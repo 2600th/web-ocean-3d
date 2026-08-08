@@ -423,6 +423,42 @@ The benchmark records `renderer.info.memory` per configuration, so the tier cost
 is visible directly: 273 MB of textures at Low, 323 MB at High and Ultra, 476 MB
 at Max, with render-target counts of 14/27/27 respectively.
 
+### The low-end pass, and where the memory actually went
+
+Those figures predate the low-end work and are kept because the benchmark rows
+above are from the same run. What that work found is that **the numbers this
+document was watching were not the ones killing the tab.**
+
+The dressing GLBs decoded to **762.3 MiB of texture memory** — roughly twice the
+entire render-target budget, and invisible to every measurement here, because
+`renderer.info.memory` counts textures the renderer has been handed and this
+document only ever quoted its totals per tier. Three causes: every LOD level
+shipped its own copy of the same maps (183 MiB of pure duplication, since the
+loader caches per URL), one beached pinnace carried 112 MiB, and nothing was
+GPU-compressed at all.
+
+Measured after: **79.9 MiB**, an 89.5% reduction, via KTX2 — ETC1S for colour and
+ARM, UASTC for normals and alpha-cutout leaf atlases, with rate-distortion
+optimisation and half-resolution normals. Dressing download went 33.7 → 40.7 MiB,
+which is the price of the UASTC half.
+
+Two lessons worth keeping, both of which cost a real defect first:
+
+- **`isPerceptual` tunes the codec; `isSetKTX2SRGBTransferFunc` tells the loader.**
+  Setting only the first shipped 239 of 367 textures tagged sRGB, including every
+  normal and metallic-roughness map. De-gamma'ing a roughness of 0.5 gives 0.21,
+  and the beached pinnace rendered pale and over-glossy for it.
+  `scripts/fix-ktx2-transfer.mjs --check` now gates this.
+- **A regenerated visual baseline cannot catch a rendering regression**, because
+  it is compared against the render that produced it. All 20 visual tests passed
+  against the broken textures. The pale hull was only visible by diffing the new
+  baseline against `main`.
+
+Render targets are now tier-dependent too — wake 13.5 MiB at Low and Medium
+against 24.0 above, caustics 256²/512²/768², and Low drops MSAA and caps DPR at
+1 before the framebuffer is allocated. The environment cube is **not**: shrinking
+it was measured and rejected, see `QualitySettings.environmentResolution`.
+
 ## What these numbers do not establish
 
 An independent review pushed back on the framing, correctly. "All seven

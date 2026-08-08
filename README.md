@@ -109,9 +109,10 @@ and weather together — so switching reads as a different *place*, not a colour
 ![Island](docs/images/island.png)
 
 *The frame the terrain, the planting and the grade are tuned against, and the one the
-reference in [`docs/ref/`](docs/ref/tropical-island-sea-level-v2.png) depicts. Bare coral sand to 3.5 m, canopy over the
-flanks carried by billboard impostors that hand over to the meshes at 90 m, a pale rock
-crown on the 150 m summit, and closed shoreline rock that can be dropped at any angle.*
+reference in [`docs/ref/`](docs/ref/tropical-island-sea-level-v2.png) depicts. Bare coral sand to 3.5 m, a procedural
+canopy over the flanks fading in over 90–180 m, baked billboard impostors standing
+in for the planting beyond 60 m (understorey) and 120 m (trees), a pale rock crown
+on the 150 m summit, and closed shoreline rock that can be dropped at any angle.*
 
 | The shore break | Over the reef |
 |---|---|
