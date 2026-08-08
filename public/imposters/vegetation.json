@@ -1,6 +1,6 @@
 {
   "schema": "web-ocean-3d/imposters@1",
-  "generatedAt": "2026-08-08T18:56:58.844Z",
+  "generatedAt": "2026-08-08T19:12:17.441Z",
   "command": "node scripts/bake-imposters.mjs",
   "source": {
     "spec": "docs/superpowers/specs/2026-08-08-low-end-optimisation-design.md",
@@ -53,7 +53,14 @@
     "bleedPx": 16,
     "scaleSemantics": "world dimensions are at unit mesh scale; Props placement applies instance scale/stretch",
     "normalMap": null,
-    "normalMapReason": "Skipped; the runtime can light the card with its dome normal."
+    "normalMapReason": "Skipped; the runtime can light the card with its dome normal.",
+    "silhouetteValidation": {
+      "coverageMin": 0.08,
+      "coverageMax": 0.6,
+      "centroidMin": 0.12,
+      "centroidMax": 0.88,
+      "contentMarginPx": 8
+    }
   },
   "species": {
     "fern_02": {
@@ -73,23 +80,23 @@
         "v1": 1,
         "origin": "bottom-left"
       },
-      "worldWidth": 0.989013,
-      "worldHeight": 0.427656,
+      "worldWidth": 0.989016,
+      "worldHeight": 0.427667,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 0.989013,
-        "height": 0.427656,
-        "depth": 0.893765,
+        "width": 0.989016,
+        "height": 0.427667,
+        "depth": 0.893757,
         "unitScale": 1,
         "reference": {
           "scale": 3.3,
           "stretch": 1,
-          "width": 3.263744,
-          "height": 1.411264
+          "width": 3.263752,
+          "height": 1.411301
         }
       },
       "props": {
@@ -107,14 +114,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 1.091325,
+        "viewSize": 1.091328,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
             "x": 0,
-            "y": 0.213828
+            "y": 0.213834
           }
         }
       }
@@ -136,23 +143,23 @@
         "v1": 1,
         "origin": "bottom-left"
       },
-      "worldWidth": 0.060915,
-      "worldHeight": 0.054415,
+      "worldWidth": 0.060923,
+      "worldHeight": 0.054408,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 0.060915,
-        "height": 0.054415,
-        "depth": 0.048677,
+        "width": 0.060923,
+        "height": 0.054408,
+        "depth": 0.048666,
         "unitScale": 1,
         "reference": {
           "scale": 10.5,
           "stretch": 1,
-          "width": 0.639607,
-          "height": 0.571352
+          "width": 0.639687,
+          "height": 0.571281
         }
       },
       "props": {
@@ -170,14 +177,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 0.067216,
+        "viewSize": 0.067225,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
             "x": 0,
-            "y": 0.027207
+            "y": 0.027204
           }
         }
       }
@@ -199,23 +206,23 @@
         "v1": 1,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.999695,
-      "worldHeight": 0.424329,
+      "worldWidth": 0.6006,
+      "worldHeight": 0.424326,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 1.999695,
-        "height": 0.424329,
-        "depth": 0.525132,
+        "width": 0.6006,
+        "height": 0.424326,
+        "depth": 0.525156,
         "unitScale": 1,
         "reference": {
           "scale": 3,
           "stretch": 1,
-          "width": 5.999084,
-          "height": 1.272988
+          "width": 1.8018,
+          "height": 1.272978
         }
       },
       "props": {
@@ -233,14 +240,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.20656,
+        "viewSize": 0.662731,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
             "x": 0,
-            "y": 0.212165
+            "y": 0.212163
           }
         }
       }
@@ -262,23 +269,23 @@
         "v1": 1,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.999908,
-      "worldHeight": 0.499619,
+      "worldWidth": 0.896206,
+      "worldHeight": 0.499618,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 1.999908,
-        "height": 0.499619,
-        "depth": 1.140904,
+        "width": 0.896206,
+        "height": 0.499618,
+        "depth": 1.140914,
         "unitScale": 1,
         "reference": {
           "scale": 2.5,
           "stretch": 1,
-          "width": 4.999771,
-          "height": 1.249046
+          "width": 2.240514,
+          "height": 1.249044
         }
       },
       "props": {
@@ -296,7 +303,7 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.206796,
+        "viewSize": 0.988917,
         "camera": {
           "projection": "orthographic",
           "view": "front",
@@ -325,23 +332,23 @@
         "v1": 0.75,
         "origin": "bottom-left"
       },
-      "worldWidth": 0.187811,
-      "worldHeight": 0.32255,
+      "worldWidth": 0.187801,
+      "worldHeight": 0.322546,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 0.187811,
-        "height": 0.32255,
-        "depth": 0.201025,
+        "width": 0.187801,
+        "height": 0.322546,
+        "depth": 0.201029,
         "unitScale": 1,
         "reference": {
           "scale": 2.2,
           "stretch": 1,
-          "width": 0.413184,
-          "height": 0.70961
+          "width": 0.413163,
+          "height": 0.709602
         }
       },
       "props": {
@@ -362,14 +369,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 0.355917,
+        "viewSize": 0.355913,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
             "x": 0,
-            "y": 0.161275
+            "y": 0.161273
           }
         }
       }
@@ -391,23 +398,23 @@
         "v1": 0.75,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.99884,
-      "worldHeight": 0.403211,
+      "worldWidth": 0.354269,
+      "worldHeight": 0.403221,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 1.99884,
-        "height": 0.403211,
-        "depth": 0.432569,
+        "width": 0.354269,
+        "height": 0.403221,
+        "depth": 0.432581,
         "unitScale": 1,
         "reference": {
           "scale": 2.6,
           "stretch": 1,
-          "width": 5.196985,
-          "height": 1.048347
+          "width": 0.921099,
+          "height": 1.048374
         }
       },
       "props": {
@@ -427,14 +434,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.205617,
+        "viewSize": 0.444933,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
             "x": 0,
-            "y": 0.201605
+            "y": 0.20161
           }
         }
       }
@@ -456,23 +463,23 @@
         "v1": 0.75,
         "origin": "bottom-left"
       },
-      "worldWidth": 2,
-      "worldHeight": 1.999908,
-      "pivotHeight": 1,
+      "worldWidth": 7.218291,
+      "worldHeight": 5.159252,
+      "pivotHeight": 0,
       "pivot": {
-        "offsetX": 0,
-        "heightAboveBottom": 1
+        "offsetX": -0.006248,
+        "heightAboveBottom": 0
       },
       "world": {
-        "width": 2,
-        "height": 1.999908,
-        "depth": 1.999969,
+        "width": 7.218291,
+        "height": 5.159252,
+        "depth": 7.302898,
         "unitScale": 1,
         "reference": {
           "scale": 1.95,
           "stretch": 1.05,
-          "width": 3.9,
-          "height": 4.094813
+          "width": 14.075667,
+          "height": 10.563569
         }
       },
       "props": {
@@ -496,14 +503,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.206897,
+        "viewSize": 7.965011,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
-            "x": 0,
-            "y": -0.000046
+            "x": 0.006248,
+            "y": 2.579626
           }
         }
       }
@@ -525,23 +532,23 @@
         "v1": 0.75,
         "origin": "bottom-left"
       },
-      "worldWidth": 2,
-      "worldHeight": 1.999969,
-      "pivotHeight": 0.999969,
+      "worldWidth": 9.043846,
+      "worldHeight": 4.26139,
+      "pivotHeight": -0.000021,
       "pivot": {
-        "offsetX": 0,
-        "heightAboveBottom": 0.999969
+        "offsetX": 0.026196,
+        "heightAboveBottom": -0.000021
       },
       "world": {
-        "width": 2,
-        "height": 1.999969,
-        "depth": 2,
+        "width": 9.043846,
+        "height": 4.26139,
+        "depth": 8.117574,
         "unitScale": 1,
         "reference": {
           "scale": 1.55,
           "stretch": 1.025,
-          "width": 3.1,
-          "height": 3.177452
+          "width": 14.017961,
+          "height": 6.770284
         }
       },
       "props": {
@@ -569,14 +576,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.206897,
+        "viewSize": 9.979416,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
-            "x": 0,
-            "y": 0.000015
+            "x": -0.026196,
+            "y": 2.130716
           }
         }
       }
@@ -598,23 +605,23 @@
         "v1": 0.5,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.999908,
-      "worldHeight": 1.999939,
-      "pivotHeight": 0.999939,
+      "worldWidth": 23.942982,
+      "worldHeight": 19.324931,
+      "pivotHeight": 0.146352,
       "pivot": {
-        "offsetX": 0.000015,
-        "heightAboveBottom": 0.999939
+        "offsetX": 0.749471,
+        "heightAboveBottom": 0.146352
       },
       "world": {
-        "width": 1.999908,
-        "height": 1.999939,
-        "depth": 1.999908,
+        "width": 23.942982,
+        "height": 19.324931,
+        "depth": 18.851436,
         "unitScale": 1,
         "reference": {
           "scale": 0.75,
           "stretch": 1,
-          "width": 1.499931,
-          "height": 1.499954
+          "width": 17.957236,
+          "height": 14.493698
         }
       },
       "props": {
@@ -634,14 +641,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.206829,
+        "viewSize": 26.419842,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
-            "x": -0.000015,
-            "y": 0.000031
+            "x": -0.749471,
+            "y": 9.516114
           }
         }
       }
@@ -663,23 +670,23 @@
         "v1": 0.5,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.999817,
-      "worldHeight": 1.999786,
-      "pivotHeight": 0.999908,
+      "worldWidth": 4.207745,
+      "worldHeight": 3.35713,
+      "pivotHeight": -0.032233,
       "pivot": {
-        "offsetX": 0.000092,
-        "heightAboveBottom": 0.999908
+        "offsetX": -0.051535,
+        "heightAboveBottom": -0.032233
       },
       "world": {
-        "width": 1.999817,
-        "height": 1.999786,
-        "depth": 1.999786,
+        "width": 4.207745,
+        "height": 3.35713,
+        "depth": 4.070599,
         "unitScale": 1,
         "reference": {
           "scale": 2.9,
           "stretch": 1.025,
-          "width": 5.799469,
-          "height": 5.944365
+          "width": 12.202461,
+          "height": 9.979069
         }
       },
       "props": {
@@ -699,14 +706,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.206694,
+        "viewSize": 4.643029,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
-            "x": -0.000092,
-            "y": -0.000015
+            "x": 0.051535,
+            "y": 1.710798
           }
         }
       }
@@ -728,23 +735,23 @@
         "v1": 0.5,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.997833,
-      "worldHeight": 1.998627,
-      "pivotHeight": 0.999695,
+      "worldWidth": 6.296413,
+      "worldHeight": 6.283909,
+      "pivotHeight": 0,
       "pivot": {
-        "offsetX": -0.00032,
-        "heightAboveBottom": 0.999695
+        "offsetX": 0.423584,
+        "heightAboveBottom": 0
       },
       "world": {
-        "width": 1.997833,
-        "height": 1.998627,
-        "depth": 1.996612,
+        "width": 6.296413,
+        "height": 6.283909,
+        "depth": 4.023386,
         "unitScale": 1,
         "reference": {
           "scale": 2.05,
           "stretch": 1.075,
-          "width": 4.095558,
-          "height": 4.404474
+          "width": 12.907646,
+          "height": 13.848164
         }
       },
       "props": {
@@ -766,14 +773,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.205381,
+        "viewSize": 6.947766,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
-            "x": 0.00032,
-            "y": -0.000381
+            "x": -0.423584,
+            "y": 3.141954
           }
         }
       }
@@ -795,23 +802,23 @@
         "v1": 0.5,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.994079,
-      "worldHeight": 1.998169,
-      "pivotHeight": 0.999542,
+      "worldWidth": 2.568959,
+      "worldHeight": 4.498463,
+      "pivotHeight": 0.018442,
       "pivot": {
-        "offsetX": 0.001862,
-        "heightAboveBottom": 0.999542
+        "offsetX": -0.703696,
+        "heightAboveBottom": 0.018442
       },
       "world": {
-        "width": 1.994079,
-        "height": 1.998169,
-        "depth": 1.973876,
+        "width": 2.568959,
+        "height": 4.498463,
+        "depth": 2.470801,
         "unitScale": 1,
         "reference": {
           "scale": 2.5,
           "stretch": 1.1,
-          "width": 4.985199,
-          "height": 5.494964
+          "width": 6.422398,
+          "height": 12.370773
         }
       },
       "props": {
@@ -830,14 +837,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.204876,
+        "viewSize": 4.963821,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
-            "x": -0.001862,
-            "y": -0.000458
+            "x": 0.703696,
+            "y": 2.230789
           }
         }
       }
@@ -859,23 +866,23 @@
         "v1": 0.25,
         "origin": "bottom-left"
       },
-      "worldWidth": 1.051485,
-      "worldHeight": 1.999756,
+      "worldWidth": 1.051495,
+      "worldHeight": 1.902008,
       "pivotHeight": 0,
       "pivot": {
         "offsetX": 0,
         "heightAboveBottom": 0
       },
       "world": {
-        "width": 1.051485,
-        "height": 1.999756,
-        "depth": 0.996948,
+        "width": 1.051495,
+        "height": 1.902008,
+        "depth": 0.996953,
         "unitScale": 1,
         "reference": {
           "scale": 3,
           "stretch": 1,
-          "width": 3.154454,
-          "height": 5.999268
+          "width": 3.154486,
+          "height": 5.706023
         }
       },
       "props": {
@@ -894,14 +901,14 @@
       },
       "frame": {
         "marginPx": 24,
-        "viewSize": 2.206627,
+        "viewSize": 2.098767,
         "camera": {
           "projection": "orthographic",
           "view": "front",
           "horizontal": true,
           "target": {
             "x": 0,
-            "y": 0.999878
+            "y": 0.951004
           }
         }
       }

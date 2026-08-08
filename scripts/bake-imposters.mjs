@@ -38,6 +38,13 @@ const GRID_COLUMNS = ATLAS_SIZE / CELL_SIZE;
 const GRID_ROWS = ATLAS_SIZE / CELL_SIZE;
 const MARGIN_PX = 24;
 const BLEED_PX = 16;
+const MIN_SILHOUETTE_COVERAGE = 0.08;
+const MAX_SILHOUETTE_COVERAGE = 0.60;
+const CENTROID_MIN = 0.12;
+const CENTROID_MAX = 0.88;
+const CONTENT_MARGIN_PX = 8;
+// TODO: Once the KTX2 pipeline lands, encode this atlas for the runtime's
+// alpha-capable GPU format instead of shipping PNG as the final texture.
 const SCHEMA = 'web-ocean-3d/imposters@1';
 
 /**
@@ -330,6 +337,22 @@ function viewerHtml(origin) {
         );
       }
 
+      // Keep this in lockstep with AssetLoader.dequantiseGeometry. Meshopt's
+      // KHR_mesh_quantization leaves positions in normalized integer buffers;
+      // applying a node transform before widening them clamps large models to
+      // the integer buffer's representable range and produces box-shaped junk.
+      function dequantiseGeometry(geometry) {
+        for (const [name, attribute] of Object.entries(geometry.attributes)) {
+          if (!attribute.normalized && attribute.array instanceof Float32Array) continue;
+
+          const items = attribute.itemSize;
+          const values = new Float32Array(attribute.count * items);
+          for (let i = 0; i < attribute.count; i++) {
+            for (let c = 0; c < items; c++) values[i * items + c] = attribute.getComponent(i, c);
+          }
+          geometry.setAttribute(name, new THREE.BufferAttribute(values, items));
+        }
+      }
       function flatten(gltf, spec) {
         gltf.scene.updateMatrixWorld(true);
         const selected = [];
@@ -347,6 +370,7 @@ function viewerHtml(origin) {
         const copies = [];
         for (const source of selected) {
           const geometry = source.geometry.clone();
+          dequantiseGeometry(geometry);
           geometry.applyMatrix4(source.matrixWorld);
           const copy = new THREE.Mesh(geometry, sourceMaterials(source.material));
           copy.frustumCulled = false;
@@ -583,6 +607,63 @@ async function bleedTransparentEdges(inputPath, outputPath, cells) {
     .toFile(outputPath);
 }
 
+async function validateAtlasSilhouettes(atlasPath, entries) {
+  const decoded = await sharp(atlasPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = decoded;
+  if (info.width !== ATLAS_SIZE || info.height !== ATLAS_SIZE || info.channels !== 4) {
+    throw new Error(`Unexpected atlas pixels during silhouette validation: ${info.width}x${info.height}x${info.channels}`);
+  }
+
+  for (const { spec, cell } of entries) {
+    let alphaPixels = 0;
+    let sumAlpha = 0;
+    let weightedX = 0;
+    let weightedY = 0;
+    let minX = cell.width;
+    let minY = cell.height;
+    let maxX = -1;
+    let maxY = -1;
+
+    for (let y = 0; y < cell.height; y++) {
+      for (let x = 0; x < cell.width; x++) {
+        const alpha = data[((cell.y + y) * info.width + cell.x + x) * 4 + 3];
+        if (alpha === 0) continue;
+        alphaPixels++;
+        sumAlpha += alpha;
+        weightedX += x * alpha;
+        weightedY += y * alpha;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+
+    const coverage = alphaPixels / (cell.width * cell.height);
+    const centroidX = weightedX / (sumAlpha * cell.width);
+    const centroidY = weightedY / (sumAlpha * cell.height);
+    const problems = [];
+    if (coverage < MIN_SILHOUETTE_COVERAGE || coverage > MAX_SILHOUETTE_COVERAGE) {
+      problems.push(`coverage ${(coverage * 100).toFixed(1)}% outside ${(MIN_SILHOUETTE_COVERAGE * 100).toFixed(0)}-${(MAX_SILHOUETTE_COVERAGE * 100).toFixed(0)}%`);
+    }
+    if (!Number.isFinite(centroidX) || !Number.isFinite(centroidY) ||
+        centroidX <= CENTROID_MIN || centroidX >= CENTROID_MAX ||
+        centroidY <= CENTROID_MIN || centroidY >= CENTROID_MAX) {
+      problems.push(`centroid (${centroidX.toFixed(3)},${centroidY.toFixed(3)}) outside ${CENTROID_MIN}-${CENTROID_MAX}`);
+    }
+    if (minX < CONTENT_MARGIN_PX || minY < CONTENT_MARGIN_PX ||
+        maxX >= cell.width - CONTENT_MARGIN_PX || maxY >= cell.height - CONTENT_MARGIN_PX) {
+      problems.push(`content bounds ${minX},${minY}-${maxX},${maxY} escape the cell margin`);
+    }
+    if (problems.length > 0) throw new Error(`${spec.slug}: ${problems.join('; ')}`);
+
+    process.stdout.write(
+      `[bake] silhouette ${spec.slug}: ${(coverage * 100).toFixed(1)}% alpha, ` +
+      `centroid (${centroidX.toFixed(3)},${centroidY.toFixed(3)}), ` +
+      `bbox ${minX},${minY}-${maxX},${maxY}\n`,
+    );
+  }
+}
 function buildSidecar(renderedEntries) {
   const emptyCells = [];
   for (let index = SPECIES.length; index < GRID_COLUMNS * GRID_ROWS; index++) emptyCells.push(cellFor(index));
@@ -626,6 +707,13 @@ function buildSidecar(renderedEntries) {
       scaleSemantics: 'world dimensions are at unit mesh scale; Props placement applies instance scale/stretch',
       normalMap: null,
       normalMapReason: 'Skipped; the runtime can light the card with its dome normal.',
+      silhouetteValidation: {
+        coverageMin: MIN_SILHOUETTE_COVERAGE,
+        coverageMax: MAX_SILHOUETTE_COVERAGE,
+        centroidMin: CENTROID_MIN,
+        centroidMax: CENTROID_MAX,
+        contentMarginPx: CONTENT_MARGIN_PX,
+      },
     },
     species,
   };
@@ -684,6 +772,7 @@ async function main() {
       await page.locator('#atlas').screenshot({ path: rawAtlasPath, omitBackground: true });
       const cells = renderedEntries.map((entry) => entry.cell);
       await bleedTransparentEdges(rawAtlasPath, ATLAS_PATH, cells);
+      await validateAtlasSilhouettes(ATLAS_PATH, renderedEntries);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
