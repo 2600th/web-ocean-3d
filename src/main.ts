@@ -1079,6 +1079,11 @@ class App {
 
   private async loadSceneContent(): Promise<void> {
     this.assets = new AssetLoader({
+      // KTX2Loader has to ask the device which compressed formats it can
+      // transcode to — ASTC, ETC2, BC — and it can only ask a renderer that
+      // exists. Without this the loader falls back and every dressing texture
+      // arrives untranscoded, which is the whole saving handed straight back.
+      renderer: this.renderer,
       onProgress: ({ fraction, itemsLoaded, itemsTotal }) => {
         const progress = 0.86 + fraction * 0.1;
         boot.set(
@@ -1097,7 +1102,13 @@ class App {
 
     const [shipResult, propsResult, reefFishResult] = await Promise.allSettled([
       Ship.load(this.assets),
-      Props.load(this.assets, { detailScale: QUALITY_TIERS[this.state.quality].propsDetail }),
+      Props.load(this.assets, {
+        // The tier decides whether the island's vegetation is meshes or cards,
+        // and on Low and Medium it decides that those GLBs are never requested
+        // at all. Passing only `detailScale` leaves Props inferring it.
+        qualityTier: this.state.quality,
+        detailScale: QUALITY_TIERS[this.state.quality].propsDetail,
+      }),
       // The reef species. Already settled-by-construction — `loadReefFish`
       // resolves null rather than rejecting — but it rides in the same batch so
       // its request overlaps the ship's rather than queueing behind it.
@@ -2097,6 +2108,10 @@ class App {
     // not change how it is moving as it becomes a billboard.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
+    // And the imposter cards sway on it too, for the same reason: a plant must
+    // not change how it is moving at the instant it stops being a mesh.
+    this.props?.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
+    this.props?.update(dt);
 
     this.remains.setSun(this.atmosphere.sunDirection, this.atmosphere.sunColor);
 
@@ -2712,6 +2727,7 @@ class App {
           this.stormQuote.reset();
           this.canopy.resetClock(start);
           this.foliageWind.resetClock(start);
+          this.props?.resetClock(start);
           this.audio.resetClock(start);
           // `resetCinematic` is deliberately *not* here any more — it now runs
           // before the weather seeds above, because those seeds are read from the
