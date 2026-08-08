@@ -313,7 +313,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 206,
     meshSegments: 119,
     shadowMapSize: 512,
-    wakeResolution: 512,
+    wakeResolution: 768,
     causticsResolution: 256,
     environmentResolution: 64,
     maxPixelRatio: 1,
