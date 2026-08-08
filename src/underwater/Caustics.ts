@@ -36,8 +36,10 @@ import {
  * of surface at `xz + (sunDir.xz / sunDir.y) * d`, which is what makes caustics
  * slide sideways as the sun moves toward the horizon.
  *
- * No textures, no render targets, no compute — this compiles to WGSL and GLSL
- * alike and costs one worley evaluation per octave per shaded fragment.
+ * The spatial field is baked into one mipmapped render target per frame, so the
+ * volumetric pass can sample it instead of re-running both Worley lattices at
+ * every march step. There are no external assets or compute-only dependencies;
+ * the bake and all consumers compile to WGSL and GLSL alike.
  */
 
 export interface CausticsParams {
@@ -98,8 +100,8 @@ export class Caustics {
   readonly texture: THREE.Texture;
   /** World size of the square the baked field covers. */
   readonly extent: number;
-  /** Texels per side. */
-  readonly resolution: number;
+  /** Texels per side. Updated by `setResolution` without replacing the texture. */
+  resolution: number;
 
   private readonly target: THREE.RenderTarget;
   private readonly bakeMaterial: THREE.NodeMaterial;
@@ -124,7 +126,7 @@ export class Caustics {
    */
   constructor(resolution = 768, extent = 320) {
     this.params = { ...DEFAULT_CAUSTICS_PARAMS };
-    this.resolution = resolution;
+    this.resolution = normalizeResolution(resolution);
     this.extent = extent;
 
     /**
@@ -173,7 +175,7 @@ export class Caustics {
     });
 
     // --- the baked field ----------------------------------------------------
-    this.target = new THREE.RenderTarget(resolution, resolution, {
+    this.target = new THREE.RenderTarget(this.resolution, this.resolution, {
       type: THREE.HalfFloatType,
       format: THREE.RGBAFormat,
       // Mipmapped, and the god-ray march depends on it.
@@ -229,6 +231,23 @@ export class Caustics {
     this.fnLod = Fn(([worldPosition, lod]: any) => this.field(worldPosition, lod));
 
     this.setSunDirection(new THREE.Vector3(0.35, 0.62, 0.7));
+  }
+
+  /**
+   * Resizes the mipmapped bake target in place.
+   *
+   * The render target is already referenced by both the seafloor and the
+   * underwater node graphs through `texture`. `RenderTarget.setSize` retires
+   * the old GPU allocation while retaining that texture object, which makes a
+   * tier change safe after the application's submitted-work fence. The next
+   * `bake` repopulates the resized mip chain.
+   */
+  setResolution(resolution: number): void {
+    if (this.disposed) return;
+    const next = normalizeResolution(resolution);
+    if (next === this.resolution) return;
+    this.target.setSize(next, next);
+    this.resolution = next;
   }
 
   /** Shared body of both sampler variants. `lod` null selects implicit LOD. */
@@ -354,6 +373,10 @@ export class Caustics {
     this.bakeMaterial.dispose();
     this.quad.geometry.dispose();
   }
+}
+
+function normalizeResolution(size: number): number {
+  return Number.isFinite(size) ? Math.max(1, Math.round(size)) : 768;
 }
 
 function clampNumber(v: number, lo: number, hi: number): number {
