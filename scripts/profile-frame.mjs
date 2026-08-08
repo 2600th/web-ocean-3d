@@ -896,7 +896,10 @@ async function main() {
     page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
     await serveBinariesFromDisk(page);
 
-    await page.goto(preview.url, { waitUntil: 'domcontentloaded' });
+    const launchUrl = new URL(preview.url);
+    launchUrl.searchParams.set('gate', '0');
+    launchUrl.searchParams.set('quality', options.tier);
+    await page.goto(launchUrl.toString(), { waitUntil: 'domcontentloaded' });
     await page.bringToFront();
     await page.waitForFunction(() => '__ocean' in window, undefined, { timeout: 120_000 });
     await page.waitForFunction(() => window.__ocean.isReady(), undefined, { timeout: 180_000 });

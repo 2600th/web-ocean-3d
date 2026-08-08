@@ -126,7 +126,7 @@ declare global {
 
 /** Waits for the scene to have loaded, prewarmed and drawn at least one frame. */
 export async function bootOcean(page: Page): Promise<void> {
-  await page.goto('/');
+  await page.goto('/?gate=0&quality=high');
   await page.waitForFunction(() => '__ocean' in window, undefined, { timeout: 60_000 });
   await page.waitForFunction(() => window.__ocean.isReady(), undefined, { timeout: 180_000 });
   // Without this a first capture can be taken while pipelines are still being

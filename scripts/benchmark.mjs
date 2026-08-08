@@ -93,6 +93,9 @@ const CHROME_FLAGS = [
  */
 const CAMERA = { position: [0, 14, 48], target: [0, 2, 0] };
 
+/** The existing visual-regression dive, kept as a benchmark configuration. */
+const UNDERWATER_CAMERA = { position: [-16, -7, 16], target: [-6, 2, 2] };
+
 /** Preset held fixed across the matrix; presets differ in cost. */
 const PRESET = 'skyPro';
 
@@ -108,6 +111,17 @@ const BUDGETS = {
   webgl: { frameMs: 33.3, fps: 30 },
 };
 
+/**
+ * Boot budgets are deliberately attached to the low-end configuration. The
+ * memory value is the renderer's live resource count, not a guessed byte total;
+ * it makes the allocation shape auditable on machines where VRAM telemetry is
+ * unavailable to the page.
+ */
+const LOW_BOOT_BUDGET = {
+  timeToFirstFrameMs: 15_000,
+  peakRendererMemory: { geometries: 120, textures: 100 },
+};
+
 /** Minimum samples for a verdict. Percentiles over a handful of frames are noise. */
 const MIN_SAMPLES = 200;
 
@@ -115,9 +129,19 @@ const MATRIX = [
   { id: 'webgpu-low', backend: 'webgpu', tier: 'low', gate: false },
   { id: 'webgpu-medium', backend: 'webgpu', tier: 'medium', gate: false },
   { id: 'webgpu-high', backend: 'webgpu', tier: 'high', gate: true },
+  { id: 'webgpu-high-underwater', backend: 'webgpu', tier: 'high', gate: false, camera: UNDERWATER_CAMERA },
   { id: 'webgpu-ultra', backend: 'webgpu', tier: 'ultra', gate: false },
   { id: 'webgpu-max', backend: 'webgpu', tier: 'max', gate: false },
-  { id: 'webgl-low', backend: 'webgl', tier: 'low', gate: true },
+  { id: 'webgl-low', backend: 'webgl', tier: 'low', gate: true, bootBudget: LOW_BOOT_BUDGET },
+  {
+    id: 'webgl-low-cpu',
+    backend: 'webgl',
+    tier: 'low',
+    gate: true,
+    dpr: 1,
+    cpuThrottlingRate: 4,
+    bootBudget: LOW_BOOT_BUDGET,
+  },
   { id: 'webgl-high', backend: 'webgl', tier: 'high', gate: false },
 ];
 
@@ -716,11 +740,42 @@ function verdictFor(config, measurement, environment, options) {
   if (reasons.length > 0) return { verdict: 'UNVERIFIED', reasons, budget };
 
   const gpu = summarise(measurement.gpuSamples);
-  const verdict = gpu.p50 <= budget.frameMs ? 'PASS' : 'FAIL';
-  if (verdict === 'FAIL') {
-    reasons.push(`GPU p50 ${gpu.p50} ms exceeds the ${budget.frameMs} ms budget`);
+  const exceeded = [];
+  if (gpu.p50 > budget.frameMs) {
+    exceeded.push(`GPU p50 ${gpu.p50} ms exceeds the ${budget.frameMs} ms budget`);
   }
-  return { verdict, reasons, budget };
+  if (gpu.p95 > budget.frameMs) {
+    exceeded.push(`GPU p95 ${gpu.p95} ms exceeds the ${budget.frameMs} ms budget`);
+  }
+  if (gpu.p99 > budget.frameMs) {
+    exceeded.push(`GPU p99 ${gpu.p99} ms exceeds the ${budget.frameMs} ms budget`);
+  }
+
+  if (config.bootBudget) {
+    const boot = measurement.boot;
+    if (!boot || boot.firstFrameMs === null) {
+      exceeded.push('time-to-first-frame was not measured');
+    } else if (boot.firstFrameMs > config.bootBudget.timeToFirstFrameMs) {
+      exceeded.push(
+        `time-to-first-frame ${round(boot.firstFrameMs)} ms exceeds the ` +
+          `${config.bootBudget.timeToFirstFrameMs} ms budget`,
+      );
+    }
+    if (!boot || boot.peakRendererMemory.geometries > config.bootBudget.peakRendererMemory.geometries) {
+      exceeded.push(
+        `peak geometries ${boot?.peakRendererMemory.geometries ?? 'n/a'} exceeds ` +
+          `${config.bootBudget.peakRendererMemory.geometries}`,
+      );
+    }
+    if (!boot || boot.peakRendererMemory.textures > config.bootBudget.peakRendererMemory.textures) {
+      exceeded.push(
+        `peak textures ${boot?.peakRendererMemory.textures ?? 'n/a'} exceeds ` +
+          `${config.bootBudget.peakRendererMemory.textures}`,
+      );
+    }
+  }
+  if (exceeded.length > 0) return { verdict: 'FAIL', reasons: exceeded, budget };
+  return { verdict: 'PASS', reasons, budget };
 }
 
 // ---------------------------------------------------------------------------
@@ -730,7 +785,7 @@ function verdictFor(config, measurement, environment, options) {
 async function runConfiguration(browser, baseUrl, config, options) {
   const context = await browser.newContext({
     viewport: { width: options.width, height: options.height },
-    deviceScaleFactor: options.dpr,
+    deviceScaleFactor: config.dpr ?? options.dpr,
   });
   const page = await context.newPage();
   const consoleErrors = [];
@@ -742,11 +797,50 @@ async function runConfiguration(browser, baseUrl, config, options) {
   await serveBinariesFromDisk(page, servedFromDisk);
 
   try {
+    if (config.cpuThrottlingRate) {
+      const client = await context.newCDPSession(page);
+      await client.send('Emulation.setCPUThrottlingRate', { rate: config.cpuThrottlingRate });
+    }
+
+    await page.addInitScript(() => {
+      window.__benchmarkBoot = {
+        firstFrameMs: null,
+        peakRendererMemory: { geometries: 0, textures: 0 },
+        startedAt: performance.now(),
+      };
+      const observe = () => {
+        const boot = window.__benchmarkBoot;
+        const ocean = window.__ocean;
+        if (ocean) {
+          const memory = ocean.renderer.info.memory;
+          boot.peakRendererMemory.geometries = Math.max(
+            boot.peakRendererMemory.geometries,
+            memory.geometries,
+          );
+          boot.peakRendererMemory.textures = Math.max(
+            boot.peakRendererMemory.textures,
+            memory.textures,
+          );
+          if (boot.firstFrameMs === null && ocean.loop.stats.frameMs > 0) {
+            boot.firstFrameMs = performance.now() - boot.startedAt;
+          }
+        }
+        if (!ocean || boot.firstFrameMs === null || !ocean.sceneContentLoaded()) {
+          window.setTimeout(observe, 50);
+        }
+      };
+      observe();
+    });
+
     // A fresh page per configuration rather than switching tiers in one session:
     // tier changes rebuild the FFT targets, the surface material and the ocean
     // geometry, and measuring the fifth rebuild of a session is measuring
     // something the user never sees.
-    const url = config.backend === 'webgl' ? `${baseUrl}?webgl=1` : baseUrl;
+    const launchUrl = new URL(baseUrl);
+    launchUrl.searchParams.set('gate', '0');
+    launchUrl.searchParams.set('quality', config.tier);
+    if (config.backend === 'webgl') launchUrl.searchParams.set('webgl', '1');
+    const url = launchUrl.toString();
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.bringToFront();
 
@@ -755,17 +849,28 @@ async function runConfiguration(browser, baseUrl, config, options) {
     await page.waitForFunction(() => window.__ocean.shadersReady(), undefined, { timeout: 180_000 });
     await page.waitForFunction(() => window.__ocean.sceneContentLoaded(), undefined, { timeout: 180_000 });
 
+    await page.waitForFunction(
+      () => window.__benchmarkBoot && window.__benchmarkBoot.firstFrameMs !== null,
+      undefined,
+      { timeout: 180_000 },
+    );
+    const boot = await page.evaluate(() => ({
+      firstFrameMs: window.__benchmarkBoot.firstFrameMs,
+      peakRendererMemory: { ...window.__benchmarkBoot.peakRendererMemory },
+    }));
+
     const environment = await collectEnvironment(page);
 
-    await page.evaluate(async ([tier, preset, camera]) => {
+    const camera = config.camera ?? CAMERA;
+    await page.evaluate(async ([preset, camera]) => {
       const ocean = window.__ocean;
-      ocean.setState({ quality: tier, preset, pixelRatio: 1, cameraMode: 'orbit' });
+      ocean.setState({ preset, pixelRatio: 1, cameraMode: 'orbit' });
       ocean.setCamera(...camera.position, ...camera.target);
       // A tier change rebuilds the water material and the ocean mesh, so the
       // pipelines prewarmed at boot no longer cover the scene. Compile the new
       // ones here instead of letting the first sampled frame pay for them.
       await ocean.renderer.compileAsync(ocean.scene, ocean.camera);
-    }, [config.tier, PRESET, CAMERA]);
+    }, [PRESET, camera]);
 
     // Settle: mip chains, the first sampler readback after the rebuild, and the
     // buoyancy solver finding the new wave field.
@@ -798,8 +903,8 @@ async function runConfiguration(browser, baseUrl, config, options) {
       backend: raw.backend,
       tier: config.tier,
       preset: PRESET,
-      camera: CAMERA,
-      resolution: { width: options.width, height: options.height, dpr: options.dpr },
+      camera,
+      resolution: { width: options.width, height: options.height, dpr: config.dpr ?? options.dpr },
       drawingBuffer: raw.drawingBuffer,
       adapter: environment.adapter,
       gl: environment.gl,
@@ -826,8 +931,15 @@ async function runConfiguration(browser, baseUrl, config, options) {
       },
       render: raw.counters,
       memory: raw.memory,
-      sceneContent: { hasShip: raw.hasShip, binariesServedFromDisk: servedFromDisk },
+      boot,
+      cpuThrottlingRate: config.cpuThrottlingRate ?? 1,
+      sceneContent: {
+        hasShip: raw.hasShip,
+        submerged: Boolean(config.camera),
+        binariesServedFromDisk: servedFromDisk,
+      },
       budget,
+      bootBudget: config.bootBudget ?? null,
       verdict,
       reasons,
       consoleErrors,
@@ -838,10 +950,13 @@ async function runConfiguration(browser, baseUrl, config, options) {
 }
 
 function formatTable(results) {
-  const header = ['configuration', 'backend', 'GPU p50', 'p95', 'p99', 'CPU p50', 'FPS(GPU)', 'delivered', 'draws', 'tris', 'verdict'];
+  const header = ['configuration', 'backend', 'TTFF', 'GPU p50', 'p95', 'p99', 'CPU p50', 'FPS(GPU)', 'delivered', 'draws', 'tris', 'verdict'];
   const rows = results.map((r) => [
     r.id + (r.gate ? ' *' : ''),
     r.backend,
+    r.boot?.firstFrameMs !== null && r.boot?.firstFrameMs !== undefined
+      ? `${r.boot.firstFrameMs.toFixed(0)} ms`
+      : 'n/a',
     r.gpuFrameMs ? `${r.gpuFrameMs.p50.toFixed(2)} ms` : 'n/a',
     r.gpuFrameMs ? `${r.gpuFrameMs.p95.toFixed(2)}` : 'n/a',
     r.gpuFrameMs ? `${r.gpuFrameMs.p99.toFixed(2)}` : 'n/a',
@@ -915,6 +1030,7 @@ async function main() {
     osReportedGpus: await osGpuInfo(),
     browser: { name: 'chromium', channel, version: browserVersion, flags: CHROME_FLAGS, headless: options.headless },
     budgets: BUDGETS,
+    bootBudgets: { low: LOW_BOOT_BUDGET },
     minSamples: MIN_SAMPLES,
     configurations: results,
     summary: {
@@ -932,7 +1048,7 @@ async function main() {
   writeFileSync(join(RESULTS_DIR, 'latest.json'), `${JSON.stringify(report, null, 2)}\n`);
 
   process.stdout.write(`\n${formatTable(results)}\n\n`);
-  process.stdout.write(`* gated configuration. Budgets: WebGPU ${BUDGETS.webgpu.frameMs} ms, WebGL2 ${BUDGETS.webgl.frameMs} ms (GPU p50).\n`);
+  process.stdout.write(`* gated configuration. GPU p50/p95/p99 budgets: WebGPU ${BUDGETS.webgpu.frameMs} ms, WebGL2 ${BUDGETS.webgl.frameMs} ms. Low boot budget: TTFF ${LOW_BOOT_BUDGET.timeToFirstFrameMs} ms, ${LOW_BOOT_BUDGET.peakRendererMemory.geometries} geometries, ${LOW_BOOT_BUDGET.peakRendererMemory.textures} textures.\n`);
   process.stdout.write(`Results: ${file}\n`);
 
   const gatesPassed = report.summary.gates.every((gate) => gate.verdict === 'PASS');
