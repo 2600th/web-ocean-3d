@@ -302,6 +302,8 @@ export class Atmosphere {
   private readonly envScene: THREE.Scene;
   private readonly envTarget: THREE.CubeRenderTarget;
   private readonly envCamera: THREE.CubeCamera;
+  /** Environment cube face size. */
+  environmentResolution: number;
   private envDirty = true;
   /**
    * Set when something other than the light's *direction* changed.
@@ -313,6 +315,7 @@ export class Atmosphere {
    */
   private envForce = true;
   private envScene3D: THREE.Scene | null = null;
+  private disposed = false;
 
   private readonly _sunDirection = new THREE.Vector3(0, 1, 0);
   private readonly _moonDirection = new THREE.Vector3(0, 1, 0);
@@ -382,10 +385,11 @@ export class Atmosphere {
   private readonly uMoonDiscCos = uniform(0.9995);
   private readonly uTime = uniform(0);
 
-  constructor(renderer: THREE.WebGPURenderer) {
+  constructor(renderer: THREE.WebGPURenderer, environmentResolution = ENV_SIZE) {
     void renderer; // the dome needs no renderer-specific setup; kept for API symmetry
 
     this.params = { ...DEFAULT_ATMOSPHERE_PARAMS, groundColor: DEFAULT_ATMOSPHERE_PARAMS.groundColor.clone() };
+    this.environmentResolution = normalizeResolution(environmentResolution);
 
     this.geometry = new THREE.SphereGeometry(1, 48, 32);
 
@@ -416,7 +420,7 @@ export class Atmosphere {
     this.envScene = new THREE.Scene();
     this.envScene.add(this.envMesh);
 
-    this.envTarget = new THREE.CubeRenderTarget(ENV_SIZE, {
+    this.envTarget = new THREE.CubeRenderTarget(this.environmentResolution, {
       type: THREE.HalfFloatType,
       generateMipmaps: false,
     });
@@ -442,14 +446,29 @@ export class Atmosphere {
   }
 
   /**
-   * Sets the sun shadow map resolution, or disables shadow casting at 0.
+   * Resizes the environment cube while retaining its CubeTexture object.
    *
-   * The existing map has to be released explicitly: `WebGLShadowMap` allocates
-   * its render target lazily from `mapSize` and then keeps it, so writing a new
-   * size without disposing leaves the old target bound and the tier change has
-   * no effect at all. Disposing forces reallocation at the requested size on the
-   * next shadow pass.
+   * The cube texture is assigned to `scene.environment` and cached by the
+   * material node graph, so replacing `envTarget` would make a tier change
+   * sample a disposed resource. `CubeRenderTarget.setSize` releases the old
+   * GPU faces in place; call this only after the application's submitted-work
+   * fence, then the next environment update rebuilds all six faces and PMREM.
    */
+  setEnvironmentResolution(resolution: number): void {
+    if (this.disposed) return;
+    const next = normalizeResolution(resolution);
+    if (next === this.environmentResolution) return;
+    this.envTarget.setSize(next, next);
+    this.environmentResolution = next;
+    this.invalidateEnvironment();
+    this.envTarget.texture.needsPMREMUpdate = true;
+  }
+
+  /** Alias for callers that apply the same target-resolution API to all systems. */
+  setResolution(resolution: number): void {
+    this.setEnvironmentResolution(resolution);
+  }
+
   /**
    * Sun shadow map resolution per side.
    *
@@ -756,6 +775,8 @@ export class Atmosphere {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.geometry.dispose();
     this.material.dispose();
     this.envTarget.dispose();
@@ -1181,4 +1202,8 @@ function henyeyGreenstein(cosTheta: any, g: any): any {
 function hash13(p: any): any {
   const q = p.mul(vec3(127.1, 311.7, 74.7));
   return fract(sin(q.x.add(q.y).add(q.z)).mul(43758.5453123));
+}
+
+function normalizeResolution(size: number): number {
+  return Number.isFinite(size) ? Math.max(1, Math.round(size)) : ENV_SIZE;
 }

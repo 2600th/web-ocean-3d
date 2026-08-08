@@ -535,8 +535,8 @@ export class Wake {
   /** Add to the scene to make `setDebugVisible` do anything. */
   readonly debugObject: THREE.Object3D;
 
-  /** Texture resolution per side. */
-  readonly resolution: number;
+  /** Texture resolution per side. Updated by `setResolution` without replacing textures. */
+  resolution: number;
 
   private readonly buffers: [THREE.RenderTarget, THREE.RenderTarget];
   private readonly output: THREE.RenderTarget;
@@ -717,7 +717,7 @@ export class Wake {
     extent = 420,
     options: WakeOptions = {},
   ) {
-    this.resolution = resolution;
+    this.resolution = normalizeResolution(resolution);
     this.extent = extent;
     // Read before the accumulate materials are built: whether the shore-break
     // term exists is baked into their node graph, exactly as the cascade count
@@ -732,8 +732,8 @@ export class Wake {
       this.uCascadeWeights.push(uniform(i < waves.derivativeTextures.length ? 1 : 0));
     }
 
-    this.buffers = [makeTarget(resolution), makeTarget(resolution)];
-    this.output = makeTarget(resolution);
+    this.buffers = [makeTarget(this.resolution), makeTarget(this.resolution)];
+    this.output = makeTarget(this.resolution);
     this.texture = this.output.texture;
 
     for (let i = 0; i < MAX_EMITTERS; i++) {
@@ -785,6 +785,28 @@ export class Wake {
     this.debugObject.visible = false;
     this.debugObject.add(this.debugMesh);
     this.debugMesh.position.y = 3;
+  }
+
+  /**
+   * Resizes the three wake targets in place.
+   *
+   * `RenderTarget.setSize` releases the old GPU allocations, but it preserves
+   * each `Texture` object. That distinction matters here: `wake.texture` is
+   * already bound into the water node graph, so replacing the output target
+   * would leave the graph sampling a disposed texture. The application must
+   * call this after its submitted-work fence, because `setSize` necessarily
+   * retires the old GPU resources.
+   */
+  setResolution(resolution: number): void {
+    if (this.disposed) return;
+    const next = normalizeResolution(resolution);
+    if (next === this.resolution) return;
+
+    for (const target of [this.buffers[0], this.buffers[1], this.output]) {
+      target.setSize(next, next);
+    }
+    this.resolution = next;
+    this.queued = 0;
   }
 
   /** Re-points the wave bindings after a tier change. See `derivativeNodes`. */
@@ -1587,6 +1609,10 @@ function createCopyMaterial(source: THREE.Texture): THREE.NodeMaterial {
     return vec4(sea.oneMinus().mul(hull.oneMinus()).oneMinus(), s.g, 0, 1);
   })();
   return material;
+}
+
+function normalizeResolution(size: number): number {
+  return Number.isFinite(size) ? Math.max(1, Math.round(size)) : 1024;
 }
 
 function makeTarget(size: number): THREE.RenderTarget {
