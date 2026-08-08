@@ -787,6 +787,24 @@ export class Props {
   /** Where the reef gathers. Shared by the rock scatter and the coral garden. */
   private reefPatches: readonly { x: number; z: number }[] = [];
   private detail = 1;
+  /**
+   * Whether vegetation is meshes, cards, or both — decided once, at load.
+   *
+   * `readonly` is a real limitation and not an oversight. The mode determines
+   * which GLBs are *requested at all*: Low and Medium never fetch the thirteen
+   * imposter-replaced species, which is where most of their saving comes from.
+   * Changing it mid-session would therefore mean either downloading a set the
+   * tier deliberately skipped, or disposing meshes a later upgrade could not
+   * get back without a network round trip in the middle of a frame.
+   *
+   * The consequences, stated plainly: a High-to-Low change keeps the meshes it
+   * already downloaded, so it sheds their draw calls but not their VRAM; and a
+   * Low-to-High change cannot restore meshes that were never fetched, so it
+   * stays on cards. Both are acceptable because the pre-load gate is the
+   * primary mechanism and `AdaptiveQuality` is one-way within a session; a
+   * visitor who wants the other tier's assets reloads, which the gate makes a
+   * deliberate, one-click action.
+   */
   private readonly imposterMode: PropsImposterMode;
   private disposed = false;
 

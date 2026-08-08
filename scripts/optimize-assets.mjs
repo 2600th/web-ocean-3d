@@ -535,9 +535,18 @@ async function main() {
     const dest = join(OUT, `${asset.slug}.glb`);
     // Sketchfab source downloads require a user token and are intentionally
     // not fetched by fetch-assets.mjs. When the committed dressing output is
-    // present, use it as a reproducible local input so the pipeline can still
-    // regenerate the shipped set; a clean checkout without that output keeps
-    // the normal missing-source error.
+    // present it is used as a local input so the pipeline can still run over
+    // the shipped set; a clean checkout without that output keeps the normal
+    // missing-source error.
+    //
+    // **This fallback is not regenerative, and calling it reproducible would be
+    // a lie.** The destination is already the pipeline's own output: without
+    // --force the build skips it because the file exists, and with --force it
+    // feeds committed KTX2 bytes back through Sharp-based atlas and WebP
+    // transforms that expect a decodable source. Re-encoding an encoded texture
+    // is lossy at best and a hard failure at worst. Regenerating these assets
+    // for real requires the token and the original Sketchfab downloads; this
+    // path exists so that the *other* assets in a run are not blocked by them.
     const source = candidates.find((path) => existsSync(path)) ?? (existsSync(dest) ? dest : candidates[0]);
 
     if (!existsSync(source)) {
