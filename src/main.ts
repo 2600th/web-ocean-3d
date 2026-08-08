@@ -162,9 +162,13 @@ class App {
   private atmosphere!: Atmosphere;
   private aerial!: AerialPerspective;
   /**
-   * The gust the island's planting sways on — the near meshes and the distant
-   * canopy cards share it, so the handover between them at 320-520 m is not a
-   * change of phase.
+   * The gust the island's planting sways on. Four systems share it — the near
+   * meshes, the imposter cards that replace them, the meadow and the distant
+   * canopy — so none of the handovers between them is a change of phase.
+   *
+   * There are two handovers now, and neither is the 320-520 m one this comment
+   * used to name: a plant becomes a card at 60 m (understorey) or 120 m
+   * (trees), and the canopy field fades in over 90-180 m behind both.
    */
   private readonly foliageWind = new FoliageWind();
   /**
@@ -2104,8 +2108,9 @@ class App {
     this.canopy.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.canopy.update(dt);
     // The planted meshes sway on the same gust the cards do — same wavelength,
-    // same speed, same phase — so a tree crossing the 320-520 m handover does
-    // not change how it is moving as it becomes a billboard.
+    // same speed, same phase — so a tree crossing its handover, at 120 m for a
+    // tree and 60 m for the understorey, does not change how it is moving as it
+    // becomes a billboard.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
     // And the imposter cards sway on it too, for the same reason: a plant must
