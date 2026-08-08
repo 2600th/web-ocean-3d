@@ -27,21 +27,29 @@
  *   node scripts/optimize-assets.mjs --force island_tree_  # rebuild matching slugs
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { availableParallelism, tmpdir } from 'node:os';
+import { isMainThread, parentPort, Worker } from 'node:worker_threads';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NodeIO } from '@gltf-transform/core';
-import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { ALL_EXTENSIONS, KHRTextureBasisu } from '@gltf-transform/extensions';
 import {
   cloneDocument,
   dedup,
+  join as joinDocument,
+  joinPrimitives,
   meshopt,
   prune,
   simplifyPrimitive,
   textureCompress,
   weld,
 } from '@gltf-transform/functions';
-import { MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer';
+import { MeshoptDecoder, MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer';
+import sharp from 'sharp';
+import { encodeToKTX2 } from 'babylonpress-ktx2-encoder';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /**
@@ -63,6 +71,123 @@ const FORCE = process.argv.includes('--force');
  * makes tuning a budget a ten-second loop instead of a four-minute one.
  */
 const ONLY = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+
+const MANIFEST_PATH = join(OUT, 'dressing-manifest.json');
+const KTX2_CACHE = join(tmpdir(), 'web-ocean-3d-ktx2-cache-v1');
+const KTX2_SIGNATURE = new Uint8Array([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a]);
+const KTX2_WORKERS = Math.min(4, Math.max(1, availableParallelism() - 1));
+
+async function decodeImage(buffer) {
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return {
+    width: info.width,
+    height: info.height,
+    data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+  };
+}
+
+async function startKTX2Worker() {
+  if (!parentPort) return;
+  parentPort.on('message', async (job) => {
+    try {
+      const encoded = await encodeToKTX2(new Uint8Array(job.image), {
+        ...job.options,
+        imageDecoder: decodeImage,
+      });
+      const data = new Uint8Array(encoded);
+      parentPort.postMessage({ id: job.id, ok: true, data }, [data.buffer]);
+    } catch (error) {
+      parentPort.postMessage({
+        id: job.id,
+        ok: false,
+        error: error instanceof Error ? { message: error.message, name: error.name, stack: error.stack } : String(error),
+      });
+    }
+  });
+}
+
+class KTX2WorkerPool {
+  constructor(size) {
+    this.workers = [];
+    this.idle = [];
+    this.queue = [];
+    this.pending = new Map();
+    this.nextId = 1;
+
+    for (let i = 0; i < size; i++) {
+      const worker = new Worker(new URL(import.meta.url), { type: 'module' });
+      worker.on('message', (message) => this.handleMessage(worker, message));
+      worker.on('error', (error) => this.handleError(worker, error));
+      this.workers.push(worker);
+      this.idle.push(worker);
+    }
+  }
+
+  encode(image, options) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({
+        id: this.nextId++,
+        image: new Uint8Array(image).slice(),
+        options,
+        resolve,
+        reject,
+      });
+      this.dispatch();
+    });
+  }
+
+  dispatch() {
+    while (this.idle.length > 0 && this.queue.length > 0) {
+      const worker = this.idle.shift();
+      const job = this.queue.shift();
+      this.pending.set(job.id, { worker, resolve: job.resolve, reject: job.reject });
+      const image = job.image.buffer;
+      worker.postMessage({ id: job.id, image, options: job.options }, [image]);
+    }
+  }
+
+  handleMessage(worker, message) {
+    const entry = this.pending.get(message.id);
+    if (!entry) return;
+    this.pending.delete(message.id);
+    this.idle.push(worker);
+    if (message.ok) {
+      entry.resolve(new Uint8Array(message.data));
+    } else {
+      const error = new Error(typeof message.error === 'string' ? message.error : message.error.message);
+      if (typeof message.error === 'object') {
+        error.name = message.error.name ?? 'Error';
+        error.stack = message.error.stack ?? error.stack;
+      }
+      entry.reject(error);
+    }
+    this.dispatch();
+  }
+
+  handleError(worker, error) {
+    this.workers = this.workers.filter((candidate) => candidate !== worker);
+    this.idle = this.idle.filter((candidate) => candidate !== worker);
+    for (const [id, entry] of this.pending) {
+      if (entry.worker !== worker) continue;
+      this.pending.delete(id);
+      entry.reject(error);
+    }
+    void worker.terminate();
+    if (this.workers.length === 0) {
+      for (const job of this.queue.splice(0)) job.reject(error);
+    }
+    this.dispatch();
+  }
+
+  async close() {
+    await Promise.all(this.workers.map((worker) => worker.terminate()));
+    this.workers = [];
+    this.idle = [];
+  }
+}
 
 /**
  * What counts as a scan's ground plate. See `stripGroundPlate`.
@@ -259,6 +384,7 @@ const ASSETS = [
     texture: 1024,
     parts: [{ match: /leaf|flower/i, ratio: 0.12, error: 0.003 }],
     cutOut: /leaf|flower/i,
+    atlas: /leaf|flower|bud/i,
     lods: [0.3, 0.09],
   },
   {
@@ -268,6 +394,7 @@ const ASSETS = [
     texture: 1024,
     parts: [{ match: /leaf/i, ratio: 0.14, error: 0.003 }],
     cutOut: /leaf/i,
+    atlas: /leaf|flower|bud/i,
     lods: [0.3, 0.09],
   },
 
@@ -304,8 +431,8 @@ const LOD_RATIOS = {
   pachira_aquatica_01: [0.35, 0.12],
   anthurium_botany_01: [0.35, 0.12],
   calathea_orbifolia_01: [0.35, 0.12],
-  fern_02: [0.4, 0.15],
-  shrub_sorrel_01: [0.4, 0.15],
+  fern_02: [0.4],
+  shrub_sorrel_01: [0.4],
   grass_medium_01: [0.4, 0.15],
   grass_medium_02: [0.4, 0.15],
 
@@ -342,14 +469,22 @@ const bytes = (n) =>
   n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`;
 
 async function main() {
+  await MeshoptDecoder.ready;
   await MeshoptEncoder.ready;
   await MeshoptSimplifier.ready;
 
   const io = new NodeIO()
     .registerExtensions(ALL_EXTENSIONS)
-    .registerDependencies({ 'meshopt.encoder': MeshoptEncoder });
+    .registerDependencies({
+      'meshopt.decoder': MeshoptDecoder,
+      'meshopt.encoder': MeshoptEncoder,
+    });
 
   mkdirSync(OUT, { recursive: true });
+  await mkdir(KTX2_CACHE, { recursive: true });
+  const ktx2Pool = new KTX2WorkerPool(KTX2_WORKERS);
+  const ktx2Stats = { converted: 0, cacheHits: 0, cacheMisses: 0, sharedJobs: 0, bytes: 0 };
+  const ktx2Jobs = new Map();
 
   let inTotal = 0;
   let outTotal = 0;
@@ -366,8 +501,13 @@ async function main() {
       join(MODELS, asset.slug, `${asset.slug}_1k.gltf`),
       join(MODELS, asset.slug, `${asset.slug}.glb`),
     ];
-    const source = candidates.find((path) => existsSync(path)) ?? candidates[0];
     const dest = join(OUT, `${asset.slug}.glb`);
+    // Sketchfab source downloads require a user token and are intentionally
+    // not fetched by fetch-assets.mjs. When the committed dressing output is
+    // present, use it as a reproducible local input so the pipeline can still
+    // regenerate the shipped set; a clean checkout without that output keeps
+    // the normal missing-source error.
+    const source = candidates.find((path) => existsSync(path)) ?? (existsSync(dest) ? dest : candidates[0]);
 
     if (!existsSync(source)) {
       console.error(`  MISSING  ${asset.slug} — run: node scripts/fetch-assets.mjs`);
@@ -379,6 +519,8 @@ async function main() {
       outTotal += statSync(dest).size;
       continue;
     }
+    const sourceDirectory = join(MODELS, asset.slug);
+    const sourceSize = existsSync(sourceDirectory) ? directorySize(sourceDirectory) : statSync(source).size;
 
     try {
       const document = await io.read(source);
@@ -399,6 +541,7 @@ async function main() {
       simplifyParts(document, asset);
       const opaqued = promoteToOpaque(document, asset);
       const masked = cutOutFoliage(document, asset);
+      const atlased = await atlasFoliage(document, asset);
       // Last of the geometry passes, because it measures the model: run it
       // before `stripGroundPlate` and it would centre on a slab that is about to
       // be cut, and before `simplifyParts` it would measure vertices that are
@@ -407,7 +550,7 @@ async function main() {
 
       await document.transform(
         dedup(),
-        textureCompress({ targetFormat: 'webp', resize: [asset.texture, asset.texture] }),
+        textureCompress({ encoder: sharp, targetFormat: 'webp', resize: [asset.texture, asset.texture] }),
         // After decimation, whole primitives and their materials can end up
         // unreferenced. Pruning before the encoder means the earlier passes
         // decide what is dead rather than this one guessing.
@@ -419,6 +562,7 @@ async function main() {
       if (plateTris > 0) notes.push(`-${plateTris} plate tris`);
       if (opaqued > 0) notes.push(`${opaqued} BLEND->OPAQUE`);
       if (masked > 0) notes.push(`${masked} BLEND->MASK`);
+      if (atlased > 0) notes.push(`${atlased} foliage materials atlased`);
       if (shift) notes.push(`grounded by [${shift.map((v) => v.toFixed(2)).join(' ')}]`);
 
       // The LOD chain branches from the finished LOD0 document, *before* it is
@@ -457,12 +601,14 @@ async function main() {
           // Half the texture budget per level. A tree at 1.4 km is fifty pixels
           // tall; a 512 map on it is a mip chain nobody reads past level four.
           textureCompress({
+            encoder: sharp,
             targetFormat: 'webp',
             resize: [Math.max(64, asset.texture >> level), Math.max(64, asset.texture >> level)],
           }),
           prune(),
-          meshopt({ encoder: MeshoptEncoder, level: 'high' }),
         );
+        await compressDocumentTextures(lod, ktx2Pool, ktx2Stats, ktx2Jobs);
+        await lod.transform(meshopt({ encoder: MeshoptEncoder, level: 'high' }));
         await io.write(lodDest, lod);
         const lodSize = statSync(lodDest).size;
         outTotal += lodSize;
@@ -475,10 +621,10 @@ async function main() {
       // advertised the Meshopt decoder from the start, so this costs nothing at
       // runtime and is most of why the shipped set shrank while the canopies
       // got denser.
+      await compressDocumentTextures(document, ktx2Pool, ktx2Stats, ktx2Jobs);
       await document.transform(meshopt({ encoder: MeshoptEncoder, level: 'high' }));
       await io.write(dest, document);
 
-      const sourceSize = directorySize(join(MODELS, asset.slug));
       const destSize = statSync(dest).size;
       inTotal += sourceSize;
       outTotal += destSize;
@@ -495,6 +641,36 @@ async function main() {
       failed += 1;
     }
   }
+
+  const manifest = { version: 1, basePath: '/models/dressing/', models: {} };
+  for (const asset of ASSETS) {
+    const base = join(OUT, asset.slug + '.glb');
+    if (!existsSync(base)) continue;
+    const lods = [{ level: 0, ratio: 1, url: manifest.basePath + asset.slug + '.glb' }];
+    for (let level = 1; level <= (asset.lods?.length ?? 0); level++) {
+      const lodPath = join(OUT, asset.slug + '_lod' + level + '.glb');
+      if (!existsSync(lodPath)) continue;
+      lods.push({
+        level,
+        ratio: asset.lods[level - 1],
+        url: manifest.basePath + asset.slug + '_lod' + level + '.glb',
+      });
+    }
+    manifest.models[asset.slug] = { lods };
+  }
+  await writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  await ktx2Pool.close();
+  console.log('  manifest : ' + MANIFEST_PATH + ' (' + Object.keys(manifest.models).length + ' model(s))');
+  console.log(
+    '  KTX2     : ' +
+      ktx2Stats.converted +
+      ' texture use(s), ' +
+      ktx2Stats.cacheMisses +
+      ' encode(s), ' +
+      ktx2Stats.cacheHits +
+      ' cache hit(s), ' +
+      bytes(ktx2Stats.bytes),
+  );
 
   console.log('\nSummary');
   console.log(`  built    : ${built} file(s)`);
@@ -787,6 +963,265 @@ function cutOutFoliage(document, asset) {
   return converted;
 }
 
+const ATLAS_WIDTH = 2048;
+const ATLAS_CELL_MAX = 512;
+const ATLAS_PADDING = 4;
+
+function align4(value) {
+  return Math.max(4, Math.round(value / 4) * 4);
+}
+
+function nextPowerOfTwo(value) {
+  return 2 ** Math.ceil(Math.log2(Math.max(1, value)));
+}
+
+async function prepareAtlasImage(texture, width, height, normal) {
+  const fallback = normal ? { r: 128, g: 128, b: 255, alpha: 1 } : { r: 0, g: 0, b: 0, alpha: 0 };
+  const source = texture
+    ? sharp(texture.getImage()).ensureAlpha().resize(width, height, { fit: 'fill' })
+    : sharp({ create: { width, height, channels: 4, background: fallback } });
+  const { data, info } = await source
+    .extend({
+      top: ATLAS_PADDING,
+      bottom: ATLAS_PADDING,
+      left: ATLAS_PADDING,
+      right: ATLAS_PADDING,
+      extendWith: 'copy',
+    })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height };
+}
+
+async function buildAtlas(entries, normal, layout = null) {
+  const placements = layout
+    ? layout.placements.map((placement) => ({ ...placement }))
+    : [];
+  let x = ATLAS_PADDING;
+  let y = ATLAS_PADDING;
+  let rowHeight = 0;
+
+  if (!layout) {
+    for (const entry of entries) {
+      const sourceTexture = normal ? entry.material.getNormalTexture() : entry.material.getBaseColorTexture();
+      const metadata = sourceTexture ? await sharp(sourceTexture.getImage()).metadata() : { width: 4, height: 4 };
+      const sourceWidth = Math.max(4, metadata.width ?? 4);
+      const sourceHeight = Math.max(4, metadata.height ?? 4);
+      const scale = Math.min(1, ATLAS_CELL_MAX / Math.max(sourceWidth, sourceHeight));
+      const width = align4(Math.max(4, sourceWidth * scale));
+      const height = align4(Math.max(4, sourceHeight * scale));
+      const outerWidth = width + ATLAS_PADDING * 2;
+      const outerHeight = height + ATLAS_PADDING * 2;
+
+      if (x + outerWidth > ATLAS_WIDTH - ATLAS_PADDING) {
+        x = ATLAS_PADDING;
+        y += rowHeight + ATLAS_PADDING;
+        rowHeight = 0;
+      }
+      placements.push({ entry, x, y, width, height });
+      x += outerWidth + ATLAS_PADDING;
+      rowHeight = Math.max(rowHeight, outerHeight);
+    }
+  }
+
+  const atlasHeight = layout?.height ?? nextPowerOfTwo(y + rowHeight + ATLAS_PADDING);
+  const background = normal ? { r: 128, g: 128, b: 255, alpha: 1 } : { r: 0, g: 0, b: 0, alpha: 0 };
+  const composites = [];
+  for (const placement of placements) {
+    const sourceTexture = normal ? placement.entry.material.getNormalTexture() : placement.entry.material.getBaseColorTexture();
+    const prepared = await prepareAtlasImage(sourceTexture, placement.width, placement.height, normal);
+    composites.push({
+      input: prepared.data,
+      raw: { width: prepared.width, height: prepared.height, channels: 4 },
+      left: placement.x,
+      top: placement.y,
+    });
+  }
+
+  const image = await sharp({
+    create: { width: ATLAS_WIDTH, height: atlasHeight, channels: 4, background },
+  })
+    .composite(composites)
+    .png()
+    .toBuffer();
+
+  return { image, width: ATLAS_WIDTH, height: atlasHeight, placements };
+}
+
+/**
+ * Atlases the existing UV-backed foliage maps. `palette()` is intentionally
+ * not used here: glTF-Transform's palette transform only accepts materials
+ * without TEXCOORD_0 and creates a palette for scalar factors, not image maps.
+ * The explicit atlas below preserves the source material identity and then
+ * `joinPrimitives`/`join` collapse the compatible foliage geometry.
+ */
+async function atlasFoliage(document, asset) {
+  if (!asset.atlas) return 0;
+  const root = document.getRoot();
+  const materials = root
+    .listMaterials()
+    .filter((material) => asset.atlas.test(material.getName()) && material.getBaseColorTexture());
+  if (materials.length < 2) return 0;
+
+  const entries = materials.map((material) => ({ material }));
+  const baseAtlas = await buildAtlas(entries, false);
+  const hasNormal = entries.some((entry) => entry.material.getNormalTexture());
+  // Normals must use exactly the base-colour layout. Repacking independently
+  // would make the shared UVs point at the wrong normal image whenever the
+  // source dimensions differ.
+  const normalAtlas = hasNormal ? await buildAtlas(entries, true, baseAtlas) : null;
+
+  const baseTexture = document.createTexture(`${asset.slug}_foliage_base_atlas`);
+  const atlasMaterial = materials[0]
+    .clone()
+    .setName(`${asset.slug}_foliage_atlas`)
+    .setBaseColorTexture(baseTexture);
+  baseTexture
+    .setImage(baseAtlas.image)
+    .setMimeType('image/png')
+    .setName(`${asset.slug}_foliage_base_atlas`);
+  if (normalAtlas) {
+    const normalTexture = document.createTexture(`${asset.slug}_foliage_normal_atlas`)
+      .setImage(normalAtlas.image)
+      .setMimeType('image/png');
+    atlasMaterial.setNormalTexture(normalTexture);
+  }
+  atlasMaterial.setAlphaMode('MASK').setAlphaCutoff(asset.cutOutAt ?? 0.35);
+
+  const placementByMaterial = new Map(
+    baseAtlas.placements.map((placement) => [placement.entry.material, placement]),
+  );
+  for (const mesh of root.listMeshes()) {
+    for (const primitive of mesh.listPrimitives()) {
+      const sourceMaterial = primitive.getMaterial();
+      const placement = sourceMaterial ? placementByMaterial.get(sourceMaterial) : undefined;
+      if (!placement) continue;
+      const uv = primitive.getAttribute('TEXCOORD_0');
+      if (!uv) throw new Error(`${asset.slug}: foliage primitive ${mesh.getName()} has no TEXCOORD_0`);
+
+      const values = new Float32Array(uv.getCount() * 2);
+      const element = [0, 0];
+      const uOffset = placement.x + ATLAS_PADDING;
+      const vOffset = baseAtlas.height - placement.y - ATLAS_PADDING - placement.height;
+      for (let i = 0; i < uv.getCount(); i++) {
+        uv.getElement(i, element);
+        // The source leaf maps use REPEAT wrapping and contain UVs outside
+        // [0, 1]. The atlas is one tile, so preserve that sampler behavior by
+        // folding each coordinate into its fractional part.
+        const u = element[0] - Math.floor(element[0]);
+        const v = element[1] - Math.floor(element[1]);
+        values[i * 2] = (uOffset + u * placement.width) / baseAtlas.width;
+        values[i * 2 + 1] = (vOffset + v * placement.height) / baseAtlas.height;
+      }
+      primitive
+        .setAttribute('TEXCOORD_0', document.createAccessor().setType('VEC2').setArray(values))
+        .setMaterial(atlasMaterial);
+    }
+  }
+
+  // Join any same-mesh group directly, then let glTF-Transform move compatible
+  // sibling nodes into the destination node while accounting for their matrices.
+  for (const mesh of root.listMeshes()) {
+    const prims = mesh.listPrimitives().filter((primitive) => primitive.getMaterial() === atlasMaterial);
+    if (prims.length < 2) continue;
+    const joined = joinPrimitives(prims);
+    for (const primitive of prims) mesh.removePrimitive(primitive);
+    mesh.addPrimitive(joined);
+  }
+  await document.transform(
+    joinDocument({
+      filter: (node) => node.getMesh()?.listPrimitives().some((primitive) => primitive.getMaterial() === atlasMaterial) ?? false,
+    }),
+  );
+
+  return materials.length;
+}
+
+function listTextureSlots(document, texture) {
+  return document
+    .getGraph()
+    .listParentEdges(texture)
+    .map((edge) => edge.getName())
+    .filter((name) => name !== 'textures');
+}
+
+function isKTX2(data) {
+  return data.byteLength >= KTX2_SIGNATURE.byteLength && KTX2_SIGNATURE.every((byte, index) => data[index] === byte);
+}
+
+function textureCacheKey(image, options) {
+  return createHash('sha256')
+    .update(image)
+    .update(JSON.stringify(options))
+    .digest('hex');
+}
+
+async function compressDocumentTextures(document, pool, stats, inFlight) {
+  const root = document.getRoot();
+  const cutoutTextures = new Set(
+    root
+      .listMaterials()
+      .filter((material) => material.getAlphaMode() === 'MASK')
+      .map((material) => material.getBaseColorTexture())
+      .filter(Boolean),
+  );
+  const textures = root.listTextures();
+  let converted = false;
+
+  await Promise.all(
+    textures.map(async (texture) => {
+      if (texture.getMimeType() === 'image/ktx2') return;
+      const image = texture.getImage();
+      if (!image) return;
+
+      const slots = listTextureSlots(document, texture);
+      const normal = slots.includes('normalTexture');
+      const uastc = normal || cutoutTextures.has(texture);
+      const options = {
+        isKTX2File: true,
+        isUASTC: uastc,
+        isNormalMap: normal,
+        isPerceptual: !normal && !slots.includes('metallicRoughnessTexture') && !slots.includes('occlusionTexture'),
+        generateMipmap: true,
+      };
+      const key = textureCacheKey(image, options);
+
+      let promise = inFlight.get(key);
+      if (!promise) {
+        promise = (async () => {
+          await mkdir(KTX2_CACHE, { recursive: true });
+          const cachedPath = join(KTX2_CACHE, key + '.ktx2');
+          if (existsSync(cachedPath)) {
+            const cached = new Uint8Array(await readFile(cachedPath));
+            if (isKTX2(cached)) {
+              stats.cacheHits += 1;
+              return cached;
+            }
+          }
+
+          const encoded = await pool.encode(image, options);
+          await writeFile(cachedPath, encoded);
+          stats.cacheMisses += 1;
+          return encoded;
+        })().finally(() => inFlight.delete(key));
+        inFlight.set(key, promise);
+      } else {
+        stats.sharedJobs += 1;
+      }
+
+      const encoded = await promise;
+      texture.setImage(encoded).setMimeType('image/ktx2');
+      const uri = texture.getURI();
+      if (uri && !uri.startsWith('data:')) texture.setURI(uri.replace(/\.[^./]+$/i, '.ktx2'));
+      stats.converted += 1;
+      stats.bytes += encoded.byteLength;
+      converted = true;
+    }),
+  );
+
+  if (converted) document.createExtension(KHRTextureBasisu).setRequired(true);
+}
+
 /**
  * Moves a model so it stands on y = 0, centred on x and z.
  *
@@ -887,4 +1322,8 @@ function directorySize(dir) {
   return total;
 }
 
-await main();
+if (isMainThread) {
+  await main();
+} else {
+  await startKTX2Worker();
+}
