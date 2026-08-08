@@ -253,20 +253,24 @@ function renderGate(
  */
 export async function openStartGate(root: HTMLElement): Promise<StartSelection> {
   const params = new URL(window.location.href).searchParams;
-  const probe = await probeDevice();
   const stored = readStoredSelection();
-  const defaults = defaultSelection(probe);
   const requestedQuality = isQualityTier(params.get('quality'))
     ? params.get('quality') as QualityTier
     : null;
 
   if (params.get('gate') === '0') {
     const backend: RendererBackend = params.get('webgl') === '1' ? 'webgl' : 'webgpu';
-    const quality = requestedQuality ?? stored?.quality ?? defaults.quality;
+    // Tooling already declares the backend and tier. Do not pay the adapter
+    // metadata round trip before a bypassed boot; Renderer will perform its
+    // normal backend probe, while a visible gate still gets the cheap probe
+    // below before presenting the device recommendation.
+    const quality = requestedQuality ?? stored?.quality ?? 'high';
     showProgress(root);
-    return { quality, backend, forceWebGL: backend === 'webgl', adapter: probe.adapter };
+    return { quality, backend, forceWebGL: backend === 'webgl', adapter: null };
   }
 
+  const probe = await probeDevice();
+  const defaults = defaultSelection(probe);
   const initial: StoredSelection = {
     backend: params.get('webgl') === '1' ? 'webgl' : stored?.backend ?? defaults.backend,
     quality: requestedQuality ?? stored?.quality ?? defaults.quality,
