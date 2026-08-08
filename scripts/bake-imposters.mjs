@@ -250,6 +250,7 @@ function viewerHtml(origin) {
       import * as THREE from 'three';
       import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
       import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+      import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
       const ATLAS_SIZE = ${ATLAS_SIZE};
       const CELL_SIZE = ${CELL_SIZE};
@@ -272,7 +273,16 @@ function viewerHtml(origin) {
 
       const scene = new THREE.Scene();
       const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100000);
-      const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+      // The dressing set is KTX2 as well as Meshopt, so the bake needs both
+      // decoders or it cannot read the very models it is baking. KTX2Loader
+      // needs a renderer to ask which compressed formats the device supports,
+      // which is why this is wired after the renderer exists.
+      const ktx2 = new KTX2Loader()
+        .setTranscoderPath('/basis/')
+        .detectSupport(renderer);
+      const loader = new GLTFLoader()
+        .setMeshoptDecoder(MeshoptDecoder)
+        .setKTX2Loader(ktx2);
       let current = null;
 
       function matches(name, include) {

@@ -115,18 +115,21 @@ export const TRANSLUCENCY_GAIN = 0.55;
  * a viewer walking up the beach watched the far forest breathe and the palms in
  * front of them stand perfectly still.
  *
- * The wavelength, speed and amplitude below are `Canopy`'s, deliberately. The
- * canopy fades in between 90 and 180 m, while the current Props tree meshes do
- * not fade out, so there is no mesh-to-card handover today. Keeping the same
- * sway constants still makes the eventual complementary fade visually coherent.
+ * The wavelength, speed and amplitude below are `Canopy`'s, deliberately, and
+ * `Imposters` uses them too. There are real handovers now — a plant becomes a
+ * card at 60 m if it is understorey and 120 m if it is a tree, and the canopy
+ * field fades in over 90-180 m behind both — so the shared constants have
+ * stopped being a hedge against a future fade and started doing their job.
  *
- * They do **not** share a phase. `Canopy` adds a per-instance offset from its
- * card seed, and a mesh has no equivalent constant available in the vertex stage
- * without new plumbing — `positionGeometry` varies across the tree and
- * `positionLocal` is post-instancing. What survives is an amplitude match and a
- * phase difference. Since the mesh does not currently fade out, there is no
- * handover distance to tune here; these shared values keep a future complementary
- * fade from introducing a new motion discontinuity.
+ * They do **not** share a phase, and no comment elsewhere should claim they do.
+ * `Canopy` adds a per-instance offset from its card seed and `Imposters` adds
+ * one from its yaw; a mesh has no equivalent constant available in the vertex
+ * stage without new plumbing — `positionGeometry` varies across the tree and
+ * `positionLocal` is post-instancing. What survives a handover is an amplitude
+ * and frequency match, not a continuous phase: a plant swapping to a card keeps
+ * the same sway *character* and may jump within its cycle. That is the honest
+ * description, and it is why the swap is placed where the plant is small on
+ * screen.
  */
 const SWAY_WAVELENGTH = 90;
 const SWAY_K = (Math.PI * 2) / SWAY_WAVELENGTH;

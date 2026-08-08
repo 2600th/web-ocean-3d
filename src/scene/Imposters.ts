@@ -10,6 +10,7 @@ import {
   vec2,
   vec3,
 } from 'three/tsl';
+import { fetchWithDeadline, withDeadline } from './AssetLoader';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;
@@ -121,7 +122,10 @@ export class Imposters {
 
   static async load(options: ImpostersLoadOptions = {}): Promise<Imposters> {
     const metadataUrl = options.metadataUrl ?? '/imposters/vegetation.json';
-    const response = await fetch(metadataUrl);
+    // Both of these are awaited by the boot, so both carry the same deadline
+    // every other asset request does. A sidecar or atlas that never answers
+    // would otherwise pend the island load forever.
+    const response = await fetchWithDeadline(metadataUrl);
     if (!response.ok) {
       throw new Error(`Imposter sidecar request failed: ${response.status} ${metadataUrl}`);
     }
@@ -132,7 +136,10 @@ export class Imposters {
     }
 
     const textureUrl = options.textureUrl ?? `/${sidecar.atlas.file.replace(/^\/+/, '')}`;
-    const atlas = await new THREE.TextureLoader().loadAsync(textureUrl);
+    const atlas = await withDeadline(
+      new THREE.TextureLoader().loadAsync(textureUrl),
+      textureUrl,
+    );
     // The sidecar's UVs use the normal Three.js/WebGL bottom-left convention.
     // TextureLoader's default flip is what maps the PNG's top-left pixel rects
     // into that convention; make it explicit before the first upload.
@@ -358,7 +365,18 @@ export class Imposters {
     material.positionNode = Fn(() => {
       const base = vec3n(placement.x, placement.y, placement.z);
       const toCamera = cameraPosition.sub(base);
+      // Away from the camera, not toward it, and the sign is load-bearing.
+      // `right x worldUp` is `-flat`, so that is the face normal; with
+      // `FrontSide` the card is only drawn when it points at the viewer. Built
+      // from `toCamera` directly it points away, every card is back-face
+      // culled, and the entire vegetation field is invisible on exactly the
+      // tiers that have no meshes to fall back on.
+      //
+      // `Canopy` gets this right by computing the same vector with the opposite
+      // subtraction (`Canopy.ts:481`) — where the local is also called
+      // `toCamera` and also is not.
       const flat = toCamera
+        .negate()
         .mul(vec3(1, 0, 1))
         .normalize()
         .add(vec3(1e-4, 0, 0))

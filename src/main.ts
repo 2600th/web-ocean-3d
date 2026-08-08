@@ -249,7 +249,8 @@ class App {
   private loop!: Loop;
   private adaptive!: AdaptiveQuality;
 
-  private readonly adapter: GPUAdapter | null;
+  /** See `StartSelection.adapter` — three-valued, and `undefined` is not `null`. */
+  private readonly adapter: GPUAdapter | null | undefined;
   private state: UiState;
   private disposed = false;
   /** True once the async scene-content load has settled, whatever the outcome. */
@@ -270,6 +271,15 @@ class App {
   private lodCompile: Promise<void> | null = null;
   /** True once `compileAsync` has built the initial pipeline set. */
   private shadersReady = false;
+  /**
+   * A `compileAsync` that outlived the prewarm timeout and is still running.
+   *
+   * Null whenever nothing is in flight. `drainQualityRequests` joins it before
+   * tearing a tier down, because the alternative is destroying resources out
+   * from under an in-flight pipeline creation — which is the exact crash this
+   * file already carries two long comments about.
+   */
+  private pendingCompile: Promise<void> | null = null;
   /** Lazily created offscreen target for `capturePixels`. */
   private captureTarget: THREE.RenderTarget | null = null;
   /** True while `stepDeterministic` owns the wave-field readback. */
@@ -1068,13 +1078,20 @@ class App {
       this.shadersReady = true;
     } catch (error) {
       console.warn('[ocean] pipeline prewarm skipped', error);
-      // compileAsync has no cancellation API. If the timeout wins, let the
-      // eventual completion update the test hook while the first frame proceeds.
+      // `compileAsync` has no cancellation API, so a timed-out compile is still
+      // running — and on a slow device, which is exactly where the timeout
+      // fires, it can still be running when a tier change tears its resources
+      // down. That is the async-pipeline-versus-destroyed-resource crash
+      // `drainQualityRequests` documents at length. Publish it so the drain can
+      // join it before it destroys anything.
       if (error === timeoutError && compile) {
-        void compile.then(
+        this.pendingCompile = compile.then(
           () => { this.shadersReady = true; },
           () => undefined,
         );
+        void this.pendingCompile.finally(() => {
+          this.pendingCompile = null;
+        });
       }
     } finally {
       if (timer !== 0) window.clearTimeout(timer);
@@ -1505,6 +1522,21 @@ class App {
     // expresses "no shadows" as `castShadow = false`, which three handles on the
     // light rather than on the renderer.
     this.atmosphere.setShadowMapSize(quality.shadowMapSize);
+
+    // The tier-sized targets, resized rather than replaced.
+    //
+    // Without these a runtime downgrade keeps every allocation the tier it came
+    // from made, which defeats the entire point of `AdaptiveQuality`: the
+    // machine that drops High to Low under load is the machine that most needs
+    // Low's memory back, and it would have got Low's step counts while still
+    // holding High's targets.
+    //
+    // All three resize in place and keep their existing texture object, so no
+    // node graph loses its binding — the constraint the shadow comment above
+    // explains at length.
+    this.wake?.setResolution(quality.wakeResolution);
+    this.caustics?.setResolution(quality.causticsResolution);
+    this.atmosphere.setEnvironmentResolution(quality.environmentResolution);
     // A uniform write, not a rebuild — the march reads its own bound.
     this.seafloor.setShadowSteps(quality.terrainShadowSteps);
 
@@ -1950,6 +1982,11 @@ class App {
     await this.loop.settle();
     // And the scene load, if one is still running. See `contentReady`.
     await this.contentReady?.catch(() => undefined);
+    // And a prewarm that outlived its own timeout. `compileAsync` cannot be
+    // cancelled, so the only safe thing to do with one still in flight is wait
+    // for it — destroying the resources it is compiling against is precisely
+    // the crash the comment below describes.
+    await this.pendingCompile?.catch(() => undefined);
     try {
       while (this.pendingQuality !== null && !this.disposed) {
         const tier = this.pendingQuality;
@@ -2108,13 +2145,13 @@ class App {
     this.canopy.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.canopy.update(dt);
     // The planted meshes sway on the same gust the cards do — same wavelength,
-    // same speed, same phase — so a tree crossing its handover, at 120 m for a
-    // tree and 60 m for the understorey, does not change how it is moving as it
-    // becomes a billboard.
+    // same speed, same amplitude. Not the same phase: `groundShading` explains
+    // why a mesh has no per-instance constant to offset by, so a plant crossing
+    // its handover keeps the character of its motion and may jump within the
+    // cycle. That is what the handover distances are chosen around.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
-    // And the imposter cards sway on it too, for the same reason: a plant must
-    // not change how it is moving at the instant it stops being a mesh.
+    // And the imposter cards sway on it too, for the same reason.
     this.props?.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.props?.update(dt);
 

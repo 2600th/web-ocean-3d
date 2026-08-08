@@ -23,8 +23,16 @@ export interface StartSelection {
   quality: QualityTier;
   backend: RendererBackend;
   forceWebGL: boolean;
-  /** The adapter metadata probe result. No device is created by the gate. */
-  adapter: GPUAdapter | null;
+  /**
+   * The adapter metadata probe result. No device is created by the gate.
+   *
+   * Three-valued on purpose, and `Renderer` reads all three: an adapter means
+   * "use this one", `null` means "probed, and there is none — take WebGL2", and
+   * `undefined` means "not probed, decide for yourself". The tooling bypass
+   * returns `undefined` because it skips the probe; returning `null` there
+   * silently forced every bypassed launch onto WebGL2.
+   */
+  adapter: GPUAdapter | null | undefined;
 }
 
 const QUALITY_LABELS: Record<QualityTier, string> = {
@@ -264,9 +272,15 @@ export async function openStartGate(root: HTMLElement): Promise<StartSelection> 
     // metadata round trip before a bypassed boot; Renderer will perform its
     // normal backend probe, while a visible gate still gets the cheap probe
     // below before presenting the device recommendation.
+    //
+    // `undefined`, emphatically not `null`. Renderer reads null as "already
+    // probed, and there is no adapter" and takes the WebGL2 fallback on the
+    // strength of it. Returning null here therefore forced every `gate=0`
+    // launch onto WebGL2 — including every benchmark and profile run nominally
+    // measuring WebGPU.
     const quality = requestedQuality ?? stored?.quality ?? 'high';
     showProgress(root);
-    return { quality, backend, forceWebGL: backend === 'webgl', adapter: null };
+    return { quality, backend, forceWebGL: backend === 'webgl', adapter: undefined };
   }
 
   const probe = await probeDevice();

@@ -65,11 +65,18 @@ export interface QualitySettings {
   /**
    * Resolution per side of each of the wake's three RGBA16F targets.
    *
-   * The wake is a ping-pong pair plus a resolved output, so its memory cost is
-   * cubic in this number: three 1024² targets cost about 24 MiB before driver
-   * overhead. Low uses 512², which keeps the wake visible without spending the
-   * memory needed for a detail that its no-displacement water cannot show.
-   * Higher tiers restore 768² and 1024² as the surface can make use of them.
+   * The wake is a ping-pong pair plus a resolved output, so the cost is three
+   * targets — a constant factor, not a third power — and quadratic in this
+   * number: 3 × r² × 8 bytes at RGBA16F, so 24.0 MiB at 1024² and 13.5 at 768²,
+   * before driver overhead.
+   *
+   * Low and Medium use 768², and specifically **not** 512², which the `Wake`
+   * constructor comment rules out: the buffer carries whitecaps as well as the
+   * wake, whitecap edges are decimetre features, and over a 420 m footprint 512
+   * is 0.82 m per texel — enough to turn a crest streak into a smear. Raising
+   * that default from 512 to 1024 was a deliberate fix and a tier must not
+   * quietly undo it for 7.9 MiB.
+   *
    * The texture objects stay bound to the water node graph while a tier change
    * resizes their targets in place.
    */
@@ -78,10 +85,17 @@ export interface QualitySettings {
    * Resolution per side of the mipmapped RGBA16F caustics field.
    *
    * Caustics are sampled below the surface and then blurred by distance, so Low
-   * does not need the 768² source field used by High and above. These values are
-   * powers of two so the mip chain has the same shape at every tier, and the
-   * target is resized rather than replaced so the seafloor and underwater node
-   * graphs keep their existing texture reference.
+   * does not need the 768² source field used by High and above.
+   *
+   * 256 and 512 are powers of two; 768 is not, and is kept because it is the
+   * resolution this field was authored and tuned at. A non-power-of-two side
+   * gives a shorter mip chain that stops on an odd level rather than reaching
+   * 1×1, which costs nothing here because the blur never reads the tail of the
+   * chain. An earlier version of this comment claimed all three were powers of
+   * two, which was simply false.
+   *
+   * The target is resized rather than replaced so the seafloor and underwater
+   * node graphs keep their existing texture reference.
    */
   causticsResolution: 256 | 512 | 768;
   /**

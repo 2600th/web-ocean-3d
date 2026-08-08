@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { dequantiseGeometry, type AssetLoader } from './AssetLoader';
+import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { Imposters } from './Imposters';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
@@ -2931,7 +2931,9 @@ interface DressingManifest {
 }
 
 async function loadDressingManifest(): Promise<DressingManifest> {
-  const response = await fetch('/models/dressing/dressing-manifest.json');
+  // Deadlined: the boot awaits this, and a manifest request that never
+  // settles is a boot that never finishes. See fetchWithDeadline.
+  const response = await fetchWithDeadline('/models/dressing/dressing-manifest.json');
   if (!response.ok) {
     throw new Error(
       'Dressing manifest request failed: ' +

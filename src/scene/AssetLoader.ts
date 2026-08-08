@@ -22,24 +22,74 @@ import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
  *
  * Compression is configured defensively. The shipped dressing set uses Meshopt
  * geometry and KTX2 textures; the loader wires both decoders before first
- * request. The Draco decoder remains optional and is
- * only wired up if a decoder is actually served from this origin — pointing at a
- * CDN would add a third-party runtime dependency to an otherwise self-contained
- * build, so if there is no local decoder we simply do not advertise Draco
- * support.
+ * request.
+ *
+ * **Draco is opt-in and is never probed for.** It used to auto-detect, HEAD-ing
+ * three candidate paths before the first model could load — and since nothing
+ * in this project has ever been Draco-encoded (`scripts/optimize-assets.mjs`
+ * encodes Meshopt and contains the string zero times), all three always missed.
+ * That cost three serial round trips on the critical boot path and put three
+ * 404s in the console of every single session, which is not free: the test
+ * suite asserts on console errors, so a probe that always fails was indistinguishable
+ * from a real asset failure.
+ *
+ * The capability is kept for anyone who does serve a decoder — pass
+ * `dracoDecoderPath` — because pointing at a CDN would add a third-party
+ * runtime dependency to an otherwise self-contained build.
  */
-
-/** Where a locally hosted Draco decoder might live, best candidate first. */
-const DRACO_CANDIDATES = [
-  '/draco/gltf/',
-  '/draco/',
-  // Vite serves the project root in dev, so the copy that ships inside the
-  // three.js package is reachable without a build step.
-  '/node_modules/three/examples/jsm/libs/draco/gltf/',
-];
 
 const BASIS_TRANSCODER_PATH = '/basis/';
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * The deadline every asset request answers to, exported so that the sidecar and
+ * manifest fetches outside this class answer to the same one.
+ *
+ * A request with no deadline is the failure this project set out to remove: the
+ * boot awaits it, nothing rejects, and the visitor watches a progress bar that
+ * will never move again. `Promise.allSettled` does not help — it handles
+ * rejection, and a promise that never settles is not a rejection.
+ */
+export const ASSET_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+
+/** `fetch` with a deadline, rejecting rather than hanging. */
+export async function fetchWithDeadline(
+  url: string,
+  timeoutMs = ASSET_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Request timed out after ${timeoutMs} ms: ${url}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Rejects if `work` has not settled within `timeoutMs`. */
+export async function withDeadline<T>(
+  work: Promise<T>,
+  label: string,
+  timeoutMs = ASSET_TIMEOUT_MS,
+): Promise<T> {
+  let timer = 0 as unknown as ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs} ms: ${label}`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const DEFAULT_MAX_CONCURRENT = 6;
 
 type MeshoptDecoder = Parameters<GLTFLoader['setMeshoptDecoder']>[0];
@@ -47,12 +97,16 @@ type MeshoptDecoder = Parameters<GLTFLoader['setMeshoptDecoder']>[0];
 interface PendingAsset {
   promise: Promise<THREE.Group>;
   controller: AbortController;
+  /** Resolves when the job leaves the concurrency queue. See `enqueue`. */
+  started: Promise<void>;
 }
 
 interface QueueJob<T> {
   run: () => Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
   reject: (reason?: unknown) => void;
+  /** Called when the job leaves the queue, so its deadline can start there. */
+  onStarted: () => void;
 }
 
 interface ProgressEntry {
@@ -191,8 +245,8 @@ export class AssetLoader {
     let pending = this.cache.get(url);
     if (!pending) {
       const controller = new AbortController();
-      const promise = this.enqueue(() => this.loadSource(url, controller.signal));
-      pending = { promise, controller };
+      const { promise, started } = this.enqueue(() => this.loadSource(url, controller.signal));
+      pending = { promise, controller, started };
       this.cache.set(url, pending);
       // A failed load must not poison the cache — the next attempt should retry.
       promise.catch(() => {
@@ -205,6 +259,7 @@ export class AssetLoader {
       options.signal,
       options.timeoutMs ?? this.timeoutMs,
       (reason) => pending?.controller.abort(reason),
+      pending.started,
     );
     return source.clone(true) as THREE.Group;
   }
@@ -212,6 +267,16 @@ export class AssetLoader {
   /** Frees every geometry, material and texture this loader created. */
   dispose(): void {
     this.disposed = true;
+    // Abort what is still in the air *before* freeing what has landed.
+    //
+    // Clearing the cache does not stop a request; it only forgets it. A load
+    // that completes after this point would build geometries, materials and
+    // textures into sets that have already been emptied and will never be
+    // visited again — which is a leak that grows with how unlucky the timing
+    // was, and is worst on the slow connections this project is trying to
+    // support.
+    const disposal = new Error('AssetLoader disposed');
+    for (const pending of this.cache.values()) pending.controller.abort(disposal);
     for (const geometry of this.geometries) geometry.dispose();
     for (const material of this.materials) material.dispose();
     for (const texture of this.textures) texture.dispose();
@@ -220,8 +285,7 @@ export class AssetLoader {
     this.textures.clear();
     this.converted.clear();
     this.cache.clear();
-    const error = new Error('AssetLoader disposed');
-    for (const job of this.queue.splice(0)) job.reject(error);
+    for (const job of this.queue.splice(0)) job.reject(disposal);
     this.transcoderManager.abort();
     this.ktx2?.dispose();
     this.ktx2 = null;
@@ -322,17 +386,37 @@ export class AssetLoader {
     this.onProgress?.(state);
   }
 
-  private enqueue(run: () => Promise<THREE.Group>): Promise<THREE.Group> {
-    return new Promise<THREE.Group>((resolve, reject) => {
-      this.queue.push({ run, resolve, reject });
+  /**
+   * Queues a load, returning both its result and a promise that resolves when
+   * it actually *starts*.
+   *
+   * The second one exists because the deadline must not include queue time.
+   * With six slots and a hundred-odd requests, a job near the back can spend
+   * most of a 30-second budget waiting its turn and then be failed for a
+   * timeout it never had a chance to beat — and the slower the connection, the
+   * more of the batch dies without ever being attempted. The deadline is a
+   * budget for the request, so it starts when the request does.
+   */
+  private enqueue(run: () => Promise<THREE.Group>): {
+    promise: Promise<THREE.Group>;
+    started: Promise<void>;
+  } {
+    let onStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      onStarted = resolve;
+    });
+    const promise = new Promise<THREE.Group>((resolve, reject) => {
+      this.queue.push({ run, resolve, reject, onStarted });
       this.pumpQueue();
     });
+    return { promise, started };
   }
 
   private pumpQueue(): void {
     while (!this.disposed && this.activeLoads < this.maxConcurrent && this.queue.length > 0) {
       const job = this.queue.shift()!;
       this.activeLoads += 1;
+      job.onStarted();
       void job.run()
         .then(job.resolve, job.reject)
         .finally(() => {
@@ -373,10 +457,10 @@ export class AssetLoader {
   private configureDraco(signal: AbortSignal): Promise<DRACOLoader | null> {
     if (this.draco) return Promise.resolve(this.draco);
 
+    // No probe: an unset path means this build does not serve a decoder, which
+    // is the case for every asset this project ships. See the module header.
     if (!this.dracoProbe) {
-      this.dracoProbe = this.explicitDracoPath
-        ? Promise.resolve(this.explicitDracoPath)
-        : probeDracoDecoder(signal);
+      this.dracoProbe = Promise.resolve(this.explicitDracoPath ?? null);
     }
 
     return this.dracoProbe.then((path) => {
@@ -538,15 +622,23 @@ function waitForAbort<T>(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   abort: (reason: Error) => void,
+  /** Starts the deadline. Omitted means "start it now". See `enqueue`. */
+  started?: Promise<void>,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => {
-      const error = new Error(`Asset load timed out after ${timeoutMs} ms`);
-      error.name = 'TimeoutError';
-      abort(error);
-      fail(error);
-    }, Math.max(1, timeoutMs));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const armTimer = () => {
+      if (settled) return;
+      timer = setTimeout(() => {
+        const error = new Error(`Asset load timed out after ${timeoutMs} ms`);
+        error.name = 'TimeoutError';
+        abort(error);
+        fail(error);
+      }, Math.max(1, timeoutMs));
+    };
+    if (started) void started.then(armTimer, armTimer);
+    else armTimer();
 
     const cleanup = () => {
       clearTimeout(timer);
@@ -579,26 +671,3 @@ function waitForAbort<T>(
   });
 }
 
-/**
- * Finds a same-origin Draco decoder, or null.
- *
- * A dev server with SPA fallback happily answers 200 with `index.html` for a
- * missing path, so the content type is checked as well as the status.
- */
-async function probeDracoDecoder(signal: AbortSignal): Promise<string | null> {
-  if (typeof fetch !== 'function') return null;
-
-  for (const base of DRACO_CANDIDATES) {
-    try {
-      throwIfAborted(signal);
-      const response = await fetch(`${base}draco_decoder.js`, { method: 'HEAD', signal });
-      if (!response.ok) continue;
-      const type = response.headers.get('content-type') ?? '';
-      if (type.includes('html')) continue;
-      return base;
-    } catch {
-      // Network error or blocked path — try the next candidate.
-    }
-  }
-  return null;
-}
