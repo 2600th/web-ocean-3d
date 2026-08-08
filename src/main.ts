@@ -340,15 +340,19 @@ class App {
 
   async start(): Promise<void> {
     boot.set(0.05, 'Initialising renderer…');
-    const rendererOptions: Parameters<typeof createRenderer>[0] & {
-      adapter?: GPUAdapter | null;
-    } = {
+    const rendererOptions: Parameters<typeof createRenderer>[0] = {
       canvas: this.canvas,
       forceWebGL: this.state.forceWebGL,
       pixelRatio: window.devicePixelRatio * this.state.pixelRatio,
-      // Renderer.ts will consume this once its probe API is widened. Keeping
-      // the already-obtained adapter at this boundary avoids another device
-      // request in the gate and is harmless with the current API.
+      // The tier decides the framebuffer before it is allocated, rather than
+      // after: antialiasing and a DPR-2 buffer are four times the pixels, and
+      // committing to them before anyone knows what machine this is was how a
+      // low-end device paid a high-end cost it could never use.
+      quality: this.state.quality,
+      // The gate has already resolved this. `undefined` would mean "probe",
+      // `null` means "probed, and there is no adapter" — the distinction
+      // decides whether the WebGL2 fallback is taken, so it is passed through
+      // rather than collapsed.
       adapter: this.adapter,
     };
     const bootstrap = await createRenderer(rendererOptions);
@@ -478,7 +482,7 @@ class App {
         derivativeTextures: this.simulation.derivativeTextures,
         tileSizes: this.simulation.tileSizes,
       },
-      1024,
+      quality.wakeResolution,
       420,
       {
         // The same depth field the water shades its shallows from, which is what
@@ -513,7 +517,7 @@ class App {
     this.scene.add(this.oceanMesh.mesh);
 
     boot.set(0.7, 'Building atmosphere…');
-    this.atmosphere = new Atmosphere(this.renderer);
+    this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
 
     // One haze for the whole frame.
@@ -634,7 +638,7 @@ class App {
     this.scene.add(this.particles.object);
 
 
-    this.caustics = new Caustics();
+    this.caustics = new Caustics(quality.causticsResolution);
     // Rebuilds the sand shader once, so it happens here at setup and never in a
     // frame path.
     this.seafloor.setCaustics(this.caustics.intensityNode(positionWorld));
