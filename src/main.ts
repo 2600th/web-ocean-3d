@@ -60,6 +60,7 @@ import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
 import { DEFAULT_UI_STATE, type UiState } from './ui/types';
+import { openStartGate, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
 // Initialize Vercel Web Analytics
@@ -145,7 +146,7 @@ class App {
   /**
    * Surface elevation as a TSL function, bound once at build time.
    *
-   * Rebound by `applyQuality` after `resize` recreates the displacement targets,
+   * Rebound by `rebuildQualityResources` after `resize` recreates the displacement targets,
    * for the same reason the surface material re-points its cascades: the node
    * graph holds the binding, and a stale one samples a disposed texture.
    */
@@ -244,7 +245,8 @@ class App {
   private loop!: Loop;
   private adaptive!: AdaptiveQuality;
 
-  private state: UiState = { ...DEFAULT_UI_STATE };
+  private readonly adapter: GPUAdapter | null;
+  private state: UiState;
   private disposed = false;
   /** True once the async scene-content load has settled, whatever the outcome. */
   private sceneContentLoaded = false;
@@ -325,23 +327,36 @@ class App {
    */
   private captureOwnsClock = false;
 
-  constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
+  constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, options: StartSelection) {
     this.canvas = canvas;
     this.uiRoot = uiRoot;
+    this.adapter = options.adapter;
+    this.state = {
+      ...DEFAULT_UI_STATE,
+      quality: options.quality,
+      forceWebGL: options.forceWebGL,
+    };
   }
 
   async start(): Promise<void> {
     boot.set(0.05, 'Initialising renderer…');
-    const bootstrap = await createRenderer({
+    const rendererOptions: Parameters<typeof createRenderer>[0] & {
+      adapter?: GPUAdapter | null;
+    } = {
       canvas: this.canvas,
       forceWebGL: this.state.forceWebGL,
       pixelRatio: window.devicePixelRatio * this.state.pixelRatio,
-    });
+      // Renderer.ts will consume this once its probe API is widened. Keeping
+      // the already-obtained adapter at this boundary avoids another device
+      // request in the gate and is harmless with the current API.
+      adapter: this.adapter,
+    };
+    const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
     this.backend = bootstrap.backend;
     console.info(`[ocean] renderer backend: ${this.backend}`);
 
-    // Set once, never toggled — see `applyQuality` for why toggling it crashes.
+    // Set once, never toggled — see `rebuildQualityResources` for why toggling it crashes.
     this.renderer.shadowMap.enabled = true;
 
     this.scene = new THREE.Scene();
@@ -781,6 +796,9 @@ class App {
 
     this.buildUi();
     this.applyPreset();
+    // Constructors already used the selected tier for resource sizes. Apply
+    // the remaining live settings once, before any asset or shader work.
+    this.applyQualitySettings(this.state.quality);
 
     this.adaptive = new AdaptiveQuality(55, (tier) => {
       console.info(`[ocean] adaptive quality: dropping to "${tier}"`);
@@ -839,7 +857,13 @@ class App {
     // harness can observe rather than a silence it has to time out on.
     this.exposeTestHooks();
 
-    boot.set(0.88, 'Loading ship and island…');
+    boot.set(0.82, 'Preparing the first frame…');
+    await this.prewarm();
+    this.loop.start();
+    boot.set(0.84, 'Streaming island content…');
+    window.setTimeout(() => boot.hide(), 350);
+
+    boot.set(0.86, 'Loading ship and island…');
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
@@ -871,9 +895,8 @@ class App {
     boot.set(0.95, 'Compiling pipelines…');
     await this.prewarm();
 
+    boot.set(0.98, 'Island arriving…');
     boot.set(1, 'Ready');
-    this.loop.start();
-    window.setTimeout(() => boot.hide(), 350);
   }
 
   /**
@@ -1022,17 +1045,44 @@ class App {
     }
   }
 
-  private async prewarm(): Promise<void> {
+  private async prewarm(timeoutMs = 30_000): Promise<void> {
+    let compile: Promise<void> | null = null;
+    const timeoutError = new Error(
+      'pipeline prewarm timed out after ' + timeoutMs + ' ms',
+    );
+    let timer = 0;
     try {
-      await this.renderer.compileAsync(this.scene, this.camera);
+      compile = this.renderer.compileAsync(this.scene, this.camera);
+      const timeout = new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(timeoutError), timeoutMs);
+      });
+      await Promise.race([compile, timeout]);
       this.shadersReady = true;
     } catch (error) {
       console.warn('[ocean] pipeline prewarm skipped', error);
+      // compileAsync has no cancellation API. If the timeout wins, let the
+      // eventual completion update the test hook while the first frame proceeds.
+      if (error === timeoutError && compile) {
+        void compile.then(
+          () => { this.shadersReady = true; },
+          () => undefined,
+        );
+      }
+    } finally {
+      if (timer !== 0) window.clearTimeout(timer);
     }
   }
 
   private async loadSceneContent(): Promise<void> {
-    this.assets = new AssetLoader();
+    this.assets = new AssetLoader({
+      onProgress: ({ fraction, itemsLoaded, itemsTotal }) => {
+        const progress = 0.86 + fraction * 0.1;
+        boot.set(
+          progress,
+          'Loading island content ' + itemsLoaded + '/' + itemsTotal + '…',
+        );
+      },
+    });
 
     // Settled, not `Promise.all`. The ship and the scene dressing are separate
     // features and must fail separately: one unreachable prop asset previously
@@ -1386,10 +1436,27 @@ class App {
     });
   }
 
-  private applyQuality(tier: QualityTier): void {
+  private rebuildQualityResources(tier: QualityTier): void {
     const quality = QUALITY_TIERS[tier];
     this.simulation.resize(quality.fftSize, quality.cascades);
     this.sampler.rebuild();
+    this.water.setCascades(this.simulation.fields);
+    this.wake.setCascades(this.simulation.derivativeTextures, this.simulation.tileSizes);
+    this.waveHeightNode = this.simulation.heightNode();
+
+    this.scene.remove(this.oceanMesh.mesh);
+    this.oceanMesh.dispose();
+    this.oceanMesh = new OceanMesh(this.water.material, {
+      radialSegments: quality.meshRings,
+      angularSegments: quality.meshSegments,
+    });
+    this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
+    this.scene.add(this.oceanMesh.mesh);
+    this.applyPreset(false);
+  }
+
+  private applyQualitySettings(tier: QualityTier): void {
+    const quality = QUALITY_TIERS[tier];
 
     // The wave textures are recreated by `resize`, so the material's bindings are
     // stale — re-point them. The reflection target is *not* recreated: its
@@ -1403,24 +1470,6 @@ class App {
     // framebuffer for refraction, each rebuild leaked the backdrop texture that
     // came with it — measured at forty textures over eight tier changes, which
     // the leak test caught.
-    this.water.setCascades(this.simulation.fields);
-    // The foam buffer reads the same fields to find breaking crests.
-    this.wake.setCascades(this.simulation.derivativeTextures, this.simulation.tileSizes);
-    // The height field the underwater pass traces against is re-pointed by
-    // `resize` itself; this call is only here to assert that, by failing loudly
-    // if the slots were never created.
-    this.waveHeightNode = this.simulation.heightNode();
-
-    this.scene.remove(this.oceanMesh.mesh);
-    this.oceanMesh.dispose();
-    this.oceanMesh = new OceanMesh(this.water.material, {
-      radialSegments: quality.meshRings,
-      angularSegments: quality.meshSegments,
-    });
-    // The tier changed the ring count, so the spacing changed with it.
-    this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
-    this.scene.add(this.oceanMesh.mesh);
-
     this.clouds.setParams({ steps: quality.cloudSteps });
 
     // Shadows are a *light* setting here, never a renderer one.
@@ -1495,7 +1544,6 @@ class App {
 
     // Without the environment capture: the tier does not move the sun, and the
     // capture is a whole extra scene render into a cube target. See `applyPreset`.
-    this.applyPreset(false);
   }
 
   /**
@@ -1894,7 +1942,8 @@ class App {
         ).backend?.device?.queue;
         await queue?.onSubmittedWorkDone?.();
         if (this.disposed) return;
-        this.applyQuality(tier);
+        this.rebuildQualityResources(tier);
+        this.applyQualitySettings(tier);
 
         // Build the new tier's pipelines *while the loop is still paused*.
         //
@@ -2906,15 +2955,12 @@ const uiRoot = document.getElementById('ui-root');
 if (!canvas || !uiRoot) {
   boot.fail('Failed to start: page markup is missing #viewport or #ui-root.');
 } else {
-  const app = new App(canvas, uiRoot);
-  // Honour a ?webgl=1 restart requested by the Force WebGL toggle.
-  if (new URL(window.location.href).searchParams.get('webgl') === '1') {
-    (app as unknown as { state: UiState }).state.forceWebGL = true;
-  }
-  app.start().catch((error: unknown) => {
+  void openStartGate(boot.root as HTMLElement)
+    .then((selection) => new App(canvas, uiRoot, selection).start())
+    .catch((error: unknown) => {
     console.error(error);
     boot.fail(
       error instanceof Error ? `Failed to start: ${error.message}` : 'Failed to start.',
     );
-  });
+    });
 }

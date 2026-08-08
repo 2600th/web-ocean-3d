@@ -1007,6 +1007,104 @@ body {
   color: var(--bone-dim);
 }
 
+.boot__gate[hidden],
+.boot__progress[hidden] {
+  display: none;
+}
+
+.boot__gate-intro,
+.boot__gate-readout {
+  margin: 0;
+  color: var(--bone-dim);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.boot__gate-intro {
+  margin: 12px 0 14px;
+}
+
+.boot__gate-label {
+  margin: 12px 0 6px;
+  color: var(--bone-dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.boot__choices {
+  display: grid;
+  gap: 6px;
+}
+
+.boot__choices--backend {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.boot__choices--quality {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.boot__choice {
+  min-height: 42px;
+  padding: 7px 5px 6px;
+  color: var(--bone-dim);
+  background: transparent;
+  border: 1px solid var(--rule-soft);
+  border-radius: 0;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.boot__choice:hover,
+.boot__choice:focus-visible {
+  border-color: var(--bone-dim);
+  outline: none;
+}
+
+.boot__choice.is-selected {
+  color: var(--bone);
+  border-color: var(--red);
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.boot__choice-name,
+.boot__choice-detail {
+  display: block;
+}
+
+.boot__choice-name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.boot__choice-detail {
+  margin-top: 4px;
+  color: var(--bone-dim);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+}
+
+.boot__gate-readout {
+  margin-top: 12px;
+  min-height: 1.45em;
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+}
+
+.boot__start {
+  margin-top: 14px;
+}
+
+.boot__start:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .boot__readout {
   display: flex;
   align-items: center;

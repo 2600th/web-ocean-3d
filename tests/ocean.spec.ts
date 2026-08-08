@@ -15,7 +15,7 @@ import type { RgbaImage } from './lib/png';
 test.describe('boot and rendering', () => {
   test('boots with no console errors and draws a non-empty frame', async ({ page }) => {
     const errors = collectConsoleErrors(page);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([]);
@@ -65,7 +65,7 @@ test.describe('boot and rendering', () => {
 
   test('falls back to WebGL2 and still renders', async ({ page }) => {
     const errors = collectConsoleErrors(page);
-    await page.goto('/?webgl=1');
+    await page.goto('/?gate=0&quality=high&webgl=1');
     await waitForOcean(page);
 
     expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([]);
@@ -104,7 +104,7 @@ test.describe('boot and rendering', () => {
 
 test.describe('wave simulation', () => {
   test('produces a physically plausible sea state', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     const stats = await page.evaluate(async () => {
@@ -168,7 +168,7 @@ test.describe('wave simulation', () => {
     // Each compositor screenshot can block for seconds when the browser is
     // pacing frames at ~1 Hz, and this test takes two of them.
     test.setTimeout(180_000);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
     test.skip(
       !(await hasGpuAdapter(page)),
@@ -218,7 +218,7 @@ test.describe('interaction', () => {
    */
   test('every preset applies without error and produces a distinct image', async ({ page }) => {
     const errors = collectConsoleErrors(page);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -279,7 +279,7 @@ test.describe('interaction', () => {
    * *water* shows it.
    */
   test('a deposited wake changes the rendered water', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -342,7 +342,7 @@ test.describe('interaction', () => {
    * does from near the waterline.
    */
   test('the wake displaces the surface, not just its foam', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -398,7 +398,7 @@ test.describe('interaction', () => {
    * removing the ship itself.
    */
   test('the water reflects nearby scene geometry', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -464,7 +464,7 @@ test.describe('interaction', () => {
    * all, so it is the layer worth having a separate assertion for.
    */
   test('screen-space reflection alone still reflects the hull', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -548,7 +548,7 @@ test.describe('interaction', () => {
       );
 
     const boot = async (page: import('@playwright/test').Page) => {
-      await page.goto('/');
+      await page.goto('/?gate=0&quality=high');
       await waitForOcean(page);
       await page.waitForFunction(() => window.__ocean.shipState() !== null, undefined, {
         timeout: 60_000,
@@ -1160,7 +1160,7 @@ test.describe('interaction', () => {
    * differ between the two captures is the sky and what is flying in it.
    */
   test('the bird flock renders, and the tier scales it', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -1275,7 +1275,7 @@ test.describe('interaction', () => {
     // and deterministic stepping is synchronous with the GPU — so this test's
     // cost is set by how much there is to draw, not by how much it asserts.
     test.setTimeout(600_000);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -1368,7 +1368,7 @@ test.describe('interaction', () => {
    * change goes away when the rain stops.
    */
   test('rain disturbs the ocean surface, and the surface recovers', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     test.skip(
@@ -1435,7 +1435,7 @@ test.describe('interaction', () => {
   });
 
   test('camera modes switch via keyboard', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     // '4' included: a mode that is selectable by button and not by key is a
@@ -1459,7 +1459,7 @@ test.describe('interaction', () => {
 
   test('quality tiers apply cleanly and rebuild GPU resources', async ({ page }) => {
     const errors = collectConsoleErrors(page);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     for (const quality of ['low', 'medium', 'high', 'ultra', 'max', 'high']) {
@@ -1487,7 +1487,7 @@ test.describe('interaction', () => {
    */
   test('shadow and reflection resolution follow the tier', async ({ page }) => {
     const errors = collectConsoleErrors(page);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     const sample = async (quality: string) => {
@@ -1536,7 +1536,7 @@ test.describe('interaction', () => {
     // in 35 s alone and timed out at four minutes inside the full suite.
     test.setTimeout(600_000);
     const errors = collectConsoleErrors(page);
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     await setState(page, { cameraMode: 'cinematic' });
@@ -1629,7 +1629,7 @@ test.describe('interaction', () => {
    * a jump apart.
    */
   test('the cinematic loop closes without a cut', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
     await setState(page, { cameraMode: 'cinematic' });
 
@@ -1690,7 +1690,7 @@ test.describe('interaction', () => {
   });
 
   test('sliders drive the simulation', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     // Stepped between setting and reading, and that is not a formality.
@@ -1737,7 +1737,7 @@ test.describe('performance', () => {
   };
 
   test('stays within the frame budget at High on WebGPU', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
     await setState(page, { quality: 'high' });
 
@@ -1749,7 +1749,7 @@ test.describe('performance', () => {
   });
 
   test('stays within the fallback frame budget at Low on WebGL', async ({ page }) => {
-    await page.goto('/?webgl=1');
+    await page.goto('/?gate=0&quality=high&webgl=1');
     await waitForOcean(page);
     await setState(page, { quality: 'low' });
 
@@ -1761,7 +1761,7 @@ test.describe('performance', () => {
   });
 
   test('does not leak GPU memory across quality changes', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
 
     const sample = async () =>
@@ -1830,7 +1830,7 @@ test.describe('responsiveness', () => {
   ] as const) {
     test(`${label} (${width}x${height}) has no layout overflow`, async ({ page }) => {
       await page.setViewportSize({ width, height });
-      await page.goto('/');
+      await page.goto('/?gate=0&quality=high');
       await waitForOcean(page, 1200);
 
       const overflow = await page.evaluate(() => ({
@@ -1864,7 +1864,7 @@ test.describe('responsiveness', () => {
    */
   test('every panel control is reachable on a short viewport', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 700 });
-    await page.goto('/');
+    await page.goto('/?gate=0&quality=high');
     await waitForOcean(page, 1200);
 
     const geometry = await page.evaluate(() => {
