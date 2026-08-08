@@ -101,8 +101,8 @@ export interface GroundShadingInputs {
  * fraction of a stop on a canopy, and a translucency term that reads at any
  * angle is not translucency, it is emission.
  */
-const TRANSLUCENCY_POWER = 4;
-const TRANSLUCENCY_GAIN = 0.55;
+export const TRANSLUCENCY_POWER = 4;
+export const TRANSLUCENCY_GAIN = 0.55;
 
 /**
  * Sway shared by the near trees and the distant canopy cards.
@@ -115,16 +115,21 @@ const TRANSLUCENCY_GAIN = 0.55;
  * a viewer walking up the beach watched the far forest breathe and the palms in
  * front of them stand perfectly still.
  *
- * The wavelength, speed and amplitude below are `Canopy`'s, deliberately: the two
- * systems hand over to each other between 320 and 520 m and a tree that changed
- * how far it travelled as it became a card would make the handover visible.
+ * The wavelength, speed and amplitude below are `Canopy`'s, deliberately, and
+ * `Imposters` uses them too. There are real handovers now — a plant becomes a
+ * card at 60 m if it is understorey and 120 m if it is a tree, and the canopy
+ * field fades in over 90-180 m behind both — so the shared constants have
+ * stopped being a hedge against a future fade and started doing their job.
  *
- * They do **not** share a phase. `Canopy` adds a per-instance offset from its
- * card seed, and a mesh has no equivalent constant available in the vertex stage
- * without new plumbing — `positionGeometry` varies across the tree and
- * `positionLocal` is post-instancing. What survives is an amplitude match and a
- * phase difference, and at the 320 m where the handover starts, 0.9 m of crown
- * travel subtends about two pixels: the pop is smaller than the thing popping.
+ * They do **not** share a phase, and no comment elsewhere should claim they do.
+ * `Canopy` adds a per-instance offset from its card seed and `Imposters` adds
+ * one from its yaw; a mesh has no equivalent constant available in the vertex
+ * stage without new plumbing — `positionGeometry` varies across the tree and
+ * `positionLocal` is post-instancing. What survives a handover is an amplitude
+ * and frequency match, not a continuous phase: a plant swapping to a card keeps
+ * the same sway *character* and may jump within its cycle. That is the honest
+ * description, and it is why the swap is placed where the plant is small on
+ * screen.
  */
 const SWAY_WAVELENGTH = 90;
 const SWAY_K = (Math.PI * 2) / SWAY_WAVELENGTH;

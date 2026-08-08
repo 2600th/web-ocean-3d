@@ -60,10 +60,27 @@ import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
 import { DEFAULT_UI_STATE, type UiState } from './ui/types';
+import { openStartGate, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
-// Initialize Vercel Web Analytics
-inject();
+// Vercel Web Analytics, and only where Vercel is actually serving it.
+//
+// `inject()` adds a script tag pointing at `/_vercel/insights/script.js`, which
+// exists only on a Vercel deployment. Everywhere else — `vite preview`, the
+// Playwright suite, the benchmark harness, anyone self-hosting the build — it
+// is a guaranteed 404 in the console of every session.
+//
+// That is not merely untidy. The suite asserts that a boot produces no console
+// errors, which is how it catches a missing asset or a failed shader, and a
+// permanent 404 makes a real failure indistinguishable from the background
+// noise. Six tests failed on it.
+// Excluded by environment rather than allow-listed by domain: the deployment
+// may well be on a custom domain, and an allow-list would quietly turn
+// analytics off there, which is the failure nobody notices.
+const localHost = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/.test(window.location.hostname);
+if (!localHost && !navigator.webdriver) {
+  inject();
+}
 
 /** Scratch for the test-hook camera pin; the hook must not allocate either. */
 const _pinPosition = new THREE.Vector3();
@@ -145,7 +162,7 @@ class App {
   /**
    * Surface elevation as a TSL function, bound once at build time.
    *
-   * Rebound by `applyQuality` after `resize` recreates the displacement targets,
+   * Rebound by `rebuildQualityResources` after `resize` recreates the displacement targets,
    * for the same reason the surface material re-points its cascades: the node
    * graph holds the binding, and a stale one samples a disposed texture.
    */
@@ -161,9 +178,13 @@ class App {
   private atmosphere!: Atmosphere;
   private aerial!: AerialPerspective;
   /**
-   * The gust the island's planting sways on — the near meshes and the distant
-   * canopy cards share it, so the handover between them at 320-520 m is not a
-   * change of phase.
+   * The gust the island's planting sways on. Four systems share it — the near
+   * meshes, the imposter cards that replace them, the meadow and the distant
+   * canopy — so none of the handovers between them is a change of phase.
+   *
+   * There are two handovers now, and neither is the 320-520 m one this comment
+   * used to name: a plant becomes a card at 60 m (understorey) or 120 m
+   * (trees), and the canopy field fades in over 90-180 m behind both.
    */
   private readonly foliageWind = new FoliageWind();
   /**
@@ -244,7 +265,9 @@ class App {
   private loop!: Loop;
   private adaptive!: AdaptiveQuality;
 
-  private state: UiState = { ...DEFAULT_UI_STATE };
+  /** See `StartSelection.adapter` — three-valued, and `undefined` is not `null`. */
+  private readonly adapter: GPUAdapter | null | undefined;
+  private state: UiState;
   private disposed = false;
   /** True once the async scene-content load has settled, whatever the outcome. */
   private sceneContentLoaded = false;
@@ -264,6 +287,15 @@ class App {
   private lodCompile: Promise<void> | null = null;
   /** True once `compileAsync` has built the initial pipeline set. */
   private shadersReady = false;
+  /**
+   * A `compileAsync` that outlived the prewarm timeout and is still running.
+   *
+   * Null whenever nothing is in flight. `drainQualityRequests` joins it before
+   * tearing a tier down, because the alternative is destroying resources out
+   * from under an in-flight pipeline creation — which is the exact crash this
+   * file already carries two long comments about.
+   */
+  private pendingCompile: Promise<void> | null = null;
   /** Lazily created offscreen target for `capturePixels`. */
   private captureTarget: THREE.RenderTarget | null = null;
   /** True while `stepDeterministic` owns the wave-field readback. */
@@ -325,23 +357,40 @@ class App {
    */
   private captureOwnsClock = false;
 
-  constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
+  constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, options: StartSelection) {
     this.canvas = canvas;
     this.uiRoot = uiRoot;
+    this.adapter = options.adapter;
+    this.state = {
+      ...DEFAULT_UI_STATE,
+      quality: options.quality,
+      forceWebGL: options.forceWebGL,
+    };
   }
 
   async start(): Promise<void> {
     boot.set(0.05, 'Initialising renderer…');
-    const bootstrap = await createRenderer({
+    const rendererOptions: Parameters<typeof createRenderer>[0] = {
       canvas: this.canvas,
       forceWebGL: this.state.forceWebGL,
       pixelRatio: window.devicePixelRatio * this.state.pixelRatio,
-    });
+      // The tier decides the framebuffer before it is allocated, rather than
+      // after: antialiasing and a DPR-2 buffer are four times the pixels, and
+      // committing to them before anyone knows what machine this is was how a
+      // low-end device paid a high-end cost it could never use.
+      quality: this.state.quality,
+      // The gate has already resolved this. `undefined` would mean "probe",
+      // `null` means "probed, and there is no adapter" — the distinction
+      // decides whether the WebGL2 fallback is taken, so it is passed through
+      // rather than collapsed.
+      adapter: this.adapter,
+    };
+    const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
     this.backend = bootstrap.backend;
     console.info(`[ocean] renderer backend: ${this.backend}`);
 
-    // Set once, never toggled — see `applyQuality` for why toggling it crashes.
+    // Set once, never toggled — see `rebuildQualityResources` for why toggling it crashes.
     this.renderer.shadowMap.enabled = true;
 
     this.scene = new THREE.Scene();
@@ -463,7 +512,7 @@ class App {
         derivativeTextures: this.simulation.derivativeTextures,
         tileSizes: this.simulation.tileSizes,
       },
-      1024,
+      quality.wakeResolution,
       420,
       {
         // The same depth field the water shades its shallows from, which is what
@@ -498,7 +547,7 @@ class App {
     this.scene.add(this.oceanMesh.mesh);
 
     boot.set(0.7, 'Building atmosphere…');
-    this.atmosphere = new Atmosphere(this.renderer);
+    this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
 
     // One haze for the whole frame.
@@ -619,7 +668,7 @@ class App {
     this.scene.add(this.particles.object);
 
 
-    this.caustics = new Caustics();
+    this.caustics = new Caustics(quality.causticsResolution);
     // Rebuilds the sand shader once, so it happens here at setup and never in a
     // frame path.
     this.seafloor.setCaustics(this.caustics.intensityNode(positionWorld));
@@ -781,6 +830,9 @@ class App {
 
     this.buildUi();
     this.applyPreset();
+    // Constructors already used the selected tier for resource sizes. Apply
+    // the remaining live settings once, before any asset or shader work.
+    this.applyQualitySettings(this.state.quality);
 
     this.adaptive = new AdaptiveQuality(55, (tier) => {
       console.info(`[ocean] adaptive quality: dropping to "${tier}"`);
@@ -839,7 +891,13 @@ class App {
     // harness can observe rather than a silence it has to time out on.
     this.exposeTestHooks();
 
-    boot.set(0.88, 'Loading ship and island…');
+    boot.set(0.82, 'Preparing the first frame…');
+    await this.prewarm();
+    this.loop.start();
+    boot.set(0.84, 'Streaming island content…');
+    window.setTimeout(() => boot.hide(), 350);
+
+    boot.set(0.86, 'Loading ship and island…');
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
@@ -871,9 +929,8 @@ class App {
     boot.set(0.95, 'Compiling pipelines…');
     await this.prewarm();
 
+    boot.set(0.98, 'Island arriving…');
     boot.set(1, 'Ready');
-    this.loop.start();
-    window.setTimeout(() => boot.hide(), 350);
   }
 
   /**
@@ -1022,17 +1079,56 @@ class App {
     }
   }
 
-  private async prewarm(): Promise<void> {
+  private async prewarm(timeoutMs = 30_000): Promise<void> {
+    let compile: Promise<void> | null = null;
+    const timeoutError = new Error(
+      'pipeline prewarm timed out after ' + timeoutMs + ' ms',
+    );
+    let timer = 0;
     try {
-      await this.renderer.compileAsync(this.scene, this.camera);
+      compile = this.renderer.compileAsync(this.scene, this.camera);
+      const timeout = new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(timeoutError), timeoutMs);
+      });
+      await Promise.race([compile, timeout]);
       this.shadersReady = true;
     } catch (error) {
       console.warn('[ocean] pipeline prewarm skipped', error);
+      // `compileAsync` has no cancellation API, so a timed-out compile is still
+      // running — and on a slow device, which is exactly where the timeout
+      // fires, it can still be running when a tier change tears its resources
+      // down. That is the async-pipeline-versus-destroyed-resource crash
+      // `drainQualityRequests` documents at length. Publish it so the drain can
+      // join it before it destroys anything.
+      if (error === timeoutError && compile) {
+        this.pendingCompile = compile.then(
+          () => { this.shadersReady = true; },
+          () => undefined,
+        );
+        void this.pendingCompile.finally(() => {
+          this.pendingCompile = null;
+        });
+      }
+    } finally {
+      if (timer !== 0) window.clearTimeout(timer);
     }
   }
 
   private async loadSceneContent(): Promise<void> {
-    this.assets = new AssetLoader();
+    this.assets = new AssetLoader({
+      // KTX2Loader has to ask the device which compressed formats it can
+      // transcode to — ASTC, ETC2, BC — and it can only ask a renderer that
+      // exists. Without this the loader falls back and every dressing texture
+      // arrives untranscoded, which is the whole saving handed straight back.
+      renderer: this.renderer,
+      onProgress: ({ fraction, itemsLoaded, itemsTotal }) => {
+        const progress = 0.86 + fraction * 0.1;
+        boot.set(
+          progress,
+          'Loading island content ' + itemsLoaded + '/' + itemsTotal + '…',
+        );
+      },
+    });
 
     // Settled, not `Promise.all`. The ship and the scene dressing are separate
     // features and must fail separately: one unreachable prop asset previously
@@ -1043,7 +1139,13 @@ class App {
 
     const [shipResult, propsResult, reefFishResult] = await Promise.allSettled([
       Ship.load(this.assets),
-      Props.load(this.assets, { detailScale: QUALITY_TIERS[this.state.quality].propsDetail }),
+      Props.load(this.assets, {
+        // The tier decides whether the island's vegetation is meshes or cards,
+        // and on Low and Medium it decides that those GLBs are never requested
+        // at all. Passing only `detailScale` leaves Props inferring it.
+        qualityTier: this.state.quality,
+        detailScale: QUALITY_TIERS[this.state.quality].propsDetail,
+      }),
       // The reef species. Already settled-by-construction — `loadReefFish`
       // resolves null rather than rejecting — but it rides in the same batch so
       // its request overlaps the ship's rather than queueing behind it.
@@ -1386,10 +1488,27 @@ class App {
     });
   }
 
-  private applyQuality(tier: QualityTier): void {
+  private rebuildQualityResources(tier: QualityTier): void {
     const quality = QUALITY_TIERS[tier];
     this.simulation.resize(quality.fftSize, quality.cascades);
     this.sampler.rebuild();
+    this.water.setCascades(this.simulation.fields);
+    this.wake.setCascades(this.simulation.derivativeTextures, this.simulation.tileSizes);
+    this.waveHeightNode = this.simulation.heightNode();
+
+    this.scene.remove(this.oceanMesh.mesh);
+    this.oceanMesh.dispose();
+    this.oceanMesh = new OceanMesh(this.water.material, {
+      radialSegments: quality.meshRings,
+      angularSegments: quality.meshSegments,
+    });
+    this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
+    this.scene.add(this.oceanMesh.mesh);
+    this.applyPreset(false);
+  }
+
+  private applyQualitySettings(tier: QualityTier): void {
+    const quality = QUALITY_TIERS[tier];
 
     // The wave textures are recreated by `resize`, so the material's bindings are
     // stale — re-point them. The reflection target is *not* recreated: its
@@ -1403,24 +1522,6 @@ class App {
     // framebuffer for refraction, each rebuild leaked the backdrop texture that
     // came with it — measured at forty textures over eight tier changes, which
     // the leak test caught.
-    this.water.setCascades(this.simulation.fields);
-    // The foam buffer reads the same fields to find breaking crests.
-    this.wake.setCascades(this.simulation.derivativeTextures, this.simulation.tileSizes);
-    // The height field the underwater pass traces against is re-pointed by
-    // `resize` itself; this call is only here to assert that, by failing loudly
-    // if the slots were never created.
-    this.waveHeightNode = this.simulation.heightNode();
-
-    this.scene.remove(this.oceanMesh.mesh);
-    this.oceanMesh.dispose();
-    this.oceanMesh = new OceanMesh(this.water.material, {
-      radialSegments: quality.meshRings,
-      angularSegments: quality.meshSegments,
-    });
-    // The tier changed the ring count, so the spacing changed with it.
-    this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
-    this.scene.add(this.oceanMesh.mesh);
-
     this.clouds.setParams({ steps: quality.cloudSteps });
 
     // Shadows are a *light* setting here, never a renderer one.
@@ -1437,6 +1538,21 @@ class App {
     // expresses "no shadows" as `castShadow = false`, which three handles on the
     // light rather than on the renderer.
     this.atmosphere.setShadowMapSize(quality.shadowMapSize);
+
+    // The tier-sized targets, resized rather than replaced.
+    //
+    // Without these a runtime downgrade keeps every allocation the tier it came
+    // from made, which defeats the entire point of `AdaptiveQuality`: the
+    // machine that drops High to Low under load is the machine that most needs
+    // Low's memory back, and it would have got Low's step counts while still
+    // holding High's targets.
+    //
+    // All three resize in place and keep their existing texture object, so no
+    // node graph loses its binding — the constraint the shadow comment above
+    // explains at length.
+    this.wake?.setResolution(quality.wakeResolution);
+    this.caustics?.setResolution(quality.causticsResolution);
+    this.atmosphere.setEnvironmentResolution(quality.environmentResolution);
     // A uniform write, not a rebuild — the march reads its own bound.
     this.seafloor.setShadowSteps(quality.terrainShadowSteps);
 
@@ -1495,7 +1611,6 @@ class App {
 
     // Without the environment capture: the tier does not move the sun, and the
     // capture is a whole extra scene render into a cube target. See `applyPreset`.
-    this.applyPreset(false);
   }
 
   /**
@@ -1883,6 +1998,11 @@ class App {
     await this.loop.settle();
     // And the scene load, if one is still running. See `contentReady`.
     await this.contentReady?.catch(() => undefined);
+    // And a prewarm that outlived its own timeout. `compileAsync` cannot be
+    // cancelled, so the only safe thing to do with one still in flight is wait
+    // for it — destroying the resources it is compiling against is precisely
+    // the crash the comment below describes.
+    await this.pendingCompile?.catch(() => undefined);
     try {
       while (this.pendingQuality !== null && !this.disposed) {
         const tier = this.pendingQuality;
@@ -1894,7 +2014,8 @@ class App {
         ).backend?.device?.queue;
         await queue?.onSubmittedWorkDone?.();
         if (this.disposed) return;
-        this.applyQuality(tier);
+        this.rebuildQualityResources(tier);
+        this.applyQualitySettings(tier);
 
         // Build the new tier's pipelines *while the loop is still paused*.
         //
@@ -2040,10 +2161,15 @@ class App {
     this.canopy.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.canopy.update(dt);
     // The planted meshes sway on the same gust the cards do — same wavelength,
-    // same speed, same phase — so a tree crossing the 320-520 m handover does
-    // not change how it is moving as it becomes a billboard.
+    // same speed, same amplitude. Not the same phase: `groundShading` explains
+    // why a mesh has no per-instance constant to offset by, so a plant crossing
+    // its handover keeps the character of its motion and may jump within the
+    // cycle. That is what the handover distances are chosen around.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
+    // And the imposter cards sway on it too, for the same reason.
+    this.props?.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
+    this.props?.update(dt);
 
     this.remains.setSun(this.atmosphere.sunDirection, this.atmosphere.sunColor);
 
@@ -2659,6 +2785,7 @@ class App {
           this.stormQuote.reset();
           this.canopy.resetClock(start);
           this.foliageWind.resetClock(start);
+          this.props?.resetClock(start);
           this.audio.resetClock(start);
           // `resetCinematic` is deliberately *not* here any more — it now runs
           // before the weather seeds above, because those seeds are read from the
@@ -2906,15 +3033,12 @@ const uiRoot = document.getElementById('ui-root');
 if (!canvas || !uiRoot) {
   boot.fail('Failed to start: page markup is missing #viewport or #ui-root.');
 } else {
-  const app = new App(canvas, uiRoot);
-  // Honour a ?webgl=1 restart requested by the Force WebGL toggle.
-  if (new URL(window.location.href).searchParams.get('webgl') === '1') {
-    (app as unknown as { state: UiState }).state.forceWebGL = true;
-  }
-  app.start().catch((error: unknown) => {
+  void openStartGate(boot.root as HTMLElement)
+    .then((selection) => new App(canvas, uiRoot, selection).start())
+    .catch((error: unknown) => {
     console.error(error);
     boot.fail(
       error instanceof Error ? `Failed to start: ${error.message}` : 'Failed to start.',
     );
-  });
+    });
 }

@@ -56,14 +56,14 @@ test.describe('shot isolation', () => {
       test.setTimeout(300_000);
 
       // Cold: a fresh page, this shot and nothing else.
-      await page.goto('/');
+      await page.goto('/?gate=0&quality=high');
       await bootOcean(page);
       await applyShot(page, shot(target));
       const cold = await capture(page);
 
       // Hot: the storm first — the heaviest sea state, rain rate and wetness in
       // the list — then the same shot, on the same page.
-      await page.goto('/');
+      await page.goto('/?gate=0&quality=high');
       await bootOcean(page);
       await applyShot(page, shot('storm'));
       await capture(page);

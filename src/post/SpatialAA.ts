@@ -5,12 +5,18 @@ import { mix, uniform, vec4 } from 'three/tsl';
  * A spatial anti-alias resolve, sitting between the transfer function and the
  * dither.
  *
- * **The scene pass is already multisampled, and that is not the problem this
- * solves.** `PassNode.setup` copies `renderer.samples` onto its render target,
- * and the renderer is constructed with `antialias: true`, so geometry edges —
- * rigging, masts, the island silhouette, the buoy — are resolved at 4x. What
- * MSAA cannot touch is *shading* aliasing, because it shades once per pixel and
- * only supersamples coverage. Every remaining stair-step in this scene is of
+ * **On most tiers the scene pass is already multisampled, and that is not the
+ * problem this solves.** `PassNode.setup` copies `renderer.samples` onto its
+ * render target, and the renderer is constructed with `antialias` from the
+ * quality tier — true everywhere except Low, which cannot afford it — so on
+ * those tiers geometry edges (rigging, masts, the island silhouette, the buoy)
+ * are resolved at 4x. What MSAA cannot touch is *shading* aliasing, because it
+ * shades once per pixel and only supersamples coverage.
+ *
+ * Low is the tier where this pass matters most, then: it is the one carrying
+ * geometry aliasing as well as shading aliasing, and it is also the one least
+ * able to pay for a wide resolve. That is a tension this pass does not
+ * currently resolve, and it is recorded rather than hidden. Every remaining stair-step in this scene is of
  * that kind: the specular on a sub-pixel wave, the foam mask's threshold, the
  * rain streaks. `OceanMaterial` already band-limits what it can in slope space
  * and its long comment on the foam mask records why widening the threshold made

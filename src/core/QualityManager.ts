@@ -47,11 +47,6 @@ export interface QualitySettings {
   /** Segments around the circle. See `meshRings` for how the two are balanced. */
   meshSegments: number;
   /**
-   * Resolution of the sun's shadow map, per side. 0 disables shadow rendering
-   * entirely. Applied to the light, not just to `renderer.shadowMap.enabled` —
-   * a tier that claims a cheaper shadow has to actually allocate a smaller map.
-   */
-  /**
    * Sun shadow map resolution per side.
    *
    * Never zero, and that is a deliberate policy change rather than an oversight.
@@ -67,6 +62,81 @@ export interface QualitySettings {
    * cost worth taking to make tier changes unable to crash.
    */
   shadowMapSize: 512 | 1024 | 2048 | 4096;
+  /**
+   * Resolution per side of each of the wake's three RGBA16F targets.
+   *
+   * The wake is a ping-pong pair plus a resolved output, so the cost is three
+   * targets — a constant factor, not a third power — and quadratic in this
+   * number: 3 × r² × 8 bytes at RGBA16F, so 24.0 MiB at 1024² and 13.5 at 768²,
+   * before driver overhead.
+   *
+   * Low and Medium use 768², and specifically **not** 512², which the `Wake`
+   * constructor comment rules out: the buffer carries whitecaps as well as the
+   * wake, whitecap edges are decimetre features, and over a 420 m footprint 512
+   * is 0.82 m per texel — enough to turn a crest streak into a smear. Raising
+   * that default from 512 to 1024 was a deliberate fix and a tier must not
+   * quietly undo it for 7.9 MiB.
+   *
+   * The texture objects stay bound to the water node graph while a tier change
+   * resizes their targets in place.
+   */
+  wakeResolution: 512 | 768 | 1024;
+  /**
+   * Resolution per side of the mipmapped RGBA16F caustics field.
+   *
+   * Caustics are sampled below the surface and then blurred by distance, so Low
+   * does not need the 768² source field used by High and above.
+   *
+   * 256 and 512 are powers of two; 768 is not, and is kept because it is the
+   * resolution this field was authored and tuned at. A non-power-of-two side
+   * gives a shorter mip chain that stops on an odd level rather than reaching
+   * 1×1, which costs nothing here because the blur never reads the tail of the
+   * chain. An earlier version of this comment claimed all three were powers of
+   * two, which was simply false.
+   *
+   * The target is resized rather than replaced so the seafloor and underwater
+   * node graphs keep their existing texture reference.
+   */
+  causticsResolution: 256 | 512 | 768;
+  /**
+   * Face size of the half-float environment cube.
+   *
+   * **Every tier is 256, and that is a measured result rather than an
+   * oversight.** This started at 64 for Low and 128 for Medium on the reasoning
+   * that a lighting probe is low-frequency and can be cheap. It is not: the far
+   * water is close to a mirror at grazing angles, so it reflects the cube
+   * directly, and halving the cube halves that reflection's angular resolution.
+   *
+   * `gallery-jitter` measured it. Medium's far-field high-frequency energy is
+   * 2.352 at 256 and 2.414 at 128 — a 2.6% rise in exactly the quantity that
+   * test exists to bound, for 2.25 MiB. Against the 682 MiB this branch takes
+   * off the texture budget, that is not a trade worth making, and the number is
+   * left here so nobody re-derives the same wrong intuition.
+   *
+   * The field and its setter are kept rather than folded back into a constant,
+   * because the plumbing is what made the measurement possible.
+   *
+   * Resizing invalidates the next capture and preserves the texture object
+   * consumed by `scene.environment`.
+   */
+  environmentResolution: 64 | 128 | 256;
+  /**
+   * Maximum device-pixel ratio used for the renderer framebuffer.
+   *
+   * This cap is applied before the first framebuffer is allocated. Low is
+   * deliberately limited to DPR 1 because a four-times larger 2x framebuffer
+   * is a memory decision made before the tier can save anything; Medium allows
+   * a halfway step and the upper tiers keep the existing DPR 2 ceiling.
+   */
+  maxPixelRatio: number;
+  /**
+   * Whether the renderer allocates multisample antialiasing at construction.
+   *
+   * Low turns MSAA off before `renderer.init()` so the framebuffer never pays
+   * for samples it cannot afford. It remains enabled for every richer tier,
+   * preserving alpha-to-coverage and the existing edge quality there.
+   */
+  antialias: boolean;
   /**
    * March steps for the island's own shadow against the heightfield; 0 disables
    * it.
@@ -269,6 +339,11 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 206,
     meshSegments: 119,
     shadowMapSize: 512,
+    wakeResolution: 768,
+    causticsResolution: 256,
+    environmentResolution: 256,
+    maxPixelRatio: 1,
+    antialias: false,
     terrainShadowSteps: 0,
     cloudSteps: 0,
     godRaySteps: 0,
@@ -298,6 +373,11 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 308,
     meshSegments: 179,
     shadowMapSize: 1024,
+    wakeResolution: 768,
+    causticsResolution: 512,
+    environmentResolution: 256,
+    maxPixelRatio: 1.5,
+    antialias: true,
     terrainShadowSteps: 12,
     cloudSteps: 12,
     godRaySteps: 12,
@@ -327,6 +407,11 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 469,
     meshSegments: 275,
     shadowMapSize: 2048,
+    wakeResolution: 1024,
+    causticsResolution: 768,
+    environmentResolution: 256,
+    maxPixelRatio: 2,
+    antialias: true,
     terrainShadowSteps: 20,
     cloudSteps: 18,
     godRaySteps: 24,
@@ -354,6 +439,11 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 613,
     meshSegments: 360,
     shadowMapSize: 2048,
+    wakeResolution: 1024,
+    causticsResolution: 768,
+    environmentResolution: 256,
+    maxPixelRatio: 2,
+    antialias: true,
     terrainShadowSteps: 28,
     cloudSteps: 34,
     godRaySteps: 40,
@@ -381,6 +471,11 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 817,
     meshSegments: 481,
     shadowMapSize: 4096,
+    wakeResolution: 1024,
+    causticsResolution: 768,
+    environmentResolution: 256,
+    maxPixelRatio: 2,
+    antialias: true,
     terrainShadowSteps: 28,
     cloudSteps: 34,
     godRaySteps: 40,

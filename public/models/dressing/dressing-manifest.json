@@ -1,0 +1,536 @@
+{
+  "version": 1,
+  "basePath": "/models/dressing/",
+  "models": {
+    "pachira_aquatica_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/pachira_aquatica_01.glb"
+        }
+      ]
+    },
+    "island_tree_02": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/island_tree_02.glb"
+        }
+      ]
+    },
+    "jacaranda_tree": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/jacaranda_tree.glb"
+        }
+      ]
+    },
+    "fern_02": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/fern_02.glb"
+        }
+      ]
+    },
+    "shrub_sorrel_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/shrub_sorrel_01.glb"
+        }
+      ]
+    },
+    "grass_medium_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/grass_medium_01.glb"
+        }
+      ]
+    },
+    "grass_medium_02": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/grass_medium_02.glb"
+        }
+      ]
+    },
+    "coast_line_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/coast_line_01.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.25,
+          "url": "/models/dressing/coast_line_01_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.07,
+          "url": "/models/dressing/coast_line_01_lod2.glb"
+        }
+      ]
+    },
+    "coast_line_02": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/coast_line_02.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.25,
+          "url": "/models/dressing/coast_line_02_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.07,
+          "url": "/models/dressing/coast_line_02_lod2.glb"
+        }
+      ]
+    },
+    "coast_land_rocks_03": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/coast_land_rocks_03.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.25,
+          "url": "/models/dressing/coast_land_rocks_03_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.07,
+          "url": "/models/dressing/coast_land_rocks_03_lod2.glb"
+        }
+      ]
+    },
+    "rock_07": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/rock_07.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/rock_07_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.09,
+          "url": "/models/dressing/rock_07_lod2.glb"
+        }
+      ]
+    },
+    "coast_rocks_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/coast_rocks_01.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.25,
+          "url": "/models/dressing/coast_rocks_01_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.07,
+          "url": "/models/dressing/coast_rocks_01_lod2.glb"
+        }
+      ]
+    },
+    "coast_rocks_03": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/coast_rocks_03.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.25,
+          "url": "/models/dressing/coast_rocks_03_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.07,
+          "url": "/models/dressing/coast_rocks_03_lod2.glb"
+        }
+      ]
+    },
+    "anthurium_botany_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/anthurium_botany_01.glb"
+        }
+      ]
+    },
+    "calathea_orbifolia_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/calathea_orbifolia_01.glb"
+        }
+      ]
+    },
+    "ship_pinnace": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/ship_pinnace.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/ship_pinnace_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.1,
+          "url": "/models/dressing/ship_pinnace_lod2.glb"
+        }
+      ]
+    },
+    "modular_wooden_pier": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/modular_wooden_pier.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/modular_wooden_pier_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.1,
+          "url": "/models/dressing/modular_wooden_pier_lod2.glb"
+        }
+      ]
+    },
+    "cannon_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/cannon_01.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.35,
+          "url": "/models/dressing/cannon_01_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.12,
+          "url": "/models/dressing/cannon_01_lod2.glb"
+        }
+      ]
+    },
+    "wooden_barrels_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/wooden_barrels_01.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.35,
+          "url": "/models/dressing/wooden_barrels_01_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.12,
+          "url": "/models/dressing/wooden_barrels_01_lod2.glb"
+        }
+      ]
+    },
+    "wooden_lantern_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/wooden_lantern_01.glb"
+        }
+      ]
+    },
+    "wooden_crate_02": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/wooden_crate_02.glb"
+        }
+      ]
+    },
+    "antique_estoc": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/antique_estoc.glb"
+        }
+      ]
+    },
+    "jug_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/jug_01.glb"
+        }
+      ]
+    },
+    "wooden_bucket_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/wooden_bucket_01.glb"
+        }
+      ]
+    },
+    "modular_fort_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/modular_fort_01.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.35,
+          "url": "/models/dressing/modular_fort_01_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.12,
+          "url": "/models/dressing/modular_fort_01_lod2.glb"
+        }
+      ]
+    },
+    "treasure_chest": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/treasure_chest.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/treasure_chest_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.1,
+          "url": "/models/dressing/treasure_chest_lod2.glb"
+        }
+      ]
+    },
+    "wooden_crate_01": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/wooden_crate_01.glb"
+        }
+      ]
+    },
+    "lambis_shell": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/lambis_shell.glb"
+        }
+      ]
+    },
+    "stylaster_coral": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/stylaster_coral.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.4,
+          "url": "/models/dressing/stylaster_coral_lod1.glb"
+        }
+      ]
+    },
+    "seriatopora_coral": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/seriatopora_coral.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/seriatopora_coral_lod1.glb"
+        }
+      ]
+    },
+    "goniastrea_coral": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/goniastrea_coral.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/goniastrea_coral_lod1.glb"
+        }
+      ]
+    },
+    "soft_coral_set": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/soft_coral_set.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.45,
+          "url": "/models/dressing/soft_coral_set_lod1.glb"
+        }
+      ]
+    },
+    "emperor_angelfish": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/emperor_angelfish.glb"
+        }
+      ]
+    },
+    "tree_poinciana": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/tree_poinciana.glb"
+        }
+      ]
+    },
+    "tree_orchid": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/tree_orchid.glb"
+        }
+      ]
+    },
+    "rock_slab_a": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/rock_slab_a.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/rock_slab_a_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.09,
+          "url": "/models/dressing/rock_slab_a_lod2.glb"
+        }
+      ]
+    },
+    "rock_slab_b": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/rock_slab_b.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/rock_slab_b_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.09,
+          "url": "/models/dressing/rock_slab_b_lod2.glb"
+        }
+      ]
+    },
+    "rock_boulder": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/rock_boulder.glb"
+        },
+        {
+          "level": 1,
+          "ratio": 0.3,
+          "url": "/models/dressing/rock_boulder_lod1.glb"
+        },
+        {
+          "level": 2,
+          "ratio": 0.09,
+          "url": "/models/dressing/rock_boulder_lod2.glb"
+        }
+      ]
+    },
+    "palm_coconut": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/palm_coconut.glb"
+        }
+      ]
+    },
+    "palm_tall": {
+      "lods": [
+        {
+          "level": 0,
+          "ratio": 1,
+          "url": "/models/dressing/palm_tall.glb"
+        }
+      ]
+    }
+  }
+}
