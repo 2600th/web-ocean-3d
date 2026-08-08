@@ -101,8 +101,8 @@ export interface GroundShadingInputs {
  * fraction of a stop on a canopy, and a translucency term that reads at any
  * angle is not translucency, it is emission.
  */
-const TRANSLUCENCY_POWER = 4;
-const TRANSLUCENCY_GAIN = 0.55;
+export const TRANSLUCENCY_POWER = 4;
+export const TRANSLUCENCY_GAIN = 0.55;
 
 /**
  * Sway shared by the near trees and the distant canopy cards.
@@ -115,16 +115,18 @@ const TRANSLUCENCY_GAIN = 0.55;
  * a viewer walking up the beach watched the far forest breathe and the palms in
  * front of them stand perfectly still.
  *
- * The wavelength, speed and amplitude below are `Canopy`'s, deliberately: the two
- * systems hand over to each other between 320 and 520 m and a tree that changed
- * how far it travelled as it became a card would make the handover visible.
+ * The wavelength, speed and amplitude below are `Canopy`'s, deliberately. The
+ * canopy fades in between 90 and 180 m, while the current Props tree meshes do
+ * not fade out, so there is no mesh-to-card handover today. Keeping the same
+ * sway constants still makes the eventual complementary fade visually coherent.
  *
  * They do **not** share a phase. `Canopy` adds a per-instance offset from its
  * card seed, and a mesh has no equivalent constant available in the vertex stage
  * without new plumbing — `positionGeometry` varies across the tree and
  * `positionLocal` is post-instancing. What survives is an amplitude match and a
- * phase difference, and at the 320 m where the handover starts, 0.9 m of crown
- * travel subtends about two pixels: the pop is smaller than the thing popping.
+ * phase difference. Since the mesh does not currently fade out, there is no
+ * handover distance to tune here; these shared values keep a future complementary
+ * fade from introducing a new motion discontinuity.
  */
 const SWAY_WAVELENGTH = 90;
 const SWAY_K = (Math.PI * 2) / SWAY_WAVELENGTH;

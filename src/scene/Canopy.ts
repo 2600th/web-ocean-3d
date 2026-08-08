@@ -18,6 +18,7 @@ import {
 } from 'three/tsl';
 import { mulberry32 } from '../core/random';
 import { ISLAND } from './Seafloor';
+import { TRANSLUCENCY_GAIN, TRANSLUCENCY_POWER } from './groundShading';
 
 /**
  * Distant canopy, drawn as billboards.
@@ -167,6 +168,13 @@ const STAND_FIELD_WEIGHT = 0.62;
 const STAND_INSTANCE_WEIGHT = 0.38;
 /** Peak-to-peak brightness jitter the combined tone applies. */
 const STAND_VALUE_RANGE = 0.42;
+/** Dome normal lateral strength, upward bias, and foliage wrap. */
+const DOME_BULGE = 0.55;
+const CANOPY_UP_BIAS = 0.45;
+const CANOPY_WRAP = 0.65;
+/** Extra terrain taps used to make dry stands follow the sun-facing slope. */
+const SLOPE_SAMPLE_METRES = 4;
+const STAND_SLOPE_WEIGHT = 0.25;
 
 /** Sway: metres of crown travel at full wind, and the wave that carries it. */
 const SWAY_WAVELENGTH = 90;
@@ -399,8 +407,13 @@ export class IslandCanopy {
     // twenty thousand blended cards over a hillside cannot resolve against each
     // other and the canopy turns inside out as the camera moves. Testing keeps
     // the depth write, which is what makes the field sort itself.
+    // alphaToCoverage smooths the cutout edge while preserving that depth-write
+    // ordering on the 8-20 px cards.
     material.alphaTest = 0.42;
-    material.side = THREE.DoubleSide;
+    material.alphaToCoverage = true;
+    // right x up = -flat points toward the camera for this cylindrical
+    // billboard, so FrontSide removes the back-face rasterisation safely.
+    material.side = THREE.FrontSide;
 
     const seed = attribute('cardSeed', 'vec4') as Node;
     const corner = positionGeometry as Node;
@@ -410,6 +423,9 @@ export class IslandCanopy {
     const stand = varying(float(0), 'canopyStand') as Node;
     /** Key light reaching this card, 0..1. */
     const keyLight = varying(float(1), 'canopyKey') as Node;
+    /** Billboard basis, published so the fragment dome has no angle branch. */
+    const cardRight = varying(vec3(0, 0, 0), 'canopyRight') as Node;
+    const cardFacing = varying(vec3(0, 0, 0), 'canopyFacing') as Node;
 
     // `Fn`, not a plain closure. TSL only maintains an assignment stack while an
     // `Fn` callback is executing, and the two `varying(...).assign(...)` calls
@@ -453,6 +469,8 @@ export class IslandCanopy {
       // gives itself away.
       const flat = normalize(vec3n(toCamera.x, 0, toCamera.z).add(vec3(1e-4, 0, 0))) as Node;
       const right = normalize(vec3n(flat.z.negate(), 0, flat.x)) as Node;
+      cardRight.assign(right);
+      cardFacing.assign(flat.negate());
 
       // Proportions, from a hash of the two draws the instance already carries.
       // A third random per card would mean a wider instance buffer for one
@@ -509,15 +527,41 @@ export class IslandCanopy {
         .mul(0.5)
         .add(0.5);
       const crown = fract(sin(seed.z.mul(127.1).add(seed.w.mul(311.7))).mul(43758.5453));
+      // Two terrain taps approximate the local slope normal. The aspect term is
+      // deliberately only a quarter of the stand tone: exposure should bias
+      // CANOPY_DRY toward sun-facing spurs, not turn every ridge into a stripe.
+      const eastGround = this.groundHeight(
+        vec3n(foot.x.add(SLOPE_SAMPLE_METRES), 0, foot.y),
+      ) as Node;
+      const northGround = this.groundHeight(
+        vec3n(foot.x, 0, foot.y.add(SLOPE_SAMPLE_METRES)),
+      ) as Node;
+      const slopeNormal = normalize(
+        vec3n(ground.sub(eastGround), SLOPE_SAMPLE_METRES, ground.sub(northGround)),
+      ) as Node;
+      const slopeExposure = slopeNormal.dot(this.uSunDir).clamp(0, 1);
+      const organicStand = field.mul(STAND_FIELD_WEIGHT).add(crown.mul(STAND_INSTANCE_WEIGHT));
       stand.assign(
-        field.mul(STAND_FIELD_WEIGHT).add(crown.mul(STAND_INSTANCE_WEIGHT)).clamp(0, 1),
+        organicStand
+          .mul(1 - STAND_SLOPE_WEIGHT)
+          .add(slopeExposure.mul(STAND_SLOPE_WEIGHT))
+          .clamp(0, 1),
       );
 
-      // Cloud shade and the hill's own shadow, sampled at the card's foot.
-      keyLight.assign(
+      // Cloud shade and the hill's own shadow, sampled at the foot and crown.
+      // Interpolating the two taps gives a free vertical AO gradient across the
+      // four vertices of a card: gullies are darker at their base than their
+      // crown, while the fragment stage pays no heightfield march.
+      const footKey =
         this.sunOcclusion === null
-          ? float(1)
-          : this.sunOcclusion(vec3n(foot.x, ground.add(CARD_HEIGHT * 0.4), foot.y)),
+          ? (float(1) as Node)
+          : this.sunOcclusion(vec3n(foot.x, ground, foot.y));
+      const crownKey =
+        this.sunOcclusion === null
+          ? (float(1) as Node)
+          : this.sunOcclusion(vec3n(foot.x, ground.add(CARD_HEIGHT * 0.85), foot.y));
+      keyLight.assign(
+        mix(footKey, crownKey, corner.y),
       );
 
       return world;
@@ -531,10 +575,39 @@ export class IslandCanopy {
       // The radial term gives the crown; the two sine lobes bite chunks out of
       // it at different frequencies so no two cards share a silhouette once the
       // instance phase is added, and the edge is ragged rather than round.
-      const centred = uv.sub(vec2(0.5, 0.45));
-      const radius = vec2n(centred.x, centred.y.mul(1.15)).length();
-
       const seedW = (attribute('cardSeed', 'vec4') as Node).w as Node;
+      const seedZ = (attribute('cardSeed', 'vec4') as Node).z as Node;
+
+      // Three outline families keep the field from repeating one ellipse. The
+      // bands blend at their boundaries so deterministic seeds do not pop when
+      // a card crosses a threshold: broad round, tall narrow, then flat topped.
+      const tallOrFlat = seedZ.smoothstep(0.3, 0.7);
+      const flatFamily = seedZ.smoothstep(0.68, 0.78);
+      const roundFamily = float(1).sub(tallOrFlat);
+      const tallFamily = tallOrFlat.mul(float(1).sub(flatFamily));
+      const verticalCentre = roundFamily
+        .mul(0.45)
+        .add(tallFamily.mul(0.54))
+        .add(flatFamily.mul(0.39));
+      const horizontalScale = roundFamily
+        .mul(1)
+        .add(tallFamily.mul(1.35))
+        .add(flatFamily.mul(0.92));
+      const verticalScale = roundFamily
+        .mul(1.15)
+        .add(tallFamily.mul(0.98))
+        .add(flatFamily.mul(1.05));
+      const centred = vec2n(uv.x.sub(0.5), uv.y.sub(verticalCentre));
+      const radial = vec2n(centred.x.mul(horizontalScale), centred.y.mul(verticalScale));
+      const roundedRadius = radial.length();
+      const flatRadius = radial.x
+        .abs()
+        .pow(4)
+        .add(radial.y.abs().pow(4))
+        .pow(0.25);
+      const radius = roundedRadius
+        .mul(float(1).sub(flatFamily))
+        .add(flatRadius.mul(flatFamily));
       // The bite is driven by the *direction* around the card rather than by an
       // angle, which keeps `atan2` out of the shader — its branch cut would draw
       // a seam down one side of every card, and TSL has moved its spelling
@@ -543,22 +616,60 @@ export class IslandCanopy {
       const dir = normalize(vec2n(centred.x, centred.y).add(vec2(1e-4, 0)));
       const h2 = dir.x.mul(dir.x).mul(2).sub(1);
       const h3 = dir.x.mul(h2).mul(2).sub(dir.x);
+      const h2Weight = roundFamily
+        .mul(0.05)
+        .add(tallFamily.mul(0.035))
+        .add(flatFamily.mul(0.065));
+      const h3Weight = roundFamily
+        .mul(0.035)
+        .add(tallFamily.mul(0.022))
+        .add(flatFamily.mul(0.018));
+      const verticalWeight = roundFamily
+        .mul(0.025)
+        .add(tallFamily.mul(0.04))
+        .add(flatFamily.mul(0.012));
       const ragged = h2
         .mul(seedW.mul(6.28).sin())
-        .mul(0.05)
-        .add(h3.mul(seedW.mul(11.2).cos()).mul(0.035))
-        .add(dir.y.mul(seedW.mul(3.1).sin()).mul(0.025));
+        .mul(h2Weight)
+        .add(h3.mul(seedW.mul(11.2).cos()).mul(h3Weight))
+        .add(dir.y.mul(seedW.mul(3.1).sin()).mul(verticalWeight));
+
+      // One two-octave field does double duty: it perturbs the rim only where
+      // the edge is visible, and the same deterministic field opens a few holes
+      // in the mass. Hole weight falls to zero at the rim, so the silhouette
+      // stays broken without turning into frayed noise.
+      const silhouetteNoise = mx_fractal_noise_float(
+        vec3n(
+          centred.x.mul(5.5).add(seedW.mul(1.7)),
+          centred.y.mul(5.5).add(seedW.mul(3.1)),
+          seedZ.mul(2.3).add(seedW.mul(7.9)),
+        ),
+        2,
+        2.0,
+        0.5,
+      )
+        .mul(0.5)
+        .add(0.5);
+      const edgeWeight = radius.smoothstep(0.16, 0.43);
+      const raggedEdge = silhouetteNoise.sub(0.5).mul(0.12).mul(edgeWeight);
+      const holeWeight = float(1).sub(radius.smoothstep(0.18, 0.42));
+      const interiorHoles = silhouetteNoise.smoothstep(0.66, 0.86).mul(holeWeight);
 
       // Alpha is a hard-ish edge because it is tested, not blended: a soft ramp
       // through an alpha test is a hard edge anyway, just one whose position
-      // moves with the ramp.
-      const alpha = float(1).sub(radius.add(ragged).smoothstep(0.3, 0.44));
+      // moves with the ramp. Alpha-to-coverage turns that stable depth edge into
+      // a smoother MSAA transition without giving up the tested ordering.
+      const alpha = float(1)
+        .sub(radius.add(ragged).add(raggedEdge).smoothstep(0.3, 0.44))
+        .mul(float(1).sub(interiorHoles.mul(0.95)));
 
       // --- shading ------------------------------------------------------------
       // A shallow ramp, and the shallowness is the point. Driving the card from
       // fully shaded at its foot to fully lit at its top is physically the right
-      // idea and reads as a *ball*: every clump gets its own strong terminator
-      // and the hillside comes out as a tray of broccoli rather than a canopy.
+      // idea and reads as a *ball*: every clump gets its own strong terminator.
+      // Keep the dome shallow enough that the hillside does not become a tray of
+      // broccoli; DOME_BULGE and CANOPY_WRAP are the two knobs that hold that
+      // line while still letting the sun move across the canopy.
       // Real forest at this range has very little per-crown shading left in it —
       // what survives a kilometre of air is the mass, not the modelling.
       const lit = mix(this.uShade, this.uSunlit, shade.smoothstep(-0.45, 1.15));
@@ -572,21 +683,44 @@ export class IslandCanopy {
       const varied = mix(flowering, this.uDry, stand.smoothstep(0.5, 0.95).mul(0.7));
       const value = stand.sub(0.5).mul(STAND_VALUE_RANGE).add(1);
 
-      // Sun contributes by elevation only. There is no normal on a card worth
-      // the name, and inventing one from the uv gives a lighting seam down the
-      // middle of every clump; what a canopy actually does at this range is get
-      // brighter as the sun climbs, which is this.
+      // Build a hemisphere from centred uv and the published billboard basis.
+      // The old seam warning was about an angle-derived normal: the dir and
+      // harmonic block above is the atan2 branch-cut hazard (:538-545 in the
+      // pre-change file). This hemisphere has no angle or seam.
       //
       // `keyLight` is the cloud deck and the hillside between the card and the
       // sun. Without it the forest went on being fully lit across a hill whose
       // own shading now has a lit face and a shaded one — a canopy floating over
       // its own shadow, which reads worse than no shadow at all.
-      const sun = this.uSunDir.y.max(0).smoothstep(0, 0.4);
+      const domeUv = vec2n(centred.x.mul(2), centred.y.mul(2));
+      const domeDepth = float(1).sub(domeUv.dot(domeUv)).max(0).sqrt();
+      const canopyNormal = cardRight
+        .mul(domeUv.x.mul(DOME_BULGE))
+        .add(vec3(0, 1, 0).mul(domeUv.y.mul(DOME_BULGE)))
+        .add(cardFacing.mul(domeDepth))
+        .add(vec3(0, 1, 0).mul(CANOPY_UP_BIAS))
+        .normalize();
+      const wrapped = canopyNormal
+        .dot(this.uSunDir)
+        .add(CANOPY_WRAP)
+        .div(1 + CANOPY_WRAP)
+        .clamp(0, 1);
+      const elevation = this.uSunDir.y.max(0).smoothstep(0, 0.4);
+      const sun = wrapped.mul(elevation);
+
+      // Back-scatter uses the same constants as mesh foliage, so a card
+      // standing in for a tree glows by the same narrow, shadowed lobe.
+      const backScatter = cardFacing
+        .dot(this.uSunDir.negate())
+        .clamp(0, 1)
+        .pow(TRANSLUCENCY_POWER)
+        .mul(TRANSLUCENCY_GAIN);
       const light = this.uAmbient
         .mul(0.55)
         .add(this.uSunColor.mul(sun.mul(0.8)).mul(keyLight));
+      const litWithScatter = light.add(this.uSunColor.mul(backScatter).mul(keyLight));
 
-      return vec4(varied.mul(light).mul(value), alpha);
+      return vec4(varied.mul(litWithScatter).mul(value), alpha);
     })();
 
     return material;

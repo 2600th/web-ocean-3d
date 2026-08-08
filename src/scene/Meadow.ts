@@ -113,12 +113,11 @@ const BLADE_WIDTH = 0.03;
 /**
  * Rows along a blade, and the curl that stops it being a flat ribbon.
  *
- * Three rows is two quads, which is eight triangles for a blade 40 cm long — and
- * the bend it has to carry is a quadratic over that length, which two spans
- * describe well enough that a third is not worth 50% more geometry at these
- * counts.
+ * Two rows are one span per column, four triangles for a blade 40 cm long. The
+ * bend is still carried by the analytic vertex shear; a second span costs twice
+ * the meadow geometry without adding a silhouette breakpoint at five metres.
  */
-const BLADE_ROWS = 3;
+const BLADE_ROWS = 2;
 const BLADE_CURL = 0.55;
 
 /**
@@ -126,10 +125,10 @@ const BLADE_CURL = 0.55;
  *
  * Grass grows in tillers from a crown, not as isolated blades on a grid, so a
  * tuft is both what the plant actually does and the cheapest way to buy density:
- * one instance, one set of heightfield evaluations, five blades. Uniform singles
+ * one instance, one set of heightfield evaluations, four blades. Uniform singles
  * at the same instance count read as a bed of nails — see `FIELD_PERIOD`.
  */
-const TUFT_BLADES = 5;
+const TUFT_BLADES = 4;
 const TUFT_SPREAD = 0.07;
 
 /**
@@ -525,8 +524,8 @@ export class IslandMeadow {
  *
  * Three columns rather than two so the blade has a spine to curl about — a flat
  * ribbon catches the light as a single flat tone and a whole field of them
- * flickers as they turn. Four rows is enough for the bend: the envelope is
- * quadratic and the blade is 40 cm long.
+ * flickers as they turn. Two rows are enough for the bend because the envelope
+ * is applied analytically in the vertex stage and the blade is 40 cm long.
  */
 function buildBladeGeometry(): THREE.InstancedBufferGeometry {
   const positions: number[] = [];
