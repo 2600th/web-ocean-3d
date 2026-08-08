@@ -249,6 +249,106 @@ Make the tier-independent allocations tier-dependent: the three 1024² RGBA16F w
 enables antialiasing and sizes the framebuffer at up to DPR 2 before the tier is consulted at
 all.
 
+### G. Collapse the tree leaf materials
+
+`tree_orchid` ships 7 materials (trunk, branches, twig, and four separate leaf atlases) and
+`tree_poinciana` ships 9 (four flower/bud materials plus a leaf). `bakeParts` merges by
+material *instance* (`Props.ts:2435-2441`), so it cannot collapse them, and three.js keys its
+render-object cache on the mesh uuid — so each is its own pipeline.
+
+| Kind | Now | After |
+|---|---|---|
+| `island-trees` | 7 mats × 3 levels = 21 meshes | 6 |
+| `island-flame-trees` | 9 × 3 = 27 | 6 |
+| `island-palms` | 5 × 3 = 15 | 6 |
+| **total** | **63** | **18** |
+
+45 fewer `InstancedMesh` and **~45 fewer pipelines**, against a boot the code measures at 73
+pipelines and ~41 s. This is the largest available cut to High-tier load time, and it is a
+build-side change: `@gltf-transform/functions` exports `palette` and `joinPrimitives`, both
+already installed. Atlas the four leaf maps into one per tree at asset-build time.
+
+### H. Canopy realism
+
+`Canopy.ts` is the island's silhouette at every distance, and it has no directional lighting
+at all — `Canopy.ts:584-587` derives light from sun *elevation* only. The sun crosses the sky
+and the forest never changes which side of the hill is bright, while the terrain underneath it
+does. The file patched the symptom with `keyLight` (`Canopy.ts:580-583`) but occlusion is not
+lighting.
+
+The comment at `Canopy.ts:574-578` rejects a normal because inventing one from the uv "gives a
+lighting seam down the middle of every clump". That objection is specific to an *angle-derived*
+normal — the same `atan2` branch cut the file already dodges at `:538-545`. A hemisphere normal
+has no seam.
+
+1. **Dome normal + wrap diffuse.** Publish the billboard basis (`right`, `-flat`) as varyings
+   and build a hemisphere normal in the fragment stage from the centred uv, with no `atan2`.
+   Blend toward world-up, because a canopy is lit from above far more than a sphere is. Then
+   wrap-diffuse rather than Lambert: foliage multiple-scatters between leaves, so a canopy has
+   almost no terminator. Starting constants `DOME_BULGE 0.55`, `CANOPY_UP_BIAS 0.45`,
+   `CANOPY_WRAP 0.65` — the "tray of broccoli" warning at `:557-563` is real, and those are the
+   two knobs that hold the line against it.
+2. **Back-scatter.** `groundShading.ts:104-105` already implements leaf translucency for the
+   tree *meshes* (`TRANSLUCENCY_POWER 4`, `TRANSLUCENCY_GAIN 0.55`) with the rationale at
+   `:75-102`. The cards do not have it. Import those constants rather than retyping them, so a
+   mesh and the card standing in for it agree when the sun is behind the island.
+3. **Break the silhouette.** `alpha` is currently monotone in radius, so every card is a solid
+   blob with no sky holes, and three harmonics at 0.05/0.035/0.025 is a wobble rather than a
+   fractal edge. Add two octaves of `mx_fractal_noise_float` on the edge, plus interior holes
+   weighted away from the rim so the mass breaks without the outline fraying. Two octaves only
+   — this is a heavy-overdraw pass and `:279-284` is right to guard it.
+4. **Silhouette archetypes.** Band `seed.z` into three outline families — round broadleaf,
+   tall-narrow, flat-topped — switching the harmonic weights and the vertical centre. This
+   attacks the bubble-wrap read from the one axis `CARD_ASPECT_VARIATION` does not.
+5. **`alphaToCoverage = true`.** One line. `antialias: true` is already set
+   (`Renderer.ts:28`), and this preserves the depth-write the sorting argument at `:396-402`
+   depends on. Kills the cutout edge crawl on 8–20 px cards.
+6. **`side = FrontSide`.** One line. The winding was checked — geometry at `:207-209` with
+   `right` and `flat` at `:454-455` gives `right × up = -flat`, which points toward the camera,
+   so the front face always faces the viewer. Halves the rasterisation on the scene's
+   highest-overdraw pass.
+7. **Two-tap vertical AO.** `sunOcclusion` is sampled once (`:517-521`); sample at foot and
+   crown and the difference is a free ambient gradient, so canopy in a gully is darker at its
+   base than canopy on a ridge. Per vertex, four verts a card.
+8. **Slope-aware stand tone.** `stand` is position-only (`:502-514`). Two extra `groundHeight`
+   taps give a slope aspect; fold in at ~0.25 weight so `CANOPY_DRY` lands on sun-exposed faces
+   rather than in random blotches, which is the job its comment at `:145-152` claims.
+
+Items 5 and 6 are two lines between them and are pure wins. Items 1 and 2 are where the
+realism lives. **The comments at `:574-578`, `:557-563` and `:396-402` must be rewritten as
+part of this** — this codebase treats its comments as load-bearing, and all three become false
+the moment item 1 lands.
+
+### I. Meadow triangle budget
+
+`IslandMeadow` at Max is 90,000 instances × 40 triangles = **3.6 M triangles in one draw**
+(`Meadow.ts:77`, `buildBladeGeometry:531-585`) — roughly three times the entire island dressing
+at LOD2, and the largest single triangle consumer in the scene. `docs/PERFORMANCE.md:250-257`
+reports whole-scene totals of 3.38 M at Low rising to 4.86 M at Max, which the meadow alone
+explains.
+
+It is well built — one draw call, frustum-culling off because it follows the camera, no shadow
+cast — so the lever is the blade, not the system. `TUFT_BLADES` 5 → 4 and `BLADE_ROWS` 3 → 2
+takes 8 triangles per blade to 4: **a 2× cut in the largest number in the frame.** The fade at
+`FADE_START = 0.78` already makes the outer third near-invisible. Measure before and after with
+the `hide('meadow', …)` toggle that `scripts/profile-frame.mjs:218-219` already provides.
+
+### J. Benchmark honesty
+
+Two gaps `docs/PERFORMANCE.md` already discloses about itself, now that we are changing the
+things it measures:
+
+- **The gate is a median.** Nothing fails on p95 or p99, and a renderer that misses vsync every
+  twentieth frame stutters however good its median is. The percentiles are already recorded;
+  make them gate.
+- **The camera is never underwater**, so the submerged branch — god rays at full strength, the
+  underwater particle system — contributes nothing to any published number. Add a submerged
+  configuration.
+
+Also add a **low-end configuration** to the matrix: WebGL2 at Low with DPR 1 and a CPU-throttled
+profile, so the thing this whole document is about has a number attached to it rather than an
+argument.
+
 ## How the work is divided
 
 Five of the six workstreams touch `main.ts` (2,920 lines) and three touch `Props.ts` (2,879
@@ -256,24 +356,28 @@ lines). Dividing agents by workstream would put every agent in those two files a
 **work is assigned by file ownership instead.** Each wave's agents have disjoint file sets and
 can run in parallel worktrees; waves are sequential.
 
+Agents are `codex --model gpt-5.6-luna` at `model_reasoning_effort = max`, started by `herdr`
+into a pane per worktree.
+
 ### Wave 1
 
 | Agent | Owns | Contains |
 |---|---|---|
 | `imposter-bake` | `scripts/bake-imposters.mjs`, `public/imposters/*` | C, bake half. All new files, zero conflict. Longest-running, so it starts first. |
-| `asset-loader` | `src/scene/AssetLoader.ts`, `scripts/optimize-assets.mjs`, `package.json` | E entire, plus B's loader half — timeouts, aborts, progress, concurrency limit, LOD manifest emit, drop redundant LOD2s. Coherent because it is all "the loader and the thing that feeds it". |
-| `boot-sequence` | `src/ui/StartGate.ts`, `src/main.ts`, `src/ui/types.ts`, `src/ui/styles.css`, specs, `scripts/benchmark.mjs` | A entire, plus B's `main.ts` half — the `applyQuality` split, progressive boot, progress wiring. |
+| `asset-loader` | `src/scene/AssetLoader.ts`, `scripts/optimize-assets.mjs`, `package.json` | E and G entire, plus B's loader half — KTX2, the leaf-material atlas, timeouts, aborts, progress, concurrency limit, LOD manifest emit, drop redundant LOD2s. Coherent because it is all "the loader and the thing that feeds it". |
+| `boot-sequence` | `src/ui/StartGate.ts`, `src/main.ts`, `src/ui/types.ts`, `src/ui/styles.css`, `tests/**`, `scripts/benchmark.mjs` | A and J entire, plus B's `main.ts` half — the `applyQuality` split, progressive boot, progress wiring, and the benchmark's new gates and configurations. |
 
 ### Wave 2
 
 | Agent | Owns | Contains |
 |---|---|---|
-| `props` | `src/scene/Props.ts`, `src/scene/Imposters.ts`, `src/scene/Canopy.ts`, `src/scene/groundShading.ts` | D entire, plus C's runtime half. |
+| `props-imposters` | `src/scene/Props.ts`, `src/scene/Imposters.ts` | D entire, plus C's runtime half. |
+| `canopy-meadow` | `src/scene/Canopy.ts`, `src/scene/Meadow.ts`, `src/scene/groundShading.ts` | H and I entire. |
 | `render-targets` | `src/physics/Wake.ts`, `src/underwater/Caustics.ts`, `src/sky/Atmosphere.ts`, `src/core/QualityManager.ts`, `src/core/Renderer.ts` | F. |
 
-Both wave-2 agents need small `main.ts` edits to wire their work in; those are made by the
-integrating session after both land, not by the agents, so `main.ts` has exactly one owner per
-wave.
+Wave-2 agents need small `main.ts` edits to wire their work in; those are made by the
+integrating session after all three land, not by the agents, so `main.ts` has exactly one owner
+throughout.
 
 ## Verification
 
@@ -286,17 +390,28 @@ wave.
   earned its place: Codex found the `applyQuality`-never-called-at-boot defect above, which
   reading the quality tier tables would never have surfaced.
 
-## What this does not do
+## Documentation that must change with the code
 
-- **It does not collapse the tree leaf materials.** `tree_orchid` ships 4 leaf materials and
-  `tree_poinciana` 4 flower/bud materials; an atlas pass would take 63 `InstancedMesh` to 18
-  and cut ~45 pipelines. On Low and Medium the imposters achieve the same result by not
-  drawing those meshes at all, and on High and above the pipelines are wanted. Revisit if High
-  boot time is still the complaint afterwards.
-- **It does not touch the meadow**, which at Max is 90,000 instances × 40 triangles = 3.6 M
-  triangles — the largest single triangle consumer in the scene, larger than the entire island
-  dressing. It is one draw call, well built, and already tier-scaled to 0 at Low. Halving
-  `TUFT_BLADES`/`BLADE_ROWS` is available if a triangle budget later binds.
-- **It does not add octahedral imposters.** See C.
-- **It does not fix the p95/p99 gap** in the benchmark gate, which `docs/PERFORMANCE.md:436`
-  already discloses.
+This codebase treats its prose as load-bearing, and several passages become false as this
+lands. They are part of the work, not follow-up:
+
+- `groundShading.ts:119-120` and `main.ts:165` both assert a 320–520 m mesh-to-card handover.
+  `Canopy.ts:122-123` replaced it with 90/180, and as established there is no handover at all
+  because the meshes never fade. Both are wrong today, before any of this.
+- `Canopy.ts:574-578`, `:557-563`, `:396-402` — see G.
+- `QualitySettings.canopy` and `.propsDetail` (`QualityManager.ts:222-262`) describe a world in
+  which the dressing is always meshes. Imposters change what those numbers mean.
+- `docs/PERFORMANCE.md` — the Results tables, the cost model, the Memory section's 273/323/476
+  MB figures, and the Limitations section's "one machine" caveat all move.
+- `README.md` and `docs/SPEC.md` describe the canopy as "billboard impostors" in a project that
+  did not have any; after C, it does, and they should say which is which.
+
+## What this deliberately does not do
+
+- **It does not add octahedral imposters.** One baked view per species, per the decision
+  recorded in C. Revisit only if the near band reads badly *after* measuring.
+- **It does not adopt `BatchedMesh` or GPU-driven culling.** `three@0.185.1` contains
+  `drawIndirect`/`drawIndexedIndirect` but WebGPU `BatchedMesh` support is still upstream work
+  in progress, and `InstancedMesh2` declares no WebGPU or TSL support — it patches WebGL shader
+  chunks, which cannot compose with `applyGroundShading` and `FoliageWind` rewriting
+  `positionNode` on every prop material.
