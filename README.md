@@ -99,7 +99,7 @@ and weather together — so switching reads as a different *place*, not a colour
 | Clear day | The night watch |
 |---|---|
 | ![Clear day](docs/images/clear-day.png) | ![Night](docs/images/night.png) |
-| The reference frame every measurement in this repository is taken against | The cinematic tour at 00:56 — moon glitter, star field, and a hull lit by nothing else |
+| The reference frame every measurement in this repository is taken against | The cinematic tour at 00:54 — moon glitter, star field, and a hull lit by nothing else |
 
 | A squall | Landfall |
 |---|---|
@@ -109,7 +109,7 @@ and weather together — so switching reads as a different *place*, not a colour
 ![Island](docs/images/island.png)
 
 *The frame the terrain, the planting and the grade are tuned against, and the one the
-reference in [`docs/ref/`](docs/ref/) depicts. Bare coral sand to 3.5 m, canopy over the
+reference in [`docs/ref/`](docs/ref/tropical-island-sea-level-v2.png) depicts. Bare coral sand to 3.5 m, canopy over the
 flanks carried by billboard impostors that hand over to the meshes at 90 m, a pale rock
 crown on the 150 m summit, and closed shoreline rock that can be dropped at any angle.*
 
@@ -145,10 +145,11 @@ would be meaningless.
 
 | | |
 |---|---|
-| **1 / 2 / 3** | Orbit / Fly / Boat camera |
+| **1 / 2 / 3 / 4** | Orbit / Fly / Boat / Cinematic camera |
 | **Orbit** | LMB drag rotate · RMB drag pan · scroll zoom |
 | **Fly** | click to capture the mouse · WASD · Space/Ctrl up-down · **scroll** speed (1.5–600 m/s) · Shift boost |
 | **Boat** | **W/S** throttle ahead and astern · **A/D** rudder · **drag** to orbit the chase camera · **scroll** to dolly · the hull is turned away from shoaling water rather than fenced by a radius |
+| **Cinematic** | A looping 60 s authored tour in six beats — open water, outbound, landfall, return, squall, reef run — carrying its own hour and weather, so one lap runs a full day and a squall through the scene |
 | **Touch** | Boat mode on a touch device gets an on-screen stick: forward for ahead, back for astern, left and right for rudder |
 
 Boat mode selects the ship, not just a camera. Leaving it releases ship input, so Orbit and
@@ -243,16 +244,20 @@ Drop the camera below the surface in any mode to trigger the underwater state.
 
 ```
 src/
-  core/        renderer bootstrap + fallback, frame loop, quality tiers
-  ocean/       spectrum, FFT, simulation, mesh, surface shading, CPU sampler
-  sky/         atmosphere, volumetric clouds, weather
+  core/        renderer bootstrap + fallback, frame loop, quality tiers, seeded random
+  ocean/       spectrum, FFT, simulation, mesh, surface shading, planar reflection, SSR, CPU sampler
+  sky/         atmosphere, volumetric clouds, aerial perspective, weather
   underwater/  fog and god rays, particulates, caustics
-  scene/       asset loading, ship, props, seafloor
-  physics/     buoyancy, wake accumulation
-  cameras/     orbit / fly / boat director
-  ui/          control panel, HUD (framework-free DOM)
+  post/        depth of field, bloom, lens flare, grade, volumetric fog, lens rain, output transform
+  scene/       asset loading, ship, props, seafloor, island planting, fish, birds
+  physics/     buoyancy, ship control, wake accumulation, spray
+  cameras/     orbit / fly / boat / cinematic director, and the authored tour
+  audio/       synthesised ambience — noise beds, not samples
+  ui/          control panel, HUD, touch controls (framework-free DOM)
   presets/     nine environment definitions
 ```
+
+`docs/SPEC.md` carries the same tree file by file.
 
 ### Design decisions worth explaining
 
@@ -283,10 +288,11 @@ invisible; a pipeline stall is not.
 
 ## Verification
 
-Two suites. The functional one asserts behaviour; the visual one compares seven canonical shots
-against checked-in baselines with a CIE94 ΔE metric whose thresholds come from a *measured*
-run-to-run noise floor — not pixel-exact equality, which no GPU render can hold to. Notable
-checks:
+Two suites. The functional one asserts behaviour; the visual one compares fifteen canonical
+shots against checked-in baselines with a CIE94 ΔE metric whose thresholds come from a
+*measured* run-to-run noise floor — not pixel-exact equality, which no GPU render can hold to.
+Method, metric and per-shot thresholds are in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
+Notable checks:
 
 - Sea state read straight off the GPU: crest amplitude in metres, no non-finite values,
   whitecap coverage under 8%
@@ -317,15 +323,19 @@ checks:
 > This table previously quoted "whitecap coverage 4.6%, asserted by
 > `produces a physically plausible sea state`". That test reads displacement
 > Jacobians and asserts only `foldedPercent < 8`; it never reads the foam buffer
-> and never measures rendered whitecap coverage. The figure was a plausible number
-> attached to the wrong source, which is exactly what
-> [`docs/CLAIMS_AUDIT.md`](docs/CLAIMS_AUDIT.md) exists to catch. Removed.
+> and never measured rendered whitecap coverage. The figure was a plausible number
+> attached to the wrong source. Coverage is now genuinely measured —
+> `tests/foam.spec.ts` renders the surface at five wind speeds and holds it to
+> Monahan's law within a factor of three, which is the figure quoted under Known
+> Limitations below.
 
 > An earlier revision of this table also quoted a buoyancy/wave-slope correlation,
 > a seafloor CPU/GPU agreement figure, a wake spread angle and a sky zenith
-> colour. No assertion in the suite produced any of them, so they have been
-> removed rather than left standing as unsourced numbers. See
-> [`docs/CLAIMS_AUDIT.md`](docs/CLAIMS_AUDIT.md).
+> colour. No assertion in the suite produced any of them, so they were removed
+> rather than left standing as unsourced numbers. Both notes are kept because the
+> failure mode they record — a real measurement drifting loose from its source and
+> being republished as an assertion — is the one this project has actually made,
+> more than once.
 
 Bugs found by measuring rather than looking, none of them visible to typecheck:
 
@@ -452,9 +462,11 @@ Full methodology, cost model and the honest list of what remains unmeasured:
 
 - [`docs/SPEC.md`](docs/SPEC.md) — feature matrix, visual checklist, measured behaviour
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — methodology, budgets, cost model
-- [`docs/CLAIMS_AUDIT.md`](docs/CLAIMS_AUDIT.md) — every claim in this repository, mapped to
-  its implementation and its evidence
+- [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — the visual harness: the canonical shots, the
+  capture protocol, the ΔE metric and where its thresholds come from
 - [`ASSET_LICENSES.md`](ASSET_LICENSES.md) — every asset, source, author and licence
+- [`PRODUCT.md`](PRODUCT.md) and [`DESIGN.md`](DESIGN.md) — who this is for, and the interface
+  system recorded from the built UI rather than from an intention written before it
 
 ---
 
@@ -464,8 +476,13 @@ Project code is original. Techniques are implemented from published literature �
 FFT ocean, JONSWAP and Pierson–Moskowitz spectra, the Preetham sky model — and from
 MIT-licensed Three.js examples.
 
-All 3D models and HDRIs are **CC0**, sourced independently from
-[Poly Haven](https://polyhaven.com), and listed with author and URL in
-[`ASSET_LICENSES.md`](ASSET_LICENSES.md).
+**Most** 3D models and HDRIs are CC0, sourced from
+[Poly Haven](https://polyhaven.com), for which no attribution is legally required — the
+authors are recorded anyway. The exceptions matter: twelve assets come from Sketchfab, of
+which three are CC0 Smithsonian coral scans and **nine are CC-BY 4.0, whose attribution is a
+condition of the licence and must survive redistribution**. Those nine credits are collected
+in one block in [`ASSET_LICENSES.md`](ASSET_LICENSES.md#sketchfab-assets); every asset,
+source, author and licence is listed there. Typefaces ship unmodified under SIL OFL 1.1.
 
-Dependencies: three.js (MIT), Vite (MIT), TypeScript (Apache-2.0), Playwright (Apache-2.0).
+Dependencies: three.js (MIT), Vite (MIT), TypeScript (Apache-2.0), Playwright (Apache-2.0),
+`@vercel/analytics` (MIT).

@@ -184,8 +184,7 @@ of what this gate can and cannot see. See the Cost model section.
 The earlier fidelity-work comparison is kept below.
 
 **The frame roughly tripled at High and both gates still pass, with more than
-twice the budget to spare.** What it bought is in
-`docs/superpowers/plans/2026-08-05-fidelity-gap-closure.md`: a cloud layer
+twice the budget to spare.** What it bought: a cloud layer
 wrapped on a sphere so the deck converges instead of stopping in a band, one
 per-channel aerial perspective on every material instead of three unrelated
 treatments and one absence, the island's own shadow marched against the
@@ -371,8 +370,9 @@ directly by adding 96 empty ones — and the transform was issuing 108 of them.
 Command submission, not arithmetic.
 
 Folding the spectra pairs and then the cascades into one atlas took it to 23
-passes and the transform from 7.24 ms to 2.55 ms; see
-`docs/superpowers/plans/2026-08-05-frame-cost-attribution.md`.
+passes and the transform from 7.24 ms to 2.55 ms. Re-measure any of this with
+`node scripts/profile-frame.mjs`, which attributes the delivered frame stage by
+stage rather than gating on GPU p50.
 
 **Why this document could assert the opposite for so long is the important
 part**, and it is a property of the gate above rather than of anyone's judgement:

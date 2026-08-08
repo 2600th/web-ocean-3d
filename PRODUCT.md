@@ -57,8 +57,10 @@ neighbouring demo could not truthfully copy is the combination of:
 ## Operating Context
 
 Desktop browser, one tab, mouse and keyboard, usually a single sitting with no
-return visit and nothing saved. There is no account, no persistence, no back end
-and no data of any kind. Touch and coarse-pointer use is real but secondary: below
+return visit and nothing saved. There is no account, no persistence and no back end
+the app talks to. The one exception to "no data" is Vercel Web Analytics, injected
+at boot from `main.ts` — aggregate page traffic, no account and nothing the visitor
+enters, because there is nothing to enter. Touch and coarse-pointer use is real but secondary: below
 900px the control panel becomes a bottom sheet and Boat mode gains an on-screen
 throttle ring.
 
@@ -71,7 +73,8 @@ renderer's own backend fallback.
 **What the visitor can drive**
 
 - Four camera modes — Orbit, Fly, Boat, Cinematic — on buttons and on keys 1–4.
-  Cinematic is an automatic 166-second tour; Boat gives them the helm.
+  Cinematic is an automatic 60-second tour in six beats, carrying its own hour and
+  weather so one lap runs a full day and a squall; Boat gives them the helm.
 - Nine looks: `skyPro`, `arctic`, `blackFlag`, `dusk`, `foggy`, `moonlit`,
   `seaOfThieves`, `storm`, `sunset`.
 - Five quality tiers: Low, Medium, High, Ultra, Max. High is the default. An
@@ -102,9 +105,9 @@ renderer's own backend fallback.
   standalone, and that boundary is load-bearing.
 - Every pixel of chrome competes with the render for GPU time and for attention.
   Backdrop blur over a full-screen 3D canvas is not free.
-- 26 canonical screenshots are compared against baselines on every run. The visual
-  suite masks the UI region, but layout changes that move that region are not free
-  either.
+- 15 canonical screenshots are compared against baselines on every run. The visual
+  suite excludes the UI by rendering offscreen, but layout changes are not free
+  either — the interface shot is a real compositor screenshot.
 - Reduced-motion is honoured globally today and must stay honoured.
 
 ## Brand Commitments
@@ -114,25 +117,30 @@ renderer's own backend fallback.
   over the sea when the visitor takes the helm in heavy weather. It is deliberately
   set in a different face from every other piece of text, because it is the one
   thing that is not instrumentation. This distinction is binding.
-- Nothing else about the current visual treatment is binding. The user has
-  explicitly asked for a **redesign**: the dark navy glass surface and its blue
-  accent are to be treated as evidence and anti-reference, not preserved.
+- Nothing else about the current visual treatment is binding. The redesign that
+  this section once called for has shipped: the dark navy glass surface and its
+  blue accent are gone, replaced by the printed-reference-page system recorded in
+  `DESIGN.md`. That system is a record of what was built, not a second binding
+  commitment — the only binding one is the voice/instrument split above.
 
 ## Evidence on Hand
 
 Real, in the repository:
 
-- `docs/images/` — gallery renders regenerated from the renderer by one command.
-  **Note: currently one look-change behind the code.**
-- `tests/baselines/` — 26 canonical shots at 1280×720.
+- `docs/images/` — gallery renders regenerated from the renderer by one command,
+  and last regenerated against the current build.
+- `tests/baselines/` — 15 canonical shots at 1280×720.
 - `docs/PERFORMANCE.md` — measured frame budget, per-tier.
-- Measured: ~95 FPS at Max on an RTX 5090, 10.48 ms/frame, after the August 2026
-  transform and cloud optimisation.
+- Measured on an RTX 5090 at Max: 13.72 ms GPU p50 against a 16.7 ms budget, 48 FPS
+  delivered. The frame roughly tripled when the fidelity work landed and still
+  passes both gates; `docs/PERFORMANCE.md` carries the trade and the caveats.
 
-Absences that must not be invented: there are no users, no testimonials, no
-customers, no pricing, no deployment, no analytics and no press. The project is a
-personal graphics demo. Any copy implying adoption, a team, or a product business
-would be fabrication.
+Absences that must not be invented: there are no testimonials, no customers, no
+pricing and no press. The project is a personal graphics demo. Any copy implying
+adoption, a team, or a product business would be fabrication — and note that the
+Vercel deployment and its traffic counter are **not** evidence against that. A
+page-view number is not a user, and nothing here licenses copy that treats it as
+one.
 
 ## Product Principles
 

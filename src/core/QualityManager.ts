@@ -31,8 +31,8 @@ export interface QualitySettings {
    * cascade at a distance inversely proportional to vertex spacing, so this moves
    * High's ripple fade from 40-80 m out to 65-131 m. The extra energy is wave
    * geometry genuinely carried further, not noise — which is a distinction
-   * `gallery-jitter` cannot draw. Figures in
-   * `docs/superpowers/plans/2026-08-05-waterline-measurements.md`.
+   * `gallery-jitter` cannot draw. Re-measure with `tests/gallery-jitter.spec.ts`,
+   * which produced every figure above.
    *
    * It is very slightly *cheaper*, not free: trading segments for rings at a
    * fixed `rings * segments` lowers both the true vertex count `(R+1)*S + 1` and

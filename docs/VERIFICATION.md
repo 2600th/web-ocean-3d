@@ -1,6 +1,6 @@
 # Deterministic visual verification
 
-A visual regression harness for the sixteen canonical shots: fixed world state,
+A visual regression harness for the fifteen canonical shots: fixed world state,
 checked-in baselines, a perceptual metric, and thresholds derived from a measured
 noise floor rather than chosen to make the suite pass.
 
@@ -19,7 +19,7 @@ npx playwright test --project=visual
 ```
 
 The `visual` project is separate from `chromium-webgpu` and boots the app at
-1280x720, DPR 1. Twelve tests, about 25 seconds on the reference stack.
+1280x720, DPR 1. Fifteen tests, one per canonical shot.
 
 | Environment variable | Effect |
 | --- | --- |
@@ -35,7 +35,7 @@ visible before it crosses.
 
 Defined as data in `tests/lib/shots.ts` — preset, quality tier, wind, cloud
 cover, camera mode, camera pose and simulation time — so the harness, any
-before/after review loop and the README screenshots can all frame the same sixteen
+before/after review loop and the README screenshots can all frame the same fifteen
 views.
 
 | Shot | Preset | What it is there to catch |
@@ -53,9 +53,13 @@ views.
 | `ship-and-island` | skyPro | Hull and landmass in one frame at their real relative scale |
 | `cinematic-landfall` | skyPro | The tour over the cove — jetty, beached pinnace, fort |
 | `cinematic-reef` | skyPro | The tour's reef leg, a third of the way in, once its dawn has come up |
-| `cinematic-surf` | skyPro | The tour inside the shore break under a low sun |
 | `cinematic-squall` | skyPro | The tour changing the weather: rain on the lens, key light killed, hull wet |
-| `cinematic-night` | skyPro | The tour at 02:20 — moon glitter, star field, a hull lit by nothing else |
+| `cinematic-night` | skyPro | The tour at 00:54 — moon glitter, star field, a hull lit by nothing else |
+
+There was a sixteenth, `cinematic-surf`, framed inside the shore break under a
+low sun. Re-cutting the tour to a 60 s lap that stands half a kilometre off the
+island left it with no surf beat to photograph, so the shot went with the beat.
+`shore-break` still covers the surf zone from a pinned camera.
 
 **Four shots run the cinematic flight rather than pinning a camera.** Those are
 the ones whose `state.cameraMode` is `'cinematic'`, and they name a
@@ -89,11 +93,19 @@ When the shot is updated, it needs a ship input
 applied before the settle and a longer settle so the wake has developed —
 nothing else about it changes, and its baseline is expected to be regenerated.
 
-**`waterline` is grazing, not a split.** `submersion` is currently a whole-frame
-cross-fade rather than a screen-space split, and the camera director pushes the
-camera out of a 0.35 m band around the surface to stop the underwater state
-flickering. A true half-in/half-out meniscus shot cannot be framed until that
-exists; this shot anchors the low-camera view in the meantime.
+**`waterline` is grazing, and it no longer has to be.** This section used to say
+that a half-in/half-out meniscus shot could not be framed: `submersion` was a
+whole-frame cross-fade, and the camera director pushed the camera out of a 0.35 m
+band around the surface. Both are gone. The medium is now integrated along each
+eye ray (`UnderwaterPass.ts`), so air and water appear in one frame and the line
+follows the crests, and the push-out was removed once it turned out to be what
+made diving impossible in either direction — no plausible frame moves the camera
+0.7 m at once, so the band had no exit. `submersion` survives as a soft
+cross-fade over that same band rather than as the waterline itself.
+
+The shot is still framed grazing rather than split, because its baseline predates
+the per-pixel work and regenerating it would discard the history it anchors. A
+genuine split shot is now possible and is not yet cut.
 
 ## How a capture is made
 
@@ -151,6 +163,26 @@ the two to be byte-identical. It first asserts the overlay is actually present
 and on screen, so it cannot pass vacuously on a page whose UI failed to build.
 (`.panel-toggle` is `display: none` above the mobile breakpoint by design, so at
 1280x720 only the HUD and the panel are on screen.)
+
+### Shots are independent of each other, and that is tested
+
+`resetDeterministic` must make a shot independent of the one before it. It did
+not, and the failure was quiet rather than loud: `boat-chase` captured straight
+after `storm` came out with heavier foam and a wetter hull than the same shot
+captured cold, so every baseline was a function of the order the suite happened
+to run in. The gallery sidesteps it by reloading the page between images — right
+for a published picture, wrong to rely on, because a workaround downstream of a
+defect cannot tell you when the defect returns.
+
+`tests/isolation.spec.ts` is the check that can. It photographs `boat-chase` and
+`clear-day-wide` twice each — once cold on a fresh page, once immediately after
+the most extreme state in the shot list — and requires the two to agree on mean
+absolute luminance. The tolerance is deliberately not zero: half-float rounding
+in the FFT and GPU tile-reduction order move two legitimately identical frames by
+a fraction of a level, while the defect it guards against was worth several
+levels across a third of the frame. It fails when the reset path is
+*disconnected* — drop any `resetClock` from `resetDeterministic` and the storm
+leaks through.
 
 ## The metric
 

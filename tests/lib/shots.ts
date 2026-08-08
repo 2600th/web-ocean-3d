@@ -560,8 +560,9 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 76,
-    // The rain envelope peaks at 99 s; this is one second past it, so the shot
-    // cannot be quietly satisfied by a squall that arrives late.
+    // The rain envelope is centred on 40 s (`RAIN_CENTRE_SECONDS`) with a 9 s
+    // half-width, so this sits exactly on the peak and the shot cannot be
+    // quietly satisfied by a squall that arrives late.
     cinematicTime: 40,
     settleSteps: 90,
   },
@@ -569,8 +570,9 @@ export const SHOTS: readonly Shot[] = [
     id: 'cinematic-night',
     title: 'The tour, on the night watch',
     purpose:
-      'The `night-watch` beat: moon glitter, the star field, and a hull lit by ' +
-      'nothing else. The whole night half of the atmosphere, which the ' +
+      'The night half of the `squall` beat, which absorbed the night watch when ' +
+      'the lap was re-cut to 60 s: moon glitter, the star field, and a hull lit ' +
+      'by nothing else. The whole night half of the atmosphere, which the ' +
       "previous flight's 08:18-to-16:42 sun swing could not reach.",
     state: {
       quality: 'high',

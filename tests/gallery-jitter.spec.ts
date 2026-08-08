@@ -163,9 +163,8 @@ const DETAIL_FLOOR = 0.4;
  * `highFreq` by 5-7% on High, Ultra and Max while recovering ~2% of near-field
  * detail; the change was kept on the argument that a finer mesh band-limits
  * *less*, so the extra energy is geometry rather than sparkle — but this file
- * cannot confirm that, and the figures are in
- * `docs/superpowers/plans/2026-08-05-waterline-measurements.md` rather than
- * settled here.
+ * cannot confirm that. The figures and the argument are recorded on `meshRings`
+ * in `src/core/QualityManager.ts` rather than settled here.
  *
  * The fix is a `detail` figure over the FAR band alongside the existing one. It
  * is deliberately not added here: every ceiling above is denominated in absolute
