@@ -172,6 +172,9 @@ const STAND_VALUE_RANGE = 0.42;
 const DOME_BULGE = 0.55;
 const CANOPY_UP_BIAS = 0.45;
 const CANOPY_WRAP = 0.65;
+const CANOPY_DETAIL_CHEAP = 0;
+const CANOPY_DETAIL_FULL = 1;
+const CANOPY_FULL_DETAIL_COUNT = 15_000;
 /** Extra terrain taps used to make dry stands follow the sun-facing slope. */
 const SLOPE_SAMPLE_METRES = 4;
 const STAND_SLOPE_WEIGHT = 0.25;
@@ -184,6 +187,10 @@ const SWAY_OMEGA = SWAY_K * SWAY_SPEED;
 const SWAY_MAX = 0.9;
 
 const CLOCK_WRAP = 3600;
+
+function canopyDetailForCount(count: number): number {
+  return count >= CANOPY_FULL_DETAIL_COUNT ? CANOPY_DETAIL_FULL : CANOPY_DETAIL_CHEAP;
+}
 
 export interface IslandCanopyOptions {
   seed?: number;
@@ -251,10 +258,11 @@ export class IslandCanopy {
   readonly object: THREE.Object3D;
 
   private readonly geometry: THREE.InstancedBufferGeometry;
-  private readonly material: THREE.MeshBasicNodeMaterial;
+  private material: THREE.MeshBasicNodeMaterial;
   private readonly mesh: THREE.Mesh;
 
   private count: number;
+  private detail = CANOPY_DETAIL_FULL;
   private wantVisible = true;
   private disposed = false;
   private phase = 0;
@@ -300,6 +308,7 @@ export class IslandCanopy {
     options: IslandCanopyOptions = {},
   ) {
     this.count = clampCount(count);
+    this.detail = canopyDetailForCount(this.count);
     this.groundHeight = groundHeight;
     this.sunOcclusion = (options.sunOcclusion as ((p: Node) => Node) | undefined) ?? null;
 
@@ -315,7 +324,7 @@ export class IslandCanopy {
       Number.POSITIVE_INFINITY,
     );
 
-    this.material = this.buildMaterial();
+    this.material = this.buildMaterial(this.detail);
 
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.name = 'island-canopy';
@@ -346,7 +355,26 @@ export class IslandCanopy {
     if (next === this.count) return;
     this.count = next;
     this.geometry.instanceCount = next;
+    // Existing main.ts quality application already routes through setCount.
+    // Keep that path quality-aware until the caller supplies an explicit detail
+    // field: current Low/Medium counts are below the High canopy budget.
+    this.setDetail(canopyDetailForCount(next));
     this.applyVisibility();
+  }
+
+  /**
+   * Selects the fragment graph: values below 1 use the cheap Low/Medium path;
+   * values at or above 1 retain the full High+ silhouette detail. Call this
+   * while the quality-change drain is paused, before compiling the new tier.
+   */
+  setDetail(detail: number): void {
+    const next = detail >= CANOPY_DETAIL_FULL ? CANOPY_DETAIL_FULL : CANOPY_DETAIL_CHEAP;
+    if (next === this.detail || this.disposed) return;
+    this.detail = next;
+    const previous = this.material;
+    this.material = this.buildMaterial(next);
+    this.mesh.material = this.material;
+    previous.dispose();
   }
 
   setVisible(visible: boolean): void {
@@ -399,7 +427,7 @@ export class IslandCanopy {
     this.mesh.visible = this.wantVisible && this.count > 0;
   }
 
-  private buildMaterial(): THREE.MeshBasicNodeMaterial {
+  private buildMaterial(detail: number): THREE.MeshBasicNodeMaterial {
     const material = new THREE.MeshBasicNodeMaterial();
     material.transparent = false;
     // Alpha *test*, not blend, and for the same reason the imported trees are
@@ -634,26 +662,34 @@ export class IslandCanopy {
         .add(h3.mul(seedW.mul(11.2).cos()).mul(h3Weight))
         .add(dir.y.mul(seedW.mul(3.1).sin()).mul(verticalWeight));
 
-      // One two-octave field does double duty: it perturbs the rim only where
-      // the edge is visible, and the same deterministic field opens a few holes
-      // in the mass. Hole weight falls to zero at the rim, so the silhouette
-      // stays broken without turning into frayed noise.
-      const silhouetteNoise = mx_fractal_noise_float(
-        vec3n(
-          centred.x.mul(5.5).add(seedW.mul(1.7)),
-          centred.y.mul(5.5).add(seedW.mul(3.1)),
-          seedZ.mul(2.3).add(seedW.mul(7.9)),
-        ),
-        2,
-        2.0,
-        0.5,
-      )
-        .mul(0.5)
-        .add(0.5);
-      const edgeWeight = radius.smoothstep(0.16, 0.43);
-      const raggedEdge = silhouetteNoise.sub(0.5).mul(0.12).mul(edgeWeight);
-      const holeWeight = float(1).sub(radius.smoothstep(0.18, 0.42));
-      const interiorHoles = silhouetteNoise.smoothstep(0.66, 0.86).mul(holeWeight);
+      // Low and Medium keep the analytic harmonic edge, but skip the two
+      // fractal-noise samplers entirely. This graph is selected in JavaScript
+      // at material-build time, so the cheap path does not evaluate or carry
+      // dead noise work behind a runtime uniform branch.
+      let raggedEdge: Node = float(0);
+      let interiorHoles: Node = float(0);
+      if (detail >= CANOPY_DETAIL_FULL) {
+        // One two-octave field does double duty: it perturbs the rim only where
+        // the edge is visible, and the same deterministic field opens a few holes
+        // in the mass. Hole weight falls to zero at the rim, so the silhouette
+        // stays broken without turning into frayed noise.
+        const silhouetteNoise = mx_fractal_noise_float(
+          vec3n(
+            centred.x.mul(5.5).add(seedW.mul(1.7)),
+            centred.y.mul(5.5).add(seedW.mul(3.1)),
+            seedZ.mul(2.3).add(seedW.mul(7.9)),
+          ),
+          2,
+          2.0,
+          0.5,
+        )
+          .mul(0.5)
+          .add(0.5);
+        const edgeWeight = radius.smoothstep(0.16, 0.43);
+        raggedEdge = silhouetteNoise.sub(0.5).mul(0.12).mul(edgeWeight);
+        const holeWeight = float(1).sub(radius.smoothstep(0.18, 0.42));
+        interiorHoles = silhouetteNoise.smoothstep(0.66, 0.86).mul(holeWeight);
+      }
 
       // Alpha is a hard-ish edge because it is tested, not blended: a soft ramp
       // through an alpha test is a hard edge anyway, just one whose position
