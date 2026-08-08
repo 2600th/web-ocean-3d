@@ -1,0 +1,919 @@
+{
+  "schema": "web-ocean-3d/imposters@1",
+  "generatedAt": "2026-08-08T18:56:58.844Z",
+  "command": "node scripts/bake-imposters.mjs",
+  "source": {
+    "spec": "docs/superpowers/specs/2026-08-08-low-end-optimisation-design.md",
+    "modelDirectory": "public/models/dressing",
+    "placementContract": "src/scene/Props.ts"
+  },
+  "atlas": {
+    "file": "imposters/vegetation.png",
+    "width": 2048,
+    "height": 2048,
+    "cellSize": 512,
+    "columns": 4,
+    "rows": 4,
+    "cellOrigin": "top-left",
+    "speciesCount": 13,
+    "unusedCellCount": 3,
+    "emptyCells": [
+      {
+        "index": 13,
+        "x": 512,
+        "y": 1536,
+        "width": 512,
+        "height": 512
+      },
+      {
+        "index": 14,
+        "x": 1024,
+        "y": 1536,
+        "width": 512,
+        "height": 512
+      },
+      {
+        "index": 15,
+        "x": 1536,
+        "y": 1536,
+        "width": 512,
+        "height": 512
+      }
+    ]
+  },
+  "bake": {
+    "camera": "orthographic",
+    "view": "front",
+    "horizontal": true,
+    "background": "transparent",
+    "premultipliedAlpha": true,
+    "shading": "albedo-only",
+    "toneMapping": "none",
+    "marginPx": 24,
+    "bleedPx": 16,
+    "scaleSemantics": "world dimensions are at unit mesh scale; Props placement applies instance scale/stretch",
+    "normalMap": null,
+    "normalMapReason": "Skipped; the runtime can light the card with its dome normal."
+  },
+  "species": {
+    "fern_02": {
+      "sourceGlb": "fern_02.glb",
+      "sourceGlbSlug": "fern_02",
+      "cell": {
+        "index": 0,
+        "x": 0,
+        "y": 0,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0,
+        "u1": 0.25,
+        "v0": 0.75,
+        "v1": 1,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 0.989013,
+      "worldHeight": 0.427656,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 0.989013,
+        "height": 0.427656,
+        "depth": 0.893765,
+        "unitScale": 1,
+        "reference": {
+          "scale": 3.3,
+          "stretch": 1,
+          "width": 3.263744,
+          "height": 1.411264
+        }
+      },
+      "props": {
+        "origin": "cluster",
+        "include": "name.endsWith('_b')",
+        "selectedNodeNames": [
+          "fern_02_b"
+        ],
+        "minScale": 2.4,
+        "maxScale": 4.2,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 1.091325,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.213828
+          }
+        }
+      }
+    },
+    "shrub_sorrel_01": {
+      "sourceGlb": "shrub_sorrel_01.glb",
+      "sourceGlbSlug": "shrub_sorrel_01",
+      "cell": {
+        "index": 1,
+        "x": 512,
+        "y": 0,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.25,
+        "u1": 0.5,
+        "v0": 0.75,
+        "v1": 1,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 0.060915,
+      "worldHeight": 0.054415,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 0.060915,
+        "height": 0.054415,
+        "depth": 0.048677,
+        "unitScale": 1,
+        "reference": {
+          "scale": 10.5,
+          "stretch": 1,
+          "width": 0.639607,
+          "height": 0.571352
+        }
+      },
+      "props": {
+        "origin": "cluster",
+        "include": "name.endsWith('_d')",
+        "selectedNodeNames": [
+          "shrub_sorrel_01_d"
+        ],
+        "minScale": 7,
+        "maxScale": 14,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 0.067216,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.027207
+          }
+        }
+      }
+    },
+    "calathea_orbifolia_01": {
+      "sourceGlb": "calathea_orbifolia_01.glb",
+      "sourceGlbSlug": "calathea_orbifolia_01",
+      "cell": {
+        "index": 2,
+        "x": 1024,
+        "y": 0,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.5,
+        "u1": 0.75,
+        "v0": 0.75,
+        "v1": 1,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.999695,
+      "worldHeight": 0.424329,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 1.999695,
+        "height": 0.424329,
+        "depth": 0.525132,
+        "unitScale": 1,
+        "reference": {
+          "scale": 3,
+          "stretch": 1,
+          "width": 5.999084,
+          "height": 1.272988
+        }
+      },
+      "props": {
+        "origin": "cluster",
+        "include": "name.endsWith('_a')",
+        "selectedNodeNames": [
+          "calathea_orbifolia_01_a"
+        ],
+        "minScale": 2.2,
+        "maxScale": 3.8,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.20656,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.212165
+          }
+        }
+      }
+    },
+    "anthurium_botany_01": {
+      "sourceGlb": "anthurium_botany_01.glb",
+      "sourceGlbSlug": "anthurium_botany_01",
+      "cell": {
+        "index": 3,
+        "x": 1536,
+        "y": 0,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.75,
+        "u1": 1,
+        "v0": 0.75,
+        "v1": 1,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.999908,
+      "worldHeight": 0.499619,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 1.999908,
+        "height": 0.499619,
+        "depth": 1.140904,
+        "unitScale": 1,
+        "reference": {
+          "scale": 2.5,
+          "stretch": 1,
+          "width": 4.999771,
+          "height": 1.249046
+        }
+      },
+      "props": {
+        "origin": "cluster",
+        "include": "name.endsWith('_a')",
+        "selectedNodeNames": [
+          "anthurium_botany_01_a"
+        ],
+        "minScale": 1.8,
+        "maxScale": 3.2,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.206796,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.249809
+          }
+        }
+      }
+    },
+    "grass_medium_01": {
+      "sourceGlb": "grass_medium_01.glb",
+      "sourceGlbSlug": "grass_medium_01",
+      "cell": {
+        "index": 4,
+        "x": 0,
+        "y": 512,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0,
+        "u1": 0.25,
+        "v0": 0.5,
+        "v1": 0.75,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 0.187811,
+      "worldHeight": 0.32255,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 0.187811,
+        "height": 0.32255,
+        "depth": 0.201025,
+        "unitScale": 1,
+        "reference": {
+          "scale": 2.2,
+          "stretch": 1,
+          "width": 0.413184,
+          "height": 0.70961
+        }
+      },
+      "props": {
+        "origin": "stack",
+        "include": "/_(mid_b|small_b|tall_a|tall_c)_/.test(name)",
+        "selectedNodeNames": [
+          "grass_medium_01_mid_b_LOD0",
+          "grass_medium_01_tall_a_LOD0",
+          "grass_medium_01_tall_c_LOD0",
+          "grass_medium_01_small_b_LOD0"
+        ],
+        "minScale": 1.6,
+        "maxScale": 2.8,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 0.355917,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.161275
+          }
+        }
+      }
+    },
+    "grass_medium_02": {
+      "sourceGlb": "grass_medium_02.glb",
+      "sourceGlbSlug": "grass_medium_02",
+      "cell": {
+        "index": 5,
+        "x": 512,
+        "y": 512,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.25,
+        "u1": 0.5,
+        "v0": 0.5,
+        "v1": 0.75,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.99884,
+      "worldHeight": 0.403211,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 1.99884,
+        "height": 0.403211,
+        "depth": 0.432569,
+        "unitScale": 1,
+        "reference": {
+          "scale": 2.6,
+          "stretch": 1,
+          "width": 5.196985,
+          "height": 1.048347
+        }
+      },
+      "props": {
+        "origin": "stack",
+        "include": "/_(a|c|e)$/.test(name)",
+        "selectedNodeNames": [
+          "grass_medium_02_a",
+          "grass_medium_02_c",
+          "grass_medium_02_e"
+        ],
+        "minScale": 2,
+        "maxScale": 3.2,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.205617,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.201605
+          }
+        }
+      }
+    },
+    "tree_orchid": {
+      "sourceGlb": "tree_orchid.glb",
+      "sourceGlbSlug": "tree_orchid",
+      "cell": {
+        "index": 6,
+        "x": 1024,
+        "y": 512,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.5,
+        "u1": 0.75,
+        "v0": 0.5,
+        "v1": 0.75,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 2,
+      "worldHeight": 1.999908,
+      "pivotHeight": 1,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 1
+      },
+      "world": {
+        "width": 2,
+        "height": 1.999908,
+        "depth": 1.999969,
+        "unitScale": 1,
+        "reference": {
+          "scale": 1.95,
+          "stretch": 1.05,
+          "width": 3.9,
+          "height": 4.094813
+        }
+      },
+      "props": {
+        "origin": "asset",
+        "include": null,
+        "selectedNodeNames": [
+          "Bauhinia_blakeana_HD_Bauhinia_blak_trunk_0",
+          "Bauhinia_blakeana_HD_Bauhinia_blak_branches_0",
+          "Bauhinia_blakeana_HD_Bauhinia_blak_twig_0",
+          "Bauhinia_blakeana_HD_Bauhinia_leaf_04_0",
+          "Bauhinia_blakeana_HD_Bauhinia_leaf_03_0",
+          "Bauhinia_blakeana_HD_Bauhinia_leaf_02_0",
+          "Bauhinia_blakeana_HD_Bauhinia_leaf_01_0"
+        ],
+        "minScale": 1.5,
+        "maxScale": 2.4,
+        "minStretch": 0.9,
+        "maxStretch": 1.2,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.206897,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": -0.000046
+          }
+        }
+      }
+    },
+    "tree_poinciana": {
+      "sourceGlb": "tree_poinciana.glb",
+      "sourceGlbSlug": "tree_poinciana",
+      "cell": {
+        "index": 7,
+        "x": 1536,
+        "y": 512,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.75,
+        "u1": 1,
+        "v0": 0.5,
+        "v1": 0.75,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 2,
+      "worldHeight": 1.999969,
+      "pivotHeight": 0.999969,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0.999969
+      },
+      "world": {
+        "width": 2,
+        "height": 1.999969,
+        "depth": 2,
+        "unitScale": 1,
+        "reference": {
+          "scale": 1.55,
+          "stretch": 1.025,
+          "width": 3.1,
+          "height": 3.177452
+        }
+      },
+      "props": {
+        "origin": "asset",
+        "include": null,
+        "selectedNodeNames": [
+          "Delonix_regia_HD_Delonix_trunk_0",
+          "Delonix_regia_HD_Delonix_twig_0",
+          "Delonix_regia_HD_Delonix_flower_02_0",
+          "Delonix_regia_HD_Delonix_stalk_0",
+          "Delonix_regia_HD_Delonix_stalk_0_1",
+          "Delonix_regia_HD_Delonix_stalk_0_2",
+          "Delonix_regia_HD_Delonix_flower_01_0",
+          "Delonix_regia_HD_Delonix__flower_bud_02_0",
+          "Delonix_regia_HD_Delonix__flower_bud_03_0",
+          "Delonix_regia_HD_Delonix__flower_bud_04_0",
+          "Delonix_regia_HD_Delonix_leaf_01_0"
+        ],
+        "minScale": 1.2,
+        "maxScale": 1.9,
+        "minStretch": 0.9,
+        "maxStretch": 1.15,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.206897,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.000015
+          }
+        }
+      }
+    },
+    "jacaranda_tree": {
+      "sourceGlb": "jacaranda_tree.glb",
+      "sourceGlbSlug": "jacaranda_tree",
+      "cell": {
+        "index": 8,
+        "x": 0,
+        "y": 1024,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0,
+        "u1": 0.25,
+        "v0": 0.25,
+        "v1": 0.5,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.999908,
+      "worldHeight": 1.999939,
+      "pivotHeight": 0.999939,
+      "pivot": {
+        "offsetX": 0.000015,
+        "heightAboveBottom": 0.999939
+      },
+      "world": {
+        "width": 1.999908,
+        "height": 1.999939,
+        "depth": 1.999908,
+        "unitScale": 1,
+        "reference": {
+          "scale": 0.75,
+          "stretch": 1,
+          "width": 1.499931,
+          "height": 1.499954
+        }
+      },
+      "props": {
+        "origin": "asset",
+        "include": null,
+        "selectedNodeNames": [
+          "tree016",
+          "tree016_1",
+          "tree016_2"
+        ],
+        "minScale": 0.55,
+        "maxScale": 0.95,
+        "minStretch": 0.9,
+        "maxStretch": 1.1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.206829,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": -0.000015,
+            "y": 0.000031
+          }
+        }
+      }
+    },
+    "island_tree_02": {
+      "sourceGlb": "island_tree_02.glb",
+      "sourceGlbSlug": "island_tree_02",
+      "cell": {
+        "index": 9,
+        "x": 512,
+        "y": 1024,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.25,
+        "u1": 0.5,
+        "v0": 0.25,
+        "v1": 0.5,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.999817,
+      "worldHeight": 1.999786,
+      "pivotHeight": 0.999908,
+      "pivot": {
+        "offsetX": 0.000092,
+        "heightAboveBottom": 0.999908
+      },
+      "world": {
+        "width": 1.999817,
+        "height": 1.999786,
+        "depth": 1.999786,
+        "unitScale": 1,
+        "reference": {
+          "scale": 2.9,
+          "stretch": 1.025,
+          "width": 5.799469,
+          "height": 5.944365
+        }
+      },
+      "props": {
+        "origin": "asset",
+        "include": null,
+        "selectedNodeNames": [
+          "mesh001",
+          "mesh001_1",
+          "mesh001_2"
+        ],
+        "minScale": 2.2,
+        "maxScale": 3.6,
+        "minStretch": 0.9,
+        "maxStretch": 1.15,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.206694,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": -0.000092,
+            "y": -0.000015
+          }
+        }
+      }
+    },
+    "palm_coconut": {
+      "sourceGlb": "palm_coconut.glb",
+      "sourceGlbSlug": "palm_coconut",
+      "cell": {
+        "index": 10,
+        "x": 1024,
+        "y": 1024,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.5,
+        "u1": 0.75,
+        "v0": 0.25,
+        "v1": 0.5,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.997833,
+      "worldHeight": 1.998627,
+      "pivotHeight": 0.999695,
+      "pivot": {
+        "offsetX": -0.00032,
+        "heightAboveBottom": 0.999695
+      },
+      "world": {
+        "width": 1.997833,
+        "height": 1.998627,
+        "depth": 1.996612,
+        "unitScale": 1,
+        "reference": {
+          "scale": 2.05,
+          "stretch": 1.075,
+          "width": 4.095558,
+          "height": 4.404474
+        }
+      },
+      "props": {
+        "origin": "asset",
+        "include": null,
+        "selectedNodeNames": [
+          "Tree_0_Tree_0Mat_0",
+          "Tree_1_Tree_1Mat_0",
+          "Tree_2_Tree_2Mat_0",
+          "Tree_3_Tree_3Mat_0",
+          "Tree_4_Tree_4Mat_0"
+        ],
+        "minScale": 1.5,
+        "maxScale": 2.6,
+        "minStretch": 0.9,
+        "maxStretch": 1.25,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.205381,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0.00032,
+            "y": -0.000381
+          }
+        }
+      }
+    },
+    "palm_tall": {
+      "sourceGlb": "palm_tall.glb",
+      "sourceGlbSlug": "palm_tall",
+      "cell": {
+        "index": 11,
+        "x": 1536,
+        "y": 1024,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0.75,
+        "u1": 1,
+        "v0": 0.25,
+        "v1": 0.5,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.994079,
+      "worldHeight": 1.998169,
+      "pivotHeight": 0.999542,
+      "pivot": {
+        "offsetX": 0.001862,
+        "heightAboveBottom": 0.999542
+      },
+      "world": {
+        "width": 1.994079,
+        "height": 1.998169,
+        "depth": 1.973876,
+        "unitScale": 1,
+        "reference": {
+          "scale": 2.5,
+          "stretch": 1.1,
+          "width": 4.985199,
+          "height": 5.494964
+        }
+      },
+      "props": {
+        "origin": "asset",
+        "include": null,
+        "selectedNodeNames": [
+          "Cylinder001_Material001_0",
+          "Cylinder001_Material002_0"
+        ],
+        "minScale": 1.8,
+        "maxScale": 3.2,
+        "minStretch": 0.9,
+        "maxStretch": 1.3,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.204876,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": -0.001862,
+            "y": -0.000458
+          }
+        }
+      }
+    },
+    "pachira_aquatica_01": {
+      "sourceGlb": "pachira_aquatica_01.glb",
+      "sourceGlbSlug": "pachira_aquatica_01",
+      "cell": {
+        "index": 12,
+        "x": 0,
+        "y": 1536,
+        "width": 512,
+        "height": 512
+      },
+      "uv": {
+        "u0": 0,
+        "u1": 0.25,
+        "v0": 0,
+        "v1": 0.25,
+        "origin": "bottom-left"
+      },
+      "worldWidth": 1.051485,
+      "worldHeight": 1.999756,
+      "pivotHeight": 0,
+      "pivot": {
+        "offsetX": 0,
+        "heightAboveBottom": 0
+      },
+      "world": {
+        "width": 1.051485,
+        "height": 1.999756,
+        "depth": 0.996948,
+        "unitScale": 1,
+        "reference": {
+          "scale": 3,
+          "stretch": 1,
+          "width": 3.154454,
+          "height": 5.999268
+        }
+      },
+      "props": {
+        "origin": "cluster",
+        "include": "name.endsWith('_d')",
+        "selectedNodeNames": [
+          "pachira_aquatica_01_bark_d",
+          "pachira_aquatica_01_leaves_d"
+        ],
+        "minScale": 2.2,
+        "maxScale": 3.8,
+        "minStretch": 1,
+        "maxStretch": 1,
+        "scaleAppliedInBake": 1,
+        "scaleAppliedByRuntimePlacement": true
+      },
+      "frame": {
+        "marginPx": 24,
+        "viewSize": 2.206627,
+        "camera": {
+          "projection": "orthographic",
+          "view": "front",
+          "horizontal": true,
+          "target": {
+            "x": 0,
+            "y": 0.999878
+          }
+        }
+      }
+    }
+  },
+  "renderer": {
+    "browser": "chrome",
+    "renderer": "three.WebGLRenderer",
+    "rendererOptions": {
+      "antialias": true,
+      "alpha": true,
+      "premultipliedAlpha": true
+    }
+  }
+}
