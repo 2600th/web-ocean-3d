@@ -34,13 +34,15 @@ import { availableParallelism, tmpdir } from 'node:os';
 import { isMainThread, parentPort, Worker } from 'node:worker_threads';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NodeIO } from '@gltf-transform/core';
+import { NodeIO, TextureChannel } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, KHRTextureBasisu } from '@gltf-transform/extensions';
 import {
   cloneDocument,
   dedup,
+  getTextureChannelMask,
   join as joinDocument,
   joinPrimitives,
+  listTextureSlots,
   meshopt,
   prune,
   simplifyPrimitive,
@@ -71,6 +73,12 @@ const FORCE = process.argv.includes('--force');
  * makes tuning a budget a ten-second loop instead of a four-minute one.
  */
 const ONLY = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const UASTC_RDO_ARG = process.argv.find((arg) => arg.startsWith('--uastc-rdo='));
+const UASTC_RDO_QUALITY = UASTC_RDO_ARG ? Number(UASTC_RDO_ARG.slice('--uastc-rdo='.length)) : 1;
+if (!Number.isFinite(UASTC_RDO_QUALITY) || UASTC_RDO_QUALITY < 0 || UASTC_RDO_QUALITY > 10) {
+  throw new Error('--uastc-rdo must be a number from 0 to 10; received ' + (UASTC_RDO_ARG ?? '(default)'));
+}
+const NORMAL_TEXTURE_SCALE = 0.5;
 
 const MANIFEST_PATH = join(OUT, 'dressing-manifest.json');
 const KTX2_CACHE = join(tmpdir(), 'web-ocean-3d-ktx2-cache-v1');
@@ -461,8 +469,31 @@ const LOD_RATIOS = {
   soft_coral_set: [0.45],
 };
 
+// These species are replaced by billboard imposters before LOD_SWITCH_METRES
+// reaches their first mesh LOD. Keeping the unused chains costs downloads and
+// render-object compilation without ever being drawn.
+const IMPOSTER_ONLY_ASSETS = new Set([
+  'fern_02',
+  'shrub_sorrel_01',
+  'calathea_orbifolia_01',
+  'anthurium_botany_01',
+  'grass_medium_01',
+  'grass_medium_02',
+  'tree_orchid',
+  'tree_poinciana',
+  'jacaranda_tree',
+  'island_tree_02',
+  'palm_coconut',
+  'palm_tall',
+  'pachira_aquatica_01',
+]);
+
 for (const asset of ASSETS) {
-  if (asset.lods === undefined && LOD_RATIOS[asset.slug]) asset.lods = LOD_RATIOS[asset.slug];
+  if (IMPOSTER_ONLY_ASSETS.has(asset.slug)) {
+    asset.lods = [];
+  } else if (asset.lods === undefined && LOD_RATIOS[asset.slug]) {
+    asset.lods = LOD_RATIOS[asset.slug];
+  }
 }
 
 const bytes = (n) =>
@@ -556,6 +587,7 @@ async function main() {
         // decide what is dead rather than this one guessing.
         prune(),
       );
+      await resizeNormalMaps(document, Math.max(64, Math.floor(asset.texture * NORMAL_TEXTURE_SCALE)));
 
       const after = countTriangles(document);
       const notes = [];
@@ -607,7 +639,11 @@ async function main() {
           }),
           prune(),
         );
-        await compressDocumentTextures(lod, ktx2Pool, ktx2Stats, ktx2Jobs);
+        await resizeNormalMaps(
+          lod,
+          Math.max(64, Math.floor(asset.texture * NORMAL_TEXTURE_SCALE) >> level),
+        );
+        await compressDocumentTextures(lod, ktx2Pool, ktx2Stats, ktx2Jobs, asset);
         await lod.transform(meshopt({ encoder: MeshoptEncoder, level: 'high' }));
         await io.write(lodDest, lod);
         const lodSize = statSync(lodDest).size;
@@ -621,7 +657,7 @@ async function main() {
       // advertised the Meshopt decoder from the start, so this costs nothing at
       // runtime and is most of why the shipped set shrank while the canopies
       // got denser.
-      await compressDocumentTextures(document, ktx2Pool, ktx2Stats, ktx2Jobs);
+      await compressDocumentTextures(document, ktx2Pool, ktx2Stats, ktx2Jobs, asset);
       await document.transform(meshopt({ encoder: MeshoptEncoder, level: 'high' }));
       await io.write(dest, document);
 
@@ -1137,12 +1173,51 @@ async function atlasFoliage(document, asset) {
   return materials.length;
 }
 
-function listTextureSlots(document, texture) {
+const LEAF_CUTOUT_NAME = /leaf|foliage|flower|bud|fern|frond|palm|anthurium|calathea|shrub|grass/i;
+
+function isLeafCutoutTexture(document, asset, texture, slots, channelMask) {
+  if (!slots.includes('baseColorTexture') || !(channelMask & TextureChannel.A)) return false;
+
+  const assetName = asset?.slug ?? '';
   return document
-    .getGraph()
-    .listParentEdges(texture)
-    .map((edge) => edge.getName())
-    .filter((name) => name !== 'textures');
+    .getRoot()
+    .listMaterials()
+    .filter((material) => material.getBaseColorTexture() === texture)
+    .some(
+      (material) =>
+        material.getAlphaMode() === 'MASK' &&
+        (LEAF_CUTOUT_NAME.test(assetName) ||
+          LEAF_CUTOUT_NAME.test(material.getName()) ||
+          LEAF_CUTOUT_NAME.test(texture.getName() ?? '')),
+    );
+}
+
+async function resizeNormalMaps(document, maxDimension) {
+  const textures = document
+    .getRoot()
+    .listTextures()
+    .filter((texture) => listTextureSlots(texture).includes('normalTexture'));
+
+  await Promise.all(
+    textures.map(async (texture) => {
+      const image = texture.getImage();
+      if (!image) return;
+
+      const metadata = await sharp(image).metadata();
+      if (!metadata.width || !metadata.height || Math.max(metadata.width, metadata.height) <= maxDimension) return;
+
+      const resized = await sharp(image)
+        .resize({
+          width: maxDimension,
+          height: maxDimension,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .png()
+        .toBuffer();
+      texture.setImage(resized).setMimeType('image/png');
+    }),
+  );
 }
 
 function isKTX2(data) {
@@ -1156,15 +1231,8 @@ function textureCacheKey(image, options) {
     .digest('hex');
 }
 
-async function compressDocumentTextures(document, pool, stats, inFlight) {
+async function compressDocumentTextures(document, pool, stats, inFlight, asset) {
   const root = document.getRoot();
-  const cutoutTextures = new Set(
-    root
-      .listMaterials()
-      .filter((material) => material.getAlphaMode() === 'MASK')
-      .map((material) => material.getBaseColorTexture())
-      .filter(Boolean),
-  );
   const textures = root.listTextures();
   let converted = false;
 
@@ -1174,15 +1242,20 @@ async function compressDocumentTextures(document, pool, stats, inFlight) {
       const image = texture.getImage();
       if (!image) return;
 
-      const slots = listTextureSlots(document, texture);
+      const slots = listTextureSlots(texture);
+      const channelMask = getTextureChannelMask(texture);
       const normal = slots.includes('normalTexture');
-      const uastc = normal || cutoutTextures.has(texture);
+      const leafCutout = isLeafCutoutTexture(document, asset, texture, slots, channelMask);
+      const uastc = normal || leafCutout;
       const options = {
         isKTX2File: true,
         isUASTC: uastc,
         isNormalMap: normal,
-        isPerceptual: !normal && !slots.includes('metallicRoughnessTexture') && !slots.includes('occlusionTexture'),
+        isPerceptual:
+          !normal && !slots.includes('metallicRoughnessTexture') && !slots.includes('occlusionTexture'),
         generateMipmap: true,
+        enableRDO: uastc,
+        rdoQualityLevel: uastc ? UASTC_RDO_QUALITY : undefined,
       };
       const key = textureCacheKey(image, options);
 
