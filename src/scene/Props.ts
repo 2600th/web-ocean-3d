@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { dequantiseGeometry, type AssetLoader } from './AssetLoader';
+import { Imposters } from './Imposters';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
 
@@ -127,9 +128,60 @@ interface DressingEntry {
 
 type Dressing = Record<DressingKey, DressingEntry>;
 
-/** Levels the loader will look for beside each base model. */
-const LOD_LEVELS = 2;
+export type PropsQualityTier = 'low' | 'medium' | 'high' | 'ultra' | 'max';
+export type PropsImposterMode = 'off' | 'always' | 'hybrid';
 
+interface ImposterKind {
+  species: string;
+  meshCullDistance: number;
+  minDistance: number;
+  maxDistance: number;
+}
+
+const IMPOSTER_KINDS: Readonly<Record<string, ImposterKind>> = {
+  'island-jacaranda': { species: 'jacaranda_tree', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
+  'island-trees': { species: 'tree_orchid', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
+  'island-flame-trees': { species: 'tree_poinciana', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
+  'island-trees-mid': { species: 'island_tree_02', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
+  'island-palms': { species: 'palm_coconut', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
+  'island-palms-tall': { species: 'palm_tall', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
+  'island-anthurium': { species: 'anthurium_botany_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
+  'island-calathea': { species: 'calathea_orbifolia_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
+  'island-ferns': { species: 'fern_02', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
+  'island-sorrel': { species: 'shrub_sorrel_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
+  'island-meadow': { species: 'grass_medium_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
+  'island-tussock': { species: 'grass_medium_02', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
+};
+
+const IMPOSTER_MANAGED_KEYS = new Set<DressingKey>([
+  'tree',
+  'treeFlame',
+  'treeMid',
+  'jacaranda',
+  'palmCoconut',
+  'palmTall',
+  'anthurium',
+  'calathea',
+  'fern',
+  'sorrel',
+  'grassMeadow',
+  'grassTussock',
+]);
+
+const IMPOSTER_NO_CULL_DISTANCE = 1_000_000;
+
+const LOD_TEXTURE_SLOTS = [
+  'map',
+  'roughnessMap',
+  'metalnessMap',
+  'normalMap',
+  'aoMap',
+  'emissiveMap',
+  'alphaMap',
+  'lightMap',
+  'bumpMap',
+  'displacementMap',
+] as const;
 /**
  * Distances at which an instance drops to the next level, metres.
  *
@@ -579,6 +631,10 @@ export interface PropsOptions {
    * writes. Defaults to 1.
    */
   detailScale?: number;
+  /** Quality tier used to select the default mesh/imposter policy. */
+  qualityTier?: PropsQualityTier;
+  /** Explicitly overrides the quality tier policy. */
+  imposterMode?: PropsImposterMode;
 }
 
 /** An instanced kind the detail scale is allowed to thin. */
@@ -615,6 +671,8 @@ interface LodKind {
    * has no bound — it draws everything past the one before it.
    */
   switchesSq: number[];
+  /** Squared distance beyond which this kind is not drawn. */
+  cullSq: number;
   /** Every placement, in the seeded order `setDetailScale` truncates. */
   matrices: Float32Array;
   /** World position of each placement, for the distance test. */
@@ -721,6 +779,7 @@ interface ScatterSpec {
 export class Props {
   readonly object: THREE.Object3D;
   readonly floaters: Floater[] = [];
+  readonly imposters: Imposters | null;
 
   private readonly ownedGeometries: THREE.BufferGeometry[] = [];
   private readonly sources: THREE.Group[] = [];
@@ -728,6 +787,7 @@ export class Props {
   /** Where the reef gathers. Shared by the rock scatter and the coral garden. */
   private reefPatches: readonly { x: number; z: number }[] = [];
   private detail = 1;
+  private readonly imposterMode: PropsImposterMode;
   private disposed = false;
 
   private constructor(
@@ -735,9 +795,13 @@ export class Props {
     dressing: Dressing,
     seed: number,
     detailScale: number,
+    imposterMode: PropsImposterMode,
+    imposters: Imposters | null,
   ) {
     this.object = new THREE.Group();
     this.object.name = 'props';
+    this.imposterMode = imposterMode;
+    this.imposters = imposters;
     this.sources.push(sources.buoy, sources.barrel);
     for (const entry of Object.values(dressing)) {
       if (entry.base) this.sources.push(entry.base);
@@ -758,66 +822,102 @@ export class Props {
     this.placeFort(dressing);
     this.placeFind(dressing, dressingRandom);
 
+    if (this.imposters) this.object.add(this.imposters.object);
+    this.imposters?.finalize();
     this.setDetailScale(detailScale);
   }
 
   static async load(loader: AssetLoader, options: PropsOptions = {}): Promise<Props> {
     const dressingKeys = Object.keys(DRESSING_URLS) as DressingKey[];
+    const requestedMode = resolveImposterMode(options);
 
-    const [hero, dressingResults] = await Promise.all([
+    const [hero, manifest, imposters] = await Promise.all([
       Promise.all([loader.load(BUOY_URL), loader.load(BARREL_URL)]),
-      // Settled, not `all`. The dressing is thirty independent files and no one
-      // of them is worth the scene: a missing fern should cost a fern, not the
-      // island, the cove and the ship's wake along with it.
-      //
-      // The LOD levels ride in the same batch and under the same rule, one step
-      // weaker: a level that is absent is not an error at all. Only some kinds
-      // earn a chain, the optimiser decides which, and a kind without one simply
-      // draws at full detail wherever it stands.
-      Promise.allSettled(
-        dressingKeys.flatMap((key) => [
-          loader.load(DRESSING_URLS[key]),
-          ...lodUrls(DRESSING_URLS[key]).map((url) => loader.load(url)),
-        ]),
-      ),
+      loadDressingManifest().catch((error: unknown) => {
+        console.warn('[ocean] dressing manifest unavailable; loading base models only', error);
+        return null;
+      }),
+      requestedMode === 'off'
+        ? Promise.resolve(null)
+        : Imposters.load().catch((error: unknown) => {
+            console.warn('[ocean] vegetation imposters unavailable; falling back to meshes', error);
+            return null;
+          }),
     ]);
+
+    // If the atlas is unavailable, keep the source models in the request plan
+    // even when the caller asked for Low/Medium. A failed optional optimisation
+    // must not turn the island into an empty field.
+    const imposterMode = imposters ? requestedMode : 'off';
+    const requests = dressingKeys.flatMap((key) => {
+      if (imposterMode === 'always' && IMPOSTER_MANAGED_KEYS.has(key)) return [];
+
+      const model = manifest?.models[modelSlug(DRESSING_URLS[key])];
+      const lods =
+        model?.lods
+          .slice()
+          .sort((a, b) => a.level - b.level) ?? [
+          { level: 0, ratio: 1, url: DRESSING_URLS[key] },
+        ];
+      return [{ key, lods }];
+    });
+
+    const loaded = await Promise.all(
+      requests.map(async (request) => ({
+        request,
+        results: await Promise.allSettled(
+          request.lods.map((lod) => loader.load(lod.url)),
+        ),
+      })),
+    );
+    const resultsByKey = new Map(
+      loaded.map(({ request, results }) => [request.key, results]),
+    );
 
     const [buoy, barrel] = hero;
     for (const group of hero) group.updateMatrixWorld(true);
 
-    const stride = 1 + LOD_LEVELS;
     const dressing = {} as Dressing;
-    dressingKeys.forEach((key, index) => {
-      const base = dressingResults[index * stride];
+    for (const key of dressingKeys) {
       const entry: DressingEntry = { base: null, lods: [] };
+      const request = requests.find((candidate) => candidate.key === key);
+      const results = resultsByKey.get(key);
+      if (!request || !results) {
+        dressing[key] = entry;
+        continue;
+      }
 
-      if (base.status === 'fulfilled') {
+      const base = results[0];
+      if (base?.status === 'fulfilled') {
         base.value.updateMatrixWorld(true);
         entry.base = base.value;
       } else {
-        console.warn(`[ocean] dressing asset unavailable: ${DRESSING_URLS[key]}`, base.reason);
+        console.warn(
+          '[ocean] dressing asset unavailable: ' + request.lods[0].url,
+          base?.reason,
+        );
       }
 
-      // Levels are taken in order and stop at the first gap, so a kind that
-      // ships only `_lod1` cannot end up with `_lod2` standing in for it.
-      for (let level = 1; level <= LOD_LEVELS; level++) {
-        const result = dressingResults[index * stride + level];
+      for (let level = 1; level < results.length; level++) {
+        if (request.lods[level]?.level !== level) break;
+        const result = results[level];
         if (result.status !== 'fulfilled') break;
         result.value.updateMatrixWorld(true);
         entry.lods.push(result.value);
       }
 
       dressing[key] = entry;
-    });
+    }
 
     return new Props(
       { buoy, barrel },
       dressing,
       options.seed ?? SEEDS.props,
       options.detailScale ?? 1,
+      imposterMode,
+      imposters,
     );
   }
-
   /** Current scattered-dressing density, 0..1. */
   get detailScale(): number {
     return this.detail;
@@ -845,6 +945,22 @@ export class Props {
       // the camera is. Invalidating is enough — `updateLod` redeals next frame.
       if (entry.lod) entry.lod.dealt = false;
     }
+    this.imposters?.setDetailScale(clamped);
+  }
+
+  /** Updates the atlas wind phase; call this beside FoliageWind.update. */
+  update(dt: number): void {
+    this.imposters?.update(dt);
+  }
+
+  /** Sets the shared wind direction and strength for vegetation cards. */
+  setWind(direction: THREE.Vector2, strength: number): void {
+    this.imposters?.setWind(direction, strength);
+  }
+
+  /** Aligns the atlas phase with a scene clock after a reset or seek. */
+  resetClock(time = 0): void {
+    this.imposters?.resetClock(time);
   }
 
   /**
@@ -885,13 +1001,17 @@ export class Props {
         const dz = lod.centres[i * 3 + 2] - cameraPosition.z;
         const distanceSq = dx * dx + dy * dy + dz * dz;
 
-        let level = lod.levels.length - 1;
-        for (let k = 0; k < lod.switchesSq.length; k++) {
-          if (distanceSq < lod.switchesSq[k]) {
-            level = k;
-            break;
+        let level = lod.levels.length;
+        if (distanceSq < lod.cullSq) {
+          level = lod.levels.length - 1;
+          for (let k = 0; k < lod.switchesSq.length; k++) {
+            if (distanceSq < lod.switchesSq[k]) {
+              level = k;
+              break;
+            }
           }
         }
+        if (level === lod.levels.length) continue;
 
         const slot = counts[level]++;
         for (const mesh of lod.levels[level]) {
@@ -987,6 +1107,7 @@ export class Props {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.imposters?.dispose();
     this.object.removeFromParent();
     this.object.clear();
     this.floaters.length = 0;
@@ -1938,7 +2059,7 @@ export class Props {
     const shore = shorelineRadius(COVE_BEARING);
     const point = new THREE.Vector3();
 
-    const pier = this.buildStatic(this.bakeParts(dressing.pier.base), 'cove-jetty-deck');
+    const pier = this.buildStaticFrom(dressing.pier, 'cove-jetty-deck');
     let jetty: THREE.Group | null = null;
     if (pier) {
       jetty = new THREE.Group();
@@ -1957,7 +2078,7 @@ export class Props {
     // Parented to the jetty rather than placed in world space: a lantern on a
     // pier is on the pier, and this way moving the jetty cannot leave it hanging
     // over open water. The scale compensates for the jetty's own.
-    const lantern = this.buildStatic(this.bakeParts(dressing.lantern.base), 'cove-lantern');
+    const lantern = this.buildStaticFrom(dressing.lantern, 'cove-lantern');
     if (lantern && jetty) {
       lantern.position.set(0.86, PIER_DECK_LOCAL, -1.4);
       lantern.rotation.y = 0.7;
@@ -1965,7 +2086,7 @@ export class Props {
       jetty.add(lantern);
     }
 
-    const pinnace = this.buildStatic(this.bakeParts(dressing.pinnace.base), 'cove-pinnace');
+    const pinnace = this.buildStaticFrom(dressing.pinnace, 'cove-pinnace');
     if (pinnace) {
       const bearing = covePoint(shore + PINNACE_OFFSHORE, PINNACE_ALONGSHORE, point);
       pinnace.position.set(point.x, point.y + PINNACE_KEEL_LIFT, point.z);
@@ -1982,7 +2103,7 @@ export class Props {
       cove.add(pinnace);
     }
 
-    const barrels = this.buildStatic(this.bakeParts(dressing.barrels.base), 'cove-barrels');
+    const barrels = this.buildStaticFrom(dressing.barrels, 'cove-barrels');
     if (barrels) {
       covePoint(shore + CAMP_OFFSHORE, -12, point);
       seatOnGround(barrels, point, 2.4, 0.9, 5);
@@ -1990,7 +2111,7 @@ export class Props {
       cove.add(barrels);
     }
 
-    const crate = this.buildStatic(this.bakeParts(dressing.coveCrate.base), 'cove-crate');
+    const crate = this.buildStaticFrom(dressing.coveCrate, 'cove-crate');
     if (crate) {
       covePoint(shore + CAMP_OFFSHORE + 6, -4, point);
       seatOnGround(crate, point, 0.55, 0.8, 4);
@@ -1998,7 +2119,7 @@ export class Props {
       cove.add(crate);
     }
 
-    const bucket = this.buildStatic(this.bakeParts(dressing.bucket.base), 'cove-bucket');
+    const bucket = this.buildStaticFrom(dressing.bucket, 'cove-bucket');
     if (bucket) {
       covePoint(shore + CAMP_OFFSHORE + 9, -18, point);
       seatOnGround(bucket, point, 1.9, 0.9, 3);
@@ -2011,14 +2132,15 @@ export class Props {
     // nothing, and three separate meshes would cost three. Baking them together
     // makes the whole group one draw and one bounding sphere, and lets the one
     // on its side be authored as a tilt rather than as a special case.
-    const jugs = this.buildStatic(this.assemble(dressing.jug.base, JUG_PIECES), 'cove-jugs');
+    const jugLevels = this.assembleLevels(dressing.jug, JUG_PIECES);
+    const jugs = this.buildStatic(jugLevels.base, 'cove-jugs', jugLevels.lods);
     if (jugs) {
       covePoint(shore + CAMP_OFFSHORE - 3, -7, point);
       seatOnGround(jugs, point, 1.2, 0.8, 3);
       cove.add(jugs);
     }
 
-    const estoc = this.buildStatic(this.bakeParts(dressing.estoc.base), 'cove-estoc');
+    const estoc = this.buildStaticFrom(dressing.estoc, 'cove-estoc');
     if (estoc) {
       const bearing = covePoint(shore + CAMP_OFFSHORE + 14, 3, point);
       // Turned point-down (the pi) and then tilted back out of vertical, so the
@@ -2052,8 +2174,9 @@ export class Props {
    * on a hillside rather than as masonry on a plateau.
    */
   private placeFort(dressing: Dressing): void {
-    const walls = this.buildStatic(this.assemble(dressing.fort.base, FORT_PIECES), 'shore-fort-walls');
-    const cannon = this.buildStatic(this.bakeParts(dressing.cannon.base), 'shore-fort-cannon');
+    const wallLevels = this.assembleLevels(dressing.fort, FORT_PIECES);
+    const walls = this.buildStatic(wallLevels.base, 'shore-fort-walls', wallLevels.lods);
+    const cannon = this.buildStaticFrom(dressing.cannon, 'shore-fort-cannon');
     if (!walls && !cannon) return;
 
     const fort = new THREE.Group();
@@ -2099,7 +2222,7 @@ export class Props {
 
     const point = new THREE.Vector3();
 
-    const chest = this.buildStatic(this.bakeParts(dressing.chest.base), 'reef-chest');
+    const chest = this.buildStaticFrom(dressing.chest, 'reef-chest');
     if (chest) {
       groundPoint(FIND.x, FIND.z, point);
       seatOnGround(chest, point, 0.92, 1, 4);
@@ -2108,7 +2231,7 @@ export class Props {
       find.add(chest);
     }
 
-    const crate = this.buildStatic(this.bakeParts(dressing.reefCrate.base), 'reef-crate');
+    const crate = this.buildStaticFrom(dressing.reefCrate, 'reef-crate');
     if (crate) {
       groundPoint(FIND.x + 3.6, FIND.z - 2.4, point);
       seatOnGround(crate, point, 2.6, 1, 4);
@@ -2170,23 +2293,42 @@ export class Props {
     random: () => number,
     spec: ScatterSpec,
   ): void {
-    const meshes = this.buildScatter(this.bakeParts(source.base, spec.bake), count, name);
-    if (!meshes) return;
+    const imposterKind = IMPOSTER_KINDS[name];
+    const useImposter =
+      this.imposters !== null &&
+      imposterKind !== undefined &&
+      this.imposterMode !== 'off';
+    const buildMeshes = this.imposterMode !== 'always' || !useImposter;
+    const meshes = buildMeshes
+      ? this.buildScatter(this.bakeParts(source.base, spec.bake), count, name)
+      : null;
+    if (!meshes && !useImposter) return;
 
-    // Every level is baked with the same options as LOD0, so an instance matrix
-    // means the same thing at every level and the deal can move a placement
-    // between them without touching it.
-    const lodMeshes = source.lods.map((group, index) =>
-      this.buildScatter(this.bakeParts(group, spec.bake), count, `${name}-lod${index + 1}`),
-    );
-    const levels: THREE.InstancedMesh[][] = [meshes];
+    // The same placement loop feeds both representations. In Hybrid, mesh
+    // levels cover the near band and the atlas covers the far band; in Always
+    // the source groups are absent and only the atlas receives these transforms.
+    const lodMeshes = meshes
+      ? source.lods.map((group, index) =>
+          this.buildScatter(
+            this.bakeParts(group, spec.bake),
+            count,
+            name + '-lod' + (index + 1),
+          ),
+        )
+      : [];
+    const levels: THREE.InstancedMesh[][] = meshes ? [meshes] : [];
     for (const level of lodMeshes) if (level) levels.push(level);
+    if (meshes) {
+      for (const level of lodMeshes) {
+        if (level) this.shareLodMaterials(meshes, level);
+      }
+    }
 
-    // Placements are kept so `updateLod` can re-deal them; without LOD levels
-    // there is nothing to deal and the arrays are not allocated.
-    const hasLod = levels.length > 1;
-    const matrices = hasLod ? new Float32Array(count * 16) : null;
-    const centres = hasLod ? new Float32Array(count * 3) : null;
+    const needsDeal =
+      levels.length > 1 ||
+      (meshes !== null && useImposter && this.imposterMode === 'hybrid');
+    const matrices = needsDeal ? new Float32Array(count * 16) : null;
+    const centres = needsDeal ? new Float32Array(count * 3) : null;
 
     const matrix = new THREE.Matrix4();
     const position = new THREE.Vector3();
@@ -2195,8 +2337,6 @@ export class Props {
     const normal = new THREE.Vector3();
     const point = new THREE.Vector3();
 
-    // Clump centres are drawn first and reused, so an instance only has to find
-    // ground near one of them.
     const clusterCount = spec.clusters ?? 0;
     const clusters: number[] = [];
     for (let i = 0; i < clusterCount; i++) {
@@ -2216,30 +2356,33 @@ export class Props {
     for (let i = 0; i < count; i++) {
       const found =
         clusters.length > 0
-          ? pickClusterPoint(random, spec, clusters, (i % (clusters.length / 2)) * 2, clusterRadius, point)
+          ? pickClusterPoint(
+              random,
+              spec,
+              clusters,
+              (i % (clusters.length / 2)) * 2,
+              clusterRadius,
+              point,
+            )
           : pickIslandPoint(random, spec, point);
       if (!found) continue;
 
       const s = spec.minScale + random() * (spec.maxScale - spec.minScale);
       position.set(point.x, point.y - sink * s, point.z);
-
-      // One terrain sample serves both the facing and the tilt, and the facing
-      // reads it *before* the tilt lerps it toward vertical — at `slope: 0` the
-      // lerp lands exactly on up and there is no gradient left to read.
       if (slope > 0 || contour) groundNormal(point.x, point.z, slopeSpan, normal);
 
       let yaw = random() * TAU;
       if (contour) {
         const derived = contourYaw(normal);
-        // Half of them face the other way along the same contour. These scans
-        // are asymmetric end to end, so the flip is a second silhouette for no
-        // triangles — and one silhouette repeated is exactly what made six
-        // identical slabs read as a fence.
-        if (derived !== null) yaw = derived + (random() - 0.5) * CONTOUR_JITTER + (random() < 0.5 ? 0 : Math.PI);
+        if (derived !== null) {
+          yaw =
+            derived +
+            (random() - 0.5) * CONTOUR_JITTER +
+            (random() < 0.5 ? 0 : Math.PI);
+        }
       }
 
       if (slope > 0) {
-        // Partial alignment: a rock lies on the slope, a tree grows up out of it.
         if (slope < 1) normal.lerp(UP, 1 - slope).normalize();
         quaternion.setFromUnitVectors(UP, normal);
         quaternion.multiply(spinAbout(UP, yaw));
@@ -2251,46 +2394,70 @@ export class Props {
       const stretch = minStretch + random() * (maxStretch - minStretch);
       scale.set(s, s * stretch, s);
       matrix.compose(position, quaternion, scale);
-      for (const mesh of meshes) mesh.setMatrixAt(placed, matrix);
+
+      if (meshes) {
+        for (const mesh of meshes) mesh.setMatrixAt(placed, matrix);
+      }
       if (matrices && centres) {
         matrix.toArray(matrices, placed * 16);
         centres[placed * 3] = position.x;
         centres[placed * 3 + 1] = position.y;
         centres[placed * 3 + 2] = position.z;
       }
+      if (useImposter) {
+        const near =
+          this.imposterMode === 'hybrid' && meshes
+            ? imposterKind.minDistance
+            : 0;
+        const far =
+          this.imposterMode === 'hybrid' && meshes
+            ? imposterKind.maxDistance
+            : IMPOSTER_NO_CULL_DISTANCE;
+        this.imposters!.addPlacement({
+          species: imposterKind.species,
+          position: [position.x, position.y, position.z],
+          scale: s,
+          stretch,
+          yaw,
+          minDistance: near,
+          maxDistance: far,
+          detailSlot: placed,
+          detailCapacity: count,
+        });
+      }
       placed++;
     }
 
     if (placed === 0) {
-      for (const level of lodMeshes) if (level) for (const mesh of level) mesh.dispose();
+      for (const level of lodMeshes) {
+        if (level) for (const mesh of level) mesh.visible = false;
+      }
       return;
     }
-    this.seal(meshes, placed, hasLod ? { levels, matrices: matrices!, centres: centres! } : undefined);
-    // Shadow flags stand. They used to be cleared here and in the cove, because
-    // the sun's shadow camera was a +/-260 m box anchored at the world origin and
-    // the island is 1.4 km from it — nothing out here could cast into that box or
-    // receive from it, so the flags only bought a per-frame frustum test against
-    // a map the island was nowhere near. `Atmosphere.setShadowFocus` now moves
-    // the box to follow the camera, so the island gets the same shadows the ship
-    // does and the cliffs finally sit on the ground rather than hovering over it.
-    // What is still true is the cost, which is why `casts` exists: a caster is
-    // drawn a second time into the depth map, and the understorey opts out.
-    for (const mesh of meshes) {
-      mesh.castShadow = spec.casts ?? true;
-      parent.add(mesh);
-    }
-    // Lower levels never cast. A shadow is a silhouette, and a silhouette from a
-    // model that has already given up its silhouette is worse than the one the
-    // full-detail caster would have drawn — while costing a second draw of the
-    // same instances into the depth map.
-    for (let i = 1; i < levels.length; i++) {
-      for (const mesh of levels[i]) {
-        mesh.castShadow = false;
+
+    if (meshes) {
+      const lod =
+        matrices && centres && levels.length > 0
+          ? { levels, matrices, centres }
+          : undefined;
+      const cullDistance =
+        useImposter && this.imposterMode === 'hybrid'
+          ? imposterKind.meshCullDistance
+          : undefined;
+      this.seal(meshes, placed, lod, cullDistance);
+
+      for (const mesh of meshes) {
+        mesh.castShadow = spec.casts ?? true;
         parent.add(mesh);
+      }
+      for (let i = 1; i < levels.length; i++) {
+        for (const mesh of levels[i]) {
+          mesh.castShadow = false;
+          parent.add(mesh);
+        }
       }
     }
   }
-
   /**
    * Fixes an instanced kind's count at what was actually placed and takes its
    * bounds.
@@ -2305,6 +2472,7 @@ export class Props {
     meshes: THREE.InstancedMesh[],
     placed: number,
     lod?: { levels: THREE.InstancedMesh[][]; matrices: Float32Array; centres: Float32Array },
+    cullDistance?: number,
   ): void {
     for (const mesh of meshes) {
       mesh.count = placed;
@@ -2328,13 +2496,14 @@ export class Props {
       }
     }
 
-    this.registerThinnable(meshes, placed, lod);
+    this.registerThinnable(meshes, placed, lod, cullDistance);
   }
 
   private registerThinnable(
     meshes: THREE.InstancedMesh[],
     capacity: number,
     lod?: { levels: THREE.InstancedMesh[][]; matrices: Float32Array; centres: Float32Array },
+    cullDistance?: number,
   ): void {
     this.thinnable.push({
       meshes,
@@ -2344,6 +2513,7 @@ export class Props {
         ? {
             levels: lod.levels,
             switchesSq: LOD_SWITCH_METRES.slice(0, lod.levels.length - 1).map((d) => d * d),
+            cullSq: cullDistance === undefined ? Number.POSITIVE_INFINITY : cullDistance * cullDistance,
             matrices: lod.matrices,
             centres: lod.centres,
             dealtAt: new THREE.Vector3(Number.POSITIVE_INFINITY, 0, 0),
@@ -2542,15 +2712,70 @@ export class Props {
     });
   }
 
-  /** A one-off prop: one mesh per material under a single group. */
-  private buildStatic(parts: BakedPart[], name: string): THREE.Group | null {
+  /** Builds a static prop and all manifest-provided LOD levels. */
+  private buildStaticFrom(
+    entry: DressingEntry,
+    name: string,
+    options: BakeOptions = {},
+  ): THREE.Object3D | null {
+    const base = this.bakeParts(entry.base, options);
+    const lods = entry.lods.map((group) => this.bakeParts(group, options));
+    return this.buildStatic(base, name, lods);
+  }
+
+  /** Bakes the same authored kit arrangement for each source LOD level. */
+  private assembleLevels(
+    entry: DressingEntry,
+    pieces: readonly KitPiece[],
+  ): { base: BakedPart[]; lods: BakedPart[][] } {
+    return {
+      base: this.assemble(entry.base, pieces),
+      lods: entry.lods.map((group) => this.assemble(group, pieces)),
+    };
+  }
+
+  private buildStatic(
+    parts: BakedPart[],
+    name: string,
+    lodParts: BakedPart[][] = [],
+  ): THREE.Object3D | null {
+    if (parts.length === 0) return null;
+
+    const hasLod = lodParts.some((level) => level.length > 0);
+    if (!hasLod) return this.buildStaticGroup(parts, name, true);
+
+    const lod = new THREE.LOD();
+    lod.name = name;
+    const base = this.buildStaticGroup(parts, name + '-lod0', true);
+    if (!base) return null;
+    lod.addLevel(base, 0);
+
+    for (let i = 0; i < lodParts.length; i++) {
+      const level = this.buildStaticGroup(
+        lodParts[i],
+        name + '-lod' + (i + 1),
+        false,
+      );
+      if (!level) continue;
+      const distance = LOD_SWITCH_METRES[Math.min(i, LOD_SWITCH_METRES.length - 1)];
+      lod.addLevel(level, distance);
+      this.shareLodPartMaterials(parts, lodParts[i]);
+    }
+    return lod;
+  }
+
+  private buildStaticGroup(
+    parts: BakedPart[],
+    name: string,
+    casts: boolean,
+  ): THREE.Group | null {
     if (parts.length === 0) return null;
     const group = new THREE.Group();
     group.name = name;
     for (let i = 0; i < parts.length; i++) {
       const mesh = new THREE.Mesh(parts[i].geometry, parts[i].material);
-      mesh.name = `${name}-${i}`;
-      mesh.castShadow = true;
+      mesh.name = name + '-' + i;
+      mesh.castShadow = casts;
       mesh.receiveShadow = true;
       mesh.frustumCulled = true;
       group.add(mesh);
@@ -2558,6 +2783,56 @@ export class Props {
     return group;
   }
 
+  private shareLodPartMaterials(
+    baseParts: BakedPart[],
+    lodParts: BakedPart[],
+  ): void {
+    for (let i = 0; i < lodParts.length; i++) {
+      const target = lodParts[i].material;
+      const source =
+        (target.name &&
+          baseParts.find((part) => part.material.name === target.name)?.material) ??
+        baseParts[i]?.material;
+      if (source) this.shareMaterialMaps(source, target);
+    }
+  }
+
+  private shareLodMaterials(
+    baseMeshes: THREE.InstancedMesh[],
+    lodMeshes: THREE.InstancedMesh[],
+  ): void {
+    for (let i = 0; i < lodMeshes.length; i++) {
+      const target = lodMeshes[i].material;
+      const source =
+        (Array.isArray(target)
+          ? undefined
+          : target.name &&
+            baseMeshes.find((mesh) => {
+              const material = mesh.material;
+              return !Array.isArray(material) && material.name === target.name;
+            })?.material) ??
+        baseMeshes[i]?.material;
+      if (source && !Array.isArray(source) && !Array.isArray(target)) {
+        this.shareMaterialMaps(source, target);
+      }
+    }
+  }
+
+  private shareMaterialMaps(source: THREE.Material, target: THREE.Material): void {
+    const sourceRecord = source as unknown as Record<string, unknown>;
+    const targetRecord = target as unknown as Record<string, unknown>;
+    for (const slot of LOD_TEXTURE_SLOTS) {
+      const value = sourceRecord[slot];
+      if (
+        value &&
+        typeof value === 'object' &&
+        (value as { isTexture?: boolean }).isTexture
+      ) {
+        targetRecord[slot] = value;
+      }
+    }
+    target.needsUpdate = true;
+  }
   /**
    * Collapses a loaded single-mesh asset into an `InstancedMesh`.
    *
@@ -2591,7 +2866,10 @@ export class Props {
     const levels: THREE.InstancedMesh[][] = [meshes];
     entry.lods.forEach((group, index) => {
       const level = this.buildScatter(this.bakeParts(group), count, name + '-lod' + (index + 1));
-      if (level) levels.push(level);
+      if (level) {
+        this.shareLodMaterials(meshes, level);
+        levels.push(level);
+      }
     });
 
     const hasLod = levels.length > 1;
@@ -2636,20 +2914,51 @@ const leanQuaternion = new THREE.Quaternion();
 const leanEuler = new THREE.Euler();
 const seatNormal = new THREE.Vector3();
 
-/**
- * The LOD URLs that might sit beside a base model.
- *
- * Derived rather than tabulated: `scripts/optimize-assets.mjs` writes
- * `<slug>_lodN.glb` next to `<slug>.glb`, so asking for them by construction is
- * what keeps the runtime from carrying a second copy of the optimiser's list of
- * which kinds have levels — a list that would be wrong the first time a budget
- * changed.
- */
-function lodUrls(baseUrl: string): string[] {
-  const stem = baseUrl.replace(/\.glb$/i, '');
-  return Array.from({ length: LOD_LEVELS }, (_, i) => `${stem}_lod${i + 1}.glb`);
+interface DressingManifestLod {
+  level: number;
+  ratio: number;
+  url: string;
 }
 
+interface DressingManifestModel {
+  lods: DressingManifestLod[];
+}
+
+interface DressingManifest {
+  version: number;
+  basePath: string;
+  models: Record<string, DressingManifestModel>;
+}
+
+async function loadDressingManifest(): Promise<DressingManifest> {
+  const response = await fetch('/models/dressing/dressing-manifest.json');
+  if (!response.ok) {
+    throw new Error(
+      'Dressing manifest request failed: ' +
+        response.status +
+        ' /models/dressing/dressing-manifest.json',
+    );
+  }
+  const manifest = (await response.json()) as DressingManifest;
+  if (manifest.version !== 1 || !manifest.models) {
+    throw new Error('Unsupported dressing manifest');
+  }
+  return manifest;
+}
+
+function modelSlug(url: string): string {
+  const filename = url.slice(url.lastIndexOf('/') + 1);
+  return filename.replace(/\.glb$/i, '');
+}
+
+function resolveImposterMode(options: PropsOptions): PropsImposterMode {
+  if (options.imposterMode) return options.imposterMode;
+  if (options.qualityTier === 'low' || options.qualityTier === 'medium') {
+    return 'always';
+  }
+  if (options.qualityTier) return 'hybrid';
+  return (options.detailScale ?? 1) <= 0.5 ? 'always' : 'hybrid';
+}
 /** A point on the open plateau, even in area over the reef annulus. */
 function reefScatterSample(random: () => number): { x: number; z: number } {
   const angle = random() * Math.PI * 2;
