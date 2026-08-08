@@ -1256,12 +1256,28 @@ async function compressDocumentTextures(document, pool, stats, inFlight, asset) 
       const normal = slots.includes('normalTexture');
       const leafCutout = isLeafCutoutTexture(document, asset, texture, slots, channelMask);
       const uastc = normal || leafCutout;
+      // Colour data is sRGB; everything that encodes *numbers* rather than
+      // colour is linear. Normal maps store directions, metallic-roughness and
+      // occlusion store coefficients — de-gamma any of them on read and a
+      // stored roughness of 0.5 arrives as 0.21, which is a different material.
+      const perceptual =
+        !normal &&
+        !slots.includes('metallicRoughnessTexture') &&
+        !slots.includes('occlusionTexture');
       const options = {
         isKTX2File: true,
         isUASTC: uastc,
         isNormalMap: normal,
-        isPerceptual:
-          !normal && !slots.includes('metallicRoughnessTexture') && !slots.includes('occlusionTexture'),
+        isPerceptual: perceptual,
+        // Must be set explicitly, and must match `isPerceptual`. This is the
+        // flag that writes the transfer function into the file's own data
+        // format descriptor, and it is what a loader reads to decide the
+        // texture's colour space — `isPerceptual` alone only tunes the codec.
+        // Left unset, every texture in the set was tagged sRGB, including all
+        // 14 of the 21 maps in the pinnace that must not be: its hull and the
+        // coast rocks rendered pale and over-shiny because their roughness and
+        // occlusion were being de-gamma'd.
+        isSetKTX2SRGBTransferFunc: perceptual,
         generateMipmap: true,
         enableRDO: uastc,
         rdoQualityLevel: uastc ? UASTC_RDO_QUALITY : undefined,
