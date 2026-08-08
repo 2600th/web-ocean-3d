@@ -101,11 +101,23 @@ export interface QualitySettings {
   /**
    * Face size of the half-float environment cube.
    *
-   * The cube is six faces, and it is only a low-frequency lighting probe. A
-   * 64² Low cube is sufficient for the analytic sky while 128² gives Medium a
-   * useful intermediate step; High, Ultra and Max retain the authored 256²
-   * capture. Resizing invalidates the next capture and preserves the texture
-   * object consumed by `scene.environment`.
+   * **Every tier is 256, and that is a measured result rather than an
+   * oversight.** This started at 64 for Low and 128 for Medium on the reasoning
+   * that a lighting probe is low-frequency and can be cheap. It is not: the far
+   * water is close to a mirror at grazing angles, so it reflects the cube
+   * directly, and halving the cube halves that reflection's angular resolution.
+   *
+   * `gallery-jitter` measured it. Medium's far-field high-frequency energy is
+   * 2.352 at 256 and 2.414 at 128 — a 2.6% rise in exactly the quantity that
+   * test exists to bound, for 2.25 MiB. Against the 682 MiB this branch takes
+   * off the texture budget, that is not a trade worth making, and the number is
+   * left here so nobody re-derives the same wrong intuition.
+   *
+   * The field and its setter are kept rather than folded back into a constant,
+   * because the plumbing is what made the measurement possible.
+   *
+   * Resizing invalidates the next capture and preserves the texture object
+   * consumed by `scene.environment`.
    */
   environmentResolution: 64 | 128 | 256;
   /**
@@ -329,7 +341,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     shadowMapSize: 512,
     wakeResolution: 768,
     causticsResolution: 256,
-    environmentResolution: 64,
+    environmentResolution: 256,
     maxPixelRatio: 1,
     antialias: false,
     terrainShadowSteps: 0,
@@ -363,7 +375,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     shadowMapSize: 1024,
     wakeResolution: 768,
     causticsResolution: 512,
-    environmentResolution: 128,
+    environmentResolution: 256,
     maxPixelRatio: 1.5,
     antialias: true,
     terrainShadowSteps: 12,
