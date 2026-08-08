@@ -8,16 +8,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/pachira_aquatica_01.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.35,
-          "url": "/models/dressing/pachira_aquatica_01_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.12,
-          "url": "/models/dressing/pachira_aquatica_01_lod2.glb"
         }
       ]
     },
@@ -27,16 +17,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/island_tree_02.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/island_tree_02_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.09,
-          "url": "/models/dressing/island_tree_02_lod2.glb"
         }
       ]
     },
@@ -46,16 +26,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/jacaranda_tree.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/jacaranda_tree_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.09,
-          "url": "/models/dressing/jacaranda_tree_lod2.glb"
         }
       ]
     },
@@ -65,11 +35,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/fern_02.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/fern_02_lod1.glb"
         }
       ]
     },
@@ -79,11 +44,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/shrub_sorrel_01.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/shrub_sorrel_01_lod1.glb"
         }
       ]
     },
@@ -93,16 +53,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/grass_medium_01.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/grass_medium_01_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.15,
-          "url": "/models/dressing/grass_medium_01_lod2.glb"
         }
       ]
     },
@@ -112,16 +62,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/grass_medium_02.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/grass_medium_02_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.15,
-          "url": "/models/dressing/grass_medium_02_lod2.glb"
         }
       ]
     },
@@ -245,16 +185,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/anthurium_botany_01.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.35,
-          "url": "/models/dressing/anthurium_botany_01_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.12,
-          "url": "/models/dressing/anthurium_botany_01_lod2.glb"
         }
       ]
     },
@@ -264,16 +194,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/calathea_orbifolia_01.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.35,
-          "url": "/models/dressing/calathea_orbifolia_01_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.12,
-          "url": "/models/dressing/calathea_orbifolia_01_lod2.glb"
         }
       ]
     },
@@ -525,16 +445,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/tree_poinciana.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/tree_poinciana_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.09,
-          "url": "/models/dressing/tree_poinciana_lod2.glb"
         }
       ]
     },
@@ -544,16 +454,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/tree_orchid.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/tree_orchid_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.09,
-          "url": "/models/dressing/tree_orchid_lod2.glb"
         }
       ]
     },
@@ -620,16 +520,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/palm_coconut.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/palm_coconut_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.14,
-          "url": "/models/dressing/palm_coconut_lod2.glb"
         }
       ]
     },
@@ -639,16 +529,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/palm_tall.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/palm_tall_lod1.glb"
-        },
-        {
-          "level": 2,
-          "ratio": 0.14,
-          "url": "/models/dressing/palm_tall_lod2.glb"
         }
       ]
     }
