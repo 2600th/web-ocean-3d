@@ -101,17 +101,19 @@ type Role = 'ship' | 'island' | 'soar' | 'perch';
  * Where the perched birds sit, in the ship's own frame (+X bow, +Y up, +Z
  * starboard), and which way each faces relative to the bow, radians.
  *
- * Read off the rigging and hull meshes of `dutch_ship_medium`: the yard-arm
- * clusters of the main and fore courses at about 10 m and 9.4 m, the fore and
- * main topsail yards at about 19.5 m and 20.4 m, and the stern rail at 6.9 m.
- * Each point is on top of the spar, so the bird's belly sits on it.
+ * Found by casting rays down onto the rigging and hull meshes of
+ * `dutch_ship_medium` in the ship's frame and keeping the hits on spars: the
+ * main and fore course yards at 10.6 m and 9.4 m, the fore topsail yard at
+ * 19.2 m, and the stern rail at 5.8 m. The yards are braced, so their arms do
+ * not share an x. Each point is the top of the spar, so the bird's belly sits
+ * on it.
  */
 const PERCHES: ReadonlyArray<readonly [number, number, number, number]> = [
-  [-1.6, 10.55, -3.55, 0.25], // main yard, port arm
-  [7.6, 9.6, 3.45, -0.4], // fore yard, starboard arm
-  [-12.55, 7.1, 0.55, Math.PI * 0.92], // taffrail, looking aft
-  [-0.4, 10.55, 3.6, -0.2], // main yard, starboard arm
-  [7.0, 19.55, -2.9, 0.5], // fore topsail yard
+  [6.4, 9.37, -3.1, 0.3], // fore yard, port arm
+  [8.1, 9.38, 3.2, -0.4], // fore yard, starboard arm
+  [-12.8, 5.8, 0.0, Math.PI * 0.92], // taffrail, looking aft
+  [0.1, 10.57, 3.5, -0.2], // main yard, starboard arm
+  [8.1, 19.15, 2.6, 0.5], // fore topsail yard, starboard arm
 ];
 
 /** Which instance indices perch, in the order of `PERCHES`. */
@@ -1036,7 +1038,7 @@ const ENVELOPES: Record<
   }
 > = {
   ship: { radius: [16, 46], altitude: [11, 34], speed: [8.5, 11.5], scale: [1.0, 1.3], glide: [-0.7, 0.5] },
-  perch: { radius: [14, 30], altitude: [12, 26], speed: [8.5, 10.5], scale: [0.95, 1.1], glide: [-0.6, 0.3] },
+  perch: { radius: [14, 30], altitude: [12, 26], speed: [8.5, 10.5], scale: [1.15, 1.3], glide: [-0.6, 0.3] },
   island: { radius: [200, 470], altitude: [130, 260], speed: [9, 12.5], scale: [2.0, 2.8], glide: [-0.4, 0.6] },
   soar: { radius: [55, 150], altitude: [60, 130], speed: [8, 10], scale: [1.6, 2.4], glide: [0.35, 0.9] },
 };
