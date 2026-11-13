@@ -176,6 +176,11 @@ const _creatureSun = new THREE.Color();
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
+/** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
+const _skyRadiance = new THREE.Color();
+const _skyHorizon = new THREE.Color();
+const _skySample = new THREE.Color();
+const _skyDirection = new THREE.Vector3();
 const _litFog = new THREE.Color();
 /** Rec. 709 luminance of a linear colour. */
 const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
@@ -889,12 +894,14 @@ class App {
     // a bandwidth saving that pays for most of the resolve.
     this.taaEnabled =
       this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    this.clouds.setTemporalJitter(this.taaEnabled);
     const scenePass = this.taaEnabled
       ? pass(this.scene, this.camera, { samples: 0 })
       : pass(this.scene, this.camera);
     this.scenePass = scenePass;
     if (this.taaEnabled) {
       scenePass.setMRT(mrt({ output, velocity }));
+      this.clouds.setPreviousViewProjection(this.prevViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -1833,6 +1840,8 @@ class App {
     if (shipResult.status === 'fulfilled') {
       const ship = shipResult.value;
       this.ship = ship;
+      // Gulls work the ship and sit on her yards; see `Birds.setShip`.
+      this.birds.setShip(ship.object);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);
@@ -2251,9 +2260,21 @@ class App {
     switch (key) {
       case 'quality':
         return this.requestQuality(this.state.quality);
-      case 'preset':
+      case 'preset': {
+        // A preset brings its own sky. Coverage lives in UI state because the
+        // slider owns it afterwards, and nothing ever copied the preset's value
+        // into it — so choosing Storm drew the storm's deck at whatever the
+        // slider last said, 0.36 by default: blue sky between fair-weather
+        // puffs under a sky lit for a 0.88 overcast. The slider still wins
+        // after this, which is what a slider is for.
+        const coverage = getPreset(this.state.preset).clouds.coverage;
+        if (this.state.cloudCoverage !== coverage) {
+          this.state.cloudCoverage = coverage;
+          this.panel?.setState({ cloudCoverage: coverage });
+        }
         this.applyPreset();
         break;
+      }
       case 'windSpeed':
       case 'peakWavelength':
         // Through `applyPreset`, not straight to the spectrum.
@@ -2996,7 +3017,14 @@ class App {
     // so the island 1.4 km out gets the same shadows the ship does.
     this.atmosphere.setShadowFocus(this.camera.position.x, this.camera.position.z);
     this.atmosphere.update(dt);
-    this.clouds.setSunDirection(this.atmosphere.sunDirection);
+    // The deck is lit in the sun's own colour, and by the moon once the sun has
+    // gone — see `Clouds.setLighting`.
+    this.clouds.setLighting(
+      this.atmosphere.sunDirection,
+      this.atmosphere.sunColor,
+      this.atmosphere.moonDirection,
+      this.atmosphere.getParams().nightIntensity,
+    );
     // The island shadows itself from whatever is currently the key light, which
     // after sunset is the moon — `Atmosphere` retargets the same light.
     this.seafloor.setKeyDirection(this.atmosphere.keyDirection);
@@ -3185,7 +3213,15 @@ class App {
     );
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
-    this.clouds.setSkyColors(_hazeZenith);
+    //
+    // And by how bright that sky actually *is*: the dome's own radiance at the
+    // zenith and around the horizon, so the deck can never be lit brighter
+    // than the sky it sits in by more than the sun or moon on it justifies.
+    this.clouds.setSkyColors(
+      _hazeZenith,
+      this.measureSkyRadiance(_skyRadiance, _skyHorizon),
+      _skyHorizon,
+    );
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -3513,6 +3549,33 @@ class App {
     this.wake.update(dt, this.renderer);
   }
 
+  /**
+   * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
+   * above the horizon. Five CPU evaluations of the sky model a frame.
+   * `horizon` receives the darkest of the four bearings: the dome away from
+   * the sun's glow, which is the colour of the air under a continuous deck
+   * (see the composite in `Clouds`).
+   */
+  private measureSkyRadiance(out: THREE.Color, horizon: THREE.Color): THREE.Color {
+    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
+    out.multiplyScalar(0.5);
+    let darkest = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const a = (k * Math.PI) / 2;
+      _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
+      this.atmosphere.skyRadiance(_skyDirection, _skySample);
+      out.r += _skySample.r * 0.125;
+      out.g += _skySample.g * 0.125;
+      out.b += _skySample.b * 0.125;
+      const luma = _skySample.r * 0.2126 + _skySample.g * 0.7152 + _skySample.b * 0.0722;
+      if (luma < darkest) {
+        darkest = luma;
+        horizon.copy(_skySample);
+      }
+    }
+    return out;
+  }
+
   private onResize = (): void => {
     // The circle of confusion is measured on a sensor and drawn in pixels, so
     // the conversion between them moves with the frame.
@@ -3632,7 +3695,15 @@ class App {
             (this.state as unknown as Record<string, unknown>).quality = partial.quality;
             await this.onStateChange('quality');
           }
-          for (const [key, value] of Object.entries(partial)) {
+          // The preset next, before the keys it seeds. Choosing a preset now
+          // resets the cloud coverage to the preset's own, so a caller sending
+          // `{ cloudCoverage, preset }` — which is the order the visual harness
+          // sends them in — has to see its explicit coverage applied after
+          // the preset, not overwritten by it.
+          const entries = Object.entries(partial).sort(
+            ([a], [b]) => Number(b === 'preset') - Number(a === 'preset'),
+          );
+          for (const [key, value] of entries) {
             if (key === 'quality') continue;
             (this.state as unknown as Record<string, unknown>)[key] = value;
             this.onStateChange(key as keyof UiState);
