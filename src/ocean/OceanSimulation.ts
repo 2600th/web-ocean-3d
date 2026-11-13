@@ -63,7 +63,7 @@ interface Cascade {
 const HEIGHT_SLOTS = 3;
 
 export interface OceanSimulationOptions {
-  size: 128 | 256 | 512;
+  size: 64 | 128 | 256 | 512;
   cascadeCount: 1 | 2 | 3;
   params: SpectrumParams;
 }
