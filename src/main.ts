@@ -12,6 +12,7 @@ import {
   velocity,
 } from 'three/tsl';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
+import { installThreeFixes } from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
   AssetLoader,
@@ -536,6 +537,7 @@ class App {
     };
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
+    if (bootstrap.backend === 'webgpu') installThreeFixes(this.renderer);
     this.backend = bootstrap.backend;
     console.info(`[ocean] renderer backend: ${this.backend}`);
 
