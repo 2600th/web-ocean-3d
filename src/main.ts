@@ -1262,6 +1262,8 @@ class App {
     if (shipResult.status === 'fulfilled') {
       const ship = shipResult.value;
       this.ship = ship;
+      // Gulls work the ship and sit on her yards; see `Birds.setShip`.
+      this.birds.setShip(ship.object);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);
