@@ -139,6 +139,8 @@ const _smokeLight = new THREE.Color();
 const _smokeSky = new THREE.Color();
 /** How much of a lightning flash still goes to the grade as a frame-wide lift. */
 const FLASH_GRADE_SHARE = 0.55;
+/** Night multiplier on the sea's key-light glint, so the moon path reads (see `water.setSun`). */
+const MOON_GLINT_BOOST = 3;
 /** Scratch for the sky colours lifted by a lightning flash before the water reads them. */
 const _flashZenith = new THREE.Color();
 const _flashHorizon = new THREE.Color();
@@ -3217,7 +3219,11 @@ class App {
     // daylight, but a mirror-sharp sun path on the sea under a sky with no sun
     // in it is the storm's most obvious lie.
     const clearSky = Math.max(0, 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) / 0.75);
-    const glint = 0.06 + 0.94 * clearSky * clearSky;
+    // At night the moon's path has to be the brightest thing on the sea, but the
+    // moon key (0.6) is a smaller fraction of the sun than the night sky fill is
+    // of daylight, so at a straight 1.8 its glitter sank into the moonlit swell.
+    const moonPath = 1 + (MOON_GLINT_BOOST - 1) * LightingRig.darkness(this.atmosphere.sunDirection.y, 0);
+    const glint = (0.06 + 0.94 * clearSky * clearSky) * moonPath;
     this.water.setSun(_keyDirection, key.color, key.intensity * 1.8 * glint, key.intensity / 3.4);
     (this.uKeyDirection.value as THREE.Vector3).copy(_keyDirection);
     // Scaled by the light's own intensity so the term follows the sun down: at
