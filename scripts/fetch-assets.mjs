@@ -51,7 +51,7 @@ const VERIFY_ONLY = args.has('--verify');
  * Texture resolution notes:
  *  - The ship is the hero object, so it gets 2k textures.
  *  - Props and rocks are background dressing at 1k to keep the payload small.
- *  - HDRIs are 2k .hdr (explicitly not 4k) so the environment loads fast.
+ *  - No HDRIs: the sky is procedural. See the note at the end of MANIFEST.
  */
 const MANIFEST = [
   // ---- Hero: sailing ship -------------------------------------------------
@@ -162,11 +162,11 @@ const MANIFEST = [
   { kind: 'model', slug: 'grass_medium_01', res: '1k', dir: 'assets/source/models/grass_medium_01', note: 'Meadow grass tuft' },
   { kind: 'model', slug: 'grass_medium_02', res: '1k', dir: 'assets/source/models/grass_medium_02', note: 'Meadow grass tuft' },
 
-  // ---- Environment maps (day / sunset / foggy / moonlit) ------------------
-  { kind: 'hdri', slug: 'kloofendal_43d_clear_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: day' },
-  { kind: 'hdri', slug: 'industrial_sunset_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: sunset' },
-  { kind: 'hdri', slug: 'kloofendal_misty_morning_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: foggy / overcast' },
-  { kind: 'hdri', slug: 'satara_night_no_lamps', res: '2k', dir: 'public/hdris', note: 'Preset: moonlit night' },
+  // No environment maps. Four 2k HDRIs (19 MB) used to be fetched into
+  // `public/hdris/` and shipped in every build, and nothing in `src/` ever
+  // loaded them: the sky, its PMREM and every preset are procedural
+  // (`src/sky/`). The `hdri` kind is still understood by `plan()` should one be
+  // wanted again — add it under `assets/source/` unless a URL will point at it.
 ];
 
 /**

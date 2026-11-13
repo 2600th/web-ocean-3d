@@ -71,13 +71,15 @@ see the note in `.gitignore`.
 | Floating buoy | `/models/ocean_buoy/ocean_buoy_1k.gltf` |
 | Floating barrel | `/models/barrel_03/barrel_03_1k.gltf` |
 | Rock (island detail) | `/models/rock_07/rock_07_1k.gltf` |
-| Environment — day preset | `/hdris/kloofendal_43d_clear_puresky_2k.hdr` |
-| Environment — sunset preset | `/hdris/industrial_sunset_puresky_2k.hdr` |
-| Environment — foggy preset | `/hdris/kloofendal_misty_morning_puresky_2k.hdr` |
-| Environment — moonlit preset | `/hdris/satara_night_no_lamps_2k.hdr` |
 
 Each `.gltf` resolves its own `.bin` and `textures/*.jpg` siblings by relative URI, so
 the folder layout must be preserved as-is.
+
+No environment maps ship. Four Poly Haven HDRIs (`kloofendal_43d_clear_puresky`,
+`industrial_sunset_puresky`, `kloofendal_misty_morning_puresky`,
+`satara_night_no_lamps`, 19 MB at 2k) used to sit in `public/hdris/` and were
+referenced by nothing in `src/`: the sky and its lighting probe are procedural.
+They were removed from `public/` and from `scripts/fetch-assets.mjs`.
 
 ---
 
@@ -114,10 +116,6 @@ One row per file shipped in `public/`.
 | Rock 07 (`rock_07`, 1k) | `public/models/rock_07/textures/rock_07_diff_1k.jpg` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
 | Rock 07 (`rock_07`, 1k) | `public/models/rock_07/textures/rock_07_arm_1k.jpg` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
 | Rock 07 (`rock_07`, 1k) | `public/models/rock_07/textures/rock_07_nor_gl_1k.jpg` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
-| Kloofendal 43d Clear (Pure Sky) (`kloofendal_43d_clear_puresky`, 2k HDR) | `public/hdris/kloofendal_43d_clear_puresky_2k.hdr` | https://polyhaven.com/a/kloofendal_43d_clear_puresky | Greg Zaal | CC0 1.0 | None (as downloaded) |
-| Industrial Sunset (Pure Sky) (`industrial_sunset_puresky`, 2k HDR) | `public/hdris/industrial_sunset_puresky_2k.hdr` | https://polyhaven.com/a/industrial_sunset_puresky | Jarod Guest (sky edits); Sergej Majboroda (original) | CC0 1.0 | None (as downloaded) |
-| Kloofendal Misty Morning (Pure Sky) (`kloofendal_misty_morning_puresky`, 2k HDR) | `public/hdris/kloofendal_misty_morning_puresky_2k.hdr` | https://polyhaven.com/a/kloofendal_misty_morning_puresky | Greg Zaal | CC0 1.0 | None (as downloaded) |
-| Satara Night (No Lamps) (`satara_night_no_lamps`, 2k HDR) | `public/hdris/satara_night_no_lamps_2k.hdr` | https://polyhaven.com/a/satara_night_no_lamps | Greg Zaal | CC0 1.0 | None (as downloaded) |
 
 ### Scene dressing (`public/models/dressing/`)
 
@@ -266,10 +264,6 @@ Some slugs floated during planning do not exist on Poly Haven. Verified against
 | `wooden_barrel` | no | `barrel_03` | Real barrels are `barrel_03`, `barrel_stove`, `wine_barrel_01`, `wooden_barrels_01`. `barrel_03` is the cleanest single floating prop. |
 | `rock_02` | no | `rock_07` | Only `rock_07` and `rock_09` exist in the plain `rock_NN` series. |
 | `cliff_side_rock` | no | *(none — retired)* | `namaqualand_cliff_01` stood in for this and has since been dropped: it is a closed solid, but it is one 90 m mass with one composed silhouette, and five copies of one silhouette is a repeat no rotation hides. The island's crags are now built from the closed 1-2 m Sketchfab rocks, stretched and clumped. |
-| `kloofendal_43d_clear_puresky` | yes | — | Day preset. |
-| `industrial_sunset_puresky` | yes | — | Sunset preset. |
-| `satara_night_no_lamps` | yes | — | Moonlit preset. |
-| `qwantani_puresky` | yes | `kloofendal_misty_morning_puresky` | `qwantani_puresky` exists and is fine, but the demo needed a foggy/overcast sky rather than a fourth clear one. |
 
 ---
 
