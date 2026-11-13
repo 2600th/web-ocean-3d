@@ -12,6 +12,7 @@ import {
   velocity,
 } from 'three/tsl';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
+import { installThreeFixes } from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
   AssetLoader,
@@ -582,6 +583,7 @@ class App {
     };
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
+    if (bootstrap.backend === 'webgpu') installThreeFixes(this.renderer);
     this.backend = bootstrap.backend;
     console.info(`[ocean] renderer backend: ${this.backend}`);
 
@@ -952,7 +954,7 @@ class App {
       // depth, which breaks down on distant ground seen at a grazing angle: the
       // beach came out as a grid of stripes that TRAA could not average away.
       scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
-      this.clouds.setPreviousViewProjection(this.prevViewProjection);
+      this.clouds.setPreviousViewProjection(this.prevViewProjection, this.currViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
