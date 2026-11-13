@@ -330,9 +330,12 @@ const WIND_WRAP = 200_000;
 /**
  * Moonlight on the deck, relative to sunlight *at the same sky brightness* —
  * the gain is multiplied by `skyLevel`, so at night this is a multiple of the
- * night sky, enough to silver an edge without whitening the deck.
+ * night sky, enough to silver an edge without whitening the deck. 1.6 since
+ * the night dome was lifted from near black to teal-navy (`Atmosphere`'s
+ * `NIGHT_HORIZON`): at 3.5 the brighter sky level made the moonlit deck read
+ * pale blue-white instead of dark teal with silvered rims.
  */
-const MOON_GAIN = 3.5;
+const MOON_GAIN = 1.6;
 
 /** Ambient gain on the base's shadow colour at a clear noon. */
 const AMBIENT_GAIN = 0.42;
