@@ -151,6 +151,16 @@ export class SunShadows {
     if (c.fov !== this.fov || c.aspect !== this.aspect || c.near !== this.near || c.zoom !== this.zoom) this.refit();
   }
 
+  /**
+   * Whether `target` is one of the cascades' shadow maps. The sun's own
+   * `shadow.map` stays null once this node renders its shadows (each cascade
+   * renders a clone), so this is how a caller recognises a shadow render.
+   */
+  ownsTarget(target: unknown): boolean {
+    for (const cascade of this.node.lights) if (cascade.shadow?.map === target) return true;
+    return false;
+  }
+
   get cascades(): number {
     return this.node.cascades;
   }
