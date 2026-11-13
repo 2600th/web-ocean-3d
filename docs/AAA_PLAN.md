@@ -122,6 +122,18 @@ reinventing it.
 - [x] HUD never blocks the view on PC or mobile: ledger collapsed by default, idle-fade of non-critical HUD, translucency over the scene, context-sensitive elements, compact mobile HUD, safe areas — the techniques AAA games use (DESIGN.md › Attention, Layout)
 - [x] Sleek: consistent spacing, type scale and motion; reviewed at 1920x1080, 1280x720, 390x844, 844x390
 
+### N. Post-processing to current AAA practice (post agent)
+Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens DOF, occludable lens flare, ASC CDL grade + cos⁴ vignette, volumetric fog/god rays, lens rain, triangular dither, ACES. Missing against what shipped AAA titles run:
+- [ ] Tone mapping: compare ACES vs AgX vs Khronos PBR Neutral on the gallery; pick on evidence (web-ocean ships AgX)
+- [ ] Auto-exposure / eye adaptation (log-average luminance, asymmetric adaptation), so dawn, noon, storm, night and the underwater dip each expose themselves
+- [ ] Ambient occlusion: GTAO (`GTAONode`) on the ship, island, rocks and props — not the water
+- [ ] Motion blur from the existing velocity MRT (`MotionBlur`), shutter-angle based, strongest on tour whips and fast orbits; off with reduced motion
+- [ ] Post-TAA sharpening (`SharpenNode`/CAS) to win back what the temporal resolve softens
+- [ ] Temporal upscaling (`TAAUNode`, FSR1 fallback) for Low/Medium and phones — render below native, resolve to native
+- [ ] Screen-space contact shadows (`SSSNode`) for small-scale grounding of props and deck detail
+- [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
+- [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
