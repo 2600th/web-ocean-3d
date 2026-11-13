@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { CameraMode } from '../ui/types';
-import { type CinematicEnvironment, CinematicDirector, type CinematicShipInput } from './Cinematic';
+import {
+  type CinematicEnvironment,
+  CinematicDirector,
+  type CinematicPose,
+  type CinematicShipInput,
+} from './Cinematic';
 
 /**
  * Modes the director can be put into.
@@ -19,7 +24,7 @@ export type DirectorMode = CameraMode | 'cinematic';
 export interface CameraTarget {
   /** World position the boat camera chases. */
   position: THREE.Vector3;
-  /** Heading in radians for the chase camera to sit behind. */
+  /** Heading in radians, `atan2(forward.z, forward.x)`, for the chase camera to sit behind. */
   heading: number;
 }
 
@@ -120,12 +125,41 @@ export class CameraDirector {
   // Chase state
   private target: CameraTarget | null = null;
 
+  /**
+   * Render-only jitter on the chase rig, set by the gameplay layer.
+   *
+   * Applied on top of the solved pose at the end of `update` and taken off again
+   * at the start of the next one, so the follow filter never integrates it — a
+   * shake that leaked into the lag would make the rig drift off the hull after
+   * every slam. The removal checks that the camera still holds the pose this
+   * class left on it, so a `pin` or a mode change in between is not undone.
+   */
+  private readonly shakeOffset = new THREE.Vector3();
+  private readonly shakeEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private readonly shakeQuat = new THREE.Quaternion();
+  private readonly unshakenPosition = new THREE.Vector3();
+  private readonly unshakenQuaternion = new THREE.Quaternion();
+  private readonly shakenPosition = new THREE.Vector3();
+  private readonly shakenQuaternion = new THREE.Quaternion();
+  private shakeApplied = false;
+
   // Cinematic state
-  private readonly cinematic = new CinematicDirector();
-  private readonly cinematicPose = {
+  private readonly cinematic: CinematicDirector;
+  private readonly cinematicPose: CinematicPose = {
     position: new THREE.Vector3(),
     target: new THREE.Vector3(),
+    fov: 50,
+    roll: 0,
   };
+  /**
+   * The lens every mode but Cinematic uses, degrees: whatever the camera was
+   * built with. The tour changes focal length shot to shot, and leaving it has
+   * to hand this back — eased with the rest of the pose rather than snapped.
+   */
+  private readonly baseFov: number;
+  private fromFov = 0;
+  private readonly rollQuat = new THREE.Quaternion();
+  private readonly motionQuery: MediaQueryList | null;
   /**
    * The hull orders the active mode is issuing, republished every frame.
    *
@@ -156,6 +190,16 @@ export class CameraDirector {
     this.camera = options.camera;
     this.domElement = options.domElement;
     this.surfaceHeight = options.surfaceHeight;
+    this.baseFov = this.camera.fov;
+    this.fromFov = this.camera.fov;
+    // The tour lifts itself over the crests on the same wave query the chase
+    // camera uses, and over the terrain on the heightfield's own function.
+    this.cinematic = new CinematicDirector({ surfaceHeight: options.surfaceHeight });
+    this.motionQuery =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null;
+    this.cinematic.setReducedMotion(this.motionQuery?.matches ?? false);
 
     this.orbit = new OrbitControls(this.camera, this.domElement);
     this.orbit.enableDamping = true;
@@ -176,6 +220,11 @@ export class CameraDirector {
     // while the fly camera is using it.
     this.domElement.addEventListener('wheel', this.onWheel, { signal, passive: false });
     window.addEventListener('mouseup', this.onMouseUp, { signal });
+    this.motionQuery?.addEventListener(
+      'change',
+      (event) => this.cinematic.setReducedMotion(event.matches),
+      { signal },
+    );
   }
 
   get currentMode(): DirectorMode {
@@ -257,6 +306,15 @@ export class CameraDirector {
     }
   }
 
+  /**
+   * Sets the chase rig's shake for the next frames: a camera-space offset in
+   * metres and pitch/yaw/roll in radians. Zeroes clear it. Ignored outside Boat.
+   */
+  setShake(offset: THREE.Vector3, pitch: number, yaw: number, roll: number): void {
+    this.shakeOffset.copy(offset);
+    this.shakeEuler.set(pitch, yaw, roll, 'YXZ');
+  }
+
   setChaseTarget(target: CameraTarget | null): void {
     this.target = target;
   }
@@ -267,6 +325,7 @@ export class CameraDirector {
     // Capture the current pose so the new rig can be eased into rather than cut to.
     this.fromPosition.copy(this.camera.position);
     this.fromQuaternion.copy(this.camera.quaternion);
+    this.fromFov = this.camera.fov;
     this.transition = 1;
 
     if (this.mode === 'fly') this.exitPointerLock();
@@ -325,6 +384,7 @@ export class CameraDirector {
 
     this.desiredPosition.copy(position);
     this.desiredQuaternion.copy(this.tmpQuat);
+    this.applyFov(this.mode === 'cinematic' ? (this.cinematicPose.fov ?? this.baseFov) : this.baseFov);
 
     switch (this.mode) {
       case 'orbit':
@@ -383,10 +443,12 @@ export class CameraDirector {
     this.updateCinematic(0);
     this.camera.position.copy(this.desiredPosition);
     this.camera.quaternion.copy(this.desiredQuaternion);
+    this.applyFov(this.cinematicPose.fov ?? this.baseFov);
     this.camera.updateMatrixWorld(true);
   }
 
   update(dt: number): void {
+    this.removeShake();
     switch (this.mode) {
       case 'orbit':
         this.updateOrbit();
@@ -402,13 +464,48 @@ export class CameraDirector {
         break;
     }
 
+    const desiredFov =
+      this.mode === 'cinematic' ? (this.cinematicPose.fov ?? this.baseFov) : this.baseFov;
     if (this.transition > 0) {
       this.transition = Math.max(0, this.transition - dt / CameraDirector.TRANSITION_SECONDS);
       const t = easeInOutCubic(1 - this.transition);
       this.camera.position.lerpVectors(this.fromPosition, this.desiredPosition, t);
       this.camera.quaternion.slerpQuaternions(this.fromQuaternion, this.desiredQuaternion, t);
+      this.applyFov(this.fromFov + (desiredFov - this.fromFov) * t);
+    } else {
+      this.applyFov(desiredFov);
     }
 
+    this.applyShake();
+  }
+
+  private applyShake(): void {
+    if (this.mode !== 'boat') return;
+    const e = this.shakeEuler;
+    if (this.shakeOffset.lengthSq() === 0 && e.x === 0 && e.y === 0 && e.z === 0) return;
+    this.unshakenPosition.copy(this.camera.position);
+    this.unshakenQuaternion.copy(this.camera.quaternion);
+    this.shakeQuat.setFromEuler(e);
+    this.camera.quaternion.multiply(this.shakeQuat);
+    this.camera.position.add(
+      this.tmpVec.copy(this.shakeOffset).applyQuaternion(this.unshakenQuaternion),
+    );
+    this.shakenPosition.copy(this.camera.position);
+    this.shakenQuaternion.copy(this.camera.quaternion);
+    this.shakeApplied = true;
+  }
+
+  private removeShake(): void {
+    if (!this.shakeApplied) return;
+    this.shakeApplied = false;
+    if (
+      !this.camera.position.equals(this.shakenPosition) ||
+      !this.camera.quaternion.equals(this.shakenQuaternion)
+    ) {
+      return;
+    }
+    this.camera.position.copy(this.unshakenPosition);
+    this.camera.quaternion.copy(this.unshakenQuaternion);
   }
 
   private updateOrbit(): void {
@@ -465,13 +562,20 @@ export class CameraDirector {
     // Sit behind and above the target, looking slightly down at it — with the
     // viewer's orbit applied on top of the hull's own bearing, so the rig keeps
     // following while the camera can point anywhere.
-    const bearing = this.target.heading + this.chaseYaw;
+    //
+    // `heading` is `atan2(forward.z, forward.x)` — the hull's and the wake's
+    // convention — so the bow points along (cos, sin). This read (sin, cos)
+    // from the start, which put the rig astern only on a heading of 45 degrees
+    // and off the beam or the bow on every other: at the spawn heading the
+    // "chase" camera watched the ship sail across the frame. The yaw offset is
+    // subtracted so a drag still orbits the same way it always did.
+    const bearing = this.target.heading - this.chaseYaw;
     const lift = CHASE_HEIGHT / CHASE_DISTANCE + this.chasePitch;
     const planar = Math.cos(Math.atan(lift));
     const back = this.tmpVec.set(
-      Math.sin(bearing) * planar,
-      0,
       Math.cos(bearing) * planar,
+      0,
+      Math.sin(bearing) * planar,
     );
     this.desiredPosition
       .copy(this.target.position)
@@ -512,7 +616,11 @@ export class CameraDirector {
    * around.
    */
   private updateCinematic(dt: number): void {
-    const orders = this.cinematic.update(dt, this.cinematicPose);
+    // The live hull, so the shots framed on the ship frame the ship rather than
+    // where the flight expected it to be. `target` is republished every frame by
+    // main whatever the mode, and is null only until the ship has loaded, when
+    // the tour falls back on its nominal circuit.
+    const orders = this.cinematic.update(dt, this.cinematicPose, this.target);
     this.shipOrders.throttle = orders.throttle;
     this.shipOrders.rudder = orders.rudder;
 
@@ -520,6 +628,9 @@ export class CameraDirector {
     this.tmpQuat.setFromRotationMatrix(
       lookAtMatrix(this.cinematicPose.position, this.cinematicPose.target, UP),
     );
+    // Dutch angle and handheld roll, about the view axis (camera −z).
+    const roll = this.cinematicPose.roll ?? 0;
+    if (roll !== 0) this.tmpQuat.multiply(this.rollQuat.setFromAxisAngle(VIEW_AXIS, roll));
     this.desiredQuaternion.copy(this.tmpQuat);
 
     if (this.transition === 0) {
@@ -646,12 +757,20 @@ export class CameraDirector {
     return this.flySpeed;
   }
 
+  /** Sets the lens, touching the projection only when it actually changes. */
+  private applyFov(fov: number): void {
+    if (!Number.isFinite(fov) || Math.abs(this.camera.fov - fov) < 1e-4) return;
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+  }
+
   private exitPointerLock(): void {
     if (document.pointerLockElement === this.domElement) document.exitPointerLock();
   }
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
+const VIEW_AXIS = new THREE.Vector3(0, 0, -1);
 const scratchMatrix = new THREE.Matrix4();
 
 function lookAtMatrix(eye: THREE.Vector3, target: THREE.Vector3, up: THREE.Vector3): THREE.Matrix4 {

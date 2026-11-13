@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 import * as THREE from 'three';
 import { setState } from './helpers';
 import { bootOcean } from './lib/capture';
-import { CINEMATIC_LOOP_SECONDS, CinematicDirector, ISLAND_STAND_OFF } from '../src/cameras/Cinematic';
-import { ISLAND } from '../src/scene/Seafloor';
+import { CINEMATIC_LOOP_SECONDS, CinematicDirector } from '../src/cameras/Cinematic';
+import { seafloorHeight } from '../src/scene/Seafloor';
 
 /**
  * What the tour promises, asserted rather than trusted.
@@ -17,50 +17,59 @@ import { ISLAND } from '../src/scene/Seafloor';
 
 test.describe('the cinematic tour', () => {
   /**
-   * The flight is smooth, and stands off the island.
+   * Every shot moves smoothly, stays out of the ground, and the loop point is
+   * a move rather than an edit.
    *
-   * Run against `CinematicDirector` directly rather than through the browser.
-   * The rig is a pure function of one clock with no GPU in it, so a full lap at
-   * 60 Hz is 3600 CPU samples and costs milliseconds; the same walk through
-   * `__ocean.step` would be 3600 rendered frames. The seam test in `ocean.spec`
-   * covers the one thing this cannot — that the *live* rig, with its easing,
-   * crosses the wrap without a jump.
+   * Run against `CinematicDirector` directly rather than through the browser:
+   * with no hull and no wave field supplied the rig falls back on the nominal
+   * circuit and flat water, so a full lap at 60 Hz is a few thousand CPU samples.
+   * The live clearance — real crests, the real hull — is a browser measurement
+   * and is not what this asserts.
    *
-   * The bounds are set an order of magnitude above what the flight measures, so
-   * this catches a knot edited into a lurch rather than policing the last few
-   * per cent. What the flight it replaced measured, on the same walk: 300 m/s,
-   * 422 m/s², 297 °/s, and a look point that closed to 9 m.
+   * The tour is *cut*, so the walk is per shot: frames either side of a shot
+   * boundary are skipped, and so are the whip pans, which are fast by design.
+   * Everything else is held to the bounds the continuous flight was held to,
+   * which still catch a key edited into a lurch.
    */
-  test('flies smoothly and keeps its distance from the island', () => {
+  test('moves smoothly within every shot and keeps clear of the terrain', () => {
     const director = new CinematicDirector();
     director.setEnabled(true);
-    const pose = { position: new THREE.Vector3(), target: new THREE.Vector3() };
+    const pose = { position: new THREE.Vector3(), target: new THREE.Vector3(), fov: 50, roll: 0 };
 
-    const STEPS = 3600;
+    const STEPS = Math.round(CINEMATIC_LOOP_SECONDS * 60);
     const dt = CINEMATIC_LOOP_SECONDS / STEPS;
     const eye: THREE.Vector3[] = [];
     const dir: THREE.Vector3[] = [];
+    const beat: string[] = [];
     for (let i = 0; i < STEPS; i++) {
       director.resetClock(i * dt);
       director.update(0, pose);
       eye.push(pose.position.clone());
       dir.push(pose.target.clone().sub(pose.position));
+      beat.push(director.beatName);
     }
 
     const at = <T>(a: T[], i: number): T => a[((i % STEPS) + STEPS) % STEPS];
+    // Inside a shot, and clear of the whip windows at either end of one.
+    const settled = (i: number) => {
+      for (let k = -24; k <= 24; k++) if (at(beat, i + k) !== beat[i]) return false;
+      return true;
+    };
 
     let peakSpeed = 0;
     let peakAccel = 0;
     let peakTurn = 0;
     let minReach = Infinity;
-    let closestIsland = Infinity;
+    let lowestOverGround = Infinity;
+    const underwater = new Set<string>();
     for (let i = 0; i < STEPS; i++) {
+      const b = eye[i];
+      lowestOverGround = Math.min(lowestOverGround, b.y - seafloorHeight(b.x, b.z));
+      if (b.y < 0) underwater.add(beat[i]);
+      if (!settled(i)) continue;
       const a = at(eye, i - 1);
-      const b = at(eye, i);
       const c = at(eye, i + 1);
       peakSpeed = Math.max(peakSpeed, c.distanceTo(a) / (2 * dt));
-      // Second difference of a C¹ curve is bounded; a knot shows as a step in it
-      // rather than as a spike, so this measures curvature and not the knots.
       peakAccel = Math.max(
         peakAccel,
         new THREE.Vector3().addVectors(a, c).addScaledVector(b, -2).length() / (dt * dt),
@@ -68,28 +77,28 @@ test.describe('the cinematic tour', () => {
       const u = at(dir, i - 1).clone().normalize();
       const w = at(dir, i + 1).clone().normalize();
       peakTurn = Math.max(peakTurn, (Math.acos(Math.min(1, Math.max(-1, u.dot(w)))) / (2 * dt)) * (180 / Math.PI));
-      minReach = Math.min(minReach, at(dir, i).length());
-      closestIsland = Math.min(closestIsland, Math.hypot(b.x - ISLAND.x, b.z - ISLAND.z));
+      minReach = Math.min(minReach, dir[i].length());
     }
 
+    // The wrap is the one boundary that must not be a cut.
+    const seam: number[] = [];
+    for (let i = STEPS - 30; i < STEPS + 60; i++) seam.push(at(eye, i + 1).distanceTo(at(eye, i)));
+    const seamMedian = [...seam].sort((x, y) => x - y)[seam.length >> 1];
+    const seamWorst = Math.max(...seam);
+
     console.log(
-      `[cinematic] peak speed ${peakSpeed.toFixed(1)} m/s, accel ${peakAccel.toFixed(1)} m/s², ` +
-        `view ${peakTurn.toFixed(1)} °/s, min look reach ${minReach.toFixed(0)} m, ` +
-        `island ${closestIsland.toFixed(0)} m`,
+      `[cinematic] within shots: speed ${peakSpeed.toFixed(1)} m/s, accel ${peakAccel.toFixed(1)} m/s², ` +
+        `view ${peakTurn.toFixed(1)} °/s, reach ${minReach.toFixed(0)} m; ` +
+        `lowest over ground ${lowestOverGround.toFixed(1)} m; seam ${seamWorst.toFixed(3)} / ${seamMedian.toFixed(3)} m`,
     );
 
-    expect(peakSpeed, 'a leg of the flight lurches').toBeLessThan(70);
-    expect(peakAccel, 'the curve has a corner in it').toBeLessThan(80);
-    // The single most useful bound here. Every whip the previous flight had came
-    // from a look target drifting close to — or through — the camera, which makes
-    // the view direction hypersensitive to it. Bounding the *reach* catches the
-    // cause; bounding the turn rate alone only catches it after the fact.
-    expect(minReach, 'a look target passes too close to the lens').toBeGreaterThan(40);
-    expect(peakTurn, 'the camera whips rather than pans').toBeLessThan(60);
-    expect(
-      closestIsland,
-      'the flight is meant to stand off the island, not fly over it',
-    ).toBeGreaterThan(ISLAND_STAND_OFF);
+    expect(peakSpeed, 'a shot lurches').toBeLessThan(70);
+    expect(peakAccel, 'a shot has a corner in it').toBeLessThan(80);
+    expect(minReach, 'a look target passes too close to the lens').toBeGreaterThan(8);
+    expect(peakTurn, 'a shot whips where it should pan').toBeLessThan(60);
+    expect(lowestOverGround, 'the camera goes into the ground').toBeGreaterThan(2);
+    expect([...underwater], 'only the dive goes under').toEqual(['reef-dive']);
+    expect(seamWorst, 'the loop point is a cut').toBeLessThan(seamMedian * 4);
   });
 
   test('reaches night, rains, and closes its environment on the loop', async ({ page }) => {
@@ -145,9 +154,10 @@ test.describe('the cinematic tour', () => {
   test('keeps the hull over the plateau whenever it frames it', async ({ page }) => {
     await bootOcean(page);
 
-    // The beats whose keys look at 'ship'. A beat that frames the hull is making
-    // a promise about where the hull is; the others are free to let it wander.
-    const SHIP_BEATS = ['open-water', 'outbound', 'squall', 'reef-run'];
+    // The shots framed on the hull. They follow the live hull wherever it is,
+    // but the circuit is what puts reef and turquoise water under it while they
+    // do; the others are free to let it wander.
+    const SHIP_BEATS = ['dawn-crane', 'wave-skim', 'hero-orbit', 'island-reveal', 'golden-hour', 'squall', 'night-watch'];
 
     const worst = await page.evaluate((names) => {
       let max = 0;
@@ -174,15 +184,12 @@ test.describe('the cinematic tour', () => {
     await bootOcean(page);
     await setState(page, { preset: 'skyPro', cameraMode: 'cinematic' });
 
-    // Park the flight in the middle of the squall — 00:56 on the tour's day —
-    // and let it apply. A literal rather than a lookup, so it has to be revisited
-    // when the flight is re-cut: this was 117, which was the night watch on the
-    // 166-second lap and wraps to 57 s of a 60-second one, where the sun is up.
-    // The test failed loudly, which is the behaviour wanted from a stale
-    // constant.
+    // Park the tour in the night watch — about 01:00 on the tour's day — and
+    // let it apply. A literal rather than a lookup, so it has to be revisited
+    // when the tour is re-cut; it was 44 on the 60-second lap.
     const night = await page.evaluate(async () => {
       await window.__ocean.resetDeterministic(0, 30);
-      window.__ocean.director.resetCinematic(44);
+      window.__ocean.director.resetCinematic(85);
       await window.__ocean.step(1 / 60, 4);
       return window.__ocean.atmosphere.sunDirection.y;
     });

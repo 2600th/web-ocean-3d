@@ -426,7 +426,7 @@ export const SHOTS: readonly Shot[] = [
     id: 'cinematic-reef',
     title: 'The tour, under the surface',
     purpose:
-      "What the cinematic flight's `reef-run` beat actually sees. The tour is " +
+      "What the cinematic tour's `reef-dive` shot actually sees. The tour is " +
       'the one camera a viewer does not steer, so a leg of it pointed at empty ' +
       'sand is a defect nobody can work around — and that is what it was, for ' +
       'the whole 26 s of it.',
@@ -451,27 +451,20 @@ export const SHOTS: readonly Shot[] = [
      */
     camera: null,
     time: 44,
-    // 53.5 s, and the precision is not fussiness — the window is genuinely that
-    // narrow. The beat crosses the reef patch at (-97, -102) at about 20 m/s, so
-    // the coral is at a useful size and inside the view cone for roughly two
-    // seconds of the lap. 52.5 has it 34 m off and small; 55 has already passed
-    // it and photographs open sand, which is the failure this shot exists to
-    // catch and has twice been captured *as* the evidence for.
-    //
-    // It also has to be lit, and on a 60-second lap that is a real constraint:
-    // the dive goes under at 03:57 and this is about the earliest the tour's
-    // dawn has the sun high enough to reach 11 m of water.
-    cinematicTime: 53.5,
+    // The middle of `reef-dive`, with the lens five metres over the coral at
+    // the patch the shot is built around (`DIVE_REEF` in `Cinematic`), at noon
+    // on the tour's day so the sun reaches the floor. If the shot moves, this
+    // moves with it.
+    cinematicTime: 25,
     settleSteps: 90,
   },
   {
     id: 'cinematic-landfall',
-    title: 'The tour, standing off the island',
+    title: 'The tour, along the beach',
     purpose:
-      "The `landfall` beat's middle key: the whole landmass in one frame from " +
-      '1.08 km, which is where the re-cut tour holds it. Headland, bay, canopy ' +
-      'band and bare summit together, at the range the billboard canopy and the ' +
-      'aerial perspective are both built to work at.',
+      "The `beach-flyover` shot at its middle: low over the shallows off the " +
+      "island's north-east face, looking along the coast past the cove to the " +
+      'treeline and the hill behind it. The closest the tour comes to the land.',
     state: {
       quality: 'high',
       cameraMode: 'cinematic',
@@ -482,7 +475,7 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 30,
-    cinematicTime: 26,
+    cinematicTime: 56,
     settleSteps: 90,
   },
   {
@@ -560,20 +553,18 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 76,
-    // The rain envelope is centred on 40 s (`RAIN_CENTRE_SECONDS`) with a 9 s
+    // The rain envelope is centred on 76 s (`RAIN_CENTRE_SECONDS`) with an 8 s
     // half-width, so this sits exactly on the peak and the shot cannot be
     // quietly satisfied by a squall that arrives late.
-    cinematicTime: 40,
+    cinematicTime: 76,
     settleSteps: 90,
   },
   {
     id: 'cinematic-night',
     title: 'The tour, on the night watch',
     purpose:
-      'The night half of the `squall` beat, which absorbed the night watch when ' +
-      'the lap was re-cut to 60 s: moon glitter, the star field, and a hull lit ' +
-      'by nothing else. The whole night half of the atmosphere, which the ' +
-      "previous flight's 08:18-to-16:42 sun swing could not reach.",
+      "The `night-watch` shot at about 01:00 on the tour's day: moonlight, the " +
+      'star field, and a hull lit by nothing else, with the squall clearing.',
     state: {
       quality: 'high',
       cameraMode: 'cinematic',
@@ -584,7 +575,7 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 88,
-    cinematicTime: 44,
+    cinematicTime: 85,
     settleSteps: 90,
   },
 ] as const;
