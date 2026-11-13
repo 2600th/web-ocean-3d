@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn,
+  If,
   acos,
   cameraPosition,
   clamp,
@@ -12,6 +13,7 @@ import {
   fract,
   max,
   mix,
+  mx_fractal_noise_float,
   mx_noise_float,
   normalize,
   positionGeometry,
@@ -1120,7 +1122,13 @@ export class Atmosphere {
       const daySky = mix(dayColor, groundColor, belowness).toVar('daySky');
 
       // --- night -------------------------------------------------------------
-      const nightSky = this.buildNightNode(dir).toVar('nightSky');
+      // Branched rather than multiplied away: the night term is three noise
+      // lookups and a star hash per pixel of the dome, and by day it is scaled
+      // by exactly zero. A uniform branch is coherent across the whole draw.
+      const nightSky = vec3(0, 0, 0).toVar('nightSky');
+      If(this.uNightRadiance.greaterThan(0), () => {
+        nightSky.assign(this.buildNightNode(dir));
+      });
 
       const color = daySky
         .mul(this.uDayRadiance)
@@ -1160,7 +1168,37 @@ export class Atmosphere {
     const starCentre = vec3(r1, r2, r3);
     const dist = local.sub(starCentre).length();
 
-    const present = smoothstep(0.938, 0.985, r0);
+    // --- the galaxy ---------------------------------------------------------
+    //
+    // A band of diffuse light around a great circle, tilted against the
+    // horizon the way the real one is, with a brighter bulge toward one end
+    // and a dark dust rift along its spine. Three things sell it: the band is
+    // *clumped* (star clouds, not a gradient), the rift is off-centre and
+    // ragged, and the star field itself is denser inside it — the band is
+    // made of the same stars as the rest of the sky, just more of them.
+    const plane = d.dot(vec3(GALACTIC_POLE.x, GALACTIC_POLE.y, GALACTIC_POLE.z));
+    const bandCore = exp(plane.mul(plane).mul(-1 / (0.13 * 0.13)));
+    const bulge = pow(saturate(d.dot(vec3(GALACTIC_CENTRE.x, GALACTIC_CENTRE.y, GALACTIC_CENTRE.z)).mul(0.5).add(0.5)), 3.0);
+    const clouds = mx_fractal_noise_float(d.mul(9.0), 4, 2.3, 0.6, 1.0).mul(0.5).add(0.5);
+    const clumps = smoothstep(0.3, 0.9, clouds);
+    const riftOffset = plane.sub(0.025).add(mx_noise_float(d.mul(11.0)).mul(0.035));
+    const rift = float(1).sub(
+      exp(riftOffset.mul(riftOffset).mul(-1 / (0.035 * 0.035)))
+        .mul(smoothstep(0.3, 0.65, mx_noise_float(d.mul(4.0).add(vec3(3.1, 0, 1.7))).mul(0.5).add(0.5)).mul(0.6).add(0.3)),
+    );
+
+    // Unresolved stars: the band's grain. A second, much finer star grid with
+    // no per-cell centre — each cell is simply lit or not — at a density that
+    // follows the band. This is what keeps the band reading as *stars* rather
+    // than as a cloud; a smooth glow alone is indistinguishable from the
+    // moonlit cumulus drawn over it.
+    const fineCell = floor(d.mul(460.0));
+    const fine = hash13(fineCell);
+    const fineLit = smoothstep(float(1).sub(bandCore.mul(clumps).mul(0.22)), 1.0, fine);
+    const band = bandCore.mul(clumps.mul(0.8).add(0.2)).mul(rift).mul(bulge.mul(1.6).add(0.4));
+    const galaxyColor = mix(vec3(0.55, 0.64, 0.9), vec3(0.95, 0.86, 0.72), bulge);
+
+    const present = smoothstep(float(0.925).sub(bandCore.mul(0.04)), 0.985, r0);
     const core = pow(saturate(float(1).sub(dist.mul(5.0))), 6.0);
     const twinkle = sin(this.uTime.mul(2.6).add(r0.mul(61.0))).mul(0.3).add(0.7);
     const tint = mix(vec3(0.72, 0.81, 1.0), vec3(1.0, 0.88, 0.74), r1);
@@ -1168,6 +1206,9 @@ export class Atmosphere {
 
     const horizonFade = smoothstep(-0.03, 0.2, d.y);
     const stars = tint.mul(core.mul(present).mul(twinkle).mul(magnitude).mul(11.0).mul(horizonFade));
+    const galaxy = galaxyColor.mul(
+      band.mul(0.18).add(fineLit.mul(rift).mul(0.9)).mul(horizonFade),
+    );
 
     // --- moon ----------------------------------------------------------------
     const cosMoon = dot(d, this.uMoonDir).toVar('cosMoon');
@@ -1181,14 +1222,41 @@ export class Atmosphere {
     const glow = vec3(0.55, 0.68, 1.0).mul(
       pow(halo, 1400.0).mul(0.5).add(pow(halo, 60.0).mul(0.06)).add(pow(halo, 5.0).mul(0.014)),
     );
+    // The 22-degree halo: moonlight refracted through hexagonal ice in high
+    // cloud. A faint ring with a reddish inner edge and a bluer outer one —
+    // the dispersion is what makes it read as an optical effect rather than
+    // a drawn circle. Kept faint: it is a thing you notice, not a thing that
+    // frames the moon.
+    const ringInner = cosMoon.sub(0.9285).mul(1 / 0.0045);
+    const ringOuter = cosMoon.sub(0.9225).mul(1 / 0.006);
+    const ring = vec3(1.0, 0.82, 0.7)
+      .mul(exp(ringInner.mul(ringInner).negate()))
+      .add(vec3(0.6, 0.72, 1.0).mul(exp(ringOuter.mul(ringOuter).negate())))
+      .mul(0.012);
     // The halo should not wrap under the horizon.
     const aboveHorizon = smoothstep(-0.08, 0.05, d.y);
 
-    return base.add(stars).add(moonBody.add(glow).mul(aboveHorizon));
+    // The galaxy and the faintest stars wash out near a bright moon.
+    const moonWash = float(1).sub(pow(halo, 12.0).mul(0.85));
+    return base
+      .add(stars)
+      .add(galaxy.mul(moonWash))
+      .add(moonBody.add(glow).add(ring).mul(aboveHorizon));
   }
 }
 
 const WHITE = /*@__PURE__*/ new THREE.Color(1, 1, 1);
+/**
+ * Orientation of the galactic plane: its pole, and the direction of the bulge
+ * within it. The band rises out of the sea with its bright bulge on the
+ * horizon *opposite* the moonlit preset's moon — where the moon's glare does
+ * not wash it out — and climbs steeply across the sky toward the zenith, so
+ * a viewer who turns their back on the moon is looking straight at it.
+ */
+const GALACTIC_POLE = /*@__PURE__*/ new THREE.Vector3(-0.432, 0.362, -0.826).normalize();
+const GALACTIC_CENTRE = /*@__PURE__*/ new THREE.Vector3(-0.857, 0.12, 0.501)
+  .projectOnPlane(GALACTIC_POLE)
+  .normalize();
 const NIGHT_SKY_TINT = /*@__PURE__*/ new THREE.Color(0.12, 0.2, 0.42);
 /** Colour moonlight fills shadows with — cool, and never quite neutral. */
 const MOON_FILL_COLOR = /*@__PURE__*/ new THREE.Color(0.42, 0.55, 0.86);
