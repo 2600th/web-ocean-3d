@@ -1543,10 +1543,33 @@ class App {
     else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s, 'ship');
   }
 
+  /**
+   * Waits until no LOD compile or tier change holds the renderer's frame state.
+   *
+   * Both pause the live loop for the length of their compile, because the
+   * compile holds the target and MRT it builds for across awaits (see
+   * `compileForFrame`). `step` and `capturePixels` draw whether the loop is
+   * paused or not, so a frame they drew meanwhile rendered into whatever the
+   * compile was holding. Traced in the cinematic test: the tour reached the
+   * island, an LOD compile took the reflection's target, and the next step's
+   * output pass ran inside the reflection's render context, ending its pass
+   * twice ("RenderPassEncoder was already ended").
+   */
+  private async compilesIdle(): Promise<void> {
+    while (this.lodCompile !== null || this.qualityApply !== null) {
+      await Promise.all([
+        this.lodCompile?.catch(() => undefined),
+        this.qualityApply?.catch(() => undefined),
+      ]);
+    }
+  }
+
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
     this.deterministic = true;
     try {
       for (let i = 0; i < steps; i++) {
+        // A step can start an LOD compile; the next one waits it out.
+        await this.compilesIdle();
         await this.sampler.readNow();
         await this.loop.step(dt, 1);
       }
@@ -1573,6 +1596,7 @@ class App {
    * assuming so here produces an ocean above a sky.
    */
   async capturePixels(): Promise<{ width: number; height: number; data: Uint8Array }> {
+    await this.compilesIdle();
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     const width = Math.max(1, Math.floor(size.x));
     const height = Math.max(1, Math.floor(size.y));
@@ -4011,6 +4035,9 @@ class App {
           await this.contentReady?.catch(() => undefined);
           await this.qualityApply?.catch(() => undefined);
           this.loop.setPaused(true);
+          // And the live frame that may still be drawing, which the pause does
+          // not stop: the first step must not overlap it.
+          await this.loop.settle();
           this.resetTemporal();
 
           // Settle the LOD levels for wherever this shot's camera is, and build
@@ -4025,9 +4052,11 @@ class App {
           // on how fast the machine compiled — the exact class of order- and
           // timing-dependence the shot list exists to keep out.
           this.props?.updateLod(this.camera.position);
+          // A compile a frame started first: two at once would each hold the
+          // renderer for its own pass.
+          await this.lodCompile?.catch(() => undefined);
           const lodLevels = this.props?.takeUncompiledLevels() ?? [];
           if (lodLevels.length > 0) await this.compileLodLevels(lodLevels);
-          await this.lodCompile?.catch(() => undefined);
 
           // Rewind far enough that the settle run *ends* exactly at `time`.
           // Setting the clock to `time` and then stepping forward would leave the
@@ -4161,6 +4190,8 @@ class App {
           // in. Cheap when nothing has changed: the deal early-exits until the
           // camera has moved 25 m, and the queue is empty on every ordinary shot.
           this.props?.updateLod(this.camera.position);
+          // The last settle step may have started one of its own.
+          await this.lodCompile?.catch(() => undefined);
           const settledLevels = this.props?.takeUncompiledLevels() ?? [];
           // Compiled, not stepped. Revealing a level changes what the next
           // *render* draws and nothing about the simulation, and `capturePixels`
