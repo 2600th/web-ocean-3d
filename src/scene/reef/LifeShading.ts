@@ -11,6 +11,7 @@ import {
   positionView,
   sin,
   vec2,
+  vec3,
   vec4,
 } from 'three/tsl';
 
@@ -28,6 +29,8 @@ import {
  *   2  polyp pores    the near-cell distance of a fine Worley field
  *   3  scutes         Worley cell edges (F2 - F1): a turtle's carapace plates
  *   4  spots          bright Worley dots: an eagle ray's back, a moray's skin
+ *   5  scales         fine Worley cells with pale seams: a turtle's head and
+ *                     flippers
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -40,6 +43,7 @@ export function lifePattern(surf: Node, pg: Node): Node {
     const isPores = surf.sub(2).abs().lessThan(0.5);
     const isScute = surf.sub(3).abs().lessThan(0.5);
     const isSpots = surf.sub(4).abs().lessThan(0.5);
+    const isScales = surf.sub(5).abs().lessThan(0.5);
 
     const field = mx_noise_float(pg.mul(4.2));
     const groove = sin(field.mul(26)).abs().toVar('lifeGroove');
@@ -52,15 +56,34 @@ export function lifePattern(surf: Node, pg: Node): Node {
 
     const dots = mx_worley_noise_float(pg.mul(16)).smoothstep(0.12, 0.22).oneMinus().toVar('lifeDots');
 
+    // Plates darken toward their centre and carry a broken streak, like a
+    // green turtle's radiating carapace markings.
+    const streak = mx_noise_float(pg.mul(vec3(9, 3, 9))).mul(0.5).add(0.5);
+    const plate = edge
+      .mul(0.45)
+      .add(0.55)
+      .mul(f.x.smoothstep(0, 0.6).mul(0.45).add(0.8))
+      .mul(streak.mul(0.45).add(0.8));
+
+    // Small skin scales: dark centres with pale seams, the reverse of plates.
+    const sf = mx_worley_noise_vec2(pg.mul(26));
+    const seam = sf.y.sub(sf.x).smoothstep(0.02, 0.12).toVar('lifeSeam');
+
     const height = isBrain.select(
       groove,
-      isPores.select(pore, isScute.select(edge, isSpots.select(dots.mul(0.4), float(0)))),
+      isPores.select(
+        pore,
+        isScute.select(edge, isSpots.select(dots.mul(0.4), isScales.select(seam.mul(0.6), float(0)))),
+      ),
     );
     const tint = isBrain.select(
       groove.smoothstep(0.1, 0.7).mul(0.5).add(0.5),
       isPores.select(
         pore.mul(0.35).add(0.65),
-        isScute.select(edge.mul(0.4).add(0.6), isSpots.select(dots.mul(2.2).add(1), float(1))),
+        isScute.select(
+          plate,
+          isSpots.select(dots.mul(2.2).add(1), isScales.select(seam.mul(-0.8).add(1.55), float(1))),
+        ),
       ),
     );
     return vec2(height, tint);

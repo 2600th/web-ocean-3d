@@ -32,9 +32,10 @@ export const TURTLE_PIVOTS = {
  */
 export function buildTurtle(): MeshBuilder {
   const b = new MeshBuilder();
-  const shell: RGB = [0.28, 0.23, 0.12];
-  const skin: RGB = [0.34, 0.31, 0.22];
-  const belly: RGB = [0.66, 0.6, 0.4];
+  // Green turtle: olive-brown carapace, darker grey-olive skin, cream plastron.
+  const shell: RGB = [0.25, 0.2, 0.09];
+  const skin: RGB = [0.2, 0.19, 0.12];
+  const belly: RGB = [0.6, 0.55, 0.36];
 
   // Carapace: the upper dome.
   let mark = b.mark();
@@ -67,16 +68,18 @@ export function buildTurtle(): MeshBuilder {
   mark = b.mark();
   b.addBlob(
     new THREE.Vector3(0, 0.0, 0.6),
-    new THREE.Vector3(0.085, 0.075, 0.12),
+    new THREE.Vector3(0.075, 0.068, 0.13),
     6,
     12,
-    { color: (t) => mixRGB(skin, belly, 1 - t) },
+    // Pale only on the jaw; a blunt beak narrows the front.
+    { color: (t) => mixRGB(skin, belly, smoothstep(0.55, 0.95, 1 - t) * 0.7), surf: 5 },
+    (d) => 1 - 0.18 * Math.max(0, d.z) * (1 - Math.abs(d.y)),
   );
   b.addTube(
     [new THREE.Vector3(0, -0.01, 0.38), new THREE.Vector3(0, 0, 0.5)],
-    [0.07, 0.065],
+    [0.07, 0.062],
     8,
-    { color: () => skin },
+    { color: () => skin, surf: 5 },
   );
   b.setAuxFrom(mark, TURTLE_PART.head);
 
@@ -90,7 +93,7 @@ export function buildTurtle(): MeshBuilder {
       new THREE.Vector3(span, 0.022, chord),
       4,
       14,
-      { color: (t) => mixRGB(skin, scaleUp(skin, 0.75), t), surf: 3 },
+      { color: (t) => mixRGB(skin, scaleUp(skin, 0.75), t), surf: 5 },
       // Taper toward the tip.
       (d) => 1 - 0.35 * smoothstep(0.2, 1, Math.abs(d.x)) * (Math.abs(d.z) + Math.abs(d.y) * 0.5),
     );
