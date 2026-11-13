@@ -23,6 +23,8 @@ import {
   IslandCanopy,
   IslandMeadow,
   KelpForest,
+  ReefLife,
+  SeaCreatures,
   Props,
   Remains,
   Seafloor,
@@ -141,6 +143,20 @@ const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
 /** Render layer the cloud dome lives on, so the planar mirror can skip it. */
 const CLOUD_LAYER = 3;
 
+/**
+ * Render layer for the life under the surface — reef, kelp, fish, creatures.
+ *
+ * The planar mirror renders the whole scene again from below the surface plane
+ * and clips it, so without this every coral, blade and fish was drawn a second
+ * time per frame to produce pixels the clip plane then threw away. The surface
+ * seen from *below* takes its mirror image from the screen-space backdrop, not
+ * from this reflector, so nothing visible depends on it.
+ */
+const UNDERWATER_LAYER = 4;
+
+/** Scratch for the sea creatures' key light. */
+const _creatureSun = new THREE.Color();
+
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
@@ -246,6 +262,8 @@ class App {
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
   private fish!: FishSchool;
   private kelp!: KelpForest;
+  private reefLife!: ReefLife;
+  private creatures!: SeaCreatures;
   private meadow!: IslandMeadow;
   private canopy!: IslandCanopy;
   private remains!: Remains;
@@ -734,6 +752,40 @@ class App {
     // The volumetric march picks its caustics mip level from this, so it has to
     // be told after the field exists — see `uCausticsTexel`.
     this.underwater.setCausticsTexelSize(this.caustics.extent / this.caustics.resolution);
+
+    // The procedural reef. Built after the caustics because it takes the same
+    // ground treatment the props do — caustics on every coral, the cloud deck's
+    // shade, contact darkening at the base — and that binding is compiled in.
+    this.reefLife = new ReefLife(quality.reefLife, {
+      shading: {
+        light: this.atmosphere.sunLight,
+        keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+        caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+        groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
+      },
+    });
+    this.scene.add(this.reefLife.object);
+
+    // The animals that live on it, homed on the same sites.
+    this.creatures = new SeaCreatures(quality.seaCreatures, {
+      sites: this.reefLife.sites,
+      caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+    });
+    this.scene.add(this.creatures.object);
+
+    // Everything that lives under the surface goes on its own layer, kept out of
+    // the planar mirror — see `UNDERWATER_LAYER`.
+    this.camera.layers.enable(UNDERWATER_LAYER);
+    this.reflections?.excludeLayer(this.camera, UNDERWATER_LAYER);
+    for (const root of [
+      this.reefLife.object,
+      this.creatures.object,
+      this.kelp.object,
+      this.fish.object,
+      this.particles.object,
+    ]) {
+      root.traverse((node) => node.layers.set(UNDERWATER_LAYER));
+    }
 
     // `RenderPipeline`, not the `PostProcessing` alias: the latter is deprecated
     // as of r183 and warns on every boot.
@@ -1255,6 +1307,9 @@ class App {
 
     if (reefFishResult.status === 'fulfilled' && reefFishResult.value) {
       this.fish.setSpecies('reef', reefFishResult.value);
+      // The species arrives as a new mesh; it joins the rest of the life on the
+      // underwater layer.
+      this.fish.object.traverse((node) => node.layers.set(UNDERWATER_LAYER));
     }
 
     if (shipResult.status === 'fulfilled') {
@@ -1742,6 +1797,8 @@ class App {
     this.spray.setStrength(quality.spray);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
+    this.reefLife.setDetail(quality.reefLife);
+    this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
     this.audio.setQuality(tier);
@@ -2312,6 +2369,28 @@ class App {
     );
     this.kelp.update(dt);
 
+    // The reef sways with the same swell; it is hidden outright when the eye is
+    // high enough above the sea that none of it could resolve.
+    this.reefLife.setSwell(
+      getPreset(this.state.preset).sea.windDirection,
+      this.state.windSpeed,
+      this.state.peakWavelength,
+    );
+    this.reefLife.setCameraHeight(this.camera.position.y);
+    this.reefLife.update(dt);
+
+    // The animals take the same sun the fish do — its colour, scaled as `Fish`
+    // scales its own, and gone when the sun is.
+    {
+      const sunUp = THREE.MathUtils.smoothstep(this.atmosphere.sunDirection.y, -0.06, 0.1);
+      this.creatures.setSun(
+        this.atmosphere.sunDirection,
+        _creatureSun.copy(this.atmosphere.sunColor).multiplyScalar(0.7 * sunUp),
+      );
+      this.creatures.setCameraHeight(this.camera.position.y);
+      this.creatures.update(dt);
+    }
+
     // The grass field follows the camera, so unlike everything else on the
     // island it has to be told where that is every frame. Two uniform writes.
     this.meadow.setSunDirection(this.atmosphere.sunDirection);
@@ -2814,6 +2893,9 @@ class App {
         backend: this.backend,
         wake: this.wake,
         water: this.water,
+        /** The procedural reef, so a harness can find its sites and count it. */
+        reefLife: this.reefLife,
+        creatures: this.creatures,
         /**
          * Readiness signals. `sceneContentLoaded` settles whether or not the
          * models arrived, so a harness can distinguish "still loading" from
@@ -3000,6 +3082,8 @@ class App {
           this.spray.resetClock(start);
           this.fish.resetClock(start);
           this.kelp.resetClock(start);
+          this.reefLife.resetClock(start);
+          this.creatures.resetClock(start);
           this.meadow.resetClock(start);
           this.stormQuote.reset();
           this.canopy.resetClock(start);
