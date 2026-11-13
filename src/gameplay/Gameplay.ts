@@ -556,7 +556,14 @@ export class Gameplay {
     this.pushAllUi();
     if (!this.greeted) {
       this.greeted = true;
-      this.ui.toast('At the helm — W/S set and take in sail, A/D steer, R anchor', 'info');
+      // Phrased for the hands the visitor is actually using: a phone has no W key.
+      const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+      this.ui.toast(
+        touch
+          ? 'At the helm — More/Less for sail, the pad to steer, Anchor to stop'
+          : 'At the helm — W/S set and take in sail, A/D steer, R anchor',
+        'info',
+      );
     }
   }
 
