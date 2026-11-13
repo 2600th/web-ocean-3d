@@ -149,9 +149,22 @@ would be meaningless.
 | **1 / 2 / 3 / 4** | Orbit / Fly / Boat / Cinematic camera |
 | **Orbit** | LMB drag rotate · RMB drag pan · scroll zoom |
 | **Fly** | click to capture the mouse · WASD · Space/Ctrl up-down · **scroll** speed (1.5–600 m/s) · Shift boost |
-| **Boat** | **W/S** throttle ahead and astern · **A/D** rudder · **drag** to orbit the chase camera · **scroll** to dolly · the hull is turned away from shoaling water rather than fenced by a radius |
-| **Cinematic** | A looping 60 s authored tour in six beats — open water, outbound, landfall, return, squall, reef run — carrying its own hour and weather, so one lap runs a full day and a squall through the scene |
+| **Boat (Helm)** | **W/S** set and take in sail, one step at a time (furled · half · full) · **A/D** rudder · **R** let go / weigh anchor · **drag** to orbit the chase camera · **scroll** to dolly · the hull is turned away from shoaling water rather than fenced by a radius |
+| **Cinematic** | A looping 90 s attract-mode trailer, cut rather than flown, in nine shots — dawn crane, wave-skim alongside the hull, reef dive through the waterline, hero orbit, island reveal over the swell, beach flyover, golden-hour dolly-zoom, squall, night watch — framed on the live hull and held clear of the crests, the terrain and the ship. It carries its own hour and weather, so one lap runs a full day and a squall; `prefers-reduced-motion` drops the handheld, the whips and the zooms |
 | **Touch** | Boat mode on a touch device gets an on-screen stick: forward for ahead, back for astern, left and right for rudder |
+
+**Sailing.** The ship sails on the wind the sea is built from. Head to wind (within about 35°)
+she is *in irons*: the canvas luffs and she drifts astern until you bear away. Close-hauled she
+pulls, on a beam or broad reach she is fastest, and dead downwind she slows a little as the
+after sails blanket the fore. Full sail at her best makes twelve or thirteen knots in a fresh breeze;
+the canvas heels her to leeward against her own righting moment. **R** lets go the windward
+bower anchor: she runs out her cable, snubs up with a jolt and swings her head toward the wind;
+**R** again weighs it, which takes a few seconds at the capstan.
+
+**Cargo.** A column of gold light marks drifting cargo somewhere in open water. Sail alongside
+it to bring it aboard; the next one is sighted from where the last was taken. The objective,
+its bearing and distance, the score and the ship's instruments are reported to the HUD through
+`GameUiSink` (`src/gameplay/types.ts`). None of it exists outside Helm mode.
 
 Boat mode selects the ship, not just a camera. Leaving it releases ship input, so Orbit and
 Fly keep their own keys. The rudder is a foil: it has little authority until the ship has way
@@ -252,6 +265,7 @@ src/
   post/        depth of field, bloom, lens flare, grade, volumetric fog, lens rain, output transform
   scene/       asset loading, ship, props, seafloor, island planting, fish, birds
   physics/     buoyancy, ship control, wake accumulation, spray
+  gameplay/    helm mode: sails against the wind, anchor, cargo objective, camera shake
   cameras/     orbit / fly / boat / cinematic director, and the authored tour
   audio/       synthesised ambience — noise beds, not samples
   ui/          control panel, HUD, touch controls (framework-free DOM)
