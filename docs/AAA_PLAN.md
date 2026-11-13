@@ -136,6 +136,18 @@ Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens 
 - [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
 - [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
 
+### O. Lighting, materials and shaders to current AAA practice (lighting agent)
+Audit each against what shipped AAA titles do, fix on evidence, measure cost per tier:
+- [ ] **Shadows:** cascade fit/stability (no swimming on camera move), soft filtering, contact hardening where cheap, shadow distance per tier, foliage/rigging shadow quality, no acne/peter-panning
+- [ ] **Image-based lighting:** environment captured from the live sky (incl. clouds/overcast/night), specular occlusion, horizon occlusion, correct diffuse irradiance — no grey ambient wash
+- [ ] **Local lights:** campfire/torches/ship lanterns as real lights at dusk and night (cheap, culled, tier-gated), emissive that blooms correctly
+- [ ] **Lightning:** the strike lights the scene (sea, clouds, ship) with a shaped flash and shadows/direction, not only a full-screen grade lift
+- [ ] **Night:** moonlight as a key light with a cool colour and correct intensity; stars/moon reflected; nothing reads pitch-black or day-bright
+- [ ] **Materials (PBR):** albedo in physically plausible ranges, roughness/metalness sanity, normal map strength, specular AA (no sparkle) on every hero material — ship wood, ropes, sails, metal fittings, rock, sand, foliage, props
+- [ ] **Translucency:** sails and leaves transmit backlight (thin-surface SSS), two-sided foliage lighting
+- [ ] **Wetness:** rain and spray darken albedo and lower roughness consistently across ship, rock, sand, props (per-object, not one global value)
+- [ ] **Shader hygiene:** no NaNs/fireflies, energy-conserving specular, consistent fog/aerial perspective on every material, shader-compile cost kept off the critical path
+
 ### Follow-ups found while merging
 - [ ] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent)
 - [ ] Night/dusk clouds lit near-white against a black clear sky; dusk sea mirrors it pink (sky agent)
