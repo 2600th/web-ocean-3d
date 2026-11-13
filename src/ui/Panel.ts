@@ -357,6 +357,17 @@ export class Panel {
     this.collapseButton = collapse;
     this.sheetButton = sheetButton;
     this.root.append(panel, sheetButton);
+
+    // Folded by default. The sea is the product, and an open ledger is a
+    // third of a laptop screen; the title plate says where the controls are,
+    // and one click opens them.
+    this.setCollapsed(true);
+  }
+
+  /** Opens or folds the ledger (desktop) — for a harness or a host shortcut. */
+  setOpen(open: boolean): void {
+    if (this.disposed) return;
+    this.setCollapsed(!open);
   }
 
   /** Push values in from the host without re-emitting change callbacks. */
