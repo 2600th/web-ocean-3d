@@ -308,6 +308,11 @@ test.describe('lens flare', () => {
     //    flare above water, and there is no lens down there to scatter in.
     await setState(page, { preset: 'skyPro' });
     await setCamera(page, [-16, -7, 16], [-6, 2, 2]);
+    // Discarded: the first capture after a camera jump still carries a little
+    // of the previous pose (the foam round the hull, amplified by TRAA, AO and
+    // exposure), so the pair compared below would otherwise differ by more
+    // than the flare. See "capture history" in docs/AAA_PLAN.md.
+    await measureAt(page, 72.5, async () => {});
     const underOn = await measureAt(page, 72.5, () =>
       page.evaluate(() => window.__ocean.setFlareEnabled(true)),
     );

@@ -1183,6 +1183,10 @@ test.describe('interaction', () => {
       const birds = window.__ocean.scene.getObjectByName('birds');
       if (birds) birds.visible = false;
     });
+    // Each capture from a fresh reset: with TRAA two captures in a row differ
+    // by the resolve's history, which at Low's render scale is thousands of
+    // pixels and would read as birds.
+    await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
     const without = await capture(page);
     await page.evaluate(() => {
       const birds = window.__ocean.scene.getObjectByName('birds');
@@ -1222,6 +1226,7 @@ test.describe('interaction', () => {
       const birds = window.__ocean.scene.getObjectByName('birds');
       if (birds) birds.visible = false;
     });
+    await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
     const lowWithout = await capture(page);
 
     let lowChanged = 0;
@@ -1294,7 +1299,11 @@ test.describe('interaction', () => {
     // well and the difference would be dominated by ordinary motion rather than
     // by wetting. Holding the clock still is what makes this a measurement of
     // one variable.
+    // Each from a fresh reset, wetness set after it: with TRAA two captures in
+    // a row differ across the whole sea by the resolve's history, which pulled
+    // the median ratio to ~1 and drowned the hull.
     const shoot = async (wetness: number) => {
+      await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
       await page.evaluate((w: number) => window.__ocean.setSurfaceWetness(w), wetness);
       return capture(page);
     };
