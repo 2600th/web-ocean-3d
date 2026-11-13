@@ -120,6 +120,24 @@ export class CameraDirector {
   // Chase state
   private target: CameraTarget | null = null;
 
+  /**
+   * Render-only jitter on the chase rig, set by the gameplay layer.
+   *
+   * Applied on top of the solved pose at the end of `update` and taken off again
+   * at the start of the next one, so the follow filter never integrates it — a
+   * shake that leaked into the lag would make the rig drift off the hull after
+   * every slam. The removal checks that the camera still holds the pose this
+   * class left on it, so a `pin` or a mode change in between is not undone.
+   */
+  private readonly shakeOffset = new THREE.Vector3();
+  private readonly shakeEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private readonly shakeQuat = new THREE.Quaternion();
+  private readonly unshakenPosition = new THREE.Vector3();
+  private readonly unshakenQuaternion = new THREE.Quaternion();
+  private readonly shakenPosition = new THREE.Vector3();
+  private readonly shakenQuaternion = new THREE.Quaternion();
+  private shakeApplied = false;
+
   // Cinematic state
   private readonly cinematic = new CinematicDirector();
   private readonly cinematicPose = {
@@ -257,6 +275,15 @@ export class CameraDirector {
     }
   }
 
+  /**
+   * Sets the chase rig's shake for the next frames: a camera-space offset in
+   * metres and pitch/yaw/roll in radians. Zeroes clear it. Ignored outside Boat.
+   */
+  setShake(offset: THREE.Vector3, pitch: number, yaw: number, roll: number): void {
+    this.shakeOffset.copy(offset);
+    this.shakeEuler.set(pitch, yaw, roll, 'YXZ');
+  }
+
   setChaseTarget(target: CameraTarget | null): void {
     this.target = target;
   }
@@ -387,6 +414,7 @@ export class CameraDirector {
   }
 
   update(dt: number): void {
+    this.removeShake();
     switch (this.mode) {
       case 'orbit':
         this.updateOrbit();
@@ -409,6 +437,36 @@ export class CameraDirector {
       this.camera.quaternion.slerpQuaternions(this.fromQuaternion, this.desiredQuaternion, t);
     }
 
+    this.applyShake();
+  }
+
+  private applyShake(): void {
+    if (this.mode !== 'boat') return;
+    const e = this.shakeEuler;
+    if (this.shakeOffset.lengthSq() === 0 && e.x === 0 && e.y === 0 && e.z === 0) return;
+    this.unshakenPosition.copy(this.camera.position);
+    this.unshakenQuaternion.copy(this.camera.quaternion);
+    this.shakeQuat.setFromEuler(e);
+    this.camera.quaternion.multiply(this.shakeQuat);
+    this.camera.position.add(
+      this.tmpVec.copy(this.shakeOffset).applyQuaternion(this.unshakenQuaternion),
+    );
+    this.shakenPosition.copy(this.camera.position);
+    this.shakenQuaternion.copy(this.camera.quaternion);
+    this.shakeApplied = true;
+  }
+
+  private removeShake(): void {
+    if (!this.shakeApplied) return;
+    this.shakeApplied = false;
+    if (
+      !this.camera.position.equals(this.shakenPosition) ||
+      !this.camera.quaternion.equals(this.shakenQuaternion)
+    ) {
+      return;
+    }
+    this.camera.position.copy(this.unshakenPosition);
+    this.camera.quaternion.copy(this.unshakenQuaternion);
   }
 
   private updateOrbit(): void {
