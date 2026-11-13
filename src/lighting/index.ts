@@ -43,7 +43,7 @@ export class LightingRig {
   /** A tier change: shadow reach and map size, and whether local lights shine. */
   applyQuality(quality: QualitySettings): void {
     this.shadows.configure(quality.shadowDistance, quality.shadowMapSize);
-    this.local.setEnabled(quality.localLights > 0);
+    this.local.setCount(quality.localLights);
   }
 
   /**
