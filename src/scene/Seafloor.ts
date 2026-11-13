@@ -23,6 +23,8 @@ import {
 // unqualified name; see `smoothstepDown` below.
 import { smoothstepDown as smoothstepDownNode } from '../core/tslMath';
 import { occludeLight } from '../core/lightOcclusion';
+// Shore hook: the swash wetting the sand. Self-contained; see `ocean/Surf`.
+import { applySwashToGround, swashRoughness } from '../ocean/Surf';
 import { SEEDS, mulberry32 } from '../core/random';
 
 /**
@@ -290,15 +292,16 @@ export const ISLAND = {
 } as const;
 
 /**
- * Where the beach stops and the growth starts, metres above mean sea level.
+ * Where the ground colour turns from sand to growth, metres above sea level.
  *
- * Not a hard line — the ramp between them is a treeline, and the sand mottling
- * runs across it so the boundary is broken rather than a contour. Below
- * `BEACH_TOP_METRES` is bare sand because that is what the swash and the wind
- * keep clear.
+ * Not a hard line — the ramp is broken by the patch noise so the edge of the
+ * growth is ragged rather than a contour. Low and tight on purpose: the ground
+ * carries the grass and scrub that creep onto the back of a beach, and at the
+ * 3.5-16 m this used to be, the gently shelving apron came out as a sixty-metre
+ * strip of bare sand from the air.
  */
-const BEACH_TOP_METRES = 3.5;
-const VEGETATION_FULL_METRES = 16;
+const GROWTH_START_METRES = 2.2;
+const GROWTH_FULL_METRES = 7;
 
 /**
  * How completely the growth covers the ground it reaches.
@@ -470,6 +473,65 @@ const LAGOON_OUT = 1.62;
 const LAGOON_Y = -5.5;
 
 /**
+ * Relief that breaks the dome: radial ridges and gullies, two subsidiary peaks
+ * and a stretch of sea cliff.
+ *
+ * Every term is windowed in `t` so it has died out before the beach, which is
+ * what keeps the coastline — and with it the ship's shoal avoidance, the shore
+ * break and the prop placement along the waterline — exactly where it was. The
+ * cliff is the one term that reaches the shore, and it stops at `CLIFF_FOOT`,
+ * short of `t = 1`, so it steepens the last few metres above the water without
+ * moving the waterline.
+ *
+ * The ridges are drawn from the *bearing*, not from position: value noise
+ * sampled on a small circle in noise space (`u * RIDGE_RADIUS`) varies smoothly
+ * round the island with no seam and no `atan2`, and folding it (`1 - |2n - 1|`)
+ * turns its crests into sharp spurs with rounded gullies between — the
+ * radial drainage every volcanic high island has. A second sample in world
+ * space bends them, so the spurs wander instead of radiating like spokes.
+ */
+const RIDGE_LIFT = 26;
+const RIDGE_RADIUS = 1.45;
+const RIDGE_OFFSET = [41.3, 7.9] as const;
+const RIDGE_WANDER = 1 / 380;
+const RIDGE_IN = 0.08;
+const RIDGE_FULL = 0.4;
+const RIDGE_FADE = 0.62;
+const RIDGE_OUT = 0.9;
+
+interface Peak {
+  x: number;
+  z: number;
+  radius: number;
+  lift: number;
+}
+/** A shoulder peak on the headland side and a lower knoll toward the spit. */
+const PEAKS: readonly Peak[] = [
+  {
+    x: Math.cos(1.25) * ISLAND.radius * 0.46,
+    z: Math.sin(1.25) * ISLAND.radius * 0.46,
+    radius: ISLAND.radius * 0.42,
+    lift: 46,
+  },
+  {
+    x: Math.cos(-0.55) * ISLAND.radius * 0.5,
+    z: Math.sin(-0.55) * ISLAND.radius * 0.5,
+    radius: ISLAND.radius * 0.3,
+    lift: 28,
+  },
+];
+const PEAK_SHORE_IN = 0.7;
+const PEAK_SHORE_OUT = 0.9;
+
+/** Sea cliffs on the weather side, away from the cove, the fort and the bay. */
+const CLIFF = sector(-1.05, 0.55);
+const CLIFF_LIFT = 20;
+const CLIFF_RISE_IN = 0.74;
+const CLIFF_RISE_OUT = 0.9;
+const CLIFF_BROW = 0.935;
+const CLIFF_FOOT = 0.975;
+
+/**
  * Shoreline radius on the bearing `(ux, uz)`, as a multiple of `ISLAND.radius`.
  */
 function shoreFraction(ux: number, uz: number): number {
@@ -541,6 +603,7 @@ export function seafloorHeight(x: number, z: number): number {
     smoothstep(HEADLAND_TOE, HEADLAND_CROWN, t) *
     smoothstepDown(t, HEADLAND_BROW, HEADLAND_FALL);
   y += SPIT_LIFT * crest;
+  y += islandRelief(dx, dz, ux, uz, t);
 
   const lagoon =
     sectorMask(ux, uz, LAGOON) *
@@ -552,6 +615,78 @@ export function seafloorHeight(x: number, z: number): number {
   const fill = Math.max(LAGOON_Y - y, 0);
   y += lagoon * fill;
   return y;
+}
+
+/**
+ * The dome-breaking relief, CPU side. `(dx, dz)` is the offset from the island
+ * centre, `u` the unit bearing, `t` the shore-normalised radius. Mirrored node
+ * for node by `islandReliefNode` in `buildNoiseNodes`.
+ */
+function islandRelief(dx: number, dz: number, ux: number, uz: number, t: number): number {
+  const g = valueNoise(
+    ux * RIDGE_RADIUS + RIDGE_OFFSET[0] + dx * RIDGE_WANDER,
+    uz * RIDGE_RADIUS + RIDGE_OFFSET[1] + dz * RIDGE_WANDER,
+  );
+  const ridged = 1 - Math.abs(g * 2 - 1);
+  const ridgeMask = smoothstep(RIDGE_IN, RIDGE_FULL, t) * smoothstepDown(t, RIDGE_FADE, RIDGE_OUT);
+  let y = RIDGE_LIFT * (ridged - 0.5) * ridgeMask;
+
+  const shoreFade = smoothstepDown(t, PEAK_SHORE_IN, PEAK_SHORE_OUT);
+  for (const peak of PEAKS) {
+    const px = dx - peak.x;
+    const pz = dz - peak.z;
+    const d = Math.sqrt(px * px + pz * pz) / peak.radius;
+    const bump = smoothstepDown(d, 0, 1);
+    y += peak.lift * bump * shoreFade;
+  }
+
+  y +=
+    CLIFF_LIFT *
+    sectorMask(ux, uz, CLIFF) *
+    smoothstep(CLIFF_RISE_IN, CLIFF_RISE_OUT, t) *
+    smoothstepDown(t, CLIFF_BROW, CLIFF_FOOT);
+  return y;
+}
+
+/**
+ * The floor mesh's own extent and subdivision, as `main` builds it. Exported
+ * for `seafloorMeshHeight`, which has to agree with the triangles actually drawn.
+ */
+export const SEAFLOOR_EXTENT = 4000;
+export const SEAFLOOR_SEGMENTS = 256;
+
+/**
+ * Height of the *rendered* floor at (x, z): the triangle the mesh actually
+ * draws there, interpolated, rather than the analytic field.
+ *
+ * The two differ by up to a few decimetres, because the mesh samples the field
+ * every fifteen metres and lerps between. That is invisible for anything with
+ * height to it and fatal for anything lying flat — a strand of weed or a shell
+ * seated on the analytic surface is buried under one triangle and floating
+ * over the next. Mirrors `PlaneGeometry`'s layout after `rotateX(-pi/2)`: rows
+ * run along +z, and each cell is split on the diagonal from (ix, iz+1) to
+ * (ix+1, iz).
+ */
+export function seafloorMeshHeight(
+  x: number,
+  z: number,
+  extent = SEAFLOOR_EXTENT,
+  segments = SEAFLOOR_SEGMENTS,
+): number {
+  const step = extent / segments;
+  const gx = (x + extent / 2) / step;
+  const gz = (z + extent / 2) / step;
+  const ix = Math.floor(gx);
+  const iz = Math.floor(gz);
+  const u = gx - ix;
+  const v = gz - iz;
+  const vx = (i: number) => i * step - extent / 2;
+  const ha = seafloorHeight(vx(ix), vx(iz));
+  const hb = seafloorHeight(vx(ix), vx(iz + 1));
+  const hc = seafloorHeight(vx(ix + 1), vx(iz + 1));
+  const hd = seafloorHeight(vx(ix + 1), vx(iz));
+  if (u + v <= 1) return ha + (hd - ha) * u + (hb - ha) * v;
+  return hc + (hb - hc) * (1 - u) + (hd - hc) * (1 - v);
 }
 
 /** Positive metres of water above the floor at (x, z); 0 where the floor is dry. */
@@ -909,7 +1044,7 @@ export class Seafloor {
 
   constructor(extent: number, options: SeafloorOptions = {}) {
     this.extent = extent;
-    const segments = options.segments ?? 256;
+    const segments = options.segments ?? SEAFLOOR_SEGMENTS;
 
     this.noiseTexture = createNoiseTexture();
     this.sandNormal = createSandNormalTexture();
@@ -943,6 +1078,8 @@ export class Seafloor {
     this.material.name = 'seafloor-sand';
     this.material.roughness = 0.93;
     this.material.metalness = 0;
+    // Shore hook: sand the swash just left is glossy. See `ocean/Surf`.
+    this.material.roughnessNode = Fn(() => swashRoughness(float(0.93), positionWorld))();
     /**
      * The sky is a source of light on this surface, not a mirror in it.
      *
@@ -1004,8 +1141,12 @@ export class Seafloor {
       const blended = normalize(
         vec3(near.x.add(far.x), near.y.add(far.y), near.z.mul(far.z)),
       ).toVar();
-      // The 0.75 the `normalMap` call this replaced passed as its scale.
-      return vec3(blended.x.mul(SAND_NORMAL_SCALE), blended.y.mul(SAND_NORMAL_SCALE), blended.z);
+      // The 0.75 the `normalMap` call this replaced passed as its scale — on the
+      // seabed, where the ripple bars belong. Dry sand above the swash is
+      // wind-smoothed, and at full strength the ripple map read on the beach as
+      // dark swirls rather than as sand.
+      const scale = mix(float(SAND_NORMAL_SCALE), float(0.08), positionWorld.y.smoothstep(0.2, 1.4)).toVar();
+      return vec3(blended.x.mul(scale), blended.y.mul(scale), blended.z);
     };
 
     /**
@@ -1031,7 +1172,13 @@ export class Seafloor {
       const geo = normalize(normalWorldGeometry).toVar();
 
       const d = this.detailNode.toVar();
-      const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus()).toVar();
+      // Dry beach, between the swash and the back of the beach, is wind-smoothed:
+      // the relief octaves that give the seabed and the hillside their texture
+      // drew it as dark, melted swirls metres across. Damped there only.
+      const dryBeach = wp.y.smoothstep(-0.3, 0.9).mul(smoothstepDownNode(wp.y, 3.5, 9)).toVar();
+      const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus())
+        .mul(dryBeach.mul(-0.7).add(1))
+        .toVar();
       // A heightfield's normal is `(-dh/dx, 1, -dh/dz)`, so added relief
       // subtracts its gradient from the horizontal components.
       const n = normalize(
@@ -1216,141 +1363,127 @@ export class Seafloor {
     this.material.colorNode = Fn(() => {
       const wp = positionWorld.toVar();
       const depth = wp.y.negate().toVar();
+      const xz = vec2(wp.x, wp.z).toVar();
 
-      // Albedos are dim on purpose. The previous dry sand was 0.74 linear, and
-      // once the mottling's 1.16 ceiling and a clear-sky IBL were through with
-      // it the whole island clipped to white: no grain, no shading, no beach.
-      // Quartz beach sand reflects around 0.35-0.45 diffuse — but that figure is
-      // the *albedo*, and what a viewer sees is the albedo times the irradiance,
-      // which here is a 3.4-intensity key plus a hemisphere fill. Measured off
-      // the rendered frame, an albedo of 0.52 put the island at RGB 228,228,228:
-      // not clipped, but a neutral near-white with no grain and no colour, which
-      // reads as snow. These land it near 195 and keep the warm ratio a quartz
-      // beach actually has, so the normal map, the caustics and the swash band
-      // all have somewhere to go.
-      // Pale warm stone, and brighter than the soil below it rather than darker:
-      // this is the crown, and in the reference frame it is the lightest thing
-      // on the island after the beach — sRGB (167, 152, 131) against the
-      // canopy's (54, 62, 41).
-      const dryRock = vec3(0.26, 0.235, 0.2);
-      // Soil under a closed canopy, not open ground. It used to be 0.24 — nearly
-      // as bright as the beach — and since `VEGETATION_COVER` lets a fraction of
-      // it through everywhere, that one constant was contributing about half the
-      // luminance of every vegetated slope on the island and taking the hue with
-      // it. A shaded forest floor is dark and warm.
-      const dryInland = vec3(0.15, 0.125, 0.082);
-      const beachSand = vec3(0.30, 0.26, 0.18);
-      const wetSand = vec3(0.15, 0.13, 0.10);
-      const shallowSand = vec3(0.42, 0.4, 0.3);
-      const deepSilt = vec3(0.1, 0.15, 0.17);
-
-      // Tight, because this is the beach edge. The 7.5 m ramp this replaced
-      // spanned the entire intertidal slope, so there was no elevation at which
-      // the floor was unambiguously sand rather than seabed.
-      const aboveWater = wp.y.smoothstep(-0.8, 1.6).toVar();
-      const submerged = mix(deepSilt, shallowSand, smoothstepDownNode(depth, 4, 70)).toVar();
-      // Inland is warmer and darker: the same sand, dry and dusted with what
-      // grows on it. The rock term takes over near the summit, which is why its
-      // edges are a fraction of `ISLAND.peak` rather than the old fixed metres.
-      const exposed = mix(beachSand, dryInland, wp.y.smoothstep(2, 15)).toVar();
-
-      // The island is vegetated in the *ground*, not only in the instances.
+      // --- palette ------------------------------------------------------------
       //
-      // This is the difference between an island and a sandbank, and geometry
-      // cannot supply it. Reading as lush needs canopy over most of the
-      // interior; the interior is three quarters of a square kilometre, and a
-      // tree here is thirty thousand triangles. Even at two hundred trees — more
-      // than doubling what the dressing carries — that is one per six thousand
-      // square metres, which an aerial capture showed for exactly what it is: a
-      // white dome with objects sprinkled on it.
-      //
-      // So the biome lives in the terrain colour and the models are the hero
-      // layer standing in it, which is how open-world terrain has always worked.
-      // The band starts above the swash and stops below the summit rock, and the
-      // mottling below breaks its edge up so it is a treeline rather than a
-      // contour.
-      //
-      // Measured against `docs/ref/tropical-island-sea-level-v2.png` rather
-      // than chosen. Sampled over the canopy the reference sits at sRGB
-      // (54, 62, 41) and (61, 71, 48): green ahead of red by about eight
-      // levels, blue at three quarters of red. What stood here was
-      // (0.075, 0.115, 0.05), whose hue is not far off — but the same frame
-      // from this renderer measured (176, 183, 184), a saturation of 0.04
-      // against the reference's 0.49. Which is not a green hill. It is a grey
-      // one.
-      //
-      // The hue is therefore barely touched and the *value* is more than
-      // halved. A sunlit broadleaf canopy is dark — in the reference it is a
-      // third of the beach it grows behind, and here it was nine tenths of it,
-      // which is why the island read as chalk with shrubs on. The blue is
-      // lifted a little relative to what it was, because at a kilometre the
-      // sky IBL puts a blue-white fill over everything and a band with no blue
-      // in it turns grey rather than staying green.
-      const canopy = vec3(0.03, 0.043, 0.024);
-      const scrub = vec3(0.062, 0.074, 0.036);
-      const growth = mix(scrub, canopy, wp.y.smoothstep(9, 60)).toVar();
-      const vegetated = mix(
-        exposed,
-        growth,
-        wp.y.smoothstep(BEACH_TOP_METRES, VEGETATION_FULL_METRES).mul(VEGETATION_COVER),
-      ).toVar();
+      // A saturated, stylised-real tropical palette. The albedos are lower than
+      // the sRGB targets they stand for (dry sand reads as about #e8d5a8, wet as
+      // #b59a6e) because what a viewer sees is albedo times a 3.4-intensity key
+      // plus sky, through the tone curve; at the targets' own values the beach
+      // clips to white. The *ratios* are the targets': warm pale coral sand, a
+      // wet band a little under half its value, and greens that stay green
+      // rather than going olive under the sky fill.
+      const sandDry: Node = vec3(0.5, 0.41, 0.25);
+      const sandWet: Node = vec3(0.21, 0.155, 0.085);
+      const shallowSand: Node = vec3(0.46, 0.42, 0.3);
+      const deepSilt: Node = vec3(0.1, 0.15, 0.17);
+      const soil: Node = vec3(0.13, 0.075, 0.04);
+      const grass: Node = vec3(0.08, 0.135, 0.03);
+      const jungle: Node = vec3(0.034, 0.088, 0.02);
+      const jungleLush: Node = vec3(0.06, 0.13, 0.026);
+      const rockLight: Node = vec3(0.23, 0.2, 0.16);
+      const rockDark: Node = vec3(0.1, 0.085, 0.07);
+      const moss: Node = vec3(0.06, 0.09, 0.03);
 
-      // The treeline, and it is high on purpose.
-      //
-      // At 0.42 the bare rock started 63 m up a 150 m island, so two thirds of
-      // the dome came out pale stone and the whole planting scheme sat in a ring
-      // round the bottom of it: a bald hill with a hedge. What a tropical high
-      // island looks like is the other way round — the reference frame is
-      // continuous dark canopy over the lower two thirds with a pale crown above
-      // it — and bare rock only appears where the slope gets too steep and too
-      // thin to hold anything.
-      //
-      // 0.72 to 0.95, and the numbers are read off the frame rather than off
-      // the contour, because on a dome those are not the same thing. Elevation
-      // 0.58 of the peak sounds like the lower half staying green; it is not.
-      // The crest falls away over 0.9 of the shore radius, so 87 m of a 150 m
-      // island is still 225 m out from the summit — a cap 45% of the island's
-      // radius across, which side-on is most of what the eye sees. Measured on
-      // the capture, a band starting at 0.58 left two thirds of the visible dome
-      // pale and the reference has pale rock over about a third of it.
-      const land = mix(
-        vegetated,
-        dryRock,
-        wp.y.smoothstep(ISLAND.peak * 0.72, ISLAND.peak * 0.95),
-      ).toVar();
+      // --- noise --------------------------------------------------------------
+      // The same texture-backed value noise the heightfield uses, at three
+      // scales: stands (90 m), patches (23 m) and grain (4.7 m).
+      const stand: Node = valueNoise(xz.mul(1 / 90)).toVar();
+      const patch: Node = valueNoise(xz.mul(1 / 23).add(vec2(17.1, 3.3))).toVar();
+      const grain: Node = valueNoise(xz.mul(1 / 4.7).add(vec2(5.7, 11.9))).toVar();
 
-      const base = mix(submerged, land, aboveWater).toVar();
-
-      // The swash band. Sand within a few metres of mean sea level is wet more
-      // often than it is dry, and without the band the beach meets the water as
-      // a join between two dry-looking materials — the strongest single tell
-      // that a shoreline is a displaced grid. It straddles y = 0 because the
-      // swash does.
-      const swash = smoothstepDownNode(wp.y.abs(), 1, 3.4).toVar();
-      const damp = mix(base, wetSand, swash).toVar();
-
-      // Broad mottling: patches of weed and darker sediment, the dark blotches
-      // visible through the shallows in the reference top-down shot.
-      // Two scales, and a wider range than the 0.78-1.18 this replaced. That
-      // band was too tight to survive the tone curve: with the island already
-      // sitting high on the ACES shoulder, a +/-20% multiplier arrived as about
-      // four levels and the beach read as a single flat value. Sand is not
-      // uniform — it is shell, weed, damp patches and wind-sorted grain — and
-      // the variation is most of what separates a beach from a painted dome.
-      const patch = valueNoise(vec2(wp.x, wp.z).mul(1 / 26)).toVar();
-      const grain = valueNoise(vec2(wp.x, wp.z).mul(1 / 5.5)).toVar();
-      const mottled = damp
-        .mul(patch.mul(0.52).add(0.66))
-        .mul(grain.mul(0.16).add(0.92))
+      // --- slope --------------------------------------------------------------
+      // From the mesh normal: 0 on the flat, rising with steepness. Rock is
+      // where the ground is too steep to hold soil, broken up by the patch
+      // noise so the exposure follows spurs and gullies rather than a contour.
+      const steep: Node = float(1).sub(normalize(normalWorldGeometry).y).toVar();
+      // Thinner soil higher up: the same slope exposes rock sooner near the
+      // crest than on the lower flanks.
+      const rockExposure: Node = steep
+        .add(patch.sub(0.5).mul(0.12))
+        .add(wp.y.smoothstep(ISLAND.peak * 0.45, ISLAND.peak * 1.2).mul(0.07))
+        .smoothstep(0.1, 0.2)
         .toVar();
 
-      if (caustics === null) return vec4(mottled, 1);
+      // Strata: banded by elevation, the bands warped by the stand noise so
+      // they dip and pinch rather than ruling the cliff with level lines.
+      const layer: Node = wp.y.mul(0.42).add(stand.mul(14)).add(patch.mul(3)).sin().mul(0.5).add(0.5);
+      const strata: Node = mix(
+        rockDark,
+        rockLight,
+        layer.smoothstep(0.2, 0.8).mul(0.45).add(patch.mul(0.3)).add(grain.mul(0.25)),
+      );
+      // Moss and lichen on the upper faces of the rock.
+      const rock: Node = mix(strata, moss, normalize(normalWorldGeometry).y.smoothstep(0.75, 0.9).mul(0.55)).toVar();
+
+      // --- ground cover -------------------------------------------------------
+      // Grass on the low flats behind the beach and in clearings; jungle
+      // everywhere else, in stands of two greens. No cap: the forest runs to
+      // the summit, and the summit is only rock where it is steep.
+      const lowland: Node = smoothstepDownNode(wp.y, 6, 20).mul(smoothstepDownNode(steep, 0.03, 0.08)).mul(0.7);
+      const clearing: Node = patch.smoothstep(0.66, 0.82).mul(0.45);
+      const openness: Node = lowland.max(clearing).mul(stand.smoothstep(0.25, 0.7)).toVar();
+      const forest: Node = mix(jungle, jungleLush, stand.smoothstep(0.3, 0.75)).toVar();
+      // Open ground is scrub, not lawn: a flat grass albedo behind the beach
+      // read as a mown verge from the sea. Tufts of darker scrub, straw-dry
+      // patches and bare sandy soil break it at three scales, and the scrub
+      // thickens toward the forest so the treeline grows out of it.
+      const tuft: Node = valueNoise(xz.mul(1 / 1.9).add(vec2(41.3, 7.7))).toVar();
+      const scrubTone: Node = mix(grass, jungleLush.mul(0.8), tuft.smoothstep(0.45, 0.8).mul(0.75)).toVar();
+      const straw: Node = vec3(0.2, 0.17, 0.07);
+      const dried: Node = mix(scrubTone, straw, patch.mul(0.6).add(grain.mul(0.4)).smoothstep(0.62, 0.86).mul(0.7));
+      const scrub: Node = mix(dried, soil.mul(1.6), grain.mul(tuft).smoothstep(0.42, 0.7).mul(0.4)).toVar();
+      const green: Node = mix(forest, scrub, openness).mul(grain.mul(0.3).add(0.85)).toVar();
+      // The forest floor shows through as warm soil at the treeline's ragged edge.
+      const growthEdge: Node = wp.y.smoothstep(GROWTH_START_METRES, GROWTH_FULL_METRES).toVar();
+      const ragged: Node = growthEdge.mul(patch.mul(0.6).add(0.7)).clamp(0, 1).toVar();
+      const vegetated: Node = mix(soil, green, ragged.smoothstep(0.35, 0.9).mul(VEGETATION_COVER).add(0.07)).toVar();
+
+      // Beach: dry sand, with the vegetation creeping onto its back edge.
+      const beach: Node = sandDry.mul(patch.mul(0.12).add(0.94)).mul(grain.mul(0.1).add(0.95)).toVar();
+      const land: Node = mix(beach, vegetated, ragged.smoothstep(0.08, 0.5)).toVar();
+      const ground: Node = mix(land, rock, rockExposure.mul(wp.y.smoothstep(1.5, 6))).toVar();
+
+      // --- water's edge -------------------------------------------------------
+      // Tight, because this is the beach edge: unambiguously sand above it,
+      // seabed below it.
+      const aboveWater: Node = wp.y.smoothstep(-0.8, 1.6).toVar();
+      const submerged: Node = mix(deepSilt, shallowSand, smoothstepDownNode(depth, 4, 70)).toVar();
+      const base: Node = mix(submerged, ground, aboveWater).toVar();
+
+      // The wet band: everything the swash reaches is darker and, through
+      // `roughnessNode`, glossy. Its upper edge wanders with the patch noise so
+      // the tide line is not a contour.
+      const wetTop: Node = patch.mul(0.9).add(1.4);
+      const wet: Node = smoothstepDownNode(wp.y, wetTop.mul(0.35), wetTop).mul(wp.y.smoothstep(-1.2, -0.2)).toVar();
+      const damp: Node = mix(base, mix(sandWet, base.mul(0.45), rockExposure), wet.mul(aboveWater.max(0.6))).toVar();
+
+      // Seabed mottling: weed and darker sediment under the shallows.
+      const seabedMottle: Node = mix(float(1), patch.mul(0.45).add(0.72), float(1).sub(aboveWater));
+      const mottled: Node = damp.mul(seabedMottle).toVar();
+
+      // Shore hook: the swash darkens the sand it reaches and it dries over
+      // seconds. Scales whatever the palette above produced; see `ocean/Surf`.
+      const surfed = applySwashToGround(mottled, wp).toVar();
+
+      if (caustics === null) return vec4(surfed, 1);
 
       // Caustics only exist under water, and fade out as the floor gets deep
       // enough that the surface pattern has diverged into ambient light.
       const reach = smoothstepDownNode(depth, 2, 48).mul(float(1).sub(aboveWater)).toVar();
       const lit = mix(float(1), caustics, reach.mul(strength)).toVar();
-      return vec4(mottled.mul(lit), 1);
+      return vec4(surfed.mul(lit), 1);
+    })();
+
+    // Wet sand is a mirror for a moment after each wave; dry sand is chalk.
+    this.material.roughnessNode = Fn(() => {
+      const y = positionWorld.y;
+      const wetTop = valueNoise(vec2(positionWorld.x, positionWorld.z).mul(1 / 23).add(vec2(17.1, 3.3)))
+        .mul(0.9)
+        .add(1.4);
+      const wet = smoothstepDownNode(y, wetTop.mul(0.35), wetTop).mul(y.smoothstep(-1.5, -0.4));
+      return mix(float(0.93), float(0.38), wet);
     })();
 
     this.material.needsUpdate = true;
@@ -1503,6 +1636,37 @@ function buildNoiseNodes(map: THREE.Texture): NoiseNodes {
   const sectorMaskNode = (u: Node, s: Sector): Node =>
     u.dot(vec2(s.x, s.z)).smoothstep(s.edge, 1);
 
+  /** `islandRelief()` above, term for term and in the same order. */
+  const islandReliefNode = (dv: Node, u: Node, t: Node): Node => {
+    const g = valueNoise(
+      vec2(
+        u.x.mul(RIDGE_RADIUS).add(RIDGE_OFFSET[0]).add(dv.x.mul(RIDGE_WANDER)),
+        u.y.mul(RIDGE_RADIUS).add(RIDGE_OFFSET[1]).add(dv.y.mul(RIDGE_WANDER)),
+      ),
+    ).toVar();
+    const ridged = float(1).sub(g.mul(2).sub(1).abs()).toVar();
+    const ridgeMask = t
+      .smoothstep(RIDGE_IN, RIDGE_FULL)
+      .mul(smoothstepDownNode(t, RIDGE_FADE, RIDGE_OUT))
+      .toVar();
+    const y = ridged.sub(0.5).mul(RIDGE_LIFT).mul(ridgeMask).toVar();
+
+    const shoreFade = smoothstepDownNode(t, PEAK_SHORE_IN, PEAK_SHORE_OUT).toVar();
+    for (const peak of PEAKS) {
+      const d = dv.sub(vec2(peak.x, peak.z)).length().div(peak.radius);
+      const bump = smoothstepDownNode(d, 0, 1).toVar();
+      y.addAssign(bump.mul(peak.lift).mul(shoreFade));
+    }
+
+    y.addAssign(
+      sectorMaskNode(u, CLIFF)
+        .mul(t.smoothstep(CLIFF_RISE_IN, CLIFF_RISE_OUT))
+        .mul(smoothstepDownNode(t, CLIFF_BROW, CLIFF_FOOT))
+        .mul(CLIFF_LIFT),
+    );
+    return y;
+  };
+
   /** `shoreFraction()` above, term for term and in the same order. */
   const shoreFractionNode = (u: Node): Node => {
     const e = u.dot(vec2(ELONGATION_AXIS.x, ELONGATION_AXIS.z)).toVar();
@@ -1580,6 +1744,7 @@ function buildNoiseNodes(map: THREE.Texture): NoiseNodes {
           .mul(HEADLAND_LIFT),
       );
       y.addAssign(crest.mul(SPIT_LIFT));
+      y.addAssign(islandReliefNode(dv, u, t));
 
       const lagoon = sectorMaskNode(u, LAGOON)
         .mul(t.smoothstep(LAGOON_IN, LAGOON_FULL))

@@ -115,15 +115,13 @@ export const TRANSLUCENCY_GAIN = 0.55;
  * a viewer walking up the beach watched the far forest breathe and the palms in
  * front of them stand perfectly still.
  *
- * The wavelength, speed and amplitude below are `Canopy`'s, deliberately, and
- * `Imposters` uses them too. There are real handovers now — a plant becomes a
- * card at 60 m if it is understorey and 120 m if it is a tree, and the canopy
- * field fades in over 90-180 m behind both — so the shared constants have
- * stopped being a hedge against a future fade and started doing their job.
+ * The wavelength, speed and amplitude below are `Canopy`'s, deliberately: the
+ * canopy card field fades in over 90-180 m behind the planted trees, and the
+ * shared constants are what keep that handover from changing how the forest
+ * moves.
  *
  * They do **not** share a phase, and no comment elsewhere should claim they do.
- * `Canopy` adds a per-instance offset from its card seed and `Imposters` adds
- * one from its yaw; a mesh has no equivalent constant available in the vertex
+ * `Canopy` adds a per-instance offset from its card seed; a mesh has no equivalent constant available in the vertex
  * stage without new plumbing — `positionGeometry` varies across the tree and
  * `positionLocal` is post-instancing. What survives a handover is an amplitude
  * and frequency match, not a continuous phase: a plant swapping to a card keeps
@@ -335,6 +333,9 @@ export function applyGroundShadingTo(
     // loader produces is one; anything else is left alone rather than silently
     // skipped in a way that looks like it worked.
     if ((material as THREE.NodeMaterial).isNodeMaterial !== true) continue;
+    // Light sources and translucent effects (fire, smoke) opt out: contact
+    // shade and cloud shadow on something that glows reads as a dirty lamp.
+    if (material.userData.noGroundShading === true) continue;
     const node = material as THREE.NodeMaterial;
     applyGroundShading(node, inputs);
     if (use.all && inputs.foliage) {
