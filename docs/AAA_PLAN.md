@@ -151,12 +151,16 @@ Audit each against what shipped AAA titles do, fix on evidence, measure cost per
 
 ### P. Words: copy, tone and onboarding (copy agent)
 User direction 2026-11-13: make the language more interesting, engaging and user-friendly, taking reference from the best games and repos.
-- [ ] Voice: an original seafaring-adventure voice for everything the player reads in play (menu, loading lines, objectives, toasts, hints, ledger labels, finish states) — warm, a little wry, never parody, never a pastiche of any one game; instrumentation (FPS, backend, tier) stays plain and truthful
-- [ ] Onboarding that teaches by doing: first-minute hints in the order a new player needs them, context-sensitive (keyboard vs touch), dismissed once learned
-- [ ] Loading: rotating lines that are tips or world flavour, not progress jargon; errors that say what happened and what to do
-- [ ] Every label and tooltip understandable without graphics knowledge; jargon (JONSWAP, TRAA) moves to the README and an "about the tech" corner
-- [ ] README rewritten to sell the experience first (hero gif/images, one-line pitch, play link, then the tech), modelled on the best showcase repos
-- [ ] `PRODUCT.md` updated: the voice/instrument split is redrawn (player-facing text gets a voice; readouts stay plain)
+- [x] Voice: an original seafaring-adventure voice for everything the player reads in play (menu, loading lines, objectives, toasts, hints, ledger labels, finish states) — warm, a little wry, never parody, never a pastiche of any one game; instrumentation (FPS, backend, tier) stays plain and truthful
+- [x] Onboarding that teaches by doing: first-minute hints in the order a new player needs them, context-sensitive (keyboard vs touch), dismissed once learned
+- [x] Loading: rotating lines that are tips or world flavour, not progress jargon; errors that say what happened and what to do
+- [x] Every label and tooltip understandable without graphics knowledge; jargon (JONSWAP, TRAA) moves to the README and an "about the tech" corner
+- [x] README rewritten to sell the experience first (hero gif/images, one-line pitch, play link, then the tech), modelled on the best showcase repos
+- [x] `PRODUCT.md` updated: the voice/instrument split is redrawn (player-facing text gets a voice; readouts stay plain)
+- Done 2026-11-13: voice guide in `PRODUCT.md` › Voice; first-minute lessons in `src/ui/Coach.ts`
+  (look, helm, sail, steer, cargo, anchor; keyboard and touch wording; learned set kept in
+  localStorage); loading lines in `src/ui/LoadingTips.ts`; ledger tooltips and *About the tech*.
+  Not done: landscape phones show no lessons (no free slot); the storm quote is unchanged.
 
 ### Follow-ups found while merging
 - [x] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent) — fixed: the prewarm now compiles the frame's real contexts (scene pass target + TRAA MRT + velocity, pinned call depths, reflection), pipelines build in parallel, live frames never build a pipeline synchronously. Same session, High: `isReady` ~48 s → ~17 s, worst frame after ready ~1.8 s → <50 ms, loop start ~17 s → ~7 s.
