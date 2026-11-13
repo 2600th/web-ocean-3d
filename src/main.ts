@@ -1225,6 +1225,7 @@ class App {
    * chain that moves them deeper or shallower changes nothing here.
    */
   private installStableContexts(): void {
+    if (this.backend !== 'webgpu') return;
     const contexts = (this.renderer as unknown as {
       _renderContexts: { get(target: unknown, mrt?: unknown, depth?: number): unknown };
     })._renderContexts;
@@ -1592,7 +1593,10 @@ class App {
     // too; see `installAsyncPipelines`.
     this.compilesInFlight++;
     const run = async (): Promise<void> => {
-      if (!scenePass) {
+      // WebGL keeps the plain compile: it has neither the MRT nor the FXC
+      // build cost, and compiling into the scene pass's multisampled target
+      // there sets off an invalid depth-stencil blit.
+      if (!scenePass || this.backend !== 'webgpu') {
         await this.renderer.compileAsync(this.scene, this.camera);
         return;
       }
