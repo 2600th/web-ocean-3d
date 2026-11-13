@@ -102,8 +102,9 @@ reinventing it.
 - [ ] Underwater look: god rays, particulates, colour depth grading, caustics on life
 
 ### I. Sky, clouds and birds (sky agent)
-- [ ] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer
-- [ ] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks
+- [x] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer — clouds resolved by TRAA (own velocity), lit by the measured dome (no white deck at night/dusk), sunset underglow, storm base relief, 2D cirrus; twilight dome, milky way, 22° moon halo. Cost unchanged: cloud layer 2.7 ms at High / 1600x900, same as before the pass
+- [x] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks — M-wing flap/glide in the vertex stage, banking circuits round ship and island, soarers, five perched on the yards and taffrail that take off when she gets under way
+- [ ] Follow-ups: perched and close gulls read as white shapes (no feather/grey-back detail); storm deck is moody but low in structure toward the sun; bright sea horizon line at night is the water/haze, not the sky
 
 ### J. Audio and music (audio agent)
 - [x] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater/tour states, cargo sting, Music slider)
