@@ -2165,6 +2165,51 @@ body {
   bottom: 11px;
 }
 
+/* Sail and anchor orders, stacked beside the stick. */
+.touchhelm {
+  position: absolute;
+  right: calc(var(--gutter) + min(38vw, 160px) + 12px);
+  bottom: calc(var(--gutter) + 92px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 3;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touchhelm[hidden] {
+  display: none;
+}
+
+.touchhelm__btn {
+  min-width: 64px;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  font: 800 13px/1 var(--font-body);
+  letter-spacing: 0.04em;
+  color: var(--on-wood, #f1e2bf);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 240, 200, 0.12), transparent 70%) padding-box,
+    linear-gradient(rgba(42, 27, 15, 0.92), rgba(23, 14, 7, 0.95)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 6px 14px rgba(5, 3, 1, 0.45);
+  cursor: pointer;
+}
+
+.touchhelm__btn:active {
+  transform: translateY(1px);
+  filter: brightness(1.2);
+}
+
+.touchhelm__btn:focus-visible {
+  outline: 2px solid var(--gold, #ecc66c);
+  outline-offset: 2px;
+}
+
 /* ==========================================================================
    Storm quote — the voice. IM Fell English italic, and nowhere else.
 
@@ -2459,6 +2504,20 @@ body {
 
   .switchrow {
     padding: 11px 0;
+  }
+}
+
+/* Landscape phone: the quest column and the wind dial share one short left
+   edge. Scale the quest down and drop its second line so the cargo tally
+   clears the dial instead of sliding under it. */
+@media (max-height: 520px) {
+  .hud-quest {
+    transform: scale(0.78);
+    transform-origin: top left;
+  }
+
+  .objective__detail {
+    display: none;
   }
 }
 

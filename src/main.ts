@@ -1531,6 +1531,8 @@ class App {
     if (TouchControls.isTouchDevice()) {
       this.touchControls = new TouchControls(this.uiRoot, {
         onInput: (throttle, rudder) => this.shipControls?.setInput(throttle, rudder),
+        onSail: (direction) => this.gameplay?.stepSail(direction),
+        onAnchor: () => this.gameplay?.toggleAnchor(),
       });
       this.touchControls.setVisible(this.state.cameraMode === 'boat');
     }
