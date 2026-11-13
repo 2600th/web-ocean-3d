@@ -767,6 +767,17 @@ body {
   transform: none;
 }
 
+/* About the tech: the jargon, folded the same way, read as short notes. */
+.ledger-about {
+  margin-top: 0;
+}
+
+.ledger-about__line {
+  margin: 0 0 9px;
+  font: 500 14px/1.45 var(--font-body);
+  color: var(--ink);
+}
+
 /* A ledger tick-box: an inked square, ticked in wax. */
 .switchrow {
   display: flex;
