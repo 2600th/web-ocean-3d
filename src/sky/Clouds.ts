@@ -5,8 +5,6 @@ import {
   If,
   Loop,
   cameraPosition,
-  cameraProjectionMatrix,
-  cameraViewMatrix,
   clamp,
   dot,
   exp,
@@ -570,18 +568,23 @@ export class Clouds {
    * frame's and last frame's view-projection. Camera translation then moves
    * nothing and rotation moves it exactly as far as the sky moves.
    *
+   * Both matrices are the unjittered ones the ocean uses (`current`, captured
+   * outside the pipeline render). The camera's own projection is jittered for
+   * the length of the scene pass, which put up to half a pixel of Halton offset
+   * into every cloud pixel's vector and softened the deck's edges.
+   *
    * Safe as a material MRT override only because the layer is on its own
    * render layer and excluded from the planar mirror: a material `mrtNode`
    * *replaces* the output of a render into a target without MRT, which is what
    * the reflector's target is.
    */
-  setPreviousViewProjection(previous: any): void {
+  setPreviousViewProjection(previous: any, current: any): void {
     this.material.mrtNode = mrt({
       velocity: Fn(() => {
         const dir = vec4(normalize(positionGeometry), 0);
-        const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(dir);
+        const now = current.mul(dir);
         const before = previous.mul(dir);
-        return current.xy.div(current.w).sub(before.xy.div(before.w));
+        return now.xy.div(now.w).sub(before.xy.div(before.w));
       })(),
     });
     this.material.needsUpdate = true;
