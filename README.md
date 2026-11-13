@@ -150,7 +150,7 @@ would be meaningless.
 | **Orbit** | LMB drag rotate · RMB drag pan · scroll zoom |
 | **Fly** | click to capture the mouse · WASD · Space/Ctrl up-down · **scroll** speed (1.5–600 m/s) · Shift boost |
 | **Boat (Helm)** | **W/S** set and take in sail, one step at a time (furled · half · full) · **A/D** rudder · **R** let go / weigh anchor · **drag** to orbit the chase camera · **scroll** to dolly · the hull is turned away from shoaling water rather than fenced by a radius |
-| **Cinematic** | A looping 60 s authored tour in six beats — open water, outbound, landfall, return, squall, reef run — carrying its own hour and weather, so one lap runs a full day and a squall through the scene |
+| **Cinematic** | A looping 90 s attract-mode trailer, cut rather than flown, in nine shots — dawn crane, wave-skim alongside the hull, reef dive through the waterline, hero orbit, island reveal over the swell, beach flyover, golden-hour dolly-zoom, squall, night watch — framed on the live hull and held clear of the crests, the terrain and the ship. It carries its own hour and weather, so one lap runs a full day and a squall; `prefers-reduced-motion` drops the handheld, the whips and the zooms |
 | **Touch** | Boat mode on a touch device gets an on-screen stick: forward for ahead, back for astern, left and right for rudder |
 
 **Sailing.** The ship sails on the wind the sea is built from. Head to wind (within about 35°)

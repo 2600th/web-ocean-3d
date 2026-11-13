@@ -92,8 +92,8 @@ reinventing it.
 - [ ] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
 
 ### G. Cinematic camera (camera agent)
-- [ ] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
-- [ ] Smooth handoff between tour and free cameras
+- [x] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
+- [x] Smooth handoff between tour and free cameras (lens and Dutch angle ease back with the pose)
 
 ### H. Underwater and sea-floor life (underwater agent)
 - [ ] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
