@@ -87,6 +87,30 @@ reinventing it.
   (bow spray is a CPU billboard system in `gameplay/effects`; `physics/Spray` slam spray is still parked)
 - [ ] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
 
+### G. Cinematic camera (camera agent)
+- [ ] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
+- [ ] Smooth handoff between tour and free cameras
+
+### H. Underwater and sea-floor life (underwater agent)
+- [ ] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
+- [ ] Animals: more fish species and schools, a turtle, rays, jellyfish — procedural meshes, boids/paths
+- [ ] Underwater look: god rays, particulates, colour depth grading, caustics on life
+
+### I. Sky, clouds and birds (sky agent)
+- [ ] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer
+- [ ] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks
+
+### J. Audio and music (audio agent)
+- [ ] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater states)
+- [ ] SFX polish: hull creaks, sail luffing, rigging, wave slaps, seabirds, underwater muffling, UI clicks
+
+### K. Shore and ship–wave interaction (shore agent)
+- [ ] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace
+- [ ] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks
+
+### L. Game feel and polish (lead)
+- [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
