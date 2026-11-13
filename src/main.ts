@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   mrt,
+  normalView,
   output,
   pass,
   positionWorld,
@@ -10,7 +11,6 @@ import {
   vec4,
   velocity,
 } from 'three/tsl';
-import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
@@ -76,6 +76,7 @@ import {
   OutputTransform,
 } from './post/OutputTransform';
 import { SpatialAA } from './post/SpatialAA';
+import { PostChain } from './post/PostChain';
 import { CameraDirector } from './cameras/CameraDirector';
 import { CINEMATIC_BEATS, nominalShipXZ } from './cameras/Cinematic';
 import { getPreset } from './presets';
@@ -269,12 +270,19 @@ const boot = {
   root: document.getElementById('boot'),
   bar: document.getElementById('boot-bar'),
   status: document.getElementById('boot-status'),
+  /** Furthest the course has been inked; the ship never sails backwards. */
+  reached: 0,
   set(progress: number, message: string) {
     // Scaled rather than resized. Animating `width` puts a layout pass and a
     // paint on the main thread for every update, during the one stretch where
     // that thread is already compiling shaders and decoding assets; a transform
     // is composited and costs neither. The bar is `transform-origin: left`.
-    const clamped = Math.max(0, Math.min(1, progress));
+    //
+    // Monotonic: stages are reported from more than one place (0.85 for the
+    // controls lands before 0.82 for the first frame), and a bar that slides
+    // back reads as something having gone wrong.
+    const clamped = Math.max(this.reached, Math.min(1, progress));
+    this.reached = clamped;
     if (this.bar) {
       (this.bar as HTMLElement).style.transform = `scaleX(${clamped})`;
     }
@@ -285,9 +293,19 @@ const boot = {
   hide() {
     this.root?.classList.add('boot--hidden');
   },
-  fail(message: string) {
+  /**
+   * The failure state: what happened and what to do, in plain words, with the
+   * error's own text under it, smaller, for whoever needs to report it.
+   */
+  fail(message: string, detail = '') {
     if (this.status) {
       this.status.textContent = message;
+      if (detail) {
+        const small = document.createElement('small');
+        small.className = 'boot__status-detail';
+        small.textContent = detail;
+        this.status.append(small);
+      }
       this.status.classList.add('boot__status--error');
     }
   },
@@ -378,7 +396,8 @@ class App {
   private readonly prevViewProjection = uniform(new THREE.Matrix4());
   /** This frame's *unjittered* view-projection; see the ocean's velocity. */
   private readonly currViewProjection = uniform(new THREE.Matrix4());
-  private traaNode: unknown = null;
+  /** GTAO, the temporal resolve (TRAA/TAAU), sharpen, motion blur, CA, eye adaptation, grain. */
+  private postChain!: PostChain;
   /** The scene pass the frame draws through; see `compileForFrame`. */
   private scenePass: ReturnType<typeof pass> | null = null;
   /** True while a live (loop-driven) frame renders; see `installAsyncPipelines`. */
@@ -545,7 +564,7 @@ class App {
   }
 
   async start(): Promise<void> {
-    boot.set(0.05, 'Initialising renderer…');
+    boot.set(0.05, 'Waking the graphics card…');
     const rendererOptions: Parameters<typeof createRenderer>[0] = {
       canvas: this.canvas,
       forceWebGL: this.state.forceWebGL,
@@ -648,7 +667,7 @@ class App {
 
     const quality = QUALITY_TIERS[this.state.quality];
 
-    boot.set(0.25, 'Building wave spectrum…');
+    boot.set(0.25, 'Raising the swell…');
     this.simulation = new OceanSimulation(this.renderer, {
       size: quality.fftSize,
       cascadeCount: quality.cascades,
@@ -663,7 +682,7 @@ class App {
     // sky purely so the ordering is impossible to get wrong.
     this.clouds = new Clouds();
 
-    boot.set(0.4, 'Building seafloor…');
+    boot.set(0.4, 'Laying the seabed…');
     // The seafloor must exist before the water material: the surface samples its
     // depth to shade shallows, and that binding is baked into the node graph.
     this.seafloor = new Seafloor(SEAFLOOR_EXTENT);
@@ -712,7 +731,7 @@ class App {
       this.ssr.setCamera(this.camera);
     }
 
-    boot.set(0.5, 'Compiling water shaders…');
+    boot.set(0.5, 'Teaching the water to catch the light…');
     this.water = this.buildWaterMaterial();
     this.oceanMesh = new OceanMesh(this.water.material, {
       radialSegments: quality.meshRings,
@@ -723,7 +742,7 @@ class App {
     this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
     this.scene.add(this.oceanMesh.mesh);
 
-    boot.set(0.7, 'Building atmosphere…');
+    boot.set(0.7, 'Hanging the sky…');
     this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
 
@@ -853,7 +872,7 @@ class App {
     // earshot is skipped rather than invented.
     this.audio.setGullLocator((out: GullFix) => this.locateGull(out));
 
-    boot.set(0.8, 'Building underwater pass…');
+    boot.set(0.8, 'Filling the deep…');
     this.underwater = new UnderwaterPass();
     // Required, not optional: a post pass is drawn with the post-processor's own
     // orthographic quad camera, so the built-in camera nodes resolve to that quad
@@ -929,7 +948,10 @@ class App {
       : pass(this.scene, this.camera);
     this.scenePass = scenePass;
     if (this.taaEnabled) {
-      scenePass.setMRT(mrt({ output, velocity }));
+      // View-space normals for GTAO. Without them it reconstructs normals from
+      // depth, which breaks down on distant ground seen at a grazing angle: the
+      // beach came out as a grid of stripes that TRAA could not average away.
+      scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
       this.clouds.setPreviousViewProjection(this.prevViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
@@ -952,26 +974,28 @@ class App {
           const world = vec4(positionWorld, 1);
           const current = (currViewProjection as any).mul(world);
           const previous = (prevViewProjection as any).mul(world);
-          return current.xy
-            .div(current.w.max(1e-4))
-            .sub(previous.xy.div(previous.w.max(1e-4)));
+          // `.z = 1` marks water for the AO mask in `PostChain`; every other
+          // material's vec2 velocity is widened to (x, y, 0, 1).
+          return vec4(
+            current.xy.div(current.w.max(1e-4)).sub(previous.xy.div(previous.w.max(1e-4))),
+            1,
+            1,
+          );
         })(),
       });
     }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
-    this.traaNode = this.taaEnabled
-      ? traa(
-          scenePass.getTextureNode('output'),
-          sceneDepth,
-          scenePass.getTextureNode('velocity'),
-          this.camera,
-        )
-      : null;
-    const sceneBeauty: any = this.traaNode
-      ? (this.traaNode as any).getTextureNode()
-      : scenePass.getTextureNode();
+    // AO, the temporal resolve and the post-resolve stages live in `PostChain`.
+    this.postChain = new PostChain({
+      renderer: this.renderer,
+      camera: this.camera,
+      scenePass,
+      depth: sceneDepth,
+      temporal: this.taaEnabled,
+    });
+    const sceneBeauty: any = this.postChain.buildResolve();
 
     this.fog = new VolumetricFog();
     // Required: a post pass draws with the post-processor's own orthographic
@@ -1063,9 +1087,14 @@ class App {
     // to be handed over explicitly or the depth buffer cannot be linearised.
     this.dof.setCamera(this.camera);
     this.dof.setFrameHeight(this.renderer.getDrawingBufferSize(_drawingBuffer).y);
-    const focused = this.dof.build(rtt(graded as THREE.Node), sceneDepth);
+    const gradedTexture = rtt(graded as THREE.Node);
+    // Eye adaptation meters this — fog and the underwater pass included, so the
+    // dip below the surface is what it reacts to — and applies its gain ahead
+    // of the bloom, whose threshold assumes the preset's exposure.
+    this.postChain.buildExposure(gradedTexture);
+    const focused = this.dof.build(gradedTexture, sceneDepth);
 
-    const bloomed = this.bloom.build(rtt(focused as THREE.Node));
+    const bloomed = this.bloom.build(rtt(this.postChain.applyExposure(focused) as THREE.Node));
 
     // Flare after the bloom and before the grade: it is light arriving at the
     // sensor through the glass, so it belongs with the other things the lens
@@ -1099,16 +1128,18 @@ class App {
     // move. See `SpatialAA` for why the filter has to sit between the other two
     // rather than at either end of the chain.
     this.post.outputNode = this.outputTransform.applyDither(
-      this.spatialAa.build(
-        this.outputTransform.buildDisplay(
-          this.lensRain.build(rtt(this.colorGrade.build(flared) as THREE.Node)),
-          OUTPUT_TONE_MAPPING,
-          OUTPUT_COLOR_SPACE,
+      this.postChain.applyGrain(
+        this.spatialAa.build(
+          this.outputTransform.buildDisplay(
+            this.lensRain.build(rtt(this.colorGrade.build(flared) as THREE.Node)),
+            OUTPUT_TONE_MAPPING,
+            OUTPUT_COLOR_SPACE,
+          ),
         ),
       ),
     ) as THREE.Node;
 
-    boot.set(0.85, 'Wiring controls…');
+    boot.set(0.85, 'Rigging the helm…');
     this.director = new CameraDirector({
       camera: this.camera,
       domElement: this.canvas,
@@ -1184,13 +1215,13 @@ class App {
     // See `requestSceneContent`.
     void this.requestSceneContent();
 
-    boot.set(0.82, 'Preparing the first frame…');
+    boot.set(0.82, 'Readying the first view…');
     await this.prewarm();
     this.loop.start();
-    boot.set(0.84, 'Streaming island content…');
+    boot.set(0.84, 'Bringing the ship and island in…');
     window.setTimeout(() => boot.hide(), 350);
 
-    boot.set(0.86, 'Loading ship and island…');
+    boot.set(0.86, 'Bringing the ship and island in…');
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
@@ -1204,8 +1235,8 @@ class App {
     // deals itself after that takes the path every other late level does — the
     // frame update hands it to `compileLodLevels`.
 
-    boot.set(0.98, 'Island arriving…');
-    boot.set(1, 'Ready');
+    boot.set(0.98, 'Island in sight…');
+    boot.set(1, 'Fair winds');
   }
 
   /**
@@ -1399,18 +1430,11 @@ class App {
    * otherwise the final frame's sub-pixel offset — and the history under it —
    * depend on how many free-running frames the session drew before the reset.
    *
-   * Reaches into two TRAANode fields (`_jitterIndex`, `_historyRenderTarget`)
-   * that r185 exposes but does not document; shrinking the history target is
-   * what its own `updateBefore` reads as "restart".
+   * `PostChain.resetTemporal` restarts TRAA, the GTAO rotation and the eye
+   * adaptation together.
    */
   private resetTemporal(): void {
-    const node = this.traaNode as
-      | { _jitterIndex: number; _historyRenderTarget: { setSize(w: number, h: number): void } }
-      | null;
-    if (node) {
-      node._jitterIndex = 0;
-      node._historyRenderTarget.setSize(1, 1);
-    }
+    this.postChain.resetTemporal();
     this.camera.updateMatrixWorld();
     this.prevViewProjection.value.multiplyMatrices(
       this.camera.projectionMatrix,
@@ -1813,7 +1837,7 @@ class App {
         const progress = 0.86 + fraction * 0.1;
         boot.set(
           progress,
-          'Loading island content ' + itemsLoaded + '/' + itemsTotal + '…',
+          'Bringing the ship and island in · ' + itemsLoaded + ' of ' + itemsTotal,
         );
       },
     });
@@ -2542,6 +2566,7 @@ class App {
     // read the volumetric fog already performs there, so nothing new is being
     // asked of the backend.
     this.lensFlare.setEnabled(quality.lensFlare === 1);
+    this.postChain.setTier(tier);
     this.water.setWakeDisplacement(quality.wakeDisplacement);
     // Instance counts only, and safe on a live scene: no geometry is rebuilt and
     // nothing allocates, so this is a tier knob rather than a reload. Null until
@@ -2884,6 +2909,7 @@ class App {
     // the sensor limit — `1 / exposure` is. The presets span 0.42 to 1.35, so a
     // fixed threshold would mean something different in each of the nine.
     this.bloom.setExposure(preset.toneMappingExposure);
+    this.postChain.setPreset(this.state.preset);
     // With the exposure, not instead of it, and the pair is not redundant:
     // exposure decides where the scene sits on the tone curve, the grade decides
     // what colour it is once it gets there. Collapsing them into one number is
@@ -2995,6 +3021,7 @@ class App {
 
   private update = (dt: number, elapsed: number): void => {
     this.director.update(dt);
+    this.postChain.update(dt);
 
     /**
      * The tour owns the sun while it is running.
@@ -3705,6 +3732,8 @@ class App {
           dof: this.dof,
           lensRain: this.lensRain,
           underwater: this.underwater,
+          /** AO, TAAU, sharpen, motion blur, CA, grain, eye adaptation; `setOverride` for A/B. */
+          chain: this.postChain,
         },
         loop: this.loop,
         backend: this.backend,
@@ -3810,6 +3839,7 @@ class App {
           // it captured on entry, so both halves are needed to close the race.
           this.captureOwnsClock = true;
           this.loop.setPaused(true);
+          this.postChain.setDeterministic(true);
           // Settle both things that pause the loop on their own account: the
           // scene load's compile pass and any tier change in flight. Awaiting
           // them is what makes the pause stick — the flag above only stops them
@@ -4145,6 +4175,7 @@ class App {
     this.lensFlare?.dispose();
     this.outputTransform?.dispose();
     this.spatialAa?.dispose();
+    this.postChain?.dispose();
     this.spray?.dispose();
     this.particles?.dispose();
     this.caustics?.dispose();
@@ -4170,14 +4201,18 @@ const canvas = document.getElementById('viewport') as HTMLCanvasElement | null;
 const uiRoot = document.getElementById('ui-root');
 
 if (!canvas || !uiRoot) {
-  boot.fail('Failed to start: page markup is missing #viewport or #ui-root.');
+  boot.fail('The page did not load completely. Reload to try again.');
 } else {
   void openStartGate(boot.root as HTMLElement)
     .then((selection) => new App(canvas, uiRoot, selection).start())
     .catch((error: unknown) => {
     console.error(error);
+    // What happened and what to do about it; the error's own words go under
+    // it. Try again reloads to the menu, where a lighter choice can be made.
     boot.fail(
-      error instanceof Error ? `Failed to start: ${error.message}` : 'Failed to start.',
+      'The sea could not be launched on this device. '
+        + 'Try again, and if it fails twice, choose WebGL2 and Low on the menu.',
+      error instanceof Error ? error.message : '',
     );
     });
 }

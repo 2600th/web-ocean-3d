@@ -62,7 +62,7 @@ export class TouchControls {
     const pad = document.createElement('div');
     pad.className = 'touchpad';
     pad.setAttribute('role', 'group');
-    pad.setAttribute('aria-label', 'Ship throttle and rudder');
+    pad.setAttribute('aria-label', 'Steering stick: up for ahead, down for astern, left and right to steer');
     pad.hidden = true;
 
     const ring = document.createElement('div');
@@ -125,11 +125,11 @@ export class TouchControls {
         actions!.append(b);
       };
       if (callbacks.onSail) {
-        button('sailUp', 'More', 'Set more sail', () => callbacks.onSail!(1));
-        button('sailDown', 'Less', 'Take in sail', () => callbacks.onSail!(-1));
+        button('sailUp', 'More', 'More sail', () => callbacks.onSail!(1));
+        button('sailDown', 'Less', 'Less sail', () => callbacks.onSail!(-1));
       }
       if (callbacks.onAnchor) {
-        button('anchor', 'Anchor', 'Drop or weigh anchor', () => callbacks.onAnchor!());
+        button('anchor', 'Anchor', 'Drop or raise the anchor', () => callbacks.onAnchor!());
       }
       this.root.append(actions);
     }

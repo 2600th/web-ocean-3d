@@ -90,16 +90,16 @@ reinventing it.
 - [x] A light loop: floating loot to collect under sail, objective marker and compass bearing (`src/gameplay`)
 - [x] Sail trim against wind (point of sail matters), anchor, camera shake + spray on impacts
   (bow spray is a CPU billboard system in `gameplay/effects`; `physics/Spray` slam spray is still parked)
-- [ ] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
+- [x] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
 
 ### G. Cinematic camera (camera agent)
 - [x] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
 - [x] Smooth handoff between tour and free cameras (lens and Dutch angle ease back with the pose)
 
 ### H. Underwater and sea-floor life (underwater agent)
-- [ ] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
-- [ ] Animals: more fish species and schools, a turtle, rays, jellyfish — procedural meshes, boids/paths
-- [ ] Underwater look: god rays, particulates, colour depth grading, caustics on life
+- [x] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
+- [x] Animals: more fish species and schools, a turtle, rays, jellyfish — procedural meshes, boids/paths
+- [x] Underwater look: god rays, particulates, colour depth grading, caustics on life
 
 ### I. Sky, clouds and birds (sky agent)
 - [x] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer — clouds resolved by TRAA (own velocity), lit by the measured dome (no white deck at night/dusk), sunset underglow, storm base relief, 2D cirrus; twilight dome, milky way, 22° moon halo. Cost unchanged: cloud layer 2.7 ms at High / 1600x900, same as before the pass
@@ -114,7 +114,7 @@ reinventing it.
 ### K. Shore and ship–wave interaction (shore agent)
 - [x] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace — `ocean/Surf` (closed-form breakers in sets, shared by the ocean's vertex and fragment stages, the wake buffer and the ground hook)
 - [x] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks — `physics/Spray` (now visible; see its header for why it was not), routed through `onSprayImpact` in `main.ts`
-- [ ] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
+- [x] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
 
 ### L. Game feel and polish (lead)
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
@@ -127,15 +127,19 @@ reinventing it.
 
 ### N. Post-processing to current AAA practice (post agent)
 Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens DOF, occludable lens flare, ASC CDL grade + cos⁴ vignette, volumetric fog/god rays, lens rain, triangular dither, ACES. Missing against what shipped AAA titles run:
-- [ ] Tone mapping: compare ACES vs AgX vs Khronos PBR Neutral on the gallery; pick on evidence (web-ocean ships AgX)
-- [ ] Auto-exposure / eye adaptation (log-average luminance, asymmetric adaptation), so dawn, noon, storm, night and the underwater dip each expose themselves
-- [ ] Ambient occlusion: GTAO (`GTAONode`) on the ship, island, rocks and props — not the water
-- [ ] Motion blur from the existing velocity MRT (`MotionBlur`), shutter-angle based, strongest on tour whips and fast orbits; off with reduced motion
-- [ ] Post-TAA sharpening (`SharpenNode`/CAS) to win back what the temporal resolve softens
-- [ ] Temporal upscaling (`TAAUNode`, FSR1 fallback) for Low/Medium and phones — render below native, resolve to native
-- [ ] Screen-space contact shadows (`SSSNode`) for small-scale grounding of props and deck detail
-- [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
-- [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
+- [x] Tone mapping: compared ACES vs AgX vs Khronos PBR Neutral, mid-grey matched (`?tonemap=aces|agx|neutral`, trims computed from three's own curve formulas: AgX ×1.008, Neutral ×1.406). **Kept ACES.** Over 11 shots (helm, tour 66/85, storm, sunset, moonlit, arctic, seaOfThieves, underwater, clear, dusk): AgX halves clipping where the sun is in frame (tour 66: 7.2% → 3.3% of pixels clipped; sunset 11.9% → 6.6%) but cuts mean saturation 20–40% on every preset (seaOfThieves 0.247 → 0.145, underwater 0.350 → 0.206) and lifts night blacks (moonlit mean luma 111 → 132) — every CDL grade would have to be re-authored to get the turquoise back. Neutral is the most saturated but clips far more (tour 66 26%, sunset 21%, helm 4.6% vs 0.05%). ACES plus eye adaptation fixes the sun-facing frames AgX was winning on: tour 66 is pulled down 0.6 EV and its clouds come back
+- [x] Auto-exposure / eye adaptation (`src/post/AutoExposure.ts`): 16×16 centre-weighted log-luminance meter → 1×1 reduction → asymmetric adaptation (3/s toward bright, 0.9/s toward dark), all on the GPU, no readback. Corrects 60% of the deviation from a **per-preset anchor** (measured at each preset's canonical view, adaptation off) beyond a ±0.75 EV dead zone, clamped to [−1.5, +0.5] EV — so every preset's authored look is untouched at its own framing and only the sun, the night beat and dark close-ups move. Gain is applied *ahead* of the bloom so its exposure-derived threshold stays exact. Deterministic: the capture hook makes every frame adopt its own target (no history). Measured gain: tour 66 −0.61 EV, tour 85 night +0.5 EV (clamped — night stays night), deck close-up +0.32 EV, every gallery preset 0
+- [x] Ambient occlusion: GTAO (`GTAONode`, its own temporal rotation driven by a counter the capture resets) composited into the scene colour *before* TRAA, masked off water (the ocean's velocity MRT now carries a flag in `.z`) and sky, faded out 60–160 m. The fade is load-bearing: without it, normals rebuilt from a perspective depth buffer drew vertical streaks down the island's tree line at 1 km. Post-multiply rather than `builtinAOContext`: the correct indirect-only path needs a depth prepass of the whole scene and the context leaks into the planar reflector's nested render
+- [x] Motion blur (`src/post/PostResolve.ts`): gather along each pixel's own velocity, 180° shutter normalised to 60 Hz, clamped to 3.5% of frame height, taps weighted by whether they land on moving pixels so a static hull does not smear. Off under `prefers-reduced-motion` (live) and in deterministic captures unless `setMotionBlurInCapture(true)`
+- [x] Post-TAA sharpening: RCAS (AMD FSR1's kernel, as `SharpenNode` ports it) run on a Karis-compressed signal so HDR glints keep the limiter's [0,1] assumption; fused with blur and CA into one pass. 0.3 at High+, 0.4 Medium, 0.5 Low
+- [x] Below-native rendering for Low (0.67) and Medium (0.77). **`TAAUNode` was tried and rejected on evidence**: at 0.67 it dissolved the rigging and its thin-feature lock left dark specks all through the island canopy; at 1.0 it was still softer than TRAA and still speckled. TRAA at the reduced size (history follows its input) + bilinear upsample + RCAS beat it on every frame compared. TRAA's previous-depth copy is skipped below native in r185, which would silently turn the AA off on a Low boot — `ScaledTRAA` does the copy against the input's size. Measured: Medium 0.79 ms of 4.6 (17%), Low 0.25 ms of 0.96 (26%); the same knob on High would save 1.08 ms (0.77) / 1.44 ms (0.67) of 6.6. FSR1 not used: its EASU needs a low-res output from the resolve, which r185's TRAA cannot give without a fork
+- [x] Screen-space contact shadows: **skipped, with reason.** `SSSNode` only makes sense on the *direct* term, which in three means the same `builtinShadowContext` route as AO — a second full raster of the scene (ocean grid, 38k meadow blades, 15k canopy at High) and a context that leaks into the planar reflector's nested render. A post multiply instead darkens sky light and reads as a second, harder AO. GTAO at a 0.6 m radius already grounds the deck furniture; revisit if a depth prepass ever exists for another reason
+- [x] Lens character, High and up only: film grain in display space, mid-tone weighted, ~1.5 px value noise at 1.2% (static in captures and under reduced motion, animated otherwise); lateral CA, radial, r²-weighted, 0.001 UV at the corner
+- [x] Every effect: per-tier table in `POST_TIERS` (`src/post/PostChain.ts`), A/B on `__ocean.post.chain.setOverride(name, bool|null)`, `?post=0` restores the pre-pass chain, rows in `scripts/profile-frame.mjs` (`post: …`). Costs measured A/B in one session (median of 4–5 alternations, RTX 5090, 1600×900, deck camera): GTAO 0.02–0.04 ms (High, half res), eye adaptation 0.01–0.02 ms, motion blur 0.01–0.04 ms at a 40 px pan, sharpen / CA / grain ≤ 0.01 ms each. WebGL2 gets eye adaptation and grain only (everything else hangs off the velocity MRT that path does not have)
+- Against `docs/REFERENCE_TARGETS.md` (captures `final-before_*` / `final-after_*`, same merged build, `?post=0` vs default): **shore by day** — the cyan rule is what rules AgX out; ACES keeps island-approach saturation at 0.380 (before 0.382). **Night** (tour 85) — +0.5 EV lifts mean luma 78 → 93 with no crushed and no clipped pixels; sky stays navy, sea teal; the bright horizon line is upstream (sky). **Storm** — untouched by design (anchor), saturation 0.121 → 0.120, teal-grey; the horizon haze is upstream. **Dusk** — the miss: the Sunset preset clips 17.8% white and its glitter path reads white, not gold. Attributed: bloom, flare and fog off each change it by < 0.05%, and −0.85 EV of exposure only takes it to 13.9% — it is scene radiance (the sun's Mie halo and the water under it), not the tone curve. AgX would halve it (11.9% → 6.6% in the comparison above) at the cost of the cyans; the right fix is in the atmosphere. Golden hour in the tour (t = 66) is helped: adaptation takes clipping 21.4% → 11.3%
+- Determinism: two consecutive captures of the same shot match exactly on the tour shots (t = 25, 40, 85: ≤ 0.001% of pixels > 2 levels). Helm, deck and storm differ run to run by 12–33% of pixels — **pre-existing**: the `?post=0` chain on the same build differs by the same amount (12.5% / 29.5% / 15.1%), and the deck shot's mean luma shifts in both. TRAA, GTAO and the adaptation now update once per pipeline render rather than once per rAF tick, which removes one source of capture-timing dependence from this chain
+- Visual baselines that will shift: every gallery shot (sharpening, grain and CA at High; GTAO on the hull, deck and rocks), most of all `boat-chase`/helm and the cinematic shots that face the sun or run at night (adaptation), and anything at Low/Medium (render scale)
+- Not done / open: the AO multiply also darkens sunlit crevices a little (the price of not having a prepass); motion blur is per-pixel gather with no tile-max dilation, so a fast object's silhouette does not blur outward over a still background; the eye-adaptation anchors are per preset and need re-measuring if a preset's grade or exposure is re-authored
 
 ### O. Lighting, materials and shaders to current AAA practice (lighting agent)
 Audit each against what shipped AAA titles do, fix on evidence, measure cost per tier:
@@ -148,6 +152,19 @@ Audit each against what shipped AAA titles do, fix on evidence, measure cost per
 - [ ] **Translucency:** sails and leaves transmit backlight (thin-surface SSS), two-sided foliage lighting
 - [ ] **Wetness:** rain and spray darken albedo and lower roughness consistently across ship, rock, sand, props (per-object, not one global value)
 - [ ] **Shader hygiene:** no NaNs/fireflies, energy-conserving specular, consistent fog/aerial perspective on every material, shader-compile cost kept off the critical path
+
+### P. Words: copy, tone and onboarding (copy agent)
+User direction 2026-11-13: make the language more interesting, engaging and user-friendly, taking reference from the best games and repos.
+- [x] Voice: an original seafaring-adventure voice for everything the player reads in play (menu, loading lines, objectives, toasts, hints, ledger labels, finish states) — warm, a little wry, never parody, never a pastiche of any one game; instrumentation (FPS, backend, tier) stays plain and truthful
+- [x] Onboarding that teaches by doing: first-minute hints in the order a new player needs them, context-sensitive (keyboard vs touch), dismissed once learned
+- [x] Loading: rotating lines that are tips or world flavour, not progress jargon; errors that say what happened and what to do
+- [x] Every label and tooltip understandable without graphics knowledge; jargon (JONSWAP, TRAA) moves to the README and an "about the tech" corner
+- [x] README rewritten to sell the experience first (hero gif/images, one-line pitch, play link, then the tech), modelled on the best showcase repos
+- [x] `PRODUCT.md` updated: the voice/instrument split is redrawn (player-facing text gets a voice; readouts stay plain)
+- Done 2026-11-13: voice guide in `PRODUCT.md` › Voice; first-minute lessons in `src/ui/Coach.ts`
+  (look, helm, sail, steer, cargo, anchor; keyboard and touch wording; learned set kept in
+  localStorage); loading lines in `src/ui/LoadingTips.ts`; ledger tooltips and *About the tech*.
+  Not done: landscape phones show no lessons (no free slot); the storm quote is unchanged.
 
 ### Follow-ups found while merging
 - [x] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent) — fixed: the prewarm now compiles the frame's real contexts (scene pass target + TRAA MRT + velocity, pinned call depths, reflection), pipelines build in parallel, live frames never build a pipeline synchronously. Same session, High: `isReady` ~48 s → ~17 s, worst frame after ready ~1.8 s → <50 ms, loop start ~17 s → ~7 s.
