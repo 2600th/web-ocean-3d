@@ -437,7 +437,7 @@ const SURF_RATE = 0.28;
  * decays from there. It used to be the open-water fold field, whose crests run
  * on the wind bearing and have nothing to do with the breakers.
  */
-const SURF_PULSE = 0.75;
+const SURF_PULSE = 0.6;
 
 /** World scale of the second `wakeBoil` octave, relative to the first. */
 const SURF_CELL_SCALE = 0.31;

@@ -2024,6 +2024,16 @@ export class OceanMaterial {
             .mul(0.9)
             .toVar();
           const far = viewDistance.smoothstep(160, 520).toVar();
+          // And the line of white at the water's edge, which from more than a
+          // few tens of metres is all the swash amounts to: a beach without it
+          // reads as a texture boundary. Up close the swash itself is visible
+          // and this hands over to it.
+          const edgeLine = smoothstepDownClamped(straightThickness, 0.02, 0.3)
+            .mul(smoothstepDownClamped(seabedSigned, 0.6, 1.4))
+            .mul(viewDistance.smoothstep(25, 110))
+            .mul(bubbles)
+            .mul(0.75)
+            .toVar();
           surf.assign(
             roller
               .max(lip)
@@ -2031,6 +2041,7 @@ export class OceanMaterial {
               .max(lace.mul(0.8))
               .max(thin)
               .max(band.mul(far))
+              .max(edgeLine)
               .clamp(0, 1)
               .mul(surfUniforms.strength.min(1)),
           );
