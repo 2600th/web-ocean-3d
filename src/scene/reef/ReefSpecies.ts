@@ -559,7 +559,8 @@ const BOMMIE_PALETTES: Record<string, readonly number[]> = {
  * densely overgrown, with sand between them. One instanced bommie carries that
  * structure for the price of one draw across every site, and because each
  * colony on it is painted from its own palette the instance colour only has to
- * nudge the whole. ~6000 triangles.
+ * nudge the whole. 11-12k triangles, the reef's most expensive template; the
+ * count is in the 15-19 colonies, not the rock.
  */
 export function buildBommie(seed: number): MeshBuilder {
   const random = mulberry32(seed);

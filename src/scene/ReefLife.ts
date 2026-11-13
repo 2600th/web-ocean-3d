@@ -3,6 +3,7 @@ import {
   Fn,
   attribute,
   cos,
+  mix,
   positionGeometry,
   positionLocal,
   sin,
@@ -14,7 +15,7 @@ import { mulberry32 } from '../core/random';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { applyGroundShading, type GroundShadingInputs } from './groundShading';
 import type { MeshBuilder, RGB } from './reef/MeshBuilder';
-import { bumpedNormal, lifePattern } from './reef/LifeShading';
+import { bumpedNormal, lifePattern, worldNormalToView } from './reef/LifeShading';
 import {
   buildAnemone,
   buildBarrelSponge,
@@ -38,7 +39,9 @@ import {
  * and the small things on the sand, all built in code and instanced.
  *
  * **Why procedural.** The reef used to be four downloaded photogrammetry and kit
- * GLBs (about 2.4 MB with their LODs) scattered by `Props`. They are good assets
+ * GLBs (about 2.4 MB with their LODs) scattered by `Props`; the three
+ * photogrammetry colonies are now gone and only the kit carpet
+ * (`soft_coral_set`) remains there. They are good assets
  * and they are the wrong tool for this job: a reef reads as *alive* through
  * variety — of form, colour and motion — at the scale of hundreds of colonies,
  * and four fixed meshes recoloured by nothing repeat visibly within one patch.
@@ -92,6 +95,14 @@ const SWAY_LAG = 9;
 
 /** Above this eye height the reef is hidden outright. */
 const HIDE_ABOVE = 90;
+
+/**
+ * Horizontal distance past a region's edge beyond which it is skipped, metres.
+ * Even the clearest preset (70 m visibility) leaves well under 1% of the
+ * contrast at this range, and from above the water the reef is out of sight
+ * long before it.
+ */
+const REGION_CULL = 220;
 
 // ----------------------------------------------------------------- the species
 
@@ -485,6 +496,10 @@ export class ReefLife {
       }
     }
     this.sites = { plateau, island, meadows: plateauMeadows.concat(islandMeadows) };
+    this.regionBounds = {
+      plateau: boundingCircle(plateau.concat(plateauMeadows)),
+      island: boundingCircle(island.concat(islandMeadows)),
+    };
 
     for (const def of SPECIES) {
       for (const region of ['plateau', 'island'] as const) {
@@ -508,12 +523,16 @@ export class ReefLife {
   /** Fraction of placed capacity drawn, 0..1. A uniform-free `count` change. */
   setDetail(detail: number): void {
     this.detail = Math.max(0, Math.min(1, detail));
+    this.applyCounts();
+  }
+
+  private applyCounts(): void {
     for (const kind of this.kinds) {
       // Small populations keep at least a few, so a low tier thins the reef
       // rather than deleting whole species.
       const n = this.detail <= 0 ? 0 : Math.max(Math.min(kind.capacity, 3), Math.round(kind.capacity * this.detail));
       kind.mesh.count = n;
-      kind.mesh.visible = n > 0;
+      kind.mesh.visible = n > 0 && this.regionNear[kind.region];
     }
     this.applyVisibility();
   }
@@ -536,6 +555,29 @@ export class ReefLife {
     }
   }
   private cameraAllows = true;
+
+  /**
+   * Height test plus a per-region distance cull. Each region is one instanced
+   * mesh per species spanning every site in it, so the renderer's frustum test
+   * sees one huge sphere and never culls it; the plateau and the island reef
+   * are about a kilometre apart, and water this murky hides either from the
+   * other completely. Skipping the far region is the largest single saving.
+   */
+  setCameraPosition(position: THREE.Vector3): void {
+    this.setCameraHeight(position.y);
+    let changed = false;
+    for (const region of ['plateau', 'island'] as const) {
+      const b = this.regionBounds[region];
+      const near = b === null || Math.hypot(position.x - b.x, position.z - b.z) - b.radius < REGION_CULL;
+      if (near !== this.regionNear[region]) {
+        this.regionNear[region] = near;
+        changed = true;
+      }
+    }
+    if (changed) this.applyCounts();
+  }
+  private readonly regionNear: Record<Region, boolean> = { plateau: true, island: true };
+  private readonly regionBounds: Record<Region, Site | null>;
 
   /** Same three numbers the surface and the kelp take. See `Kelp.setSwell`. */
   setSwell(bearingRadians: number, windSpeed: number, peakWavelength = 47): void {
@@ -722,10 +764,39 @@ export class ReefLife {
     // brain-coral meanders, polyp pores; see `reef/LifeShading`.
     const pattern = lifePattern(surf, positionGeometry);
     material.colorNode = vec4(pattern.y, pattern.y, pattern.y, 1);
-    material.normalNode = bumpedNormal(pattern.x, 0.012);
+    const bumped = bumpedNormal(pattern.x, 0.012);
+    if (side === THREE.DoubleSide) {
+      // Thin, flexible life (blades, fan lattices, tentacles) stands edge-on
+      // to a sun that comes from above, so its true normal leaves it nearly
+      // black. Bend the normal of whatever sways toward the sky, the usual
+      // foliage trick standing in for light through the leaf. Rigid parts
+      // (amplitude 0, e.g. a bommie's rock) keep their own normal.
+      const bendUp = swayData.x.smoothstep(0, 0.04).mul(0.6);
+      material.normalNode = (mix(bumped, worldNormalToView(vec3(0, 1, 0)), bendUp) as Node).normalize();
+    } else {
+      material.normalNode = bumped;
+    }
 
     return material;
   }
+}
+
+/** A circle (centre of the extent, conservative radius) around every site. */
+function boundingCircle(sites: Site[]): Site | null {
+  if (sites.length === 0) return null;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const s of sites) {
+    minX = Math.min(minX, s.x - s.radius);
+    maxX = Math.max(maxX, s.x + s.radius);
+    minZ = Math.min(minZ, s.z - s.radius);
+    maxZ = Math.max(maxZ, s.z + s.radius);
+  }
+  const x = (minX + maxX) / 2;
+  const z = (minZ + maxZ) / 2;
+  return { x, z, radius: Math.hypot(maxX - x, maxZ - z) };
 }
 
 /** A point inside a reef site, centre-weighted. */

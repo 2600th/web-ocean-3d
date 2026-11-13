@@ -2376,7 +2376,7 @@ class App {
       this.state.windSpeed,
       this.state.peakWavelength,
     );
-    this.reefLife.setCameraHeight(this.camera.position.y);
+    this.reefLife.setCameraPosition(this.camera.position);
     this.reefLife.update(dt);
 
     // The animals take the same sun the fish do — its colour, scaled as `Fish`
