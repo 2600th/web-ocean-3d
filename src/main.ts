@@ -1,5 +1,18 @@
 import * as THREE from 'three/webgpu';
-import { pass, positionWorld, rtt, uniform } from 'three/tsl';
+import {
+  Fn,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
+  mrt,
+  output,
+  pass,
+  positionWorld,
+  rtt,
+  uniform,
+  vec4,
+  velocity,
+} from 'three/tsl';
+import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
@@ -221,6 +234,9 @@ class App {
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
 
   private post!: THREE.RenderPipeline;
+  private taaEnabled = false;
+  /** Last frame's view-projection, for the ocean's world-space velocity. */
+  private readonly prevViewProjection = uniform(new THREE.Matrix4());
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -683,10 +699,46 @@ class App {
     // `RenderPipeline`, not the `PostProcessing` alias: the latter is deprecated
     // as of r183 and warns on every boot.
     this.post = new THREE.RenderPipeline(this.renderer);
-    const scenePass = pass(this.scene, this.camera);
+    // Temporal reprojection AA, WebGPU only and opt-out with `?taa=0`.
+    //
+    // The water's remaining aliasing — thresholded foam at mid distance, glitter
+    // spikes, the rigging — is sub-pixel signal that no spatial filter can
+    // recover; the shader comments say so in as many words. TRAA integrates it
+    // over frames instead. It also replaces 4x MSAA on the scene pass, which is
+    // a bandwidth saving that pays for most of the resolve.
+    this.taaEnabled =
+      this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    const scenePass = this.taaEnabled
+      ? pass(this.scene, this.camera, { samples: 0 })
+      : pass(this.scene, this.camera);
+    if (this.taaEnabled) {
+      scenePass.setMRT(mrt({ output, velocity }));
+      // The ocean mesh is re-centred under the camera every frame, so its model
+      // matrix moves with the eye while the surface it draws is anchored to the
+      // world. Stock velocity would read that re-centring as motion and smear
+      // the whole sea; reproject its world position through last frame's
+      // camera instead.
+      const prevViewProjection = this.prevViewProjection;
+      this.water.material.mrtNode = mrt({
+        velocity: Fn(() => {
+          const world = vec4(positionWorld, 1);
+          const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(world);
+          const previous = (prevViewProjection as any).mul(world);
+          return current.xy.div(current.w).sub(previous.xy.div(previous.w));
+        })(),
+      });
+    }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
+    const sceneBeauty: any = this.taaEnabled
+      ? (traa(
+          scenePass.getTextureNode('output'),
+          sceneDepth,
+          scenePass.getTextureNode('velocity'),
+          this.camera,
+        ) as any).getTextureNode()
+      : scenePass.getTextureNode();
 
     this.fog = new VolumetricFog();
     // Required: a post pass draws with the post-processor's own orthographic
@@ -713,7 +765,7 @@ class App {
 
     const graded = this.fog.build(
       this.underwater.build(
-        scenePass.getTextureNode(),
+        sceneBeauty,
         sceneDepth,
         // The shafts are an integral of this field along the view ray, so
         // passing it here is what makes them and the seafloor pattern the same
@@ -807,6 +859,8 @@ class App {
     // comment asks for and what a drop of water on glass actually does.
     this.outputTransform = new OutputTransform();
     this.spatialAa = new SpatialAA();
+    // TRAA already resolved the edges; FXAA on top only softens them again.
+    if (this.taaEnabled) this.spatialAa.setStrength(0);
     this.post.outputColorTransform = false;
     // Tone map, anti-alias, dither — in that order, and none of the three can
     // move. See `SpatialAA` for why the filter has to sit between the other two
@@ -850,7 +904,14 @@ class App {
     // anything back. It also left the deterministic capture path racing a render
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
-    this.loop = new Loop(() => this.post.renderAsync());
+    this.loop = new Loop(async () => {
+      await this.post.renderAsync();
+      // After the frame, so next frame's velocity reprojects against this one.
+      this.prevViewProjection.value.multiplyMatrices(
+        this.camera.projectionMatrix,
+        this.camera.matrixWorldInverse,
+      );
+    });
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
