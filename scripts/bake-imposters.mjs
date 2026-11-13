@@ -28,7 +28,13 @@ import { tmpdir } from 'node:os';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUTPUT_DIR = join(ROOT, 'public', 'imposters');
-const ATLAS_PATH = join(OUTPUT_DIR, 'vegetation.png');
+/**
+ * WebP, not PNG: lossy colour at q92 over a lossless alpha plane. The PNG was
+ * 1.8 MB; this is 0.37 MB with the alpha bit-exact and the premultiplied colour
+ * at 44 dB, and the atlas is minified on cards hundreds of metres away. Alpha is
+ * what decides a silhouette, which is why it is the half kept lossless.
+ */
+const ATLAS_PATH = join(OUTPUT_DIR, 'vegetation.webp');
 const SIDECAR_PATH = join(OUTPUT_DIR, 'vegetation.json');
 const MODEL_DIR = join(ROOT, 'public', 'models', 'dressing');
 
@@ -613,7 +619,7 @@ async function bleedTransparentEdges(inputPath, outputPath, cells) {
   }
 
   await sharp(data, { raw: { width: ATLAS_SIZE, height: ATLAS_SIZE, channels: 4 } })
-    .png({ compressionLevel: 9 })
+    .webp({ quality: 92, alphaQuality: 100, effort: 6, smartSubsample: true })
     .toFile(outputPath);
 }
 
@@ -693,7 +699,7 @@ function buildSidecar(renderedEntries) {
       placementContract: 'src/scene/Props.ts',
     },
     atlas: {
-      file: 'imposters/vegetation.png',
+      file: 'imposters/vegetation.webp',
       width: ATLAS_SIZE,
       height: ATLAS_SIZE,
       cellSize: CELL_SIZE,
