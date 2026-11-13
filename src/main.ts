@@ -64,7 +64,7 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
-import { VolumetricFog } from './post/VolumetricFog';
+import { DEFAULT_VOLUMETRIC_FOG_PARAMS, VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
 import { SceneBloom } from './post/Bloom';
@@ -180,7 +180,36 @@ const _hazeZenith = new THREE.Color();
 /** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
 const _skyRadiance = new THREE.Color();
 const _skyHorizon = new THREE.Color();
-const _skySample = new THREE.Color();
+/** Typical dome radiance at the horizon, for the volumetric fog; see `measureSkyRadiance`. */
+const _skyTypical = new THREE.Color();
+const _skyBearings = [new THREE.Color(), new THREE.Color(), new THREE.Color(), new THREE.Color()];
+const _fogColor = new THREE.Color();
+/** Dome radiance overhead; see `measureSkyRadiance`. */
+const _skyZenith = new THREE.Color();
+/** The sky the water and the haze are given; see `seenSky`. */
+const _seenHorizon = new THREE.Color();
+const _seenZenith = new THREE.Color();
+const _cloudFog = new THREE.Color();
+const _cloudZenith = new THREE.Color();
+
+/**
+ * A fill tint dimmed to the dome's own radiance, once the sun is down.
+ *
+ * `Atmosphere.horizonColor` and `zenithColor` are the hemisphere *fill* — hues
+ * at a daylight scale — and by day the dome around the horizon is about as
+ * bright, so the water and the haze were tuned against them and keep them.
+ * After sunset the dome falls a hundredfold and the tints do not: the sea went
+ * on mirroring a mid-blue sky above a near-black one, meeting in a hard step at
+ * the horizon. So, by how far the sun is down, the tint is dimmed to the dome's
+ * luma (`dark` = 1 gives exactly that luma) and its hue drawn toward the
+ * dome's. Never brightened.
+ */
+function seenSky(tint: THREE.Color, dome: THREE.Color, dark: number, out: THREE.Color): THREE.Color {
+  const tintLuma = luma(tint);
+  const fit = tintLuma > 1e-6 ? Math.min(1, luma(dome) / tintLuma) : 1;
+  const s = 1 - dark * (1 - fit);
+  return out.copy(tint).multiplyScalar(s).lerp(dome, 1 - s);
+}
 const _skyDirection = new THREE.Vector3();
 const _litFog = new THREE.Color();
 /** Rec. 709 luminance of a linear colour. */
@@ -3202,9 +3231,15 @@ class App {
     // rather than the two being summed.
     const fogPreset = getPreset(this.state.preset).fog;
     const hazeDensity = fogPreset.density * (1 - 0.75 * this.state.fogDensity);
+    // Measured first: the water and the haze below are both given the dome's
+    // own brightness after sunset, and the clouds further down read it too.
+    this.measureSkyRadiance(_skyRadiance, _skyHorizon, _skyTypical, _skyZenith);
+    const sunDown = 1 - THREE.MathUtils.smoothstep(this.atmosphere.sunDirection.y, -0.1, 0.02);
+    seenSky(this.atmosphere.horizonColor, _skyTypical, sunDown, _seenHorizon);
+    seenSky(this.atmosphere.zenithColor, _skyZenith, sunDown, _seenZenith);
     this.water.setSky(
-      this.atmosphere.zenithColor,
-      this.atmosphere.horizonColor,
+      _seenZenith,
+      _seenHorizon,
       fogPreset.color,
       // Zero: the shared aerial perspective owns this now, for the sea as well
       // as for the land. Two independent haze terms meeting at the shoreline is
@@ -3229,12 +3264,17 @@ class App {
     // the real dark sky, stood out as black blobs, and the sea mirrored it pink.
     // So the fog is dimmed to the sky's own brightness whenever the sky is the
     // darker of the two — never brightened, so a preset's daytime look is kept.
-    const skyLuma = luma(this.atmosphere.horizonColor);
+    const skyLuma = luma(_seenHorizon);
     const fogLuma = luma(fogPreset.color);
     _litFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, skyLuma / fogLuma) : 1);
     const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
-    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(_litFog, overcastPull);
-    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(_litFog, overcastPull);
+    _hazeHorizon.copy(_seenHorizon).lerp(_litFog, overcastPull);
+    _hazeZenith.copy(_seenZenith).lerp(_litFog, overcastPull);
+    // The deck takes the *tint* and scales it by the measured sky itself
+    // (`Clouds.setSkyColors`), so it is handed the undimmed one.
+    const tintLuma = luma(this.atmosphere.horizonColor);
+    _cloudFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, tintLuma / fogLuma) : 1);
+    _cloudZenith.copy(this.atmosphere.zenithColor).lerp(_cloudFog, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
@@ -3251,11 +3291,7 @@ class App {
     // And by how bright that sky actually *is*: the dome's own radiance at the
     // zenith and around the horizon, so the deck can never be lit brighter
     // than the sky it sits in by more than the sun or moon on it justifies.
-    this.clouds.setSkyColors(
-      _hazeZenith,
-      this.measureSkyRadiance(_skyRadiance, _skyHorizon),
-      _skyHorizon,
-    );
+    this.clouds.setSkyColors(_cloudZenith, _skyRadiance, _skyHorizon);
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -3435,7 +3471,20 @@ class App {
     // under. There is no atmosphere below the waterline — the medium down there
     // is the underwater pass's job, and leaving both on would stack two
     // different descriptions of the same water on top of each other.
+    // The fog's sky-lit colour. Its far field settles on this colour, so it is
+    // what the horizon shows wherever the fog runs out to the far plane. It was
+    // never set and stayed at the default pale grey-blue at every hour — at
+    // night a hundred times the dome's own radiance there, which drew a stark
+    // white line along the night horizon between the dark sea and the dark
+    // deck. Same rule as `_litFog`: never brightened, so daylight is untouched;
+    // where the sky is the darker of the two, the colour goes over to the
+    // dome's own horizon radiance, so the haze ends on the sky behind it.
+    const fogBase = DEFAULT_VOLUMETRIC_FOG_PARAMS.color;
+    const fogBaseLuma = luma(fogBase);
+    const fogLit = Math.min(1, luma(_skyTypical) / Math.max(1e-5, fogBaseLuma));
+    _fogColor.copy(_skyTypical).lerp(fogBase, fogLit);
     this.fog.setParams({
+      color: _fogColor,
       sunDirection: _keyDirection,
       sunColor: this.atmosphere.sunLight.color,
       sunIntensity: Math.max(0.05, this.atmosphere.sunLight.intensity / 3.4),
@@ -3586,27 +3635,33 @@ class App {
   /**
    * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
    * above the horizon. Five CPU evaluations of the sky model a frame.
+   *
    * `horizon` receives the darkest of the four bearings: the dome away from
    * the sun's glow, which is the colour of the air under a continuous deck
-   * (see the composite in `Clouds`).
+   * (see the composite in `Clouds`). `typical` receives the mean of the middle
+   * two by brightness: the horizon as most of it looks, with neither the sun's
+   * bearing (64x the others at sunset, from the disc) nor the darkest one
+   * deciding it. `zenith` receives the overhead sample.
    */
-  private measureSkyRadiance(out: THREE.Color, horizon: THREE.Color): THREE.Color {
-    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
-    out.multiplyScalar(0.5);
-    let darkest = Infinity;
+  private measureSkyRadiance(
+    out: THREE.Color,
+    horizon: THREE.Color,
+    typical: THREE.Color,
+    zenith: THREE.Color,
+  ): THREE.Color {
+    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), zenith);
+    out.copy(zenith).multiplyScalar(0.5);
     for (let k = 0; k < 4; k++) {
       const a = (k * Math.PI) / 2;
       _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
-      this.atmosphere.skyRadiance(_skyDirection, _skySample);
-      out.r += _skySample.r * 0.125;
-      out.g += _skySample.g * 0.125;
-      out.b += _skySample.b * 0.125;
-      const luma = _skySample.r * 0.2126 + _skySample.g * 0.7152 + _skySample.b * 0.0722;
-      if (luma < darkest) {
-        darkest = luma;
-        horizon.copy(_skySample);
-      }
+      const sample = this.atmosphere.skyRadiance(_skyDirection, _skyBearings[k]);
+      out.r += sample.r * 0.125;
+      out.g += sample.g * 0.125;
+      out.b += sample.b * 0.125;
     }
+    const sorted = _skyBearings.sort((a, b) => luma(a) - luma(b));
+    horizon.copy(sorted[0]);
+    typical.copy(sorted[1]).add(sorted[2]).multiplyScalar(0.5);
     return out;
   }
 
