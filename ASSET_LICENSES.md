@@ -67,13 +67,14 @@ see the note in `.gitignore`.
 
 | Purpose | Path (relative to the Vite public root, i.e. served at `/`) |
 | --- | --- |
-| Hero sailing ship | `/models/dutch_ship_medium/dutch_ship_medium_2k.gltf` |
-| Floating buoy | `/models/ocean_buoy/ocean_buoy_1k.gltf` |
-| Floating barrel | `/models/barrel_03/barrel_03_1k.gltf` |
-| Rock (island detail) | `/models/rock_07/rock_07_1k.gltf` |
+| Hero sailing ship | `/models/hero/dutch_ship_medium.glb` |
+| Floating buoy | `/models/hero/ocean_buoy.glb` |
+| Floating barrel | `/models/hero/barrel_03.glb` |
+| Rock (island skirt and reef) | `/models/dressing/rock_07.glb` (+ `_lod1`, `_lod2`) |
 
-Each `.gltf` resolves its own `.bin` and `textures/*.jpg` siblings by relative URI, so
-the folder layout must be preserved as-is.
+The hero models are single self-contained `.glb` files built from the Poly Haven
+downloads (fetched into `assets/source/models/`) by `scripts/optimize-assets.mjs`;
+see `HERO_ASSETS` there for every encoding choice and why.
 
 No environment maps ship. Four Poly Haven HDRIs (`kloofendal_43d_clear_puresky`,
 `industrial_sunset_puresky`, `kloofendal_misty_morning_puresky`,
@@ -89,33 +90,10 @@ One row per file shipped in `public/`.
 
 | Asset | File path | Source URL | Author | Licence | Modifications |
 | --- | --- | --- | --- | --- | --- |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/dutch_ship_medium_2k.gltf` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock (model, textures, cleanup); Rico Cilliers (sails model, textures); Nicolò Zubbini (original model) | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/dutch_ship_medium.bin` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_hull_diff_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_hull_arm_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_hull_nor_gl_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_rigging_diff_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_rigging_arm_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_rigging_nor_gl_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_sails_diff_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_sails_arm_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Dutch Ship Medium (`dutch_ship_medium`, 2k) | `public/models/dutch_ship_medium/textures/dutch_ship_medium_sails_nor_gl_2k.jpg` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock; Rico Cilliers; Nicolò Zubbini | CC0 1.0 | None (as downloaded) |
-| Ocean Buoy (`ocean_buoy`, 1k) | `public/models/ocean_buoy/ocean_buoy_1k.gltf` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | None (as downloaded) |
-| Ocean Buoy (`ocean_buoy`, 1k) | `public/models/ocean_buoy/ocean_buoy.bin` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | None (as downloaded) |
-| Ocean Buoy (`ocean_buoy`, 1k) | `public/models/ocean_buoy/textures/ocean_buoy_diff_1k.jpg` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | None (as downloaded) |
-| Ocean Buoy (`ocean_buoy`, 1k) | `public/models/ocean_buoy/textures/ocean_buoy_arm_1k.jpg` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | None (as downloaded) |
-| Ocean Buoy (`ocean_buoy`, 1k) | `public/models/ocean_buoy/textures/ocean_buoy_nor_gl_1k.jpg` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | None (as downloaded) |
-| Ocean Buoy (`ocean_buoy`, 1k) | `public/models/ocean_buoy/textures/ocean_buoy_emission_1k.jpg` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | None (as downloaded) |
-| Barrel 03 (`barrel_03`, 1k) | `public/models/barrel_03/barrel_03_1k.gltf` | https://polyhaven.com/a/barrel_03 | Serhii Khromov | CC0 1.0 | None (as downloaded) |
-| Barrel 03 (`barrel_03`, 1k) | `public/models/barrel_03/barrel_03.bin` | https://polyhaven.com/a/barrel_03 | Serhii Khromov | CC0 1.0 | None (as downloaded) |
-| Barrel 03 (`barrel_03`, 1k) | `public/models/barrel_03/textures/barrel_03_diff_1k.jpg` | https://polyhaven.com/a/barrel_03 | Serhii Khromov | CC0 1.0 | None (as downloaded) |
-| Barrel 03 (`barrel_03`, 1k) | `public/models/barrel_03/textures/barrel_03_arm_1k.jpg` | https://polyhaven.com/a/barrel_03 | Serhii Khromov | CC0 1.0 | None (as downloaded) |
-| Barrel 03 (`barrel_03`, 1k) | `public/models/barrel_03/textures/barrel_03_nor_gl_1k.jpg` | https://polyhaven.com/a/barrel_03 | Serhii Khromov | CC0 1.0 | None (as downloaded) |
-| Rock 07 (`rock_07`, 1k) | `public/models/rock_07/rock_07_1k.gltf` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
-| Rock 07 (`rock_07`, 1k) | `public/models/rock_07/rock_07.bin` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
-| Rock 07 (`rock_07`, 1k) | `public/models/rock_07/textures/rock_07_diff_1k.jpg` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
-| Rock 07 (`rock_07`, 1k) | `public/models/rock_07/textures/rock_07_arm_1k.jpg` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
-| Rock 07 (`rock_07`, 1k) | `public/models/rock_07/textures/rock_07_nor_gl_1k.jpg` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | None (as downloaded) |
+| Dutch Ship Medium (`dutch_ship_medium`, 2k source) | `public/models/hero/dutch_ship_medium.glb` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock (model, textures, cleanup); Rico Cilliers (sails model, textures); Nicolò Zubbini (original model) | CC0 1.0 | Re-encoded by `scripts/optimize-assets.mjs`: hull colour and normal kept at 2k, the other seven maps resized to 1k, all nine KTX2 (UASTC colour/normal, ETC1S roughness), geometry Meshopt-compressed. No geometry or content edits. |
+| Ocean Buoy (`ocean_buoy`, 1k source) | `public/models/hero/ocean_buoy.glb` | https://polyhaven.com/a/ocean_buoy | Mateusz Sadek | CC0 1.0 | Re-encoded: textures KTX2 (normal map at 512), geometry Meshopt-compressed. |
+| Barrel 03 (`barrel_03`, 1k source) | `public/models/hero/barrel_03.glb` | https://polyhaven.com/a/barrel_03 | Serhii Khromov | CC0 1.0 | Re-encoded: textures KTX2 (normal map at 512), geometry Meshopt-compressed. |
+| Rock 07 (`rock_07`, 1k source) | `public/models/dressing/rock_07.glb`, `rock_07_lod1.glb`, `rock_07_lod2.glb` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | Built by the dressing pipeline (see below): decimated, welded, KTX2 textures, Meshopt geometry, two LOD levels. |
 
 ### Scene dressing (`public/models/dressing/`)
 
@@ -259,7 +237,7 @@ Some slugs floated during planning do not exist on Poly Haven. Verified against
 
 | Slug considered | Exists? | Used instead | Why |
 | --- | --- | --- | --- |
-| `dutch_ship_medium` | yes | — | Used as-is at 2k. (`dutch_ship_large_01` / `_02` and `ship_pinnace` also exist.) |
+| `dutch_ship_medium` | yes | — | 2k source; ships as KTX2 with the hull at 2k and the rest at 1k. (`dutch_ship_large_01` / `_02` and `ship_pinnace` also exist.) |
 | `buoy` | no | `ocean_buoy` | Closest real equivalent; `lifebuoy` is the only other buoy. |
 | `wooden_barrel` | no | `barrel_03` | Real barrels are `barrel_03`, `barrel_stove`, `wine_barrel_01`, `wooden_barrels_01`. `barrel_03` is the cleanest single floating prop. |
 | `rock_02` | no | `rock_07` | Only `rock_07` and `rock_09` exist in the plain `rock_NN` series. |

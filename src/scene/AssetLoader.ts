@@ -92,6 +92,12 @@ export async function withDeadline<T>(
 }
 const DEFAULT_MAX_CONCURRENT = 6;
 
+/**
+ * Anisotropy the hero models — ship, buoy, barrel — ask for. See
+ * `AssetLoadOptions.anisotropy`. Clamped to the device's maximum on use.
+ */
+export const HERO_ANISOTROPY = 16;
+
 type MeshoptDecoder = Parameters<GLTFLoader['setMeshoptDecoder']>[0];
 
 interface PendingAsset {
@@ -131,6 +137,20 @@ export interface AssetLoadOptions {
   signal?: AbortSignal;
   /** Per-asset deadline. Defaults to the loader-wide timeout. */
   timeoutMs?: number;
+  /**
+   * Anisotropic filtering for this asset's textures, clamped to what the device
+   * supports. For the hero models, which the camera sees close and at grazing
+   * angles.
+   *
+   * Their KTX2 builds measured visibly softer than the JPEG originals along the
+   * hull, with identical texels and an identical box-filtered mip chain — and
+   * matched them exactly once their textures were sampled anisotropically,
+   * while forcing mip 0 matched them too. On this stack an RGBA8 texture is
+   * evidently filtered better than its BC7 counterpart at the same nominal
+   * anisotropy of 1; asking for it explicitly is what makes the compressed
+   * build look the way the uncompressed one already did.
+   */
+  anisotropy?: number;
 }
 
 export interface AssetLoaderOptions {
@@ -191,6 +211,8 @@ export class AssetLoader {
   private readonly explicitDracoPath: string | undefined;
   private onProgress: AssetProgressCallback | undefined;
   private disposed = false;
+  /** From the renderer when one is supplied; 1 means "no anisotropy" until then. */
+  private maxAnisotropy = 1;
 
   /** Reused so the per-file progress callback never allocates. */
   private readonly progressState: AssetProgress = {
@@ -228,6 +250,7 @@ export class AssetLoader {
    */
   setRenderer(renderer: THREE.WebGPURenderer): void {
     if (this.disposed) throw new Error('AssetLoader disposed; cannot set renderer');
+    this.maxAnisotropy = Math.max(1, renderer.getMaxAnisotropy());
     this.ktx2?.dispose();
     this.ktx2 = new KTX2Loader(this.transcoderManager)
       .setTranscoderPath(BASIS_TRANSCODER_PATH)
@@ -261,6 +284,21 @@ export class AssetLoader {
       (reason) => pending?.controller.abort(reason),
       pending.started,
     );
+    if (options.anisotropy !== undefined) {
+      // On the shared source: its textures are shared by every clone anyway.
+      const anisotropy = Math.max(1, Math.min(options.anisotropy, this.maxAnisotropy));
+      const textures = new Set<THREE.Texture>();
+      source.traverse((node) => {
+        const material = (node as THREE.Mesh).material;
+        if (!material) return;
+        for (const m of Array.isArray(material) ? material : [material]) collectTextures(m, textures);
+      });
+      for (const texture of textures) {
+        if (texture.anisotropy === anisotropy) continue;
+        texture.anisotropy = anisotropy;
+        texture.needsUpdate = true;
+      }
+    }
     return source.clone(true) as THREE.Group;
   }
 

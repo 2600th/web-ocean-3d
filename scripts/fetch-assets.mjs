@@ -49,23 +49,27 @@ const VERIFY_ONLY = args.has('--verify');
  * https://api.polyhaven.com/assets?t=models and ?t=hdris before being added here.
  *
  * Texture resolution notes:
- *  - The ship is the hero object, so it gets 2k textures.
+ *  - The ship is the hero object, so its source is 2k; the build keeps 2k for
+ *    the hull and drops the rest to 1k (see HERO_ASSETS in optimize-assets).
  *  - Props and rocks are background dressing at 1k to keep the payload small.
  *  - No HDRIs: the sky is procedural. See the note at the end of MANIFEST.
  */
 const MANIFEST = [
   // ---- Hero: sailing ship -------------------------------------------------
+  //
+  // Source, like the dressing: `scripts/optimize-assets.mjs` (HERO_ASSETS)
+  // builds the KTX2 + Meshopt `public/models/hero/*.glb` that actually ships.
   {
     kind: 'model',
     slug: 'dutch_ship_medium',
     res: '2k',
-    dir: 'public/models/dutch_ship_medium',
+    dir: 'assets/source/models/dutch_ship_medium',
     note: 'Hero sailing ship',
   },
 
   // ---- Floating props -----------------------------------------------------
-  { kind: 'model', slug: 'ocean_buoy', res: '1k', dir: 'public/models/ocean_buoy', note: 'Floating marine buoy' },
-  { kind: 'model', slug: 'barrel_03', res: '1k', dir: 'public/models/barrel_03', note: 'Floating barrel' },
+  { kind: 'model', slug: 'ocean_buoy', res: '1k', dir: 'assets/source/models/ocean_buoy', note: 'Floating marine buoy' },
+  { kind: 'model', slug: 'barrel_03', res: '1k', dir: 'assets/source/models/barrel_03', note: 'Floating barrel' },
 
   // ---- Island silhouette --------------------------------------------------
   { kind: 'model', slug: 'rock_07', res: '1k', dir: 'assets/source/models/rock_07', note: 'Standalone rock' },
