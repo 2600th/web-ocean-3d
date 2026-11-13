@@ -66,7 +66,8 @@ reinventing it.
 
 - [x] World detail: skull rock, sea arch, summit spires, strata outcrops, wet barnacled waterlines, beach wrack and driftwood, camp with fire/smoke/torches. 12.8 MB of vegetation GLBs and the imposter atlas removed.
 - [x] Lower slopes no longer read as lawn: open ground is scrub (tufts, straw-dry patches, bare soil) in the terrain shader
-- [ ] Follow-ups: sand swirl/grid pattern at close range (shore agent owns the sand); shell litter is at true scale and reads only up close — accepted
+- [x] Dry-sand swirls removed (ripple map faded out above the swash, relief bump damped on the dry beach); beach wrack blended instead of cut out (no MSAA under TRAA); meadow clumped with bare ground and dry patches
+- Shell litter is at true scale and reads only up close — accepted
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky

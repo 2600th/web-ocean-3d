@@ -1145,7 +1145,7 @@ export class Seafloor {
       // seabed, where the ripple bars belong. Dry sand above the swash is
       // wind-smoothed, and at full strength the ripple map read on the beach as
       // dark swirls rather than as sand.
-      const scale = mix(float(SAND_NORMAL_SCALE), float(0.22), positionWorld.y.smoothstep(0.4, 3)).toVar();
+      const scale = mix(float(SAND_NORMAL_SCALE), float(0.08), positionWorld.y.smoothstep(0.2, 1.4)).toVar();
       return vec3(blended.x.mul(scale), blended.y.mul(scale), blended.z);
     };
 
@@ -1172,7 +1172,13 @@ export class Seafloor {
       const geo = normalize(normalWorldGeometry).toVar();
 
       const d = this.detailNode.toVar();
-      const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus()).toVar();
+      // Dry beach, between the swash and the back of the beach, is wind-smoothed:
+      // the relief octaves that give the seabed and the hillside their texture
+      // drew it as dark, melted swirls metres across. Damped there only.
+      const dryBeach = wp.y.smoothstep(-0.3, 0.9).mul(smoothstepDownNode(wp.y, 3.5, 9)).toVar();
+      const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus())
+        .mul(dryBeach.mul(-0.7).add(1))
+        .toVar();
       // A heightfield's normal is `(-dh/dx, 1, -dh/dz)`, so added relief
       // subtracts its gradient from the horizontal components.
       const n = normalize(
