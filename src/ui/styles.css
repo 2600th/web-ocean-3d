@@ -1766,6 +1766,21 @@ body {
   transform: none;
 }
 
+/* A first-minute lesson: the same ribbon, one line, held until it is done.
+   It steps back with the rest of the HUD rather than holding the view. */
+.hud-hints.is-coach {
+  transition-duration: var(--fade-in);
+}
+
+#ui-root.is-idle .hud-hints.is-coach {
+  opacity: 0.62;
+  transition-duration: var(--fade-out);
+}
+
+#ui-root.is-dragging .hud-hints.is-coach {
+  opacity: 0.22;
+}
+
 #ui-root.is-idle :is(.hud-compass, .hud-instruments, .hud-modes, .hud-corner, .score, .panel--collapsed, .panel-toggle, .touchpad, .touchhelm) {
   transition-duration: var(--fade-out);
 }
@@ -3102,6 +3117,33 @@ body {
 
   .touchhelm__btn {
     min-height: 40px;
+  }
+}
+
+/* Phone and tablet portrait: the key list stays off, and a lesson is the one
+   hint that shows. It sits in the left column above the wind plate, clear of
+   the mode bar below it and of the sail orders and stick on the right thumb.
+   Landscape phones keep the ribbon off entirely; the empty middle is the
+   ship's, and the sides are full. */
+@media (max-width: 900px) and (orientation: portrait) {
+  .hud-hints.is-coach {
+    display: flex;
+    position: absolute;
+    left: 0;
+    /* Clear of the wind plate, which grows a speed row at the helm, and
+       narrow enough to pass left of the sail orders over the stick. */
+    bottom: calc(100% + 82px);
+    max-width: min(186px, 100%);
+    justify-content: flex-start;
+    padding: 6px 12px;
+    border-radius: 14px;
+  }
+
+  .hud-hints.is-coach .hud-hints__item {
+    white-space: normal;
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.25;
   }
 }
 
