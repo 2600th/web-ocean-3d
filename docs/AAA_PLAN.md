@@ -82,9 +82,10 @@ reinventing it.
 - [x] Mobile layout, reduced-motion honoured, `src/ui` stays three-free
 
 ### E. Gameplay and feel (gameplay agent)
-- [ ] A light loop: floating loot to collect under sail, objective marker and compass bearing
-- [ ] Sail trim against wind (point of sail matters), anchor, camera shake + spray on impacts
-- [ ] Toasts/score in the new UI
+- [x] A light loop: floating loot to collect under sail, objective marker and compass bearing (`src/gameplay`)
+- [x] Sail trim against wind (point of sail matters), anchor, camera shake + spray on impacts
+  (bow spray is a CPU billboard system in `gameplay/effects`; `physics/Spray` slam spray is still parked)
+- [ ] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
 
 ### F. Verification
 - [ ] Progress screenshots each milestone

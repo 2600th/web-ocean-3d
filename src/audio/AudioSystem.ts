@@ -515,6 +515,22 @@ const UI_CLICK_FALL = 0.62;
 const UI_CLICK_SECONDS = 0.045;
 const UI_CLICK_LEVEL = 0.13;
 
+/** Reward chime: root pitch, the arpeggio as ratios of it, and note spacing. */
+const CHIME_ROOT_HZ = 784;
+const CHIME_NOTES = [1, 1.25, 1.5] as const;
+const CHIME_SPACING = 0.085;
+const CHIME_LEVEL = 0.16;
+/** [frequency ratio, level, decay seconds] per partial of each note. */
+const CHIME_PARTIALS: readonly (readonly [number, number, number])[] = [
+  [1, 1, 0.9],
+  [2.76, 0.28, 0.35],
+];
+
+/** Anchor chain: the band the rattle sits in, its level and its link rate. */
+const CHAIN_BAND_HZ = 2600;
+const CHAIN_LEVEL = 0.35;
+const CHAIN_LINKS_PER_SECOND = 14;
+
 // --- gulls -----------------------------------------------------------------
 //
 // The hardest thing in this file to keep on the right side of the line between a
@@ -1435,6 +1451,100 @@ export class AudioSystem {
     osc.start(now);
     osc.stop(now + UI_CLICK_SECONDS + 0.01);
     this.trackVoice(osc, gain);
+  }
+
+  /**
+   * A reward chime: a rising major arpeggio of struck-bell partials.
+   *
+   * Interface feedback rather than a sound in the world, so it rides the UI bus
+   * past the underwater muffle like the click does. Three notes, each a
+   * fundamental plus an inharmonic partial at 2.76x — the ratio that makes a
+   * struck bar read as metal rather than as a sine beep.
+   */
+  playChime(): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    if (!this.acquireVoice()) return;
+
+    const now = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = CHIME_LEVEL;
+    out.connect(this.uiBus);
+
+    const nodes: AudioNode[] = [out];
+    let first: OscillatorNode | null = null;
+    let end = now;
+    for (let i = 0; i < CHIME_NOTES.length; i++) {
+      const start = now + i * CHIME_SPACING;
+      for (const [ratio, level, decay] of CHIME_PARTIALS) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = CHIME_ROOT_HZ * CHIME_NOTES[i] * ratio;
+        const gain = ctx.createGain();
+        envelope(gain.gain, start, 0.004, level, decay);
+        osc.connect(gain);
+        gain.connect(out);
+        osc.start(start);
+        osc.stop(start + decay + 0.05);
+        end = Math.max(end, start + decay + 0.05);
+        if (first === null) first = osc;
+        else nodes.push(osc);
+        nodes.push(gain);
+      }
+    }
+    // One voice for the whole chord: the first oscillator carries the cleanup,
+    // and it is held open until the last partial has rung out.
+    if (first !== null) {
+      first.stop(end);
+      this.trackVoice(first, ...nodes);
+    }
+  }
+
+  /**
+   * Anchor chain running out or being hove in: a rattle of metal on wood.
+   *
+   * Band-passed noise chopped by a fast gate, so it reads as links rather than
+   * as hiss. In the world, so it goes through the air bus and is muffled under
+   * water with everything else.
+   *
+   * @param seconds How long the chain runs.
+   */
+  playAnchorChain(seconds = 1.5): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    if (!this.acquireVoice()) return;
+
+    const duration = clampNumber(finite(seconds, 1.5), 0.2, 6);
+    const now = ctx.currentTime;
+    const random = this.oneShotRandom;
+
+    const source = ctx.createBufferSource();
+    source.buffer = this.white;
+    source.loop = true;
+
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = CHAIN_BAND_HZ;
+    band.Q.value = 2.2;
+
+    // The gate: one click per link, with a little irregularity so it is a chain
+    // and not a motor.
+    const gate = ctx.createGain();
+    gate.gain.setValueAtTime(0, now);
+    let t = now;
+    while (t < now + duration) {
+      gate.gain.setValueAtTime(CHAIN_LEVEL * (0.6 + 0.4 * random()), t);
+      gate.gain.exponentialRampToValueAtTime(CHAIN_LEVEL * 0.02, t + 0.035);
+      t += 1 / (CHAIN_LINKS_PER_SECOND * (0.8 + 0.4 * random()));
+    }
+    gate.gain.setValueAtTime(0, now + duration);
+
+    source.connect(band);
+    band.connect(gate);
+    gate.connect(this.airBus);
+    source.start(now, random() * this.white.duration);
+    source.stop(now + duration + 0.05);
+    this.trackVoice(source, band, gate);
   }
 
   /**

@@ -69,11 +69,12 @@ const HINTS: Record<CameraMode, readonly Hint[]> = {
     { action: 'Speed', key: 'Scroll' },
     { action: 'Boost', key: 'Shift' },
   ],
-  // Reverse is real: S astern of a stop backs the ship, and the rudder reverses
-  // with it.
+  // W/S step the canvas (furled, half, full) and R lets go or weighs the
+  // anchor — see `src/gameplay`.
   boat: [
-    { action: 'Throttle', key: 'W S' },
+    { action: 'Sail', key: 'W S' },
     { action: 'Steer', key: 'A D' },
+    { action: 'Anchor', key: 'R' },
     { action: 'Look', key: 'Drag' },
     { action: 'Zoom', key: 'Scroll' },
   ],
