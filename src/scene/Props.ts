@@ -890,6 +890,26 @@ export class Props {
     this.islandDetail.setWind(direction, strength);
   }
 
+  /**
+   * World positions of the island's light sources — the camp fire, the jetty
+   * torches and the jetty lantern — for `lighting/LocalLights`.
+   */
+  lightAnchors(): { fire: THREE.Vector3; torches: THREE.Vector3[]; lanterns: THREE.Vector3[] } {
+    const lanterns: THREE.Vector3[] = [];
+    const lantern = this.object.getObjectByName('cove-lantern');
+    if (lantern) {
+      lantern.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(lantern);
+      if (!box.isEmpty()) lanterns.push(box.getCenter(new THREE.Vector3()));
+    }
+    return { ...this.islandDetail.lightAnchors, lanterns };
+  }
+
+  /** Light on the camp smoke: what the sky gives it, and the fire under it. See `IslandDetail.setLighting`. */
+  setDetailLighting(ambient: THREE.Color, fire: number): void {
+    this.islandDetail.setLighting(ambient, fire);
+  }
+
   /** Aligns the animated dressing with a scene clock after a reset or seek. */
   resetClock(time = 0): void {
     this.islandDetail.resetClock(time);

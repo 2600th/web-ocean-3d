@@ -32,13 +32,24 @@ import { float, materialColor, materialRoughness, mix, normalWorldGeometry, unif
  * would have built. Wrapping those keeps the glTF's textures composing exactly as
  * before and needs no knowledge of which maps a given material happens to carry.
  *
- * Sharing is a feature here rather than a problem: the mask is evaluated per
- * fragment from the geometric normal, so one material serves every clone and each
- * still wets according to how its own surfaces are turned.
+ * ### Per object, not per scene
  *
- * The graph is attached in `adopt`, during scene load, and driven afterwards by a
- * single uniform — so no frame in gameplay pays a shader compile, and there is no
- * per-material CPU work per frame at all.
+ * Rain falls on everything, but spray does not: a sea coming green over the bow
+ * soaks the ship and nothing else. This used to be one scalar for every adopted
+ * material, so a wave across the deck darkened the rocks, the jetty and the
+ * crates on an island a kilometre and a half away. Each adopted root now names a
+ * *channel* — the ship, the island — and each channel has its own level: rain
+ * drives all of them alike, `douse` drives one.
+ *
+ * The level reaches the shader through an object-scope uniform rather than one
+ * uniform per channel, and that matters because materials can be shared: the
+ * value is written per draw from the object being drawn, so one material on two
+ * objects in two channels still wets each by its own amount. three does the same
+ * for `modelWorldMatrix`; the object bind group is per render object. The lookup
+ * is a cached parent walk, so a draw costs a map read.
+ *
+ * The graph is attached in `adopt`, during scene load, and driven afterwards by
+ * plain numbers — so no frame in gameplay pays a shader compile.
  */
 
 /** Roughness a fully wetted surface tends toward. Flat water is ~0.05. */
@@ -69,10 +80,15 @@ const SHELTERED_WETNESS = 0.15;
 const WET_TAU = 3.5;
 const DRY_TAU = 26;
 
+/** Channel for anything adopted without naming one. */
+const DEFAULT_CHANNEL = 'world';
+
 interface Tracked {
   material: THREE.MeshStandardMaterial;
   /** Set when the wetting graph was attached, so `dispose` can detach it. */
   wired: boolean;
+  /** Channel whose level a scalar-path (unwired) material follows. */
+  channel: Channel;
   roughness: number;
   color: THREE.Color;
   /** The node graphs the material had before wetting wrapped them, restored on dispose. */
@@ -80,27 +96,43 @@ interface Tracked {
   roughnessNode: unknown;
 }
 
+interface Channel {
+  name: string;
+  level: number;
+}
+
 export class SurfaceWetness {
   private readonly tracked: Tracked[] = [];
-  private wetness = 0;
+  private readonly channels = new Map<string, Channel>();
+  /** Roots registered by `adopt`, and the channel each belongs to. */
+  private readonly roots = new WeakMap<THREE.Object3D, Channel>();
+  /** Per-object resolution cache; objects never change root in this scene. */
+  private readonly resolved = new WeakMap<THREE.Object3D, Channel>();
   /**
-   * The one thing that changes per frame. Every adopted material reads it, so
-   * updating wetness is a single uniform write regardless of how many materials
-   * the scene loaded.
+   * The level for the object being drawn. Written per draw, so materials shared
+   * across channels still wet by their own object's amount.
    */
-  private readonly uWetness = uniform(0);
+  private readonly uWetness = uniform(0).onObjectUpdate(({ object }) =>
+    object ? this.channelOf(object).level : 0,
+  );
   /** Materials are shared between clones; adopting one twice would double-apply. */
   private readonly seen = new Set<THREE.Material>();
 
+  constructor() {
+    this.channel(DEFAULT_CHANNEL);
+  }
+
   /**
-   * Adopts every standard material under `root`.
+   * Adopts every standard material under `root`, wetting it by `channel`.
    *
-   * Safe to call for several roots — the ship and the props share materials
-   * through the asset loader's cache, and adopting a material twice would take
-   * the already-darkened colour as its dry reference and walk it to black over
-   * repeated calls.
+   * Safe to call for several roots — adopting a material twice would take the
+   * already-darkened colour as its dry reference and walk it to black over
+   * repeated calls, so a material is wired once and every object drawing it
+   * reads its own channel at draw time.
    */
-  adopt(root: THREE.Object3D): void {
+  adopt(root: THREE.Object3D, channel = DEFAULT_CHANNEL): void {
+    const target = this.channel(channel);
+    this.roots.set(root, target);
     root.traverse((node) => {
       const mesh = node as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -120,6 +152,7 @@ export class SurfaceWetness {
         const entry: Tracked = {
           material: standard,
           wired: false,
+          channel: target,
           roughness: standard.roughness,
           color: standard.color.clone(),
           colorNode: (standard as unknown as { colorNode?: unknown }).colorNode ?? null,
@@ -182,47 +215,84 @@ export class SurfaceWetness {
   }
 
   /**
-   * @param rain Rain rate, 0..1, from the weather system.
+   * @param rain Rain rate, 0..1, from the weather system. Drives every channel.
    */
   update(dt: number, rain: number): void {
     const target = Math.max(0, Math.min(1, rain));
     if (!(dt > 0)) return;
-    const tau = target > this.wetness ? WET_TAU : DRY_TAU;
-    // Exponential approach, framerate-independent.
-    this.wetness += (target - this.wetness) * (1 - Math.exp(-dt / tau));
+    for (const channel of this.channels.values()) {
+      const tau = target > channel.level ? WET_TAU : DRY_TAU;
+      // Exponential approach, framerate-independent.
+      channel.level += (target - channel.level) * (1 - Math.exp(-dt / tau));
+    }
     this.write();
   }
 
   /**
    * Water arriving all at once rather than as rain: spray over the bow, green
-   * water across the deck. Wets immediately by `amount` and then dries on the
-   * same slow constant rain does, so a ship that has been taking it green stays
-   * dark for the better part of a minute after the sea goes down.
+   * water across the deck. Wets one channel immediately by `amount` and then
+   * dries on the same slow constant rain does, so a ship that has been taking it
+   * green stays dark for the better part of a minute after the sea goes down —
+   * and the island it is sailing past stays dry.
    */
-  douse(amount: number): void {
+  douse(amount: number, channel = DEFAULT_CHANNEL): void {
     if (!(amount > 0)) return;
-    this.wetness = Math.min(1, this.wetness + amount * (1 - this.wetness));
+    const c = this.channel(channel);
+    c.level = Math.min(1, c.level + amount * (1 - c.level));
     this.write();
   }
 
-  /** Immediate set, for deterministic capture. Skips the time constants. */
+  /** Immediate set of every channel, for deterministic capture. Skips the time constants. */
   setWetness(value: number): void {
-    this.wetness = Math.max(0, Math.min(1, value));
+    const v = Math.max(0, Math.min(1, value));
+    for (const channel of this.channels.values()) channel.level = v;
     this.write();
   }
 
+  /** The wettest channel, 0..1. */
   get value(): number {
-    return this.wetness;
+    let v = 0;
+    for (const channel of this.channels.values()) v = Math.max(v, channel.level);
+    return v;
+  }
+
+  /** One channel's level, 0..1; 0 for a channel nothing has used. */
+  level(channel: string): number {
+    return this.channels.get(channel)?.level ?? 0;
+  }
+
+  private channel(name: string): Channel {
+    let c = this.channels.get(name);
+    if (c === undefined) {
+      c = { name, level: this.channels.get(DEFAULT_CHANNEL)?.level ?? 0 };
+      this.channels.set(name, c);
+    }
+    return c;
+  }
+
+  /** The channel of the nearest adopted ancestor, cached per object. */
+  private channelOf(object: THREE.Object3D): Channel {
+    const cached = this.resolved.get(object);
+    if (cached !== undefined) return cached;
+    let found: Channel | undefined;
+    for (let node: THREE.Object3D | null = object; node !== null; node = node.parent) {
+      found = this.roots.get(node);
+      if (found !== undefined) break;
+    }
+    const channel = found ?? this.channel(DEFAULT_CHANNEL);
+    // Only cache a hit: an object drawn before its root was adopted (or before
+    // it was parented) must be able to find its channel later.
+    if (found !== undefined) this.resolved.set(object, channel);
+    return channel;
   }
 
   private write(): void {
-    const w = this.wetness;
-    this.uWetness.value = w;
     // Only entries that could not take the graph need the scalar treatment; a
-    // wired material would otherwise be darkened twice, once here and once in
-    // its own shader.
+    // wired material reads its level per draw and would otherwise be darkened
+    // twice, once here and once in its own shader.
     for (const entry of this.tracked) {
       if (entry.wired) continue;
+      const w = entry.channel.level;
       if (w < 1e-4) {
         entry.material.roughness = entry.roughness;
         entry.material.color.copy(entry.color);

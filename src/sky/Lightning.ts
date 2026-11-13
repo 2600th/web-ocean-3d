@@ -54,6 +54,8 @@ export class Lightning {
   private untilNext = 4;
   private age = Infinity;
   private flash = 0;
+  /** Where the current (or last) stroke came down, for the flash light. */
+  private readonly strikeAt = { x: 0, z: 0, distance: Infinity };
   private cloudBase = 900;
 
   constructor() {
@@ -75,6 +77,16 @@ export class Lightning {
   }
 
   /** 0..1 — how much of the frame the current flash lights. */
+  /** The last strike's ground point and its distance from the eye at the time. */
+  get lastStrike(): Readonly<{ x: number; z: number; distance: number }> {
+    return this.strikeAt;
+  }
+
+  /** Cloud base the bolt starts from, metres. */
+  get cloudBaseHeight(): number {
+    return this.cloudBase;
+  }
+
   get flashIntensity(): number {
     return this.flash;
   }
@@ -141,6 +153,9 @@ export class Lightning {
     const x = camera.position.x + Math.cos(bearing) * distance;
     const z = camera.position.z + Math.sin(bearing) * distance;
 
+    this.strikeAt.x = x;
+    this.strikeAt.z = z;
+    this.strikeAt.distance = distance;
     this.buildBolt(x, z, distance, rand);
     this.age = 0;
     return { x, z, distance };

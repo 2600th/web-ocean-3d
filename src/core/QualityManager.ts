@@ -72,6 +72,23 @@ export interface QualitySettings {
    */
   shadowMapSize: 512 | 1024 | 2048 | 4096;
   /**
+   * Sun shadow cascades, and how far from the eye the last one reaches (metres).
+   *
+   * `shadowMapSize` is per cascade. The count is part of every lit material's
+   * shader, so it is taken from the tier the session *boots* on and a later tier
+   * change moves only the size and the distance — see `lighting/SunShadows`.
+   */
+  shadowCascades: 1 | 2 | 3 | 4;
+  shadowDistance: number;
+  /**
+   * Point lights for the camp fire, the jetty torches and lanterns, and the
+   * ship's stern lantern, at dusk and night. 0 creates none (the emissive meshes
+   * still glow); otherwise the number of lights the scene carries. Fixed at boot
+   * for the same reason as the cascade count: a light's existence is part of
+   * every lit material's shader, its intensity is not.
+   */
+  localLights: number;
+  /**
    * Resolution per side of each of the wake's three RGBA16F targets.
    *
    * The wake is a ping-pong pair plus a resolved output, so the cost is three
@@ -365,6 +382,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 206,
     meshSegments: 119,
     shadowMapSize: 512,
+    shadowCascades: 1,
+    shadowDistance: 120,
+    localLights: 0,
     wakeResolution: 768,
     causticsResolution: 256,
     environmentResolution: 256,
@@ -401,6 +421,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 308,
     meshSegments: 179,
     shadowMapSize: 1024,
+    shadowCascades: 3,
+    shadowDistance: 200,
+    localLights: 4,
     wakeResolution: 768,
     causticsResolution: 512,
     environmentResolution: 256,
@@ -437,6 +460,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 469,
     meshSegments: 275,
     shadowMapSize: 2048,
+    shadowCascades: 3,
+    shadowDistance: 300,
+    localLights: 4,
     wakeResolution: 1024,
     causticsResolution: 768,
     environmentResolution: 256,
@@ -471,6 +497,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 613,
     meshSegments: 360,
     shadowMapSize: 2048,
+    shadowCascades: 3,
+    shadowDistance: 400,
+    localLights: 4,
     wakeResolution: 1024,
     causticsResolution: 768,
     environmentResolution: 256,
@@ -504,7 +533,12 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cascades: 3,
     meshRings: 817,
     meshSegments: 481,
-    shadowMapSize: 4096,
+    // Per cascade: four 2048 maps rather than one 4096 — the same memory, and
+    // the near cascade is twenty times denser than the old single box was.
+    shadowMapSize: 2048,
+    shadowCascades: 4,
+    shadowDistance: 500,
+    localLights: 4,
     wakeResolution: 1024,
     causticsResolution: 768,
     environmentResolution: 256,

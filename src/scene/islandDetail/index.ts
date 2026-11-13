@@ -151,6 +151,26 @@ export class IslandDetail {
     this.clock.setWind(direction, strength);
   }
 
+  /** Where the fire's coals and the torch flames are, world space. Filled by `camp`. */
+  readonly lightAnchors: { fire: THREE.Vector3; torches: THREE.Vector3[] } = {
+    fire: new THREE.Vector3(),
+    torches: [],
+  };
+
+  /**
+   * How the camp smoke is lit.
+   *
+   * The plume was unlit — a fixed grey, so at night it stood over a dark beach
+   * as a bright white column. `ambient` is the light the sky and the key give a
+   * diffuse grey card, normalised so a clear noon is about 1; `fire` is 0..1,
+   * the camp fire's glow on the underside of the plume once it is dark enough
+   * for the fire to matter.
+   */
+  setLighting(ambient: THREE.Color, fire: number): void {
+    (this.clock.uSmokeLight.value as THREE.Color).copy(ambient);
+    this.clock.uFireGlow.value = fire;
+  }
+
   dispose(): void {
     this.object.removeFromParent();
     for (const g of this.geometries) g.dispose();
@@ -443,6 +463,7 @@ export class IslandDetail {
     }
     stone.dispose();
     const fireY = seafloorMeshHeight(fire.x, fire.z);
+    this.lightAnchors.fire.set(fire.x, fireY + 0.55, fire.z);
     const logG = buildLog(0xf12e, 1, 0.07, 0);
     for (let i = 0; i < 6; i++) {
       // A collapsed teepee: logs leaning in to a point above the coals.
@@ -595,6 +616,7 @@ export class IslandDetail {
       const base = at(-3, along);
       base.y = seafloorMeshHeight(base.x, base.z) - 0.3;
       const top = base.clone().add(new THREE.Vector3(0, 2.6, 0));
+      this.lightAnchors.torches.push(top.clone().add(new THREE.Vector3(0, 0.2, 0)));
       polePlace(base, top, [0.45, 0.36, 0.28]);
       const flame = new THREE.ConeGeometry(0.1, 0.34, 6);
       flame.translate(0, 0.17, 0);

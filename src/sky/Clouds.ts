@@ -5,8 +5,6 @@ import {
   If,
   Loop,
   cameraPosition,
-  cameraProjectionMatrix,
-  cameraViewMatrix,
   clamp,
   dot,
   exp,
@@ -330,9 +328,12 @@ const WIND_WRAP = 200_000;
 /**
  * Moonlight on the deck, relative to sunlight *at the same sky brightness* —
  * the gain is multiplied by `skyLevel`, so at night this is a multiple of the
- * night sky, enough to silver an edge without whitening the deck.
+ * night sky, enough to silver an edge without whitening the deck. 1.6 since
+ * the night dome was lifted from near black to teal-navy (`Atmosphere`'s
+ * `NIGHT_HORIZON`): at 3.5 the brighter sky level made the moonlit deck read
+ * pale blue-white instead of dark teal with silvered rims.
  */
-const MOON_GAIN = 3.5;
+const MOON_GAIN = 1.6;
 
 /** Ambient gain on the base's shadow colour at a clear noon. */
 const AMBIENT_GAIN = 0.42;
@@ -567,18 +568,23 @@ export class Clouds {
    * frame's and last frame's view-projection. Camera translation then moves
    * nothing and rotation moves it exactly as far as the sky moves.
    *
+   * Both matrices are the unjittered ones the ocean uses (`current`, captured
+   * outside the pipeline render). The camera's own projection is jittered for
+   * the length of the scene pass, which put up to half a pixel of Halton offset
+   * into every cloud pixel's vector and softened the deck's edges.
+   *
    * Safe as a material MRT override only because the layer is on its own
    * render layer and excluded from the planar mirror: a material `mrtNode`
    * *replaces* the output of a render into a target without MRT, which is what
    * the reflector's target is.
    */
-  setPreviousViewProjection(previous: any): void {
+  setPreviousViewProjection(previous: any, current: any): void {
     this.material.mrtNode = mrt({
       velocity: Fn(() => {
         const dir = vec4(normalize(positionGeometry), 0);
-        const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(dir);
+        const now = current.mul(dir);
         const before = previous.mul(dir);
-        return current.xy.div(current.w).sub(before.xy.div(before.w));
+        return now.xy.div(now.w).sub(before.xy.div(before.w));
       })(),
     });
     this.material.needsUpdate = true;

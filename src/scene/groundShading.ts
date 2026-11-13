@@ -5,6 +5,7 @@ import {
   float,
   materialColor,
   mix,
+  normalWorld,
   positionGeometry,
   positionLocal,
   positionWorld,
@@ -103,6 +104,12 @@ export interface GroundShadingInputs {
  */
 export const TRANSLUCENCY_POWER = 4;
 export const TRANSLUCENCY_GAIN = 0.55;
+/**
+ * Fraction of the light on a leaf's far face that its near face passes on.
+ * Broadleaf transmittance runs about 0.2-0.4 in the visible green; this is the
+ * low end, because the lobe above already carries the view-aligned part.
+ */
+export const LEAF_DIFFUSE_TRANSMITTANCE = 0.22;
 
 /**
  * Sway shared by the near trees and the distant canopy cards.
@@ -376,9 +383,18 @@ function applyLeafTranslucency(
       .clamp(0, 1)
       .pow(TRANSLUCENCY_POWER)
       .toVar('ltBack');
+    // And the diffuse half: light arriving on the leaf's far face comes through
+    // it whatever the viewing angle. Without this a frond lit from the other
+    // side was lit by the sky alone — one face of the foliage was never lit by
+    // the sun at all. `normalWorld` faces the viewer on a double-sided leaf, so
+    // a negative dot with the key means the key is behind the leaf. See
+    // `lighting/Translucency` for the form; the key colour is normalised to a
+    // noon sun of 1, hence the 3.4 / pi.
+    const far = normalWorld.dot(vec3(foliage.sunDirection)).negate().max(0);
+    const diffuse = far.mul(LEAF_DIFFUSE_TRANSMITTANCE * (3.4 / Math.PI));
     return vec3(materialColor)
       .mul(vec3(foliage.sunColor))
-      .mul(back.mul(TRANSLUCENCY_GAIN))
+      .mul(back.mul(TRANSLUCENCY_GAIN).add(diffuse))
       .mul(inputs.keyShadow(wp));
   })();
 

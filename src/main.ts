@@ -65,7 +65,8 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
-import { VolumetricFog } from './post/VolumetricFog';
+import { LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
+import { DEFAULT_VOLUMETRIC_FOG_PARAMS, VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
 import { SceneBloom } from './post/Bloom';
@@ -134,6 +135,17 @@ const _hullRadius = new THREE.Vector3(1, 1, 1);
 const _birdShade = new THREE.Color();
 const _meadowAmbient = new THREE.Color();
 const _meadowWind = new THREE.Vector2();
+/** Scratch for the key light's colour at its strength, for the custom-lit foliage and the smoke. */
+const _keyLight = new THREE.Color();
+const _smokeLight = new THREE.Color();
+const _smokeSky = new THREE.Color();
+/** How much of a lightning flash still goes to the grade as a frame-wide lift. */
+const FLASH_GRADE_SHARE = 0.55;
+/** Night multiplier on the sea's key-light glint, so the moon path reads (see `water.setSun`). */
+const MOON_GLINT_BOOST = 3;
+/** Scratch for the sky colours lifted by a lightning flash before the water reads them. */
+const _flashZenith = new THREE.Color();
+const _flashHorizon = new THREE.Color();
 /** Scratch for the drawing-buffer size, read on resize and at startup. */
 const _drawingBuffer = new THREE.Vector2();
 /**
@@ -181,7 +193,36 @@ const _hazeZenith = new THREE.Color();
 /** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
 const _skyRadiance = new THREE.Color();
 const _skyHorizon = new THREE.Color();
-const _skySample = new THREE.Color();
+/** Typical dome radiance at the horizon, for the volumetric fog; see `measureSkyRadiance`. */
+const _skyTypical = new THREE.Color();
+const _skyBearings = [new THREE.Color(), new THREE.Color(), new THREE.Color(), new THREE.Color()];
+const _fogColor = new THREE.Color();
+/** Dome radiance overhead; see `measureSkyRadiance`. */
+const _skyZenith = new THREE.Color();
+/** The sky the water and the haze are given; see `seenSky`. */
+const _seenHorizon = new THREE.Color();
+const _seenZenith = new THREE.Color();
+const _cloudFog = new THREE.Color();
+const _cloudZenith = new THREE.Color();
+
+/**
+ * A fill tint dimmed to the dome's own radiance, once the sun is down.
+ *
+ * `Atmosphere.horizonColor` and `zenithColor` are the hemisphere *fill* — hues
+ * at a daylight scale — and by day the dome around the horizon is about as
+ * bright, so the water and the haze were tuned against them and keep them.
+ * After sunset the dome falls a hundredfold and the tints do not: the sea went
+ * on mirroring a mid-blue sky above a near-black one, meeting in a hard step at
+ * the horizon. So, by how far the sun is down, the tint is dimmed to the dome's
+ * luma (`dark` = 1 gives exactly that luma) and its hue drawn toward the
+ * dome's. Never brightened.
+ */
+function seenSky(tint: THREE.Color, dome: THREE.Color, dark: number, out: THREE.Color): THREE.Color {
+  const tintLuma = luma(tint);
+  const fit = tintLuma > 1e-6 ? Math.min(1, luma(dome) / tintLuma) : 1;
+  const s = 1 - dark * (1 - fit);
+  return out.copy(tint).multiplyScalar(s).lerp(dome, 1 - s);
+}
 const _skyDirection = new THREE.Vector3();
 const _litFog = new THREE.Color();
 /** Rec. 709 luminance of a linear colour. */
@@ -242,12 +283,19 @@ const boot = {
   root: document.getElementById('boot'),
   bar: document.getElementById('boot-bar'),
   status: document.getElementById('boot-status'),
+  /** Furthest the course has been inked; the ship never sails backwards. */
+  reached: 0,
   set(progress: number, message: string) {
     // Scaled rather than resized. Animating `width` puts a layout pass and a
     // paint on the main thread for every update, during the one stretch where
     // that thread is already compiling shaders and decoding assets; a transform
     // is composited and costs neither. The bar is `transform-origin: left`.
-    const clamped = Math.max(0, Math.min(1, progress));
+    //
+    // Monotonic: stages are reported from more than one place (0.85 for the
+    // controls lands before 0.82 for the first frame), and a bar that slides
+    // back reads as something having gone wrong.
+    const clamped = Math.max(this.reached, Math.min(1, progress));
+    this.reached = clamped;
     if (this.bar) {
       (this.bar as HTMLElement).style.transform = `scaleX(${clamped})`;
     }
@@ -258,9 +306,19 @@ const boot = {
   hide() {
     this.root?.classList.add('boot--hidden');
   },
-  fail(message: string) {
+  /**
+   * The failure state: what happened and what to do, in plain words, with the
+   * error's own text under it, smaller, for whoever needs to report it.
+   */
+  fail(message: string, detail = '') {
     if (this.status) {
       this.status.textContent = message;
+      if (detail) {
+        const small = document.createElement('small');
+        small.className = 'boot__status-detail';
+        small.textContent = detail;
+        this.status.append(small);
+      }
       this.status.classList.add('boot__status--error');
     }
   },
@@ -316,6 +374,8 @@ class App {
   private clouds!: Clouds;
   private weather!: Weather;
   private lightning!: Lightning;
+  /** Sun cascades, fire and lantern lights, the lightning's light. See `lighting/`. */
+  private lighting!: LightingRig;
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
@@ -519,7 +579,7 @@ class App {
   }
 
   async start(): Promise<void> {
-    boot.set(0.05, 'Initialising renderer…');
+    boot.set(0.05, 'Waking the graphics card…');
     const rendererOptions: Parameters<typeof createRenderer>[0] = {
       canvas: this.canvas,
       forceWebGL: this.state.forceWebGL,
@@ -623,7 +683,7 @@ class App {
 
     const quality = QUALITY_TIERS[this.state.quality];
 
-    boot.set(0.25, 'Building wave spectrum…');
+    boot.set(0.25, 'Raising the swell…');
     this.simulation = new OceanSimulation(this.renderer, {
       size: quality.fftSize,
       cascadeCount: quality.cascades,
@@ -638,7 +698,7 @@ class App {
     // sky purely so the ordering is impossible to get wrong.
     this.clouds = new Clouds();
 
-    boot.set(0.4, 'Building seafloor…');
+    boot.set(0.4, 'Laying the seabed…');
     // The seafloor must exist before the water material: the surface samples its
     // depth to shade shallows, and that binding is baked into the node graph.
     this.seafloor = new Seafloor(SEAFLOOR_EXTENT);
@@ -687,7 +747,7 @@ class App {
       this.ssr.setCamera(this.camera);
     }
 
-    boot.set(0.5, 'Compiling water shaders…');
+    boot.set(0.5, 'Teaching the water to catch the light…');
     this.water = this.buildWaterMaterial();
     this.oceanMesh = new OceanMesh(this.water.material, {
       radialSegments: quality.meshRings,
@@ -698,9 +758,12 @@ class App {
     this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
     this.scene.add(this.oceanMesh.mesh);
 
-    boot.set(0.7, 'Building atmosphere…');
+    boot.set(0.7, 'Hanging the sky…');
     this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
+    // Before anything lit compiles: the cascades and the extra lights are part
+    // of every lit material's shader. See `lighting/index.ts`.
+    this.lighting = new LightingRig(this.scene, this.renderer, this.camera, this.atmosphere.sunLight, quality);
 
     // One haze for the whole frame.
     //
@@ -828,7 +891,7 @@ class App {
     // earshot is skipped rather than invented.
     this.audio.setGullLocator((out: GullFix) => this.locateGull(out));
 
-    boot.set(0.8, 'Building underwater pass…');
+    boot.set(0.8, 'Filling the deep…');
     this.underwater = new UnderwaterPass();
     // Required, not optional: a post pass is drawn with the post-processor's own
     // orthographic quad camera, so the built-in camera nodes resolve to that quad
@@ -908,7 +971,7 @@ class App {
       // depth, which breaks down on distant ground seen at a grazing angle: the
       // beach came out as a grid of stripes that TRAA could not average away.
       scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
-      this.clouds.setPreviousViewProjection(this.prevViewProjection);
+      this.clouds.setPreviousViewProjection(this.prevViewProjection, this.currViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -1095,7 +1158,7 @@ class App {
       ),
     ) as THREE.Node;
 
-    boot.set(0.85, 'Wiring controls…');
+    boot.set(0.85, 'Rigging the helm…');
     this.director = new CameraDirector({
       camera: this.camera,
       domElement: this.canvas,
@@ -1171,13 +1234,13 @@ class App {
     // See `requestSceneContent`.
     void this.requestSceneContent();
 
-    boot.set(0.82, 'Preparing the first frame…');
+    boot.set(0.82, 'Readying the first view…');
     await this.prewarm();
     this.loop.start();
-    boot.set(0.84, 'Streaming island content…');
+    boot.set(0.84, 'Bringing the ship and island in…');
     window.setTimeout(() => boot.hide(), 350);
 
-    boot.set(0.86, 'Loading ship and island…');
+    boot.set(0.86, 'Bringing the ship and island in…');
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
@@ -1191,8 +1254,8 @@ class App {
     // deals itself after that takes the path every other late level does — the
     // frame update hands it to `compileLodLevels`.
 
-    boot.set(0.98, 'Island arriving…');
-    boot.set(1, 'Ready');
+    boot.set(0.98, 'Island in sight…');
+    boot.set(1, 'Fair winds');
   }
 
   /**
@@ -1433,8 +1496,9 @@ class App {
     // White water where it hit, and water on the deck when it came aboard.
     const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
     this.wake.splash(p.x, p.z, radius, 0.4 + 0.6 * s);
-    if (impact.kind === 'wash') this.wetness.douse(0.55 * s);
-    else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s);
+    // The ship's channel only: green water on the deck does not wet the island.
+    if (impact.kind === 'wash') this.wetness.douse(0.55 * s, 'ship');
+    else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s, 'ship');
   }
 
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
@@ -1793,7 +1857,7 @@ class App {
         const progress = 0.86 + fraction * 0.1;
         boot.set(
           progress,
-          'Loading island content ' + itemsLoaded + '/' + itemsTotal + '…',
+          'Bringing the ship and island in · ' + itemsLoaded + ' of ' + itemsTotal,
         );
       },
     });
@@ -1855,7 +1919,16 @@ class App {
       ship.object.visible = false;
       loaded.push(ship.object);
       this.scene.add(ship.object);
-      this.wetness.adopt(ship.object);
+      this.wetness.adopt(ship.object, 'ship');
+      // After wetting, so the filter widens the wet roughness too.
+      applySpecularAATo(ship.object);
+      // Backlit canvas. The key uniforms follow the moon at night.
+      applyThinTransmissionTo(ship.object, /sail/i, {
+        keyDirection: this.uKeyDirection,
+        keyColor: this.uKeyColor,
+        occlusion: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+      });
+      this.lighting.local.setShip(ship.object);
       // The hull gets the same treatment the dressing does, and the part of it
       // that matters here is the caustics: `underwater.png` shows the submerged
       // hull as a flat black cutout, because the one thing lighting a shape down
@@ -1944,7 +2017,10 @@ class App {
       this.scene.add(props.object);
       // Props share materials with the hull through the loader's cache;
       // `adopt` de-duplicates, so this is a no-op for anything already tracked.
-      this.wetness.adopt(props.object);
+      this.wetness.adopt(props.object, 'island');
+      sanitizeDielectrics(props.object);
+      applySpecularAATo(props.object);
+      this.lighting.local.setIsland(props.lightAnchors(), props.object);
       // Everything placed on the ground learns about the ground: contact
       // darkening at its base, the caustic pattern if it is under water, and the
       // island's own shadow and the cloud deck's if it is not. See
@@ -2456,6 +2532,8 @@ class App {
     // expresses "no shadows" as `castShadow = false`, which three handles on the
     // light rather than on the renderer.
     this.atmosphere.setShadowMapSize(quality.shadowMapSize);
+    // Cascade map size (read live by the filter) and reach; local lights' gate.
+    this.lighting.applyQuality(quality);
 
     // The tier-sized targets, resized rather than replaced.
     //
@@ -3098,8 +3176,15 @@ class App {
 
     // The grass field follows the camera, so unlike everything else on the
     // island it has to be told where that is every frame. Two uniform writes.
-    this.meadow.setSunDirection(this.atmosphere.sunDirection);
-    this.meadow.setSunColor(this.atmosphere.sunColor);
+    // The *key* light, at its strength — not the sun's direction and its
+    // normalised colour. Every lit material follows the key, which is the moon
+    // after dark and is dimmed by an overcast; the custom-lit grass and canopy
+    // were the two things in the scene still lit by a full-strength sun under a
+    // storm deck and by a sun below the horizon at night.
+    const keyLight = this.atmosphere.sunLight;
+    _keyLight.copy(keyLight.color).multiplyScalar(keyLight.intensity / 3.4);
+    this.meadow.setSunDirection(this.atmosphere.keyDirection);
+    this.meadow.setSunColor(_keyLight);
     this.meadow.setAmbientColor(_meadowAmbient.copy(this.atmosphere.zenithColor).multiplyScalar(0.5));
     {
       const bearing = getPreset(this.state.preset).sea.windDirection;
@@ -3113,8 +3198,8 @@ class App {
     // The canopy shares the meadow's light and wind — they are the same
     // vegetation under the same sky, and two sets of uniforms drifting apart is
     // how a sward ends up lit at a different hour from the trees above it.
-    this.canopy.setSunDirection(this.atmosphere.sunDirection);
-    this.canopy.setSunColor(this.atmosphere.sunColor);
+    this.canopy.setSunDirection(this.atmosphere.keyDirection);
+    this.canopy.setSunColor(_keyLight);
     this.canopy.setAmbientColor(_meadowAmbient);
     this.canopy.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.canopy.update(dt);
@@ -3150,8 +3235,30 @@ class App {
       if (strike) {
         this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
       }
-      this.colorGrade.setFlash(this.lightning.flashIntensity);
+      // Less of the flash as a grade lift now the strike lights the scene for
+      // real (`lighting/LightningLight`); what is left is the eye's response to
+      // a bright sky, which a frame-wide lift is the right model of.
+      this.colorGrade.setFlash(this.lightning.flashIntensity * FLASH_GRADE_SHARE);
     }
+
+    // The lights `lighting/` owns: cascade refit, fire and lanterns after dark,
+    // and the strike's own light on the scene.
+    this.lighting.update(
+      elapsed,
+      this.camera.position,
+      this.atmosphere.sunDirection.y,
+      this.atmosphere.overcast,
+      this.lightning.flashIntensity,
+      this.lightning.lastStrike,
+      this.lightning.cloudBaseHeight,
+    );
+    // The camp smoke takes the key and the sky like a grey card, and the fire
+    // from underneath once it is dark.
+    _smokeLight
+      .copy(this.atmosphere.sunLight.color)
+      .multiplyScalar((this.atmosphere.sunLight.intensity / 3.4) * 0.75)
+      .add(_smokeSky.copy(this.atmosphere.zenithColor).multiplyScalar(this.atmosphere.ambientLight.intensity * 0.6));
+    this.props?.setDetailLighting(_smokeLight, this.lighting.local.fireLevel);
 
     // The key light, whichever body is providing it, at its actual strength.
     //
@@ -3170,7 +3277,11 @@ class App {
     // daylight, but a mirror-sharp sun path on the sea under a sky with no sun
     // in it is the storm's most obvious lie.
     const clearSky = Math.max(0, 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) / 0.75);
-    const glint = 0.06 + 0.94 * clearSky * clearSky;
+    // At night the moon's path has to be the brightest thing on the sea, but the
+    // moon key (0.6) is a smaller fraction of the sun than the night sky fill is
+    // of daylight, so at a straight 1.8 its glitter sank into the moonlit swell.
+    const moonPath = 1 + (MOON_GLINT_BOOST - 1) * LightingRig.darkness(this.atmosphere.sunDirection.y, 0);
+    const glint = (0.06 + 0.94 * clearSky * clearSky) * moonPath;
     this.water.setSun(_keyDirection, key.color, key.intensity * 1.8 * glint, key.intensity / 3.4);
     (this.uKeyDirection.value as THREE.Vector3).copy(_keyDirection);
     // Scaled by the light's own intensity so the term follows the sun down: at
@@ -3187,9 +3298,19 @@ class App {
     // rather than the two being summed.
     const fogPreset = getPreset(this.state.preset).fog;
     const hazeDensity = fogPreset.density * (1 - 0.75 * this.state.fogDensity);
+    // Measured first: the water and the haze below are both given the dome's
+    // own brightness after sunset, and the clouds further down read it too.
+    this.measureSkyRadiance(_skyRadiance, _skyHorizon, _skyTypical, _skyZenith);
+    const sunDown = 1 - THREE.MathUtils.smoothstep(this.atmosphere.sunDirection.y, -0.1, 0.02);
+    seenSky(this.atmosphere.horizonColor, _skyTypical, sunDown, _seenHorizon);
+    seenSky(this.atmosphere.zenithColor, _skyZenith, sunDown, _seenZenith);
+    // A strike lights the cloud deck from inside, and the sea mirrors the deck:
+    // the analytic sky the water reflects at grazing angles brightens with it.
+    // Without this the flash lit the hull and left the sea dark under it.
+    const deckFlash = this.lighting.flash.deck.intensity * 1.5;
     this.water.setSky(
-      this.atmosphere.zenithColor,
-      this.atmosphere.horizonColor,
+      _flashZenith.copy(_seenZenith).multiplyScalar(1 + deckFlash),
+      _flashHorizon.copy(_seenHorizon).multiplyScalar(1 + deckFlash),
       fogPreset.color,
       // Zero: the shared aerial perspective owns this now, for the sea as well
       // as for the land. Two independent haze terms meeting at the shoreline is
@@ -3214,12 +3335,17 @@ class App {
     // the real dark sky, stood out as black blobs, and the sea mirrored it pink.
     // So the fog is dimmed to the sky's own brightness whenever the sky is the
     // darker of the two — never brightened, so a preset's daytime look is kept.
-    const skyLuma = luma(this.atmosphere.horizonColor);
+    const skyLuma = luma(_seenHorizon);
     const fogLuma = luma(fogPreset.color);
     _litFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, skyLuma / fogLuma) : 1);
     const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
-    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(_litFog, overcastPull);
-    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(_litFog, overcastPull);
+    _hazeHorizon.copy(_seenHorizon).lerp(_litFog, overcastPull);
+    _hazeZenith.copy(_seenZenith).lerp(_litFog, overcastPull);
+    // The deck takes the *tint* and scales it by the measured sky itself
+    // (`Clouds.setSkyColors`), so it is handed the undimmed one.
+    const tintLuma = luma(this.atmosphere.horizonColor);
+    _cloudFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, tintLuma / fogLuma) : 1);
+    _cloudZenith.copy(this.atmosphere.zenithColor).lerp(_cloudFog, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
@@ -3236,11 +3362,7 @@ class App {
     // And by how bright that sky actually *is*: the dome's own radiance at the
     // zenith and around the horizon, so the deck can never be lit brighter
     // than the sky it sits in by more than the sun or moon on it justifies.
-    this.clouds.setSkyColors(
-      _hazeZenith,
-      this.measureSkyRadiance(_skyRadiance, _skyHorizon),
-      _skyHorizon,
-    );
+    this.clouds.setSkyColors(_cloudZenith, _skyRadiance, _skyHorizon);
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -3303,6 +3425,8 @@ class App {
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.
     this.wetness.update(dt, raining);
+    // The island's ground follows the island channel: rain, never spray.
+    this.seafloor.setRainWetness(this.wetness.level('island'));
 
     this.lensRain.setIntensity(raining);
 
@@ -3420,7 +3544,20 @@ class App {
     // under. There is no atmosphere below the waterline — the medium down there
     // is the underwater pass's job, and leaving both on would stack two
     // different descriptions of the same water on top of each other.
+    // The fog's sky-lit colour. Its far field settles on this colour, so it is
+    // what the horizon shows wherever the fog runs out to the far plane. It was
+    // never set and stayed at the default pale grey-blue at every hour — at
+    // night a hundred times the dome's own radiance there, which drew a stark
+    // white line along the night horizon between the dark sea and the dark
+    // deck. Same rule as `_litFog`: never brightened, so daylight is untouched;
+    // where the sky is the darker of the two, the colour goes over to the
+    // dome's own horizon radiance, so the haze ends on the sky behind it.
+    const fogBase = DEFAULT_VOLUMETRIC_FOG_PARAMS.color;
+    const fogBaseLuma = luma(fogBase);
+    const fogLit = Math.min(1, luma(_skyTypical) / Math.max(1e-5, fogBaseLuma));
+    _fogColor.copy(_skyTypical).lerp(fogBase, fogLit);
     this.fog.setParams({
+      color: _fogColor,
       sunDirection: _keyDirection,
       sunColor: this.atmosphere.sunLight.color,
       sunIntensity: Math.max(0.05, this.atmosphere.sunLight.intensity / 3.4),
@@ -3571,27 +3708,33 @@ class App {
   /**
    * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
    * above the horizon. Five CPU evaluations of the sky model a frame.
+   *
    * `horizon` receives the darkest of the four bearings: the dome away from
    * the sun's glow, which is the colour of the air under a continuous deck
-   * (see the composite in `Clouds`).
+   * (see the composite in `Clouds`). `typical` receives the mean of the middle
+   * two by brightness: the horizon as most of it looks, with neither the sun's
+   * bearing (64x the others at sunset, from the disc) nor the darkest one
+   * deciding it. `zenith` receives the overhead sample.
    */
-  private measureSkyRadiance(out: THREE.Color, horizon: THREE.Color): THREE.Color {
-    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
-    out.multiplyScalar(0.5);
-    let darkest = Infinity;
+  private measureSkyRadiance(
+    out: THREE.Color,
+    horizon: THREE.Color,
+    typical: THREE.Color,
+    zenith: THREE.Color,
+  ): THREE.Color {
+    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), zenith);
+    out.copy(zenith).multiplyScalar(0.5);
     for (let k = 0; k < 4; k++) {
       const a = (k * Math.PI) / 2;
       _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
-      this.atmosphere.skyRadiance(_skyDirection, _skySample);
-      out.r += _skySample.r * 0.125;
-      out.g += _skySample.g * 0.125;
-      out.b += _skySample.b * 0.125;
-      const luma = _skySample.r * 0.2126 + _skySample.g * 0.7152 + _skySample.b * 0.0722;
-      if (luma < darkest) {
-        darkest = luma;
-        horizon.copy(_skySample);
-      }
+      const sample = this.atmosphere.skyRadiance(_skyDirection, _skyBearings[k]);
+      out.r += sample.r * 0.125;
+      out.g += sample.g * 0.125;
+      out.b += sample.b * 0.125;
     }
+    const sorted = _skyBearings.sort((a, b) => luma(a) - luma(b));
+    horizon.copy(sorted[0]);
+    typical.copy(sorted[1]).add(sorted[2]).multiplyScalar(0.5);
     return out;
   }
 
@@ -3635,6 +3778,8 @@ class App {
         ssr: this.ssr,
         /** Storm lightning, so a test can wait for a strike. */
         lightning: this.lightning,
+        /** Sun cascades, local lights and the strike's light — see `lighting/`. */
+        lighting: this.lighting,
         sampler: this.sampler,
         atmosphere: this.atmosphere,
         /**
@@ -4114,6 +4259,7 @@ class App {
     // Restores the dry roughness and colour on materials the loader's cache
     // shares, so a re-created App does not inherit a permanently wet ship.
     this.wetness.dispose();
+    this.lighting?.dispose();
     this.buoyancy?.dispose();
     this.wake?.dispose();
     this.ship?.dispose();
@@ -4131,14 +4277,18 @@ const canvas = document.getElementById('viewport') as HTMLCanvasElement | null;
 const uiRoot = document.getElementById('ui-root');
 
 if (!canvas || !uiRoot) {
-  boot.fail('Failed to start: page markup is missing #viewport or #ui-root.');
+  boot.fail('The page did not load completely. Reload to try again.');
 } else {
   void openStartGate(boot.root as HTMLElement)
     .then((selection) => new App(canvas, uiRoot, selection).start())
     .catch((error: unknown) => {
     console.error(error);
+    // What happened and what to do about it; the error's own words go under
+    // it. Try again reloads to the menu, where a lighter choice can be made.
     boot.fail(
-      error instanceof Error ? `Failed to start: ${error.message}` : 'Failed to start.',
+      'The sea could not be launched on this device. '
+        + 'Try again, and if it fails twice, choose WebGL2 and Low on the menu.',
+      error instanceof Error ? error.message : '',
     );
     });
 }

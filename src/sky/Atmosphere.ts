@@ -290,6 +290,15 @@ export const DEFAULT_ATMOSPHERE_PARAMS: AtmosphereParams = {
 
 /** Colour of moonlight — a cool, desaturated blue. See ref-moonlit.png. */
 const MOON_LIGHT_COLOR = new THREE.Color(0.44, 0.58, 0.9);
+/** Moon key at full night, in the sun's units (3.4 at noon). See `updateLights`. */
+const MOON_KEY = 0.6;
+/**
+ * Hemisphere fill at full night. The environment capture of a night sky is a
+ * few thousandths — the dome's night term is starlight, not moonlit air — so at
+ * night this fill *is* the sky light, and it scales with the key to keep the
+ * day's key-to-fill ratio (about 2.5:1 here) rather than going flat.
+ */
+const MOON_FILL = 0.24;
 
 // Module-scope scratch — `update`/`setParams` must not allocate.
 const _fex = new THREE.Vector3();
@@ -689,11 +698,11 @@ export class Atmosphere {
     const wZenith = (h * 0.5 + 0.5) * 0.35 * tw;
 
     out.setRGB(
-      dr * day + (0.016 + (0.0016 - 0.016) * up) * night +
+      dr * day + (NIGHT_HORIZON.r + (NIGHT_ZENITH.r - NIGHT_HORIZON.r) * up) * night +
         TWILIGHT_HORIZON.r * wHorizon + TWILIGHT_BELT.r * wBelt + TWILIGHT_ZENITH.r * wZenith,
-      dg * day + (0.022 + (0.0032 - 0.022) * up) * night +
+      dg * day + (NIGHT_HORIZON.g + (NIGHT_ZENITH.g - NIGHT_HORIZON.g) * up) * night +
         TWILIGHT_HORIZON.g * wHorizon + TWILIGHT_BELT.g * wBelt + TWILIGHT_ZENITH.g * wZenith,
-      db * day + (0.044 + (0.0105 - 0.044) * up) * night +
+      db * day + (NIGHT_HORIZON.b + (NIGHT_ZENITH.b - NIGHT_HORIZON.b) * up) * night +
         TWILIGHT_HORIZON.b * wHorizon + TWILIGHT_BELT.b * wBelt + TWILIGHT_ZENITH.b * wZenith,
     );
     const luma = out.r * LUMA.x + out.g * LUMA.y + out.b * LUMA.z;
@@ -1020,7 +1029,14 @@ export class Atmosphere {
         .multiplyScalar(SUN_LIGHT_DISTANCE)
         .add(this.shadowFocus);
       this.sunLight.color.copy(MOON_LIGHT_COLOR);
-      this.sunLight.intensity = 0.42 * moonUp * this.nightAmount;
+      // 0.6, up from 0.42. At 0.42 a dark-wood hull under a high moon rendered
+      // at a few percent linear — a silhouette with no planking, no rail and no
+      // form — while the sea beside it, which reflects the moonlit sky, stayed
+      // readable. A game's night is not a photometric night (a full moon is
+      // about a millionth of the sun); it is the day's lighting *ratios* at a
+      // dark exposure. 0.6 is 18% of the noon sun, which with the fill below
+      // keeps the key-to-fill contrast of a clear day and lets the hull read.
+      this.sunLight.intensity = MOON_KEY * moonUp * this.nightAmount;
     }
 
     // The target is what the shadow box is centred on, and it has to be told
@@ -1034,7 +1050,14 @@ export class Atmosphere {
 
     // Hemisphere fill approximates the dome's own irradiance: blue-dominant when
     // the sun is high, sun-tinted at low elevations, near-black at night.
-    _skyTint.setRGB(0.32, 0.48, 0.82).lerp(this._sunColor, (1 - day) * 0.6);
+    //
+    // Sun-tinted only while there is a sun to tint it. Below the horizon the
+    // extinction colour goes on reporting a deep red, and mixing that into the
+    // blue fill made the whole blue hour purple-pink — the sea at the dusk
+    // squall mirrored it as a flat mauve under a sky that is blue everywhere
+    // but its sunward horizon. The dome keeps that warm band itself.
+    const sunAbove = smoothstepScalar(-0.06, 0.02, this._sunDirection.y);
+    _skyTint.setRGB(0.32, 0.48, 0.82).lerp(this._sunColor, (1 - day) * 0.6 * sunAbove);
     _skyTint.lerp(NIGHT_SKY_TINT, night);
     // Overcast desaturates the fill along with the dome it stands in for, or a
     // grey sky would keep casting blue light into the shadows.
@@ -1091,7 +1114,7 @@ export class Atmosphere {
     // look like that: the sky is still a hemisphere of sources, moonlight
     // scatters through the whole atmosphere, and the sea throws light back up.
     //
-    // 0.16 reads shape without washing the darkness out, and the ground term
+    // `MOON_FILL` reads shape without washing the darkness out, and the ground term
     // lifts with it so the underside of the hull picks up the water instead of
     // falling into a void.
     // Overcast moves light out of the key and into the fill rather than removing
@@ -1099,7 +1122,7 @@ export class Atmosphere {
     // has soft shadows rather than dark ones. Without this the storm simply went
     // dim once the key was attenuated above.
     this.ambientLight.intensity =
-      (0.15 + 0.85 * day) * (1 + 0.55 * overcastAmount) * (1 - 0.86 * night) + 0.16 * night;
+      (0.15 + 0.85 * day) * (1 + 0.55 * overcastAmount) * (1 - 0.86 * night) + MOON_FILL * night;
     if (night > 0.001) {
       // Cool and dim — the colour moonlight actually fills shadows with. Blended
       // rather than assigned, so dusk hands over gradually.
@@ -1273,10 +1296,10 @@ export class Atmosphere {
   }
 
   private buildNightNode(d: any): any {
-    // Faintly brighter toward the horizon, as real night skies are.
+    // Brighter toward the horizon, as real night skies are. See `NIGHT_HORIZON`.
     const base = mix(
-      vec3(0.016, 0.022, 0.044),
-      vec3(0.0016, 0.0032, 0.0105),
+      vec3(NIGHT_HORIZON.r, NIGHT_HORIZON.g, NIGHT_HORIZON.b),
+      vec3(NIGHT_ZENITH.r, NIGHT_ZENITH.g, NIGHT_ZENITH.b),
       saturate(d.y.mul(1.7)),
     );
 
@@ -1388,6 +1411,18 @@ const GALACTIC_CENTRE = /*@__PURE__*/ new THREE.Vector3(-0.857, 0.12, 0.501)
   .projectOnPlane(GALACTIC_POLE)
   .normalize();
 const NIGHT_SKY_TINT = /*@__PURE__*/ new THREE.Color(0.12, 0.2, 0.42);
+/**
+ * The night dome's own glow, before `uNightRadiance` (0.168 at full night), at
+ * the horizon and overhead. Shared by the shader and `skyRadiance`.
+ *
+ * A deep teal-navy, the colour a night at sea is painted in, rather than
+ * black: at a fifth of these values the sky rendered near black while the sea,
+ * which reflects the fill tint, sat at mid blue — a dark sky over a bright sea
+ * meeting in a hard step. The horizon is about three times the zenith, a
+ * soft lighter band and not a line.
+ */
+const NIGHT_HORIZON = /*@__PURE__*/ new THREE.Color(0.083, 0.19, 0.286);
+const NIGHT_ZENITH = /*@__PURE__*/ new THREE.Color(0.024, 0.054, 0.1);
 /** Colour moonlight fills shadows with — cool, and never quite neutral. */
 const MOON_FILL_COLOR = /*@__PURE__*/ new THREE.Color(0.42, 0.55, 0.86);
 /** Light coming back up off the sea at night. */
