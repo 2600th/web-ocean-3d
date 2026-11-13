@@ -1,6 +1,5 @@
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
 /**
@@ -20,25 +19,24 @@ import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
  *    `dispose()` frees the lot in one pass rather than relying on callers to
  *    traverse their own subtrees.
  *
- * Compression is configured defensively. The shipped dressing set uses Meshopt
- * geometry and KTX2 textures; the loader wires both decoders before first
- * request.
+ * Compression: every model this project ships is Meshopt geometry and KTX2
+ * textures (`scripts/optimize-assets.mjs`), and the loader wires both decoders
+ * before the first request.
  *
- * **Draco is opt-in and is never probed for.** It used to auto-detect, HEAD-ing
- * three candidate paths before the first model could load — and since nothing
- * in this project has ever been Draco-encoded (`scripts/optimize-assets.mjs`
- * encodes Meshopt and contains the string zero times), all three always missed.
- * That cost three serial round trips on the critical boot path and put three
- * 404s in the console of every single session, which is not free: the test
- * suite asserts on console errors, so a probe that always fails was indistinguishable
- * from a real asset failure.
+ * **There is no Draco.** Nothing here has ever been Draco-encoded, and the
+ * loader used to carry an opt-in path for it anyway. That was not free even
+ * unused: importing `DRACOLoader` makes Vite emit its decoder — two `.wasm`
+ * and three `.js` files, 1.3 MB — into every build, because three.js names them
+ * with `new URL(..., import.meta.url)`. Re-encoding through gltf-transform is
+ * the way to bring a Draco asset in.
  *
- * The capability is kept for anyone who does serve a decoder — pass
- * `dracoDecoderPath` — because pointing at a CDN would add a third-party
- * runtime dependency to an otherwise self-contained build.
+ * **The Basis transcoder is the one Vite bundles.** `KTX2Loader` with no
+ * transcoder path loads the copy in `three/examples/jsm/libs/basis` through the
+ * same `new URL` mechanism, so the build emits it as a content-hashed asset that
+ * can be cached forever. A second copy used to sit in `public/basis/` and be
+ * the one actually requested — 585 KB shipped twice, the used copy uncacheable.
  */
 
-const BASIS_TRANSCODER_PATH = '/basis/';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
@@ -168,8 +166,6 @@ export interface AssetLoaderOptions {
    * to true.
    */
   convertToNodeMaterials?: boolean;
-  /** Explicit Draco decoder directory; skips auto-detection when provided. */
-  dracoDecoderPath?: string;
 }
 
 export class AssetLoader {
@@ -201,14 +197,11 @@ export class AssetLoader {
    */
   private readonly converted = new Map<THREE.Material, THREE.Material>();
 
-  private draco: DRACOLoader | null = null;
-  private dracoProbe: Promise<string | null> | null = null;
   private meshoptProbe: Promise<MeshoptDecoder | null> | null = null;
   private meshoptDecoder: MeshoptDecoder | null = null;
   private ktx2: KTX2Loader | null = null;
 
   private readonly convertMaterials: boolean;
-  private readonly explicitDracoPath: string | undefined;
   private onProgress: AssetProgressCallback | undefined;
   private disposed = false;
   /** From the renderer when one is supplied; 1 means "no anisotropy" until then. */
@@ -224,7 +217,6 @@ export class AssetLoader {
 
   constructor(options: AssetLoaderOptions = {}) {
     this.convertMaterials = options.convertToNodeMaterials ?? true;
-    this.explicitDracoPath = options.dracoDecoderPath;
     this.onProgress = options.onProgress;
     this.timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.maxConcurrent = Math.max(1, Math.floor(options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT));
@@ -253,7 +245,6 @@ export class AssetLoader {
     this.maxAnisotropy = Math.max(1, renderer.getMaxAnisotropy());
     this.ktx2?.dispose();
     this.ktx2 = new KTX2Loader(this.transcoderManager)
-      .setTranscoderPath(BASIS_TRANSCODER_PATH)
       .setWorkerLimit(Math.max(1, Math.min(4, this.maxConcurrent)))
       .detectSupport(renderer);
   }
@@ -327,24 +318,18 @@ export class AssetLoader {
     this.transcoderManager.abort();
     this.ktx2?.dispose();
     this.ktx2 = null;
-    this.draco?.dispose();
-    this.draco = null;
   }
 
   // ------------------------------------------------------------------ internals
 
   private async loadSource(url: string, signal: AbortSignal): Promise<THREE.Group> {
     throwIfAborted(signal);
-    const [draco, meshopt] = await Promise.all([
-      this.configureDraco(signal),
-      this.configureMeshopt(signal),
-    ]);
+    const meshopt = await this.configureMeshopt(signal);
     throwIfAborted(signal);
 
     const manager = new THREE.LoadingManager();
     this.bindProgress(manager, url);
     const gltf = new GLTFLoader(manager);
-    if (draco) gltf.setDRACOLoader(draco);
     if (meshopt) gltf.setMeshoptDecoder(meshopt);
     if (this.ktx2) gltf.setKTX2Loader(this.ktx2);
 
@@ -490,25 +475,6 @@ export class AssetLoader {
     this.materials.add(converted);
     collectTextures(converted, this.textures);
     return converted;
-  }
-
-  private configureDraco(signal: AbortSignal): Promise<DRACOLoader | null> {
-    if (this.draco) return Promise.resolve(this.draco);
-
-    // No probe: an unset path means this build does not serve a decoder, which
-    // is the case for every asset this project ships. See the module header.
-    if (!this.dracoProbe) {
-      this.dracoProbe = Promise.resolve(this.explicitDracoPath ?? null);
-    }
-
-    return this.dracoProbe.then((path) => {
-      throwIfAborted(signal);
-      if (!path || this.draco || this.disposed) return this.draco;
-      const draco = new DRACOLoader();
-      draco.setDecoderPath(path);
-      this.draco = draco;
-      return draco;
-    });
   }
 
   /**

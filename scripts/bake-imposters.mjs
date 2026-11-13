@@ -277,9 +277,9 @@ function viewerHtml(origin) {
       // decoders or it cannot read the very models it is baking. KTX2Loader
       // needs a renderer to ask which compressed formats the device supports,
       // which is why this is wired after the renderer exists.
-      const ktx2 = new KTX2Loader()
-        .setTranscoderPath('/basis/')
-        .detectSupport(renderer);
+      // No transcoder path: the loader finds the copy beside it in
+      // node_modules, which Vite serves, so this needs nothing in public/.
+      const ktx2 = new KTX2Loader().detectSupport(renderer);
       const loader = new GLTFLoader()
         .setMeshoptDecoder(MeshoptDecoder)
         .setKTX2Loader(ktx2);
