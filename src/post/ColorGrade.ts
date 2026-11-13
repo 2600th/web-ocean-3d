@@ -97,6 +97,8 @@ export class ColorGrade {
   private readonly uPower = uniform(new THREE.Color(1, 1, 1));
   private readonly uSaturation = uniform(1);
   private readonly uVignette = uniform(0);
+  /** Lightning flash, 0..~1.4; lifts the HDR frame toward a cold white. */
+  private readonly uFlash = uniform(0);
 
   /**
    * @param sceneColor Any composited colour node. Unlike the depth-of-field and
@@ -117,7 +119,14 @@ export class ColorGrade {
       // volumetric fog's scattering integral and the lens flare's additive
       // ghosts can leave a channel a hair below zero in linear space. One NaN
       // pixel here survives every later stage and lands on screen.
-      const lifted = max(source.rgb.mul(this.uSlope).add(this.uOffset), vec3(0)).toVar('gradeLift');
+      // A lightning flash is light *added to the scene*, so it acts on scene
+      // radiance before the grade: a gain on what is lit plus a cold fill for
+      // what is not, which is how a storm-dark sea and deck read in a strike.
+      const flashed = source.rgb
+        .mul(float(1).add(this.uFlash.mul(0.9)))
+        .add(vec3(0.6, 0.68, 0.9).mul(this.uFlash.mul(0.06)))
+        .toVar('gradeFlash');
+      const lifted = max(flashed.mul(this.uSlope).add(this.uOffset), vec3(0)).toVar('gradeLift');
       const cdl = pow(lifted, this.uPower).toVar('gradeCdl');
 
       const luma = dot(cdl, LUMA_709).toVar('gradeLuma');
@@ -155,6 +164,10 @@ export class ColorGrade {
 
       return vec4(graded.mul(lens), source.a);
     })();
+  }
+
+  setFlash(intensity: number): void {
+    this.uFlash.value = Math.max(0, intensity);
   }
 
   setParams(params: Partial<ColorGradeParams>): void {

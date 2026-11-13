@@ -86,9 +86,35 @@ export class Reflections {
     this.base.renderTargets.clear();
   }
 
+  /**
+   * Keeps a layer out of the mirror for `camera`.
+   *
+   * The reflector builds its virtual camera once per real camera and never
+   * copies layers onto it, so disabling a layer there sticks.
+   */
+  excludeLayer(camera: THREE.Camera, layer: number): void {
+    this.base.getVirtualCamera(camera).layers.disable(layer);
+  }
+
   /** Current resolution scale, so a test can prove the tier reached it. */
   get resolutionScale(): number {
     return this.base.resolutionScale;
+  }
+
+  /**
+   * What the reflector renders `camera`'s reflection with: its mirrored camera
+   * and its target. Read for the pipeline prewarm, which compiles that render
+   * ahead of time; the camera's pose is whatever the last frame left it in.
+   */
+  renderSetup(camera: THREE.Camera): { camera: THREE.Camera; target: THREE.RenderTarget } {
+    const virtualCamera = this.base.getVirtualCamera(camera) as THREE.Camera;
+    return { camera: virtualCamera, target: this.base.getRenderTarget(virtualCamera) };
+  }
+
+  /** Whether `target` is one of the reflector's own render targets. */
+  ownsTarget(target: unknown): boolean {
+    for (const own of this.base.renderTargets.values()) if (own === target) return true;
+    return false;
   }
 
   dispose(): void {

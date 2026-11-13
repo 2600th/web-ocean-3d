@@ -70,7 +70,7 @@ export interface OceanSimulationOptions {
 
 export class OceanSimulation {
   private readonly renderer: THREE.WebGPURenderer;
-  private readonly quad = new THREE.QuadMesh();
+  private readonly quad = new THREE.QuadMesh(new THREE.NodeMaterial());
   private readonly cascades: Cascade[] = [];
   private fft: FFTResources;
 

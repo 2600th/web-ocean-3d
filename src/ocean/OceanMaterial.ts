@@ -10,7 +10,6 @@ import {
   normalize,
   positionLocal,
   positionWorld,
-  sin,
   dFdx,
   dFdy,
   screenUV,
@@ -26,6 +25,15 @@ import {
 } from 'three/tsl';
 import { smoothstepDownClamped } from '../core/tslMath';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
+import {
+  breaker,
+  foamCells,
+  setSurfState,
+  surfPhaseGradient,
+  surfReachDepth,
+  surfUniforms,
+  swashSheetHeight,
+} from './Surf';
 
 export interface WaterAppearance {
   /** Colour of light that survives deep transmission — the "body" of the water. */
@@ -39,6 +47,8 @@ export interface WaterAppearance {
   extinction: THREE.Vector3;
   /** Strength of the subsurface glow on backlit crests. */
   scatterStrength: number;
+  /** View-independent translucency of thin crest water, 0 disables. */
+  crestGlow: number;
   /** Base roughness of the microfacet surface. */
   roughness: number;
   /** Jacobian value at which foam starts to appear. Lower = less foam. */
@@ -54,6 +64,7 @@ export const DEFAULT_APPEARANCE: WaterAppearance = {
   foamColor: new THREE.Color(0xeff8ff),
   extinction: new THREE.Vector3(0.34, 0.11, 0.07),
   scatterStrength: 1.0,
+  crestGlow: 0.55,
   roughness: 0.075,
   // Deeper folding required than the naive "J < 1" test: the swell cascade marks
   // broad areas as mildly folded, and treating all of that as whitecap covers a
@@ -306,13 +317,25 @@ const FOAM_WIND_STRETCH = 2.6;
 const SHORE_GRADIENT_EPSILON = 12;
 
 /**
- * How far out, in break depths, the shore bearing is computed at all.
+ * Ground distance from the eye, metres, inside which the vertex stage lifts the
+ * water into the breakers and the swash sheet.
  *
- * Three, which is comfortably past where `bore` and `swash` can be non-zero, so
- * the branch never cuts a term that would have shown. Everything beyond it keeps
- * the wind bearing and never touches the heightfield.
+ * Bounded by the mesh, not by cost: the sheet is a few centimetres thick and
+ * follows sand with a 1:10 slope, so it needs vertices well under a metre apart
+ * to stay on the beach rather than cutting through it, and past a couple of
+ * hundred metres the radial grid is metres apart. Past here the ground shader's
+ * swash hook carries the effect on its own, and at that range it is a pixel
+ * wide anyway.
  */
-const SHORE_BEARING_REACH = 3;
+const SURF_VERTEX_REACH = 220;
+
+/**
+ * Fraction of the FFT field's displacement and slope left in the shallowest
+ * surf. The open-ocean spectrum knows nothing about the bottom; inside the
+ * break the sea is the breakers and a chop on top of them, and leaving the
+ * full field on puts metre-high swell crests across the beach.
+ */
+const SURF_FFT_FLOOR = 0.25;
 
 /**
  * Water thickness a backlit crest and a wave body present to the sun, metres.
@@ -396,6 +419,8 @@ export class OceanMaterial {
   private readonly uFoamColor = uniform(new THREE.Color(DEFAULT_APPEARANCE.foamColor));
   private readonly uExtinction = uniform(new THREE.Vector3().copy(DEFAULT_APPEARANCE.extinction));
   private readonly uScatterStrength = uniform(DEFAULT_APPEARANCE.scatterStrength);
+  /** Strength of the view-independent crest translucency. */
+  private readonly uCrestGlow = uniform(DEFAULT_APPEARANCE.crestGlow);
   private readonly uRoughness = uniform(DEFAULT_APPEARANCE.roughness);
   /**
    * Unit wind vector in world XZ, and the slope-variance ratio across it.
@@ -412,10 +437,6 @@ export class OceanMaterial {
   private readonly uSlopeAnisotropy = uniform(1.9);
   private readonly uFoamThreshold = uniform(DEFAULT_APPEARANCE.foamThreshold);
   private readonly uFoamSoftness = uniform(DEFAULT_APPEARANCE.foamSoftness);
-  /** Seconds, for the travelling sets in the shore break. See `setSurf`. */
-  private readonly uSurfPhase = uniform(0);
-  /** How strongly the shore break draws, 0..1. */
-  private readonly uSurfStrength = uniform(1);
 
   // --- environment ---------------------------------------------------------
   private readonly uSunDirection = uniform(new THREE.Vector3(0.4, 0.5, 0.3).normalize());
@@ -483,6 +504,12 @@ export class OceanMaterial {
   private readonly uRainTime = uniform(0);
 
   /** How much of the planar reflection reaches the surface, 0..1. */
+  /**
+   * 1 when the eye is below the surface, 0 above. Decides which side of the
+   * interface is being shaded — see the topside normal fix below for why the
+   * shading normal must not decide it.
+   */
+  private readonly uEyeSubmerged = uniform(0);
   private readonly uReflectionAmount = uniform(1);
   /** Screen-space offset applied to the reflection lookup, at unit distance. */
   private readonly uReflectionDistortion = uniform(0.09);
@@ -563,6 +590,7 @@ export class OceanMaterial {
     if (a.foamColor) (this.uFoamColor.value as THREE.Color).copy(a.foamColor);
     if (a.extinction) (this.uExtinction.value as THREE.Vector3).copy(a.extinction);
     if (a.scatterStrength !== undefined) this.uScatterStrength.value = a.scatterStrength;
+    if (a.crestGlow !== undefined) this.uCrestGlow.value = a.crestGlow;
     if (a.roughness !== undefined) this.uRoughness.value = a.roughness;
     if (a.foamThreshold !== undefined) this.uFoamThreshold.value = a.foamThreshold;
     if (a.foamSoftness !== undefined) this.uFoamSoftness.value = a.foamSoftness;
@@ -584,9 +612,16 @@ export class OceanMaterial {
    * unrelated media and sharing a uniform between them is how a rain slider ends
    * up freezing the surf.
    */
-  setSurf(phase: number, strength = 1): void {
-    this.uSurfPhase.value = phase;
-    this.uSurfStrength.value = Math.max(0, strength);
+  setSurf(phase: number, strength = 1, peakWavelength = 47, shoreNear = true): void {
+    // Swell arriving at a beach is longer-period than the local wind sea's
+    // peak: the short components are the ones refraction and the reef strip
+    // out first. Deep-water dispersion for the peak, plus fifteen percent.
+    const period = Math.sqrt((2 * Math.PI * Math.max(4, peakWavelength)) / 9.81) * 1.15;
+    // What breaks on a beach is the swell that reaches it — nearer 1.5 m than
+    // the open sea's significant height. A fraction of the sea state rather
+    // than the sea state, as the previous shore break had it.
+    const height = Math.min(3.2, (this.uWaveScale.value as number) * 0.26 + 0.55);
+    setSurfState(phase, period, height, strength, shoreNear);
   }
 
   setWind(bearingRadians: number, speed: number): void {
@@ -647,6 +682,11 @@ export class OceanMaterial {
   }
 
   /** Per-tier reflection strength. No effect when built without a reflection. */
+  /** Whether the eye is under water; selects topside or underside shading. */
+  setEyeSubmerged(submerged: boolean): void {
+    this.uEyeSubmerged.value = submerged ? 1 : 0;
+  }
+
   setReflection(amount: number, distortion = 0.09): void {
     this.uReflectionAmount.value = Math.max(0, Math.min(1, amount));
     this.uReflectionDistortion.value = Math.max(0, distortion);
@@ -872,6 +912,37 @@ export class OceanMaterial {
         });
       }
 
+      // --- surf ----------------------------------------------------------------
+      // Inside the surf zone the water is lifted into the breakers and, over the
+      // sand, into the swash sheet — real geometry, so the waterline itself runs
+      // up and down the beach with each wave instead of a foam decal sliding
+      // over a fixed edge. See `ocean/Surf`. Two branches: a uniform one (is a
+      // shore anywhere near the eye) and a per-vertex one (is this vertex in the
+      // surf), so open water pays two compares and no heightfield.
+      if (floorDepth !== null) {
+        If(
+          surfUniforms.active.greaterThan(0.5).and(groundDistance.lessThan(SURF_VERTEX_REACH)),
+          () => {
+            const depth = floorDepth(vec3(worldXZ.x, 0, worldXZ.y)).toVar();
+            If(depth.lessThan(surfReachDepth()), () => {
+              const fft = mix(
+                float(SURF_FFT_FLOOR),
+                float(1),
+                depth.smoothstep(0.3, surfReachDepth().mul(0.7)),
+              ).toVar();
+              displacement.mulAssign(fft);
+              const wave = breaker(depth, worldXZ);
+              displacement.y.addAssign(wave.eta);
+              // Faded out toward the edge of the vertex reach, where the mesh can
+              // no longer hold a sheet this thin on a slope this shallow.
+              const sheet = swashSheetHeight(depth, worldXZ).toVar();
+              const hold = smoothstepDownClamped(groundDistance, SURF_VERTEX_REACH * 0.7, SURF_VERTEX_REACH);
+              displacement.y.assign(mix(displacement.y, displacement.y.max(sheet), hold));
+            });
+          },
+        );
+      }
+
       return vec3(local.x.add(displacement.x), displacement.y, local.z.add(displacement.z));
     })();
 
@@ -885,6 +956,16 @@ export class OceanMaterial {
       const viewVector = cameraPosition.sub(worldPos).toVar();
       const viewDistance = viewVector.length().toVar();
       const viewDir = viewVector.div(viewDistance).toVar();
+
+      // The seabed under this fragment, evaluated once and shared by the
+      // refraction column, the surf and the contact foam. It used to be
+      // evaluated three times unconditionally — sixteen texture fetches and the
+      // island's structural arithmetic each — on every water pixel in the frame.
+      // Signed: negative over sand, where the swash sheet runs.
+      const seabedSigned: any = (
+        floorDepth === null ? float(1000) : floorDepth(vec3(fieldXZ.x, 0, fieldXZ.y))
+      ).toVar();
+      const seabedDepth: any = seabedSigned.max(0).toVar();
 
       // --- surface normal and fold from the derivative fields ----------------
       const slope = vec2(0).toVar();
@@ -964,6 +1045,64 @@ export class OceanMaterial {
         });
       }
 
+      // --- surf: the breakers' shape -------------------------------------------
+      // The breaker geometry the vertex stage displaced has to be lit too, and
+      // the ocean takes its normal from slope, never from the mesh. Inside the
+      // surf zone the FFT slope is cut back by the same factor its displacement
+      // was, and the breaker's own slope added along the shoreward direction —
+      // which is what makes a wave visibly steepen and stand up as it comes in.
+      //
+      // Behind a real per-pixel branch. A wavefront is wholly in deep water or
+      // wholly in the surf, so the divergence is rare, and every fetch inside
+      // uses explicit LOD 0.
+      /** Unit vector pointing up the beach. */
+      const shoreward = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
+      const surfPhaseValue = float(0).toVar();
+      const surfS = float(0.5).toVar();
+      const surfBreak = float(0).toVar();
+      const surfBreakLast = float(0).toVar();
+      const surfBreakPrevious = float(0).toVar();
+      const inSurf = float(0).toVar();
+      if (floorDepth !== null) {
+        If(seabedSigned.lessThan(surfReachDepth()), () => {
+          inSurf.assign(1);
+          // The gradient of *depth* points out to sea, so its negation points up
+          // the beach. Forward differences over twelve metres: wide enough to
+          // average out the heightfield's own metre-scale relief, narrow enough
+          // to follow a coastline that turns. Degenerate on a flat bottom, where
+          // the wind bearing is the honest answer.
+          const e = SHORE_GRADIENT_EPSILON;
+          const dDepthX = floorDepth(vec3(fieldXZ.x.add(e), 0, fieldXZ.y)).sub(seabedSigned).toVar();
+          const dDepthZ = floorDepth(vec3(fieldXZ.x, 0, fieldXZ.y.add(e))).sub(seabedSigned).toVar();
+          const gradient = vec2(dDepthX, dDepthZ).toVar();
+          const steepness = gradient.length().toVar();
+          shoreward.assign(
+            mix(shoreward, gradient.negate().div(steepness.max(1e-4)), steepness.smoothstep(0.02, 0.12)),
+          );
+
+          const wave = breaker(seabedDepth, fieldXZ);
+          surfPhaseValue.assign(wave.phase);
+          surfS.assign(wave.s);
+          surfBreak.assign(wave.breakDepth);
+          surfBreakLast.assign(wave.breakDepthLast);
+          surfBreakPrevious.assign(wave.breakDepthPrevious);
+
+          const fft = mix(
+            float(SURF_FFT_FLOOR),
+            float(1),
+            seabedDepth.smoothstep(0.3, surfReachDepth().mul(0.7)),
+          );
+          slope.mulAssign(fft);
+          // d(eta)/dx along the beach = d(eta)/d(phase) * d(phase)/dx. Faded with
+          // distance like the finer cascades: a breaker face is a few metres
+          // across, so past a few hundred metres it is shading noise.
+          const reach = smoothstepDownClamped(viewDistance, 260, 700);
+          slope.addAssign(
+            shoreward.mul(wave.etaPerPhase.mul(surfPhaseGradient(seabedDepth))).mul(reach),
+          );
+        });
+      }
+
       const normal = normalize(vec3(slope.x.negate(), 1, slope.y.negate())).toVar();
 
       // Flatten the normal toward vertical with distance. Mip filtering removes
@@ -972,6 +1111,21 @@ export class OceanMaterial {
       // reads as a smooth sheet anyway.
       const flatten = viewDistance.smoothstep(2500, 9000).clamp(0, 1).toVar();
       const n = normalize(mix(normal, vec3(0, 1, 0), flatten)).toVar();
+
+      // A topside normal that faces away from the eye is not a surface the eye
+      // can see: at grazing angles the facet that would face away is hidden
+      // behind the crest in front of it, and the pixel is actually showing the
+      // facets that face the viewer (Noniv/web-ocean, MIT, ocean.js:183-198, does
+      // the same). Left alone, `n . v < 0` sent ordinary topside pixels down the
+      // *underside* branch below — Snell's window and TIR on water seen from
+      // above — which painted flat, hard-edged brown blotches over every
+      // gallery frame. Bend such normals back to just facing the viewer.
+      If(this.uEyeSubmerged.lessThan(0.5), () => {
+        const facing = n.dot(viewDir).toVar();
+        If(facing.lessThan(0.06), () => {
+          n.assign(normalize(n.add(viewDir.mul(float(0.06).sub(facing)))));
+        });
+      });
 
       const nDotV = n.dot(viewDir).clamp(1e-3, 1).toVar();
 
@@ -1063,6 +1217,15 @@ export class OceanMaterial {
         .mul(this.uDepthRange)
         .mul(axialToRay)
         .toVar();
+      // Water between the surface and whatever is *directly* behind it, before
+      // refraction moved the lookup. Contact foam is about where an object
+      // pierces this pixel's surface, so it must not follow the refracted ray.
+      const straightThickness: any = straightZ
+        .sub(surfaceZ)
+        .max(0)
+        .mul(this.uDepthRange)
+        .mul(axialToRay)
+        .toVar();
       const pathLength: any = (
         floorDepth === null
           ? bufferThickness
@@ -1071,7 +1234,7 @@ export class OceanMaterial {
               // bends toward vertical entering water, so this over-estimates a
               // little at grazing angles; the buffer estimate normally wins there
               // anyway.
-              floorDepth(worldPos).max(0).mul(axialToRay),
+              seabedDepth.mul(axialToRay),
             )
       ).toVar();
 
@@ -1083,7 +1246,23 @@ export class OceanMaterial {
       // colour, which is why `absorption` weights one and its complement the
       // other rather than both being tuned independently.
       const refracted: any = viewportSharedTexture(sampleUv).rgb.toVar();
-      const inscatter: any = mix(this.uDeepColor, this.uShallowColor, absorption).toVar();
+      // `shallowColor` is the look of thin water *over bright sand* — the bed's
+      // own reflectance, tinted. Where the depth buffer finds an object well
+      // above the seabed (a hull, a buoy, a rock face), that sand is not there,
+      // and the same tint painted the submerged hull a flat turquoise sheet
+      // brighter than the open sea around it. Over an object, the column
+      // scatters like open water: the deep body colour, weighted by how much
+      // the column absorbed.
+      const objectBehind: any = (
+        floorDepth === null
+          ? float(0)
+          : floorDepth(worldPos).max(0).sub(bufferThickness).smoothstep(0.35, 1.2)
+      ).toVar();
+      const inscatter: any = mix(
+        mix(this.uDeepColor, this.uShallowColor, absorption),
+        this.uDeepColor,
+        objectBehind,
+      ).toVar();
       // Faded out with distance — see REFRACTION_FADE_NEAR. The backdrop is a
       // screen-space read at whatever resolution the frame happens to be, so
       // past a couple of hundred metres it is delivering the seabed's texture
@@ -1185,6 +1364,27 @@ export class OceanMaterial {
         )
         .toVar();
 
+      // Crest glow: the light a wave's upper third carries *sideways* to the eye
+      // whatever the sun is doing. The phase lobe above only fires looking into
+      // the sun, so a front-lit or cross-lit sea had no translucency at all and
+      // every crest was the same opaque blue as the trough below it — which is
+      // what made the open sea read as a flat lagoon. Thin water near the crest
+      // scatters skylight and refracted sunlight toward a viewer looking across
+      // it, strongest at grazing view (longer path through the thin part) and
+      // more so when backlit. This is the term stylised-real game oceans lean on
+      // for their emerald crests; here it is driven by the same crest height and
+      // thinness the physical term uses, so it scales with the sea state.
+      const crest = heightAboveMean.mul(heightAboveMean).toVar();
+      const across = float(1).sub(viewDir.y.abs()).clamp(0, 1).toVar();
+      scatter.addAssign(
+        (this.uScatterColor as any)
+          .mul(crest)
+          .mul(across.mul(0.6).add(0.4))
+          .mul(awayFromSun.mul(0.6).add(0.4))
+          .mul(this.uCrestGlow)
+          .mul(this.uLightLevel.min(1.2)),
+      );
+
       // --- reflection ----------------------------------------------------------
       // The analytic sky gradient is kept as the base layer, not replaced. It is
       // what fills the horizon, where a planar reflection has nothing to offer
@@ -1225,7 +1425,7 @@ export class OceanMaterial {
         const reflectionLod = this.uRoughness
           .mul(12)
           .add(viewDistance.mul(0.004))
-          .clamp(0, 2)
+          .clamp(0, 1.25)
           .toVar();
         const mirrored = planar.sample(viewportSafeUV(rawUv)).level(reflectionLod).toVar();
 
@@ -1703,140 +1903,204 @@ export class OceanMaterial {
       // it — but it only covers a 420 m square around the camera. Past that the
       // instantaneous mask is all there is, so it is faded in exactly as the
       // buffer's own edge fades out and the two never overlap.
-      // --- shore break ---------------------------------------------------------
+      // --- surf ----------------------------------------------------------------
       //
-      // The single largest thing missing from the shoreline: waves arrived at the
-      // beach and simply stopped, with no surf at all, because every foam term
-      // above is driven by the *surface* — the Jacobian fold and the wake buffer
-      // — and neither knows the seabed is there. A wave does not break because it
-      // steepened; it breaks because it ran out of water.
+      // White water driven by the *seabed*, because every foam term above is
+      // driven by the surface and neither knows the bottom is there. A wave
+      // does not break because it steepened; it breaks because it ran out of
+      // water. The breakers themselves — where each crest is, how big, where it
+      // breaks — come from `ocean/Surf`, shared with the vertex stage (which
+      // shaped them) and the ground (which the swash wets), so the foam drawn
+      // here sits exactly on the crest the geometry raised.
       //
-      // So this is driven by depth. Three things have to be right, and the first
-      // attempt got only the first of them.
+      // Four kinds of white, in the order a viewer on the beach sees them:
       //
-      // **Where it breaks.** McCowan's criterion puts the break where the depth
-      // falls to about 1.3 wave heights, so the surf line walks seaward as the
-      // sea gets up — which is what makes a shore read as the same shore in a
-      // calm and in a blow. The wave height to use is *not* `uWaveScale`: that is
-      // Pierson-Moskowitz significant height for a fully developed sea, which at
-      // this preset's 15 m/s is 5.5 m, and 1.3 times that put the break line in
-      // eight metres of water. The whole lagoon came out solid white. What breaks
-      // on a beach is the swell that reaches it, which here is nearer 1.5 m, so
-      // the height is taken as a fraction of the sea state rather than as the
-      // sea state.
+      //  - **the lip**: as a crest reaches its break depth it pitches over, and
+      //    for a moment there is a bright line along the top of it;
+      //  - **the bore**: from there in, the wave is a roller of white water
+      //    riding its own front, travelling shoreward with the crest;
+      //  - **the lace**: what the roller leaves behind it. Foam on a surf zone
+      //    is not a sheet that fades; it tears into a network of bubble lines
+      //    that thin and part over several seconds. A ridged noise thresholded
+      //    higher as the foam ages does that — fat and continuous right behind
+      //    the bore, a net of threads a wave later;
+      //  - **the swash edge**: where the water is centimetres thick, at the
+      //    waterline and at the front of the sheet running up the sand.
       //
-      // **That it is a band, not a region.** Everything shallower than the break
-      // depth is not white; the strip *at* the break is. A parabola in normalised
-      // depth peaks a third of the way in and returns to zero at both ends, which
-      // gives a line of white with clear water outside it and a lull behind it.
-      //
-      // **That it has gaps.** Real surf arrives in groups — the spectrum is
-      // narrow-banded, so the envelope beats and the beach gets three or four big
-      // ones and then a lull. Without that the surf line is a static ribbon,
-      // which is the other half of why a foam contour reads as painted.
+      // The persistent buffer adds the foam the surf leaves standing and
+      // drifting between sets. See the shore term in `Wake`.
       const surf = float(0).toVar();
       if (floorDepth !== null) {
-        const seabed = floorDepth(worldPos).max(0).toVar();
-        const swell = this.uWaveScale.mul(0.26).add(0.55).toVar();
-        const breakDepth = swell.mul(1.3).toVar();
+        If(inSurf.greaterThan(0.5), () => {
+          const d = seabedDepth;
+          const s = surfS;
+          const age = surfPhaseValue.fract().toVar();
 
-        // Normalised depth through the surf zone, 1 at the break line.
-        const band = seabed.div(breakDepth.max(0.2)).clamp(0, 1).toVar();
-        // Parabola: 0 at the sand, 0 at the break line, 1 between them. Skewed
-        // shoreward by the exponent so the white sits inside the break rather
-        // than straddling it, which is where broken water actually is.
-        const bore = band.oneMinus().mul(band.mul(2.6).min(1)).mul(1.9).clamp(0, 1).toVar();
+          // Is the nearest crest broken here? Soft over the last few percent of
+          // depth so the break line is not a contour.
+          const brokenNear = smoothstepDownClamped(d, surfBreak.mul(0.86), surfBreak.mul(1.04)).toVar();
 
-        // The swash: the strip that is never dry. Narrow, and separate from the
-        // bore because it has to survive when the surf is quiet — a beach with no
-        // line of white at the water's edge reads as a texture boundary, which is
-        // exactly how this one read.
-        const swash = smoothstepDownClamped(seabed, 0, swell.mul(0.42)).toVar();
-
-        // Sets, travelling **shoreward** — along the local shore normal, not
-        // along the wind.
-        //
-        // This is the readable half of wave refraction. Swell entering shallow
-        // water slows, and the part of a crest that reaches the shallows first
-        // slows first, so the crest swings until it is running square at the
-        // beach: surf arrives parallel to the shore whatever direction the wind
-        // is blowing from. Ours arrived on the wind bearing, so on a curved
-        // coast the sets crossed the beach at an angle on one side and ran along
-        // it on the other, which reads as a moving texture rather than as surf.
-        //
-        // The full fix is to refract the *field*, which would mean warping the
-        // domain the FFT cascades are sampled in — and that field is also what
-        // the buoyancy solver reads on the CPU, so a warp there is a change to
-        // the physics as well as to the picture. It is also the one item in the
-        // gap analysis that no reference shader attempts. What is done instead is
-        // to give the surf its own bearing: the sets are the part a viewer reads
-        // as "the swell is coming in", and inside the surf zone the resolved wave
-        // geometry is centimetres anyway.
-        //
-        // The gradient of *depth* points out to sea, so its negation points up
-        // the beach. Two forward differences over twelve metres: wide enough to
-        // average out the heightfield's own metre-scale relief, narrow enough to
-        // follow a coastline that turns.
-        //
-        // **Behind a real per-pixel branch**, and that distinction cost this a
-        // review finding. The `if (floorDepth !== null)` enclosing this block is
-        // a *TypeScript* condition — it decides what graph to build, not what a
-        // fragment executes — so without the `If` below, two full heightfield
-        // evaluations, thirty-two texture fetches and the whole structural
-        // island arithmetic ran for **every water fragment in the frame**, on a
-        // term that only exists inside the surf zone. On WebGL2 Low, where none
-        // of the raymarches run at all, that was most of the tier's cost.
-        //
-        // The branch is genuinely divergent, but the ocean is overwhelmingly
-        // uniform in it: a wavefront is either wholly in deep water or wholly in
-        // the surf. Every fetch inside uses explicit LOD 0, so no derivative is
-        // required and the divergence is safe as well as cheap.
-        const shoreBearing = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
-        If(seabed.lessThan(breakDepth.mul(SHORE_BEARING_REACH)), () => {
-          const e = SHORE_GRADIENT_EPSILON;
-          const dDepthX = floorDepth(worldPos.add(vec3(e, 0, 0)))
-            .max(0)
-            .sub(seabed)
+          const bubbles = breakup.mul(0.7).add(0.55).clamp(0, 1).toVar();
+          const roller = s
+            .smoothstep(-0.07, -0.015)
+            .mul(smoothstepDownClamped(s, 0.12, 0.34))
+            .mul(brokenNear)
+            .mul(bubbles)
             .toVar();
-          const dDepthZ = floorDepth(worldPos.add(vec3(0, 0, e)))
-            .max(0)
-            .sub(seabed)
+
+          const lipBand = d.sub(surfBreak).div(surfBreak.mul(0.22).add(0.12)).toVar();
+          const lipLine = s.div(0.035).toVar();
+          const lip = lipBand
+            .mul(lipBand)
+            .negate()
+            .exp()
+            .mul(lipLine.mul(lipLine).negate().exp())
             .toVar();
-          const gradient = vec2(dDepthX, dDepthZ).toVar();
-          // Degenerate on a flat bottom, where there is no shore to point at and
-          // the wind bearing is the honest answer.
-          const slope = gradient.length().toVar();
-          shoreBearing.assign(
-            mix(
-              shoreBearing,
-              gradient.negate().div(slope.max(1e-4)),
-              slope.smoothstep(0.02, 0.12),
-            ),
+
+          // The crest whitening along its top just before it goes.
+          const featherLine = s.div(0.02).toVar();
+          const feather = smoothstepDownClamped(d, surfBreak.mul(1.05), surfBreak.mul(1.7))
+            .mul(brokenNear.oneMinus())
+            .mul(featherLine.mul(featherLine).negate().exp())
+            .mul(0.45)
+            .toVar();
+
+          // Age, in periods, of the youngest broken water at this point: the
+          // last crest if it broke here, the one before it otherwise.
+          const lastBroke = d.lessThan(surfBreakLast);
+          const previousBroke = d.lessThan(surfBreakPrevious);
+          const laceAge = lastBroke
+            .select(age, previousBroke.select(age.add(1), float(9)))
+            .toVar();
+          // Drifts shoreward a little as it ages: what is left of a bore is still
+          // being carried up the beach by the next.
+          const laceUv = worldPos.xz
+            .add(shoreward.mul(laceAge.mul(surfUniforms.period).mul(0.35)))
+            .mul(0.62)
+            .toVar();
+          // The network: cell boundaries, whose lines thin as the foam ages.
+          // Two scales so it is not a regular honeycomb; a slow patch field so
+          // the network tears into rafts and streaks rather than covering the
+          // surf zone evenly, and tears further as it ages.
+          // Warped, so the cells are stretched and bent like bubble rafts being
+          // pulled about by the backwash rather than tiled.
+          const warp = vec2(
+            valueNoise(laceUv.mul(0.45)),
+            valueNoise(laceUv.mul(0.45).add(vec2(5.2, 1.3))),
+          )
+            .sub(0.5)
+            .mul(1.6);
+          const warped = laceUv.add(warp).toVar();
+          const cellsA = foamCells(warped).toVar();
+          const cellsB = foamCells(warped.mul(2.1).add(vec2(7.1, 3.3))).toVar();
+          const lineWidth = mix(float(0.3), float(0.05), laceAge.smoothstep(0.03, 1.3)).toVar();
+          // Older threads also break: a second noise snips them into segments.
+          const snip = valueNoise(warped.mul(1.7).add(vec2(2.2, 9.4)))
+            .smoothstep(mix(float(0.0), float(0.45), laceAge.smoothstep(0.3, 1.5)), 0.75)
+            .toVar();
+          const lines = smoothstepDownClamped(cellsA.y, lineWidth.mul(0.4), lineWidth)
+            .max(smoothstepDownClamped(cellsB.y, lineWidth.mul(0.3), lineWidth.mul(0.75)).mul(0.6))
+            .mul(snip)
+            .toVar();
+          const rafts = valueNoise(laceUv.mul(0.22).add(vec2(3.1, 8.7)))
+            .smoothstep(mix(float(0.0), float(0.6), laceAge.smoothstep(0.2, 1.6)), 0.85)
+            .toVar();
+          // Right behind the roller the foam has not torn yet: a sheet, holed by
+          // the cells as it starts to part.
+          const sheet = smoothstepDownClamped(laceAge, 0.1, 0.42)
+            .mul(cellsA.y.smoothstep(0.02, 0.25).mul(0.35).add(0.65))
+            .toVar();
+          const laceNear = lines
+            .mul(rafts)
+            .max(sheet)
+            .mul(smoothstepDownClamped(laceAge, 1.1, 1.9))
+            .mul(bubbles)
+            .toVar();
+          // Past a few hundred metres the threads are below a pixel; what they
+          // average to is a coverage that falls with age.
+          const laceFar = smoothstepDownClamped(laceAge, 0.1, 1.4).mul(0.4);
+          const lace = mix(laceNear, laceFar, viewDistance.smoothstep(240, 620)).toVar();
+
+          // Centimetres of water: the waterline and the front of the swash. The
+          // depth buffer knows how thin the water in front of the sand is,
+          // including over the sheet the vertex stage ran up the beach.
+          const thin = straightThickness
+            .smoothstep(0.004, 0.025)
+            .mul(smoothstepDownClamped(straightThickness, 0.03, 0.1))
+            .mul(smoothstepDownClamped(seabedSigned, 0.5, 1.4))
+            .mul(breakup.mul(0.8).add(0.45).clamp(0, 1))
+            .toVar();
+
+          // Seen from far off, a surf zone is a band of white whose individual
+          // breakers are a pixel wide. The time-averaged coverage stands in for
+          // them there: most of the inner surf zone white most of the time,
+          // thinning out to the break line.
+          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3))
+            .mul(breakup.mul(0.4).add(0.6))
+            .mul(0.9)
+            .toVar();
+          const far = viewDistance.smoothstep(160, 520).toVar();
+          // And the line of white at the water's edge, which from more than a
+          // few tens of metres is all the swash amounts to: a beach without it
+          // reads as a texture boundary. Up close the swash itself is visible
+          // and this hands over to it.
+          const edgeLine = smoothstepDownClamped(straightThickness, 0.02, 0.3)
+            .mul(smoothstepDownClamped(seabedSigned, 0.6, 1.4))
+            .mul(viewDistance.smoothstep(25, 110))
+            .mul(bubbles)
+            .mul(0.75)
+            .toVar();
+          surf.assign(
+            roller
+              .max(lip)
+              .max(feather)
+              .max(lace.mul(0.8))
+              .max(thin)
+              .max(band.mul(far))
+              .max(edgeLine)
+              .clamp(0, 1)
+              .mul(surfUniforms.strength.min(1)),
           );
         });
-
-        // Two harmonics at incommensurate wavelengths so the pattern does not
-        // visibly repeat, and a low floor so the lulls are real gaps rather than
-        // a dimming.
-        const along = worldPos.xz.dot(shoreBearing).toVar();
-        const setA = sin(along.mul(0.026).sub(this.uSurfPhase.mul(0.62))).toVar();
-        const setB = sin(along.mul(0.0111).sub(this.uSurfPhase.mul(0.34))).toVar();
-        const sets = setA.mul(0.4).add(setB.mul(0.3)).add(0.44).clamp(0, 1).toVar();
-
-        // The same breakup noise the crest foam uses, so surf and whitecaps are
-        // made of the same bubbles and the join between them is invisible.
-        surf.assign(
-          bore
-            .mul(sets)
-            .max(swash.mul(0.7))
-            .add(perturb.mul(0.3))
-            .smoothstep(0.3, 0.78)
-            .clamp(0, 1)
-            .mul(this.uSurfStrength),
-        );
       }
 
-      const foamMask = accumulated.max(crestFoam.mul(buffered.oneMinus())).max(surf).toVar();
+      // --- contact foam ------------------------------------------------------
+      //
+      // Foam where something pierces the surface: the hull's waterline, a buoy,
+      // a pier pile, a rock. Water churns and traps air against anything it
+      // moves past, so every real object at sea wears a ring of white. Measured
+      // from the depth buffer — the water column directly behind this pixel —
+      // rather than from any list of objects, so every prop gets it for free.
+      //
+      // Seabed contact is excluded where the heightfield explains the depth:
+      // that is the shore break's job, and treating a whole shallow lagoon as an
+      // "object" would foam it edge to edge. Faded with distance because depth
+      // precision and the mask's footprint both run out past a couple of
+      // hundred metres.
+      const contactBand = smoothstepDownClamped(straightThickness, 0.02, 1.3).toVar();
+      const notSeabed: any = (
+        floorDepth === null
+          ? float(1)
+          : seabedDepth.sub(straightThickness).smoothstep(0.35, 1.2)
+      ).toVar();
+      const contactReach = smoothstepDownClamped(viewDistance, 120, 260).toVar();
+      const contactFoam = contactBand
+        .mul(notSeabed)
+        .mul(contactReach)
+        // Lace, not an outline: the noise is biased low enough that the ring
+        // breaks into patches and gaps, and it is capped short of the crest
+        // foam's white. With the bias at +0.25 the ring was solid all the way
+        // round and drew the hull's waterline like a cartoon stroke.
+        .mul(breakup.mul(1.4).add(perturb.mul(0.9)).sub(0.12).clamp(0, 1))
+        .smoothstep(0.24, 0.72)
+        .mul(0.85)
+        .toVar();
+
+      const foamMask = accumulated
+        .max(crestFoam.mul(buffered.oneMinus()))
+        .max(surf)
+        .max(contactFoam)
+        .toVar();
 
       // Foam is lit, not painted.
       //
@@ -1845,11 +2109,27 @@ export class OceanMaterial {
       // the night unchanged. Whitecaps are a few centimetres of bubbles — a dense
       // scattering medium, so almost Lambertian, bright but still lit by the same
       // sun as everything else, and shadowed on the side away from it.
-      const bubbles = breakup.mul(0.5).add(0.5).toVar();
+      //
+      // Lit by the same sun *and sky* as the water around it. The previous form
+      // was `foamColor * bubbles * (0.6..1)` with no light term at all, which put
+      // a whitecap at roughly 40 % of its albedo — darker than the sky the water
+      // beside it was reflecting. At grazing angles, where the surface reflects a
+      // bright horizon, every whitecap therefore read as a grey or (at sunset)
+      // brown hole in the sea: the hard-edged blotches in every gallery frame.
+      // Foam is a near-Lambertian scatterer, so its radiance is albedo times the
+      // irradiance arriving on it: a wrapped sun term (bubbles scatter light in
+      // from the side) under the cloud shadow, plus the sky dome's ambient.
+      const bubbles = breakup.mul(0.22).add(0.84).toVar();
+      const foamSun = nDotL.mul(0.55).add(0.3).mul(sunShade.mul(0.7).add(0.3)).toVar();
+      const foamSky = (mix(this.uHorizonColor, this.uSkyColor, 0.45) as any).mul(0.42).toVar();
       const foamColor = this.uFoamColor
         .mul(bubbles)
-        .mul(nDotL.mul(0.4).add(0.6))
-        .mul(ambientFloor)
+        .mul(
+          (this.uSunColor as any)
+            .mul(foamSun)
+            .mul(this.uLightLevel.min(1.25))
+            .add(foamSky),
+        )
         .toVar();
 
       // Foam kills the specular under it. Bubbles are a diffuse rough medium, so a
@@ -1857,8 +2137,17 @@ export class OceanMaterial {
       // tell that the foam is a decal — and at 15 m/s it happens across half the
       // frame. Not driven fully to zero: the wet film between bubbles does still
       // glint.
-      const surface = mix(litBody, reflection, fresnel)
-        .add(specular.mul(foamMask.mul(0.88).oneMinus()))
+      // Where water meets sand it does so at a few centimetres' thickness, and
+      // the mesh carrying it cannot follow sand that closely: the edge where the
+      // two triangulations cross is a staircase. Fading the reflection and the
+      // glint out over the last few centimetres hands that edge to the refracted
+      // sand behind it — which is what the water there looks like anyway — so
+      // the visible front is the swash foam the ground draws, on an analytic
+      // contour, and not the mesh.
+      const nearLand = smoothstepDownClamped(seabedSigned, 0.4, 1.2);
+      const edgeVisible = mix(float(1), straightThickness.smoothstep(0.0, 0.045), nearLand).toVar();
+      const surface = mix(litBody, reflection, fresnel.mul(edgeVisible))
+        .add(specular.mul(foamMask.mul(0.88).oneMinus()).mul(edgeVisible))
         .toVar();
 
       const withFoam = mix(surface, foamColor, foamMask).toVar();
@@ -1882,7 +2171,7 @@ export class OceanMaterial {
       // face". It is coherent over large regions of the screen, so the cost above
       // water is a compare.
       const facingSign = n.dot(viewDir).toVar();
-      If(facingSign.lessThan(0), () => {
+      If(facingSign.lessThan(0).and(this.uEyeSubmerged.greaterThan(0.5)), () => {
         const cosI = facingSign.abs().clamp(0, 1).toVar();
 
         // Snell: sin(t) = ior * sin(i). Past sin(t) = 1 there is no transmitted
