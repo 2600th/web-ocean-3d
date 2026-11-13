@@ -632,6 +632,27 @@ const BACK_COLOR = new THREE.Color(0.055, 0.085, 0.1);
 const FLANK_COLOR = new THREE.Color(0.42, 0.5, 0.53);
 const BELLY_COLOR = new THREE.Color(0.8, 0.83, 0.8);
 
+/**
+ * The procedural body as several species, one per school, cycled in
+ * `SCHOOL_LAYOUT` order: every school used to be the same silver jack, so ten
+ * schools read as one animal repeated ten times. The swim, the shape and the
+ * counter-shading are shared — what changes is the pigment, which is what
+ * identifies a fish at the distances these are seen at.
+ *
+ *   silver jack        the original: dark back, silver flank
+ *   blue fusilier      cobalt back over a yellow lateral band, pink belly
+ *   yellowtail snapper slate back, a bright yellow flank stripe
+ *   bigeye / soldier   rose-red all over, the reef's night shift
+ *   barracuda          steel grey back, pale flank
+ */
+const PELAGIC_PALETTES: readonly (readonly [THREE.Color, THREE.Color, THREE.Color])[] = [
+  [BACK_COLOR, FLANK_COLOR, BELLY_COLOR],
+  [new THREE.Color(0.03, 0.08, 0.32), new THREE.Color(0.72, 0.6, 0.12), new THREE.Color(0.85, 0.68, 0.72)],
+  [new THREE.Color(0.14, 0.18, 0.28), new THREE.Color(0.85, 0.68, 0.14), new THREE.Color(0.86, 0.84, 0.78)],
+  [new THREE.Color(0.35, 0.06, 0.06), new THREE.Color(0.75, 0.22, 0.2), new THREE.Color(0.85, 0.55, 0.5)],
+  [new THREE.Color(0.1, 0.12, 0.14), new THREE.Color(0.55, 0.58, 0.6), new THREE.Color(0.86, 0.87, 0.86)],
+];
+
 /** Skylight the fish sit in, and the direct sun on top of it. */
 const AMBIENT_COLOR = new THREE.Color(0.24, 0.34, 0.38);
 const SUN_COLOR = new THREE.Color(0.9, 0.88, 0.78);
@@ -783,9 +804,10 @@ export class FishSchool {
   private readonly uSunDir = uniform(new THREE.Vector3(0.35, 0.62, 0.7).normalize());
   private readonly uSunColor = uniform(new THREE.Color(SUN_COLOR));
   private readonly uAmbient = uniform(new THREE.Color(AMBIENT_COLOR));
-  private readonly uBack = uniform(new THREE.Color(BACK_COLOR));
-  private readonly uFlank = uniform(new THREE.Color(FLANK_COLOR));
-  private readonly uBelly = uniform(new THREE.Color(BELLY_COLOR));
+  /** Per school: dorsal, flank and ventral tone — see `PELAGIC_PALETTES`. */
+  private readonly uBacks: Node[] = [];
+  private readonly uFlanks: Node[] = [];
+  private readonly uBellies: Node[] = [];
   private readonly uSheen = uniform(SHEEN);
 
   // Scratch for the per-frame anchor solve. Reused — never reallocated.
@@ -808,6 +830,10 @@ export class FishSchool {
       this.uAnchors.push(uniform(new THREE.Vector4(0, -8, 0, path.halfHeight)));
       this.uHeadings.push(uniform(new THREE.Vector4(1, 0, 0, 0)));
       this.uShapes.push(uniform(new THREE.Vector4(path.length, path.width, 0, 0)));
+      const palette = PELAGIC_PALETTES[this.uBacks.length % PELAGIC_PALETTES.length];
+      this.uBacks.push(uniform(palette[0].clone()));
+      this.uFlanks.push(uniform(palette[1].clone()));
+      this.uBellies.push(uniform(palette[2].clone()));
     }
 
     this.object = new THREE.Object3D();
@@ -1200,8 +1226,11 @@ export class FishSchool {
             texture(map, uv()).rgb.toVar()
           : (() => {
               const t = flank.mul(0.5).add(0.5).toVar();
-              const shaded = mix(this.uBelly, this.uFlank, t.smoothstep(0.0, 0.45)).toVar();
-              shaded.assign(mix(shaded, this.uBack, t.smoothstep(0.52, 0.95)));
+              const back = pickPerSchool(this.uBacks, trait.x);
+              const flankTone = pickPerSchool(this.uFlanks, trait.x);
+              const belly = pickPerSchool(this.uBellies, trait.x);
+              const shaded = mix(belly, flankTone, t.smoothstep(0.0, 0.45)).toVar();
+              shaded.assign(mix(shaded, back, t.smoothstep(0.52, 0.95)));
               return shaded;
             })()
       ) as Node;
