@@ -695,6 +695,12 @@ const UI_CUE_GAP: Readonly<Record<UiCue, number>> = {
   warn: 0.5,
 };
 const UI_TICK_LEVEL = 0.05;
+
+/**
+ * Period of the score's scheduling timer, ms. The look-ahead is 350 ms, so the
+ * band keeps playing through a stalled render loop with room to spare.
+ */
+const MUSIC_PUMP_MS = 100;
 const UI_HOVER_LEVEL = 0.022;
 
 // --- gulls -----------------------------------------------------------------
@@ -1005,6 +1011,8 @@ export class AudioSystem {
   };
   private wasUnder = false;
   private plungeCooldown = 0;
+  /** The score's scheduling timer; see `MusicEngine.pump`. */
+  private pumpTimer: ReturnType<typeof setInterval> | null = null;
 
   private airGain!: ParamTarget;
   private muffle!: ParamTarget;
@@ -1146,6 +1154,14 @@ export class AudioSystem {
     this.startBeds(now);
     this.flushAll(now);
     this.applyMasterGain(this.offline ? 0 : RESUME_RAMP);
+    if (!this.offline && this.pumpTimer === null && typeof setInterval === 'function') {
+      this.pumpTimer = setInterval(() => {
+        const c = this.ctx;
+        // dt 0: the model does not advance off the timer, but the band can go
+        // live and keep scheduling while the render loop is stalled.
+        if (c !== null && this.enabled && !this.muted && this.running()) this.music.update(0, c.currentTime, true);
+      }, MUSIC_PUMP_MS);
+    }
     return this.running();
   }
 
@@ -1439,6 +1455,7 @@ export class AudioSystem {
   setMuted(muted: boolean): void {
     if (this.muted === muted) return;
     this.muted = muted;
+    if (muted && this.ctx !== null) this.music.pause();
     this.applyMasterGain(MUTE_RAMP);
     const ctx = this.ctx;
     // Unmuting resumes writing, and the graph has been frozen wherever it was
@@ -1458,6 +1475,7 @@ export class AudioSystem {
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
+    if (!enabled && this.ctx !== null) this.music.pause();
     this.applyMasterGain(ENABLE_RAMP);
 
     const ctx = this.ctx;
@@ -2020,6 +2038,8 @@ export class AudioSystem {
     this.ctx = null;
     if (ctx === null) return;
 
+    if (this.pumpTimer !== null) clearInterval(this.pumpTimer);
+    this.pumpTimer = null;
     this.stopVoices();
     for (const bed of this.beds) bed.dispose();
     this.beds.length = 0;

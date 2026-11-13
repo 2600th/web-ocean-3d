@@ -8,7 +8,7 @@
  *
  * Four sections, in the order a visitor reaches for them: the *look* (preset
  * cards and quality), the sea and sky (the sliders that change the render), the
- * cabin (volume and resolution), and — folded away, because they are the
+ * cabin (volume, music and resolution), and — folded away, because they are the
  * author's instruments rather than the visitor's — the shipwright's debug
  * toggles. The ledger folds to its title on desktop and is a bottom sheet under
  * 900px.
@@ -38,6 +38,7 @@ type SliderKey =
   | 'timeOfDay'
   | 'fogDensity'
   | 'volume'
+  | 'musicVolume'
   | 'pixelRatio';
 type ToggleKey = 'buoyancyProbes' | 'wakeProbes' | 'forceWebGL';
 
@@ -72,7 +73,7 @@ const SEA_SKY_SLIDERS = [
   'timeOfDay',
 ] as const satisfies readonly SliderKey[];
 
-const CABIN_SLIDERS = ['volume', 'pixelRatio'] as const satisfies readonly SliderKey[];
+const CABIN_SLIDERS = ['volume', 'musicVolume', 'pixelRatio'] as const satisfies readonly SliderKey[];
 
 const SLIDERS: readonly SliderSpec[] = [
   {
@@ -128,6 +129,14 @@ const SLIDERS: readonly SliderSpec[] = [
     max: 1,
     step: 0.01,
     format: (v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`),
+  },
+  {
+    key: 'musicVolume',
+    label: 'Music',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
   },
   {
     key: 'pixelRatio',

@@ -235,7 +235,7 @@ const PROFILES: Readonly<Record<MusicState, Profile>> = {
 };
 
 /** Seconds of audio scheduled ahead of the clock. Longer than any plausible frame. */
-const LOOKAHEAD = 0.3;
+const LOOKAHEAD = 0.35;
 /** Fell this far behind (a hitch, a background tab): skip ahead instead of catching up. */
 const RESYNC_BEHIND = 0.12;
 /** Stem crossfade time constant, seconds. */
@@ -736,10 +736,26 @@ export class MusicEngine implements NoteHost {
       this.flush(now);
       this.nextStep = now + 0.06;
     }
-    if (this.nextStep < now - RESYNC_BEHIND) this.nextStep = now + 0.02;
+    this.pump(now);
+  }
 
-    const tempo = p.tempo[0] + (p.tempo[1] - p.tempo[0]) * e;
+  /**
+   * Schedules every quaver that starts inside the look-ahead, and nothing else.
+   *
+   * `update` calls it every frame. `AudioSystem` also calls `update(0, …)`
+   * from a 100 ms timer, because frames are not guaranteed — a shader compile
+   * or a heavy scene can hold the render loop for a second or more, and a band
+   * that stops whenever the GPU is busy is a band with a fault. With `dt` 0 the
+   * model does not advance; only the scheduling does. Does nothing until
+   * `update` has seen the context live.
+   */
+  pump(now: number): void {
+    if (!this.wasLive) return;
+    if (this.nextStep < now - RESYNC_BEHIND) this.nextStep = now + 0.02;
+    const p = this.profile;
+    const tempo = p.tempo[0] + (p.tempo[1] - p.tempo[0]) * this.energy;
     const targetDur = 60 / (Math.max(20, tempo) * 3);
+    const audible = this.volume > 0;
     while (this.nextStep < now + LOOKAHEAD) {
       // A glide, not a jump: the band speeds up over a couple of bars.
       this.stepDur += (targetDur - this.stepDur) * 0.12;
@@ -747,6 +763,11 @@ export class MusicEngine implements NoteHost {
       this.advance();
       this.nextStep += this.stepDur;
     }
+  }
+
+  /** Holds the sequencer until `update` next sees the context live (mute, disable). */
+  pause(): void {
+    this.wasLive = false;
   }
 
   /** Back to the top: silences every note and rewinds the sequencer and its random streams. */
@@ -791,10 +812,13 @@ export class MusicEngine implements NoteHost {
     this.activeVoices++;
     this.live.add(source);
     source.onended = () => {
+      // Guarded: Chrome fires \`ended\` twice for a buffer source whose stop()
+      // lands exactly on the buffer's natural end (measured), which counted
+      // voices below zero and quietly lifted the cap.
+      if (!this.live.delete(source)) return;
       source.disconnect();
       for (const node of nodes) node.disconnect();
       this.activeVoices--;
-      this.live.delete(source);
     };
   }
 

@@ -47,6 +47,11 @@ export interface UiState {
    * rather than a promise of noise.
    */
   volume: number;
+  /**
+   * Music level, 0..1, under the master volume. 0 stops the score outright
+   * (nothing is scheduled), so it is also the "music off" switch.
+   */
+  musicVolume: number;
   buoyancyProbes: boolean;
   wakeProbes: boolean;
   forceWebGL: boolean;
@@ -122,6 +127,7 @@ export const DEFAULT_UI_STATE: UiState = {
   timeOfDay: null,
   fogDensity: 0.35,
   volume: 0.4,
+  musicVolume: 0.5,
   buoyancyProbes: false,
   wakeProbes: false,
   forceWebGL: false,

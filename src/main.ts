@@ -33,7 +33,14 @@ import {
   FoliageWind,
   applyGroundShadingTo,
 } from './scene';
-import { AudioSystem, DEFAULT_AUDIO_SCENE_PARAMS } from './audio';
+import {
+  AudioSystem,
+  DEFAULT_AUDIO_SCENE_PARAMS,
+  SlapDetector,
+  type GullFix,
+  type MusicState,
+} from './audio';
+import { attachUiSounds } from './ui/sounds';
 import { Gameplay, type GameUiSink, type SailSetting } from './gameplay';
 import {
   BuoyancySystem,
@@ -150,6 +157,25 @@ const _shipProbe = new THREE.Vector2();
 /** Scratch for the HUD's view heading. */
 const _hudView = new THREE.Vector3();
 
+// Audio scratch: the ship's axes, the listener's right, a bird, a hull probe.
+const _audioAxis = new THREE.Vector3();
+const _audioRight = new THREE.Vector3();
+const _audioRel = new THREE.Vector3();
+const _audioBird = new THREE.Vector3();
+const _audioProbe = new THREE.Vector3();
+
+/**
+ * Hull probes for wave slaps, in the hull's frame as fractions of (half length,
+ * height above the waterline in metres, half beam). Bow and waist, both sides:
+ * the bow is where a sea arrives first, the waist is where a beam sea slaps.
+ */
+const SLAP_PROBES: readonly (readonly [number, number, number])[] = [
+  [0.7, 0.35, -0.75],
+  [0.7, 0.35, 0.75],
+  [0.05, 0.3, -1],
+  [0.05, 0.3, 1],
+];
+
 /**
  * Compass bearing of a world XZ direction: degrees clockwise from north, with
  * north = −Z and east = +X (the HUD's convention, see `NavReadout`).
@@ -260,6 +286,12 @@ class App {
   private audio!: AudioSystem;
   /** Hoisted: `update` reads these every frame and must not allocate. */
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
+  /** Sail state for the audio, polled from gameplay without allocating. */
+  private readonly sailAudio = { active: false, sailFill: 0, sailLuff: 0 };
+  private readonly slaps = new SlapDetector(SLAP_PROBES.length);
+  /** Weather hysteresis for the score, so a squall at the threshold does not flip it. */
+  private musicStormy = false;
+  private detachUiSounds: (() => void) | null = null;
 
   private post!: THREE.RenderPipeline;
   private taaEnabled = false;
@@ -708,8 +740,16 @@ class App {
     }
     this.scene.add(this.remains.object);
 
-    this.audio = new AudioSystem({ volume: this.state.volume, quality: this.state.quality });
+    this.audio = new AudioSystem({
+      volume: this.state.volume,
+      musicVolume: this.state.musicVolume,
+      quality: this.state.quality,
+    });
     this.audio.resumeOnGesture();
+    // Gull cries come from a real bird in the flock, placed by distance and
+    // bearing from the listener. Tries a few birds; a cry with none in
+    // earshot is skipped rather than invented.
+    this.audio.setGullLocator((out: GullFix) => this.locateGull(out));
 
     boot.set(0.8, 'Building underwater pass…');
     this.underwater = new UnderwaterPass();
@@ -1400,6 +1440,9 @@ class App {
       const ui: GameUiSink = {
         toast: (text, kind) => {
           this.hud.toast(text, kind);
+          // The reward toast has its chime already; the others get a cue of their own.
+          if (kind === 'warning') this.audio.uiTick('warn');
+          else if (kind !== 'reward') this.audio.uiTick('info');
         },
         setObjective: (objective) => this.hud.setObjective(objective),
         setScore: (label, value) => this.hud.setScore(label, value),
@@ -1512,6 +1555,106 @@ class App {
     });
   }
 
+  /**
+   * The ship as the audio hears it: how far and which side, how she is
+   * rolling and pitching, what the canvas is doing, and wave slaps from four
+   * hull probes. Allocation-free.
+   */
+  private updateShipAudio(dt: number, audio: typeof this.audioParams): void {
+    const ship = this.ship;
+    if (ship === null) {
+      audio.shipDistance = Number.POSITIVE_INFINITY;
+      audio.sailFill = 0;
+      audio.sailLuff = 0;
+      return;
+    }
+    const hull = ship.object;
+    const cam = this.camera.position;
+    _audioRel.copy(hull.position).sub(cam);
+    const distance = _audioRel.length();
+    _audioRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    audio.shipDistance = distance;
+    audio.shipPan = distance > 1e-3 ? _audioRel.dot(_audioRight) / distance : 0;
+
+    // Roll: the beam axis (+Z, starboard) tilting out of the horizontal;
+    // pitch: the bow axis (+X) rising. The same frame `Gameplay` uses.
+    _audioAxis.set(0, 0, 1).applyQuaternion(hull.quaternion);
+    audio.shipHeel = -Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+    _audioAxis.set(1, 0, 0).applyQuaternion(hull.quaternion);
+    audio.shipPitch = Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+
+    const sails = this.gameplay?.audioState(this.sailAudio) ?? null;
+    audio.sailFill = sails?.sailFill ?? 0;
+    audio.sailLuff = sails?.sailLuff ?? 0;
+
+    // Wave slaps: water climbing past a point on the planking, fast. Only
+    // within earshot, since each probe is a sea-surface sample.
+    if (!this.sampler.ready || distance > 120 || !(dt > 0)) return;
+    hull.updateMatrixWorld();
+    const halfLength = ship.hullLength * 0.5;
+    const halfBeam = ship.hullBeam * 0.5;
+    for (let i = 0; i < SLAP_PROBES.length; i++) {
+      const [along, up, across] = SLAP_PROBES[i];
+      _audioProbe.set(along * halfLength, up, across * halfBeam).applyMatrix4(hull.matrixWorld);
+      const immersion = this.sampler.height(_audioProbe.x, _audioProbe.z) - _audioProbe.y;
+      const strength = this.slaps.update(i, immersion, dt);
+      if (strength > 0) {
+        // Placed within the ship's own image by which side of the listener the probe is on.
+        _audioRel.copy(_audioProbe).sub(hull.position);
+        const pan = THREE.MathUtils.clamp(_audioRel.dot(_audioRight) / Math.max(1, halfBeam), -1, 1);
+        this.audio.waveSlap(strength, pan);
+      }
+    }
+  }
+
+  /**
+   * Which arrangement the score should play. Priority: under water, then
+   * weather, then the tour, then sailing (at the helm and moving or with
+   * canvas set), else calm. The audio system holds a state for a couple of
+   * seconds before following it, so calling this every frame is the intent.
+   */
+  private chooseMusicState(raining: number, submersion: number): MusicState {
+    if (submersion > 0.5) return 'underwater';
+    const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
+    const gale = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
+    const weather = Math.max(raining, coverage * gale, this.state.preset === 'storm' ? 1 : 0);
+    if (weather > 0.5) this.musicStormy = true;
+    else if (weather < 0.3) this.musicStormy = false;
+    if (this.musicStormy) return 'storm';
+    if (this.state.cameraMode === 'cinematic') return 'tour';
+    if (this.state.cameraMode === 'boat' && this.sailAudio.active) {
+      const speed = this.audioParams.hullSpeed;
+      if (speed > 1 || this.sailAudio.sailFill > 0.2) return 'sailing';
+    }
+    return 'calm';
+  }
+
+  /** 0..1 for the score: ship speed against a brisk 7.5 m/s (~15 knots). */
+  private musicEnergy(): number {
+    return THREE.MathUtils.clamp(this.audioParams.hullSpeed / 7.5, 0, 1);
+  }
+
+  /** `setGullLocator`'s callback: one drawn bird near enough to hear. */
+  private locateGull(out: GullFix): boolean {
+    const count = this.birds.getCount();
+    if (count === 0) return false;
+    const cam = this.camera.position;
+    _audioRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // Deterministic per draw is not needed here: which bird calls is not
+      // part of any captured frame, and the audio itself is muted in captures.
+      const index = Math.floor(Math.random() * count);
+      if (!this.birds.positionOf(index, _audioBird)) continue;
+      _audioRel.copy(_audioBird).sub(cam);
+      const distance = _audioRel.length();
+      if (distance > 240) continue;
+      out.distance = distance;
+      out.pan = distance > 1e-3 ? _audioRel.dot(_audioRight) / distance : 0;
+      return true;
+    }
+    return false;
+  }
+
   private buildUi(): void {
     const callbacks = {
       onChange: <K extends keyof UiState>(key: K, value: UiState[K]) => {
@@ -1521,6 +1664,9 @@ class App {
     };
     this.panel = new Panel(this.uiRoot, this.state, callbacks);
     this.hud = new Hud(this.uiRoot, this.state.cameraMode, callbacks);
+    // Clicks, ticks and rustles for the ledger and the HUD. The UI reports
+    // what happened as a cue name and never sees the audio system.
+    this.detachUiSounds = attachUiSounds(this.uiRoot, (cue, value) => this.audio.uiTick(cue, value));
     this.stormQuote = new StormQuote(this.uiRoot);
     this.hud.setBackend(this.backend);
 
@@ -1611,6 +1757,9 @@ class App {
       }
       case 'volume':
         this.audio.setVolume(this.state.volume);
+        break;
+      case 'musicVolume':
+        this.audio.setMusicVolume(this.state.musicVolume);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
@@ -2554,6 +2703,8 @@ class App {
     // so a sky with no birds in it stays silent instead of the audio inventing
     // some. Low draws none, and hears none.
     audio.birdCount = this.birds.getCount();
+    this.updateShipAudio(dt, audio);
+    this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);
 
     // Rain on the lens. Placed here rather than with the other rain wiring
@@ -2768,6 +2919,8 @@ class App {
         scene: this.scene,
         camera: this.camera,
         director: this.director,
+        /** The audio system: `musicDebug`, `getMusicState()`, and the hooks. */
+        audio: this.audio,
         simulation: this.simulation,
         /**
          * Reflection layers, exposed so a test can isolate them.
@@ -3197,6 +3350,8 @@ class App {
     window.removeEventListener('resize', this.onResize);
     this.loop?.stop();
     this.panel?.dispose();
+    this.detachUiSounds?.();
+    this.detachUiSounds = null;
     this.hud?.dispose();
     this.touchControls?.dispose();
     this.director?.dispose();
