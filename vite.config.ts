@@ -14,6 +14,11 @@ const BASIS_DIR = fileURLToPath(
 );
 
 export default defineConfig({
+  // Per checkout, not `node_modules/.vite`. Worktrees link the main checkout's
+  // node_modules, so every dev server shared one pre-bundle cache and kept
+  // invalidating each other's — the page then failed with 504 "Outdated
+  // Optimize Dep" and never booted.
+  cacheDir: '.vite-cache',
   server: {
     port: 5173,
     host: '127.0.0.1',
