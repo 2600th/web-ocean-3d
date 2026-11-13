@@ -85,14 +85,17 @@ export class AmbientOcclusion {
   private settings: AoSettings = { enabled: true, resolutionScale: 0.5, samples: 12 };
 
   /** Metres. AO fades out across this range; see `build`. */
-  private readonly fadeStart = uniform(60);
-  private readonly fadeEnd = uniform(160);
+  private readonly fadeStart = uniform(35);
+  private readonly fadeEnd = uniform(90);
 
   constructor(
     private readonly depth: any,
     private readonly camera: THREE.Camera,
+    private readonly normal: any = null,
   ) {
-    this.node = new SequencedGTAO(depth, null as any, camera);
+    // Real normals from the scene pass when it has them; `null` falls back to
+    // GTAO's depth reconstruction, which stripes distant grazing ground.
+    this.node = new SequencedGTAO(depth, normal, camera);
     this.node.useTemporalFiltering = true;
     // Metres: this is a ship and a coastline, not a room. Half a metre finds
     // the deck furniture, the gunwale and the rock clefts; the falloff keeps
@@ -127,7 +130,14 @@ export class AmbientOcclusion {
       // the island's tree line at a kilometre before this fade existed.
       const distance = perspectiveDepthToViewZ(depth.sample(p).r, near, far).negate();
       const fade = float(1).sub(smoothstep(this.fadeStart, this.fadeEnd, distance));
-      const k = this.uStrength.mul(float(1).sub(water)).mul(fade);
+      // Grazing surfaces get none. The depth buffer spans a 24 km sea, so at a
+      // hundred metres it steps in terraces, and GTAO's horizon search reads
+      // those steps as occluders on any flat ground seen edge-on — the beach
+      // came out as a grid of stripes. Real normals did not fix it; the view
+      // angle does. `|n.z|` is the view-space facing ratio, close enough to
+      // n.v inside a 55-degree frustum.
+      const facing: any = this.normal === null ? float(1) : this.normal.sample(p).z.abs().smoothstep(0.12, 0.4);
+      const k: any = this.uStrength.mul(float(1).sub(water)).mul(fade).mul(facing);
       return vec4(c.rgb.mul(mix(float(1), a, k)), c.a);
     })();
   }

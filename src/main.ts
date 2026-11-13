@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   mrt,
+  normalView,
   output,
   pass,
   positionWorld,
@@ -901,7 +902,10 @@ class App {
       : pass(this.scene, this.camera);
     this.scenePass = scenePass;
     if (this.taaEnabled) {
-      scenePass.setMRT(mrt({ output, velocity }));
+      // View-space normals for GTAO. Without them it reconstructs normals from
+      // depth, which breaks down on distant ground seen at a grazing angle: the
+      // beach came out as a grid of stripes that TRAA could not average away.
+      scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
       this.clouds.setPreviousViewProjection(this.prevViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the

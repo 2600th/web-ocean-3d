@@ -267,7 +267,7 @@ export class PostChain {
     const color = scenePass.getTextureNode('output');
     const velocity = scenePass.getTextureNode('velocity');
 
-    this.ao = new AmbientOcclusion(depth, camera);
+    this.ao = new AmbientOcclusion(depth, camera, scenePass.getTextureNode('normal'));
     // Resolved to a texture explicitly rather than by the resolve's own
     // `convertToTexture`, because its resolution has to follow the scene pass
     // when the tier renders below native — TAAU sizes its input from this
