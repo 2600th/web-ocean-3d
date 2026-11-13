@@ -101,6 +101,22 @@ export class Reflections {
     return this.base.resolutionScale;
   }
 
+  /**
+   * What the reflector renders `camera`'s reflection with: its mirrored camera
+   * and its target. Read for the pipeline prewarm, which compiles that render
+   * ahead of time; the camera's pose is whatever the last frame left it in.
+   */
+  renderSetup(camera: THREE.Camera): { camera: THREE.Camera; target: THREE.RenderTarget } {
+    const virtualCamera = this.base.getVirtualCamera(camera) as THREE.Camera;
+    return { camera: virtualCamera, target: this.base.getRenderTarget(virtualCamera) };
+  }
+
+  /** Whether `target` is one of the reflector's own render targets. */
+  ownsTarget(target: unknown): boolean {
+    for (const own of this.base.renderTargets.values()) if (own === target) return true;
+    return false;
+  }
+
   dispose(): void {
     this.plane.removeFromParent();
     for (const target of this.base.renderTargets.values()) target.dispose();
