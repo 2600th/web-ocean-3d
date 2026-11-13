@@ -269,7 +269,7 @@ const COVERAGE_QUANTILES: ReadonlyArray<readonly [number, number]> = [
 ];
 
 /** Softness of the cloud edge in noise units. Crisper = puffier cumulus. */
-const EDGE_WIDTH = 0.1;
+const EDGE_WIDTH = 0.045;
 
 /** Strength of the single-scattering term with the sun fully above the horizon. */
 const SUN_GAIN = 1.5;
@@ -340,10 +340,10 @@ export class Clouds {
    */
   private readonly uShadowStrength = uniform(0.0015);
   /** Extinction per metre of unit density. */
-  private readonly uExtinction = uniform(0.006);
+  private readonly uExtinction = uniform(0.0085);
   private readonly uLightStep = uniform(175);
   private readonly uSunGain = uniform(SUN_GAIN);
-  private readonly uAmbientGain = uniform(0.55);
+  private readonly uAmbientGain = uniform(0.42);
   /**
    * Ambient reaching the *top* of the layer.
    *
@@ -744,7 +744,7 @@ export class Clouds {
     const edge = this.uThreshold
       .add(float(1).sub(profile).mul(0.22))
       .add(weather.sub(0.5).mul(this.uWeatherAmount));
-    const width = float(EDGE_WIDTH).add(softness.mul(0.4));
+    const width = float(EDGE_WIDTH).add(softness.mul(0.25));
 
     // The erosion octave fades out as the march coarsens.
     //
@@ -758,8 +758,14 @@ export class Clouds {
     // the march cannot resolve is not detail, it is noise, so it is faded rather
     // than sampled. Same reasoning as the wave cascades' geometry fade.
     const detailFade = float(1).sub(softness).clamp(0, 1);
-    const field =
-      detail === null ? base : base.add(detail.mul(detailFade).mul(0.3));
+    // Billowed rather than added. A centred detail octave only nibbles the
+    // silhouette symmetrically, which reads as fuzz; eroding *more* toward the
+    // edge (where the base field is near the threshold) and less in the core is
+    // what carves cauliflower lobes into a cumulus instead of fraying it.
+    const erosion = detail === null
+      ? null
+      : detail.abs().mul(-1).add(0.13).mul(detailFade).mul(0.55);
+    const field = erosion === null ? base : base.add(erosion);
     const shaped = smoothstep(edge, edge.add(width), field);
 
     return shaped.mul(profile).mul(this.uDensity);

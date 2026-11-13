@@ -1,5 +1,18 @@
 import * as THREE from 'three/webgpu';
-import { pass, positionWorld, rtt, uniform } from 'three/tsl';
+import {
+  Fn,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
+  mrt,
+  output,
+  pass,
+  positionWorld,
+  rtt,
+  uniform,
+  vec4,
+  velocity,
+} from 'three/tsl';
+import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
@@ -41,6 +54,7 @@ import { DEFAULT_SSR_STEPS, ScreenSpaceReflection } from './ocean/ScreenSpaceRef
 import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
+import { Lightning } from './sky/Lightning';
 import { VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
@@ -121,8 +135,27 @@ const TOUR_ENV_ELEVATION_STEP = 0.035;
  */
 const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
 
+/** Render layer the cloud dome lives on, so the planar mirror can skip it. */
+const CLOUD_LAYER = 3;
+
+/** Haze sky colours, pulled toward the deck's grey under an overcast. */
+const _hazeHorizon = new THREE.Color();
+const _hazeZenith = new THREE.Color();
+
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
+/** Scratch for the HUD's view heading. */
+const _hudView = new THREE.Vector3();
+
+/**
+ * Compass bearing of a world XZ direction: degrees clockwise from north, with
+ * north = −Z and east = +X (the HUD's convention, see `NavReadout`).
+ */
+function compassBearing(x: number, z: number): number {
+  return (Math.atan2(x, -z) * 180) / Math.PI;
+}
+
+const MS_TO_KNOTS = 1.943844;
 
 const boot = {
   root: document.getElementById('boot'),
@@ -133,9 +166,12 @@ const boot = {
     // paint on the main thread for every update, during the one stretch where
     // that thread is already compiling shaders and decoding assets; a transform
     // is composited and costs neither. The bar is `transform-origin: left`.
+    const clamped = Math.max(0, Math.min(1, progress));
     if (this.bar) {
-      (this.bar as HTMLElement).style.transform = `scaleX(${Math.max(0, Math.min(1, progress))})`;
+      (this.bar as HTMLElement).style.transform = `scaleX(${clamped})`;
     }
+    // The ship on the boot chart sails to the same fraction.
+    this.root?.style.setProperty('--boot-progress', String(clamped));
     if (this.status) this.status.textContent = message;
   },
   hide() {
@@ -200,6 +236,7 @@ class App {
   private readonly uKeyColor: any = uniform(new THREE.Color(1, 1, 1));
   private clouds!: Clouds;
   private weather!: Weather;
+  private lightning!: Lightning;
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
@@ -222,6 +259,9 @@ class App {
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
 
   private post!: THREE.RenderPipeline;
+  private taaEnabled = false;
+  /** Last frame's view-projection, for the ocean's world-space velocity. */
+  private readonly prevViewProjection = uniform(new THREE.Matrix4());
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -534,6 +574,7 @@ class App {
     if (this.backend === 'webgpu') {
       this.reflections = new Reflections(QUALITY_TIERS[this.state.quality].reflectionScale);
       this.scene.add(this.reflections.plane);
+      this.reflections.excludeLayer(this.camera, CLOUD_LAYER);
       this.ssr = new ScreenSpaceReflection();
       this.ssr.setCamera(this.camera);
     }
@@ -571,9 +612,17 @@ class App {
     this.clouds.setAerialPerspective(this.aerial);
 
     this.scene.add(this.clouds.mesh);
+    // Clouds stay out of the planar mirror. Through a roughness-blurred, half-
+    // resolution, haze-tinted reflection a cumulus came back as a khaki smear
+    // lying on the sea — the pale blotches in the near field. SSR still
+    // reflects the clouds that are on screen, sharply and in the right place.
+    this.clouds.mesh.layers.set(CLOUD_LAYER);
+    this.camera.layers.enable(CLOUD_LAYER);
 
     this.weather = new Weather();
     this.scene.add(this.weather.object);
+    this.lightning = new Lightning();
+    this.scene.add(this.lightning.object);
 
     // Birds go in with the sky rather than with the props: they are lit by the
     // atmosphere and nothing else, and they never touch the water.
@@ -686,10 +735,46 @@ class App {
     // `RenderPipeline`, not the `PostProcessing` alias: the latter is deprecated
     // as of r183 and warns on every boot.
     this.post = new THREE.RenderPipeline(this.renderer);
-    const scenePass = pass(this.scene, this.camera);
+    // Temporal reprojection AA, WebGPU only and opt-out with `?taa=0`.
+    //
+    // The water's remaining aliasing — thresholded foam at mid distance, glitter
+    // spikes, the rigging — is sub-pixel signal that no spatial filter can
+    // recover; the shader comments say so in as many words. TRAA integrates it
+    // over frames instead. It also replaces 4x MSAA on the scene pass, which is
+    // a bandwidth saving that pays for most of the resolve.
+    this.taaEnabled =
+      this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    const scenePass = this.taaEnabled
+      ? pass(this.scene, this.camera, { samples: 0 })
+      : pass(this.scene, this.camera);
+    if (this.taaEnabled) {
+      scenePass.setMRT(mrt({ output, velocity }));
+      // The ocean mesh is re-centred under the camera every frame, so its model
+      // matrix moves with the eye while the surface it draws is anchored to the
+      // world. Stock velocity would read that re-centring as motion and smear
+      // the whole sea; reproject its world position through last frame's
+      // camera instead.
+      const prevViewProjection = this.prevViewProjection;
+      this.water.material.mrtNode = mrt({
+        velocity: Fn(() => {
+          const world = vec4(positionWorld, 1);
+          const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(world);
+          const previous = (prevViewProjection as any).mul(world);
+          return current.xy.div(current.w).sub(previous.xy.div(previous.w));
+        })(),
+      });
+    }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
+    const sceneBeauty: any = this.taaEnabled
+      ? (traa(
+          scenePass.getTextureNode('output'),
+          sceneDepth,
+          scenePass.getTextureNode('velocity'),
+          this.camera,
+        ) as any).getTextureNode()
+      : scenePass.getTextureNode();
 
     this.fog = new VolumetricFog();
     // Required: a post pass draws with the post-processor's own orthographic
@@ -716,7 +801,7 @@ class App {
 
     const graded = this.fog.build(
       this.underwater.build(
-        scenePass.getTextureNode(),
+        sceneBeauty,
         sceneDepth,
         // The shafts are an integral of this field along the view ray, so
         // passing it here is what makes them and the seafloor pattern the same
@@ -810,6 +895,8 @@ class App {
     // comment asks for and what a drop of water on glass actually does.
     this.outputTransform = new OutputTransform();
     this.spatialAa = new SpatialAA();
+    // TRAA already resolved the edges; FXAA on top only softens them again.
+    if (this.taaEnabled) this.spatialAa.setStrength(0);
     this.post.outputColorTransform = false;
     // Tone map, anti-alias, dither — in that order, and none of the three can
     // move. See `SpatialAA` for why the filter has to sit between the other two
@@ -853,7 +940,14 @@ class App {
     // anything back. It also left the deterministic capture path racing a render
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
-    this.loop = new Loop(() => this.post.renderAsync());
+    this.loop = new Loop(async () => {
+      await this.post.renderAsync();
+      // After the frame, so next frame's velocity reprojects against this one.
+      this.prevViewProjection.value.multiplyMatrices(
+        this.camera.projectionMatrix,
+        this.camera.matrixWorldInverse,
+      );
+    });
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
@@ -1382,6 +1476,28 @@ class App {
     if (!wasPaused && !this.disposed && !this.captureOwnsClock) this.loop.setPaused(false);
 
     this.sceneContentLoaded = true;
+  }
+
+  /**
+   * Compass, wind dial and log. Bearings go out as compass bearings and speeds
+   * in knots; the HUD diffs and throttles its own writes, so this is called
+   * every frame.
+   */
+  private updateHudNav(): void {
+    this.camera.getWorldDirection(_hudView);
+    // The spectrum's wind direction is the way the sea runs, so the wind
+    // blows *from* the opposite bearing.
+    const windAngle = getPreset(this.state.preset).sea.windDirection;
+    const windTo = compassBearing(Math.cos(windAngle), Math.sin(windAngle));
+    const atHelm = this.state.cameraMode === 'boat' && (this.shipControls?.isEnabled ?? false);
+    const ship = atHelm ? this.shipControls?.getState(this.shipStateOut) ?? null : null;
+    this.hud.setNav({
+      headingDeg: compassBearing(_hudView.x, _hudView.z),
+      windFromDeg: windTo + 180,
+      windKnots: this.state.windSpeed * MS_TO_KNOTS,
+      shipHeadingDeg: ship ? compassBearing(Math.cos(ship.heading), Math.sin(ship.heading)) : null,
+      shipKnots: ship ? ship.speed * MS_TO_KNOTS : null,
+    });
   }
 
   private buildUi(): void {
@@ -2223,6 +2339,24 @@ class App {
     this.clouds.update(dt);
     this.weather.update(dt, this.camera.position);
 
+    // Lightning, in heavy weather only, and never while a capture owns the
+    // clock — a baseline must not depend on whether a strike happened to land.
+    {
+      const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
+      const wind = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
+      this.lightning.setCloudBase(getPreset(this.state.preset).clouds.altitude ?? 900);
+      const strike = this.lightning.update(
+        dt,
+        this.camera,
+        coverage * wind,
+        !this.captureOwnsClock && this.director.submersion() < 0.5,
+      );
+      if (strike) {
+        this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+      }
+      this.colorGrade.setFlash(this.lightning.flashIntensity);
+    }
+
     // The key light, whichever body is providing it, at its actual strength.
     //
     // This used to be the sun direction, the sun colour and a hardcoded
@@ -2264,19 +2398,27 @@ class App {
     );
     // Everything the haze has to agree with, from the same atmosphere the dome
     // and the water read. Uniform writes; no rebuild.
+    //
+    // Under an overcast the light the haze scatters toward the eye is the
+    // deck's grey, not the clear-sky blue the CPU-side horizon and zenith still
+    // describe. Fed raw, a kilometre of storm haze repainted the dark cloud base
+    // in clear-sky blue and the storm read as a fine evening.
+    const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
+    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(fogPreset.color, overcastPull);
+    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(fogPreset.color, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
       fogPreset.color,
       hazeDensity,
-      this.atmosphere.horizonColor,
-      this.atmosphere.zenithColor,
+      _hazeHorizon,
+      _hazeZenith,
       this.atmosphere.sunDirection,
       this.atmosphere.sunColor,
     );
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
-    this.clouds.setSkyColors(this.atmosphere.zenithColor);
+    this.clouds.setSkyColors(_hazeZenith);
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -2347,6 +2489,7 @@ class App {
     const submersion = this.director.submersion();
     const surface = this.sampler.height(this.camera.position.x, this.camera.position.z);
     const preset = getPreset(this.state.preset);
+    this.water.setEyeSubmerged(this.camera.position.y < surface);
 
     this.underwater.setParams({
       submersion,
@@ -2416,7 +2559,9 @@ class App {
     // anchor the flare where the sun is not, and paint it warm on a blue moon.
     // `_keyDirection` is already derived from `sunLight.position` further up, so
     // it follows the retarget; the colour has to come from the same object.
-    this.lensFlare.setSource(_keyDirection, key.color, key.intensity / 3.4);
+    // A deck thick enough to call an overcast leaves no disc to flare on.
+    const flareThrough = 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.97;
+    this.lensFlare.setSource(_keyDirection, key.color, (key.intensity / 3.4) * flareThrough);
     this.lensFlare.setSubmersion(submersion);
 
     this.lensRain.setSubmersion(submersion);
@@ -2491,6 +2636,7 @@ class App {
     this.water.setFoamCenter(this.wake.centerX, this.wake.centerZ);
 
     this.hud.setFps(this.loop.stats.fps);
+    this.updateHudNav();
 
     // The line, when the viewer takes the helm in weather. Driven from `elapsed`
     // rather than a wall clock so a deterministic rewind puts it back where it
@@ -2622,6 +2768,8 @@ class App {
          */
         reflections: this.reflections,
         ssr: this.ssr,
+        /** Storm lightning, so a test can wait for a strike. */
+        lightning: this.lightning,
         sampler: this.sampler,
         atmosphere: this.atmosphere,
         /**
@@ -2659,6 +2807,16 @@ class App {
          * models arrived, so a harness can distinguish "still loading" from
          * "loaded, and the ship legitimately is not there".
          */
+        /**
+         * The gameplay-facing HUD surfaces: toasts, the objective scroll and
+         * the score plaque. See `Hud` for the signatures.
+         */
+        ui: {
+          toast: (...args: Parameters<Hud['toast']>) => this.hud.toast(...args),
+          setObjective: (...args: Parameters<Hud['setObjective']>) => this.hud.setObjective(...args),
+          setScore: (...args: Parameters<Hud['setScore']>) => this.hud.setScore(...args),
+          clearScore: (...args: Parameters<Hud['clearScore']>) => this.hud.clearScore(...args),
+        },
         isReady: () =>
           this.sceneContentLoaded && this.sampler.ready && this.loop.stats.frameMs > 0,
         sceneContentLoaded: () => this.sceneContentLoaded,

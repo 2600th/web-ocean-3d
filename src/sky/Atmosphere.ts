@@ -557,6 +557,11 @@ export class Atmosphere {
    * Approximate on purpose: an exact answer means sampling the dome, and the
    * horizon is precisely where a single sample is least representative.
    */
+  /** How far toward flat overcast light the sky is pulled, 0..1. */
+  get overcast(): number {
+    return this.uOvercast.value as number;
+  }
+
   get zenithColor(): THREE.Color {
     return this._zenithColor;
   }
@@ -810,7 +815,12 @@ export class Atmosphere {
     // cloud layer, and that one feature was most of why the frame read as a hazy
     // morning rather than as weather. What survives a real overcast is a diffuse
     // brightening around the sun's bearing, which the Mie term already supplies.
-    this.uSunDiscVisible.value = 1 - overcast;
+    //
+    // And it has to go to *zero*, not to 12 %: at 19000x, an eighth of the disc
+    // is still two thousand times the sky, and it read as a full moon hanging in
+    // a storm. Gone by three-quarters overcast, eased on the way.
+    const clear = Math.max(0, 1 - overcast / 0.75);
+    this.uSunDiscVisible.value = clear * clear;
 
     this.nightAmount = Math.min(1, Math.max(0, p.nightIntensity));
     const night = this.nightAmount;

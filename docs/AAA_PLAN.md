@@ -31,6 +31,24 @@ reinventing it.
    grey sand.
 5. **19 MB of HDRIs ship and are referenced by nothing.** Total payload 90 MB.
 
+## Feature bar: Three.js Water Pro v3.5 — match, then exceed
+
+| Water Pro feature | Us before this pass | Action |
+|---|---|---|
+| FFT waves, physical units | 3-cascade JONSWAP + Hasselmann spreading | — |
+| Depth absorption, refraction, SSR | Beer–Lambert per channel, depth refraction, SSR over planar | — |
+| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks |
+| Foam around objects | **missing** | **done** — depth-intersection contact foam on anything piercing the surface |
+| Caustics on floor | animated caustics + world-space god rays | — (chromatic dispersion deferred: scalar field shared by four consumers) |
+| Interacting wakes | Kelvin wake that displaces the surface | — |
+| GPU buoyancy, multi-point | 4-probe solver on CPU sampler | — |
+| Underwater + waterline | per-pixel waterline, Snell's window, TIR | — |
+| Infinite water, LOD | camera-centred radial grid to 24 km | — |
+| 8 presets, quality levels, determinism | 9 presets, 5 tiers + adaptive, deterministic hooks | — |
+| Hull masking | not needed at this freeboard — checked from deck height in a 21 m/s storm, no water inside the hull | revisit if a low-freeboard boat is added |
+| WebGL fallback | same TSL source on WebGL2 | — |
+| *Beyond:* | | **done:** TRAA, crest glow, lightning + thunder, overcast-correct haze, cumulus erosion. In progress: procedural island + world, game loop, payload cut |
+
 ## Task list
 
 ### A. Load time and payload (asset agent)
@@ -48,17 +66,20 @@ reinventing it.
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky
-- [ ] Slope-variance glitter + grazing fixes (web-ocean)
-- [ ] Crest sharpening + roughness-capped Fresnel (NeuralSpecOcean)
-- [ ] Painterly-saturated, Sea-of-Thieves-inspired water palette: emerald SSS on crests, deep teal body
-- [ ] TRAA temporal anti-aliasing
-- [ ] DOF focus fix (no smeared sky)
+- [x] Grazing fix: topside normals bent toward the viewer (web-ocean) — and the underside branch no longer fires on them, which was the brown-blotch defect
+- [ ] Slope-variance (LEAN) glitter — deferred: needs second-moment FFT outputs; current specular AA holds
+- [ ] Crest sharpening — deferred: the CPU buoyancy sampler would have to apply the same warp
+- [x] Stylised-real water: crest glow term, Tropical extinction re-cut, Tropical made the default look
+- [x] TRAA temporal anti-aliasing (replaces 4x MSAA on the scene pass; ocean writes world-space velocity)
+- [x] Soft sky/sea: not DOF (measured) — clouds re-shaped, clouds removed from the planar mirror, reflection mip cap lowered
+- [x] Storm: re-graded, lightning + thunder, overcast-correct haze, sun disc hidden under the deck
+- [x] Contact foam (Water Pro parity)
 - [ ] Upgrade three r185 → r187
 
 ### D. UI and design language (UI agent)
-- [ ] Original nautical-adventure UI inspired by Sea of Thieves: parchment, brass, ink, hand-drawn map frames
-- [ ] Boot/start gate as a ship's-log page; HUD compass + wind + speed in knots
-- [ ] Mobile layout, reduced-motion honoured, `src/ui` stays three-free
+- [x] Original nautical-adventure UI inspired by Sea of Thieves: parchment, brass, ink, hand-drawn map frames
+- [x] Boot/start gate as a ship's-log page; HUD compass + wind + speed in knots
+- [x] Mobile layout, reduced-motion honoured, `src/ui` stays three-free
 
 ### E. Gameplay and feel (gameplay agent)
 - [x] A light loop: floating loot to collect under sail, objective marker and compass bearing (`src/gameplay`)

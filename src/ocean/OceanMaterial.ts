@@ -39,6 +39,8 @@ export interface WaterAppearance {
   extinction: THREE.Vector3;
   /** Strength of the subsurface glow on backlit crests. */
   scatterStrength: number;
+  /** View-independent translucency of thin crest water, 0 disables. */
+  crestGlow: number;
   /** Base roughness of the microfacet surface. */
   roughness: number;
   /** Jacobian value at which foam starts to appear. Lower = less foam. */
@@ -54,6 +56,7 @@ export const DEFAULT_APPEARANCE: WaterAppearance = {
   foamColor: new THREE.Color(0xeff8ff),
   extinction: new THREE.Vector3(0.34, 0.11, 0.07),
   scatterStrength: 1.0,
+  crestGlow: 0.55,
   roughness: 0.075,
   // Deeper folding required than the naive "J < 1" test: the swell cascade marks
   // broad areas as mildly folded, and treating all of that as whitecap covers a
@@ -396,6 +399,8 @@ export class OceanMaterial {
   private readonly uFoamColor = uniform(new THREE.Color(DEFAULT_APPEARANCE.foamColor));
   private readonly uExtinction = uniform(new THREE.Vector3().copy(DEFAULT_APPEARANCE.extinction));
   private readonly uScatterStrength = uniform(DEFAULT_APPEARANCE.scatterStrength);
+  /** Strength of the view-independent crest translucency. */
+  private readonly uCrestGlow = uniform(DEFAULT_APPEARANCE.crestGlow);
   private readonly uRoughness = uniform(DEFAULT_APPEARANCE.roughness);
   /**
    * Unit wind vector in world XZ, and the slope-variance ratio across it.
@@ -483,6 +488,12 @@ export class OceanMaterial {
   private readonly uRainTime = uniform(0);
 
   /** How much of the planar reflection reaches the surface, 0..1. */
+  /**
+   * 1 when the eye is below the surface, 0 above. Decides which side of the
+   * interface is being shaded — see the topside normal fix below for why the
+   * shading normal must not decide it.
+   */
+  private readonly uEyeSubmerged = uniform(0);
   private readonly uReflectionAmount = uniform(1);
   /** Screen-space offset applied to the reflection lookup, at unit distance. */
   private readonly uReflectionDistortion = uniform(0.09);
@@ -563,6 +574,7 @@ export class OceanMaterial {
     if (a.foamColor) (this.uFoamColor.value as THREE.Color).copy(a.foamColor);
     if (a.extinction) (this.uExtinction.value as THREE.Vector3).copy(a.extinction);
     if (a.scatterStrength !== undefined) this.uScatterStrength.value = a.scatterStrength;
+    if (a.crestGlow !== undefined) this.uCrestGlow.value = a.crestGlow;
     if (a.roughness !== undefined) this.uRoughness.value = a.roughness;
     if (a.foamThreshold !== undefined) this.uFoamThreshold.value = a.foamThreshold;
     if (a.foamSoftness !== undefined) this.uFoamSoftness.value = a.foamSoftness;
@@ -647,6 +659,11 @@ export class OceanMaterial {
   }
 
   /** Per-tier reflection strength. No effect when built without a reflection. */
+  /** Whether the eye is under water; selects topside or underside shading. */
+  setEyeSubmerged(submerged: boolean): void {
+    this.uEyeSubmerged.value = submerged ? 1 : 0;
+  }
+
   setReflection(amount: number, distortion = 0.09): void {
     this.uReflectionAmount.value = Math.max(0, Math.min(1, amount));
     this.uReflectionDistortion.value = Math.max(0, distortion);
@@ -973,6 +990,21 @@ export class OceanMaterial {
       const flatten = viewDistance.smoothstep(2500, 9000).clamp(0, 1).toVar();
       const n = normalize(mix(normal, vec3(0, 1, 0), flatten)).toVar();
 
+      // A topside normal that faces away from the eye is not a surface the eye
+      // can see: at grazing angles the facet that would face away is hidden
+      // behind the crest in front of it, and the pixel is actually showing the
+      // facets that face the viewer (Noniv/web-ocean, MIT, ocean.js:183-198, does
+      // the same). Left alone, `n . v < 0` sent ordinary topside pixels down the
+      // *underside* branch below — Snell's window and TIR on water seen from
+      // above — which painted flat, hard-edged brown blotches over every
+      // gallery frame. Bend such normals back to just facing the viewer.
+      If(this.uEyeSubmerged.lessThan(0.5), () => {
+        const facing = n.dot(viewDir).toVar();
+        If(facing.lessThan(0.06), () => {
+          n.assign(normalize(n.add(viewDir.mul(float(0.06).sub(facing)))));
+        });
+      });
+
       const nDotV = n.dot(viewDir).clamp(1e-3, 1).toVar();
 
       // --- Fresnel (Schlick), F0 for an air/water interface ------------------
@@ -1058,6 +1090,15 @@ export class OceanMaterial {
       // it made the water's density flicker with the ripples.
       const axialToRay: any = float(1).div(viewDir.dot(this.uCameraForward).abs().max(0.15));
       const bufferThickness: any = backdropZ
+        .sub(surfaceZ)
+        .max(0)
+        .mul(this.uDepthRange)
+        .mul(axialToRay)
+        .toVar();
+      // Water between the surface and whatever is *directly* behind it, before
+      // refraction moved the lookup. Contact foam is about where an object
+      // pierces this pixel's surface, so it must not follow the refracted ray.
+      const straightThickness: any = straightZ
         .sub(surfaceZ)
         .max(0)
         .mul(this.uDepthRange)
@@ -1185,6 +1226,27 @@ export class OceanMaterial {
         )
         .toVar();
 
+      // Crest glow: the light a wave's upper third carries *sideways* to the eye
+      // whatever the sun is doing. The phase lobe above only fires looking into
+      // the sun, so a front-lit or cross-lit sea had no translucency at all and
+      // every crest was the same opaque blue as the trough below it — which is
+      // what made the open sea read as a flat lagoon. Thin water near the crest
+      // scatters skylight and refracted sunlight toward a viewer looking across
+      // it, strongest at grazing view (longer path through the thin part) and
+      // more so when backlit. This is the term stylised-real game oceans lean on
+      // for their emerald crests; here it is driven by the same crest height and
+      // thinness the physical term uses, so it scales with the sea state.
+      const crest = heightAboveMean.mul(heightAboveMean).toVar();
+      const across = float(1).sub(viewDir.y.abs()).clamp(0, 1).toVar();
+      scatter.addAssign(
+        (this.uScatterColor as any)
+          .mul(crest)
+          .mul(across.mul(0.6).add(0.4))
+          .mul(awayFromSun.mul(0.6).add(0.4))
+          .mul(this.uCrestGlow)
+          .mul(this.uLightLevel.min(1.2)),
+      );
+
       // --- reflection ----------------------------------------------------------
       // The analytic sky gradient is kept as the base layer, not replaced. It is
       // what fills the horizon, where a planar reflection has nothing to offer
@@ -1225,7 +1287,7 @@ export class OceanMaterial {
         const reflectionLod = this.uRoughness
           .mul(12)
           .add(viewDistance.mul(0.004))
-          .clamp(0, 2)
+          .clamp(0, 1.25)
           .toVar();
         const mirrored = planar.sample(viewportSafeUV(rawUv)).level(reflectionLod).toVar();
 
@@ -1836,7 +1898,38 @@ export class OceanMaterial {
         );
       }
 
-      const foamMask = accumulated.max(crestFoam.mul(buffered.oneMinus())).max(surf).toVar();
+      // --- contact foam ------------------------------------------------------
+      //
+      // Foam where something pierces the surface: the hull's waterline, a buoy,
+      // a pier pile, a rock. Water churns and traps air against anything it
+      // moves past, so every real object at sea wears a ring of white. Measured
+      // from the depth buffer — the water column directly behind this pixel —
+      // rather than from any list of objects, so every prop gets it for free.
+      //
+      // Seabed contact is excluded where the heightfield explains the depth:
+      // that is the shore break's job, and treating a whole shallow lagoon as an
+      // "object" would foam it edge to edge. Faded with distance because depth
+      // precision and the mask's footprint both run out past a couple of
+      // hundred metres.
+      const contactBand = smoothstepDownClamped(straightThickness, 0.04, 0.85).toVar();
+      const notSeabed: any = (
+        floorDepth === null
+          ? float(1)
+          : floorDepth(worldPos).max(0).sub(straightThickness).smoothstep(0.35, 1.2)
+      ).toVar();
+      const contactReach = smoothstepDownClamped(viewDistance, 120, 260).toVar();
+      const contactFoam = contactBand
+        .mul(notSeabed)
+        .mul(contactReach)
+        .mul(breakup.mul(1.3).add(perturb.mul(0.8)).add(0.25).clamp(0, 1))
+        .smoothstep(0.18, 0.62)
+        .toVar();
+
+      const foamMask = accumulated
+        .max(crestFoam.mul(buffered.oneMinus()))
+        .max(surf)
+        .max(contactFoam)
+        .toVar();
 
       // Foam is lit, not painted.
       //
@@ -1898,7 +1991,7 @@ export class OceanMaterial {
       // face". It is coherent over large regions of the screen, so the cost above
       // water is a compare.
       const facingSign = n.dot(viewDir).toVar();
-      If(facingSign.lessThan(0), () => {
+      If(facingSign.lessThan(0).and(this.uEyeSubmerged.greaterThan(0.5)), () => {
         const cosI = facingSign.abs().clamp(0, 1).toVar();
 
         // Snell: sin(t) = ior * sin(i). Past sin(t) = 1 there is no transmitted

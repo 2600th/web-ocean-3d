@@ -275,31 +275,31 @@ Some slugs floated during planning do not exist on Poly Haven. Verified against
 
 ### Typefaces (`public/fonts/`)
 
-Both are self-hosted rather than linked from a font CDN. That is a privacy and a
-performance decision in equal parts: a CDN link discloses every visitor to a third
-party, and it puts a DNS lookup plus a connection in front of the first painted
-frame — which here is the boot overlay, whose entire job is to appear immediately.
+All three are self-hosted rather than linked from a font CDN. That is a privacy
+and a performance decision in equal parts: a CDN link discloses every visitor to
+a third party, and it puts a DNS lookup plus a connection in front of the first
+painted frame — which here is the boot chart, whose entire job is to appear
+immediately.
 
-Both are **SIL Open Font License 1.1**, which permits bundling and redistribution
-in a build. The OFL requires that the fonts not be sold on their own and that any
-*modified* version be renamed; neither file is modified.
+All three are **SIL Open Font License 1.1**, which permits bundling and
+redistribution in a build. The OFL requires that the fonts not be sold on their
+own and that any *modified* version be renamed; no file is modified. Each is the
+Latin subset exactly as Google Fonts serves it to a modern browser.
 
 | File | Family | Author | Licence | Source |
 | --- | --- | --- | --- | --- |
-| `bodoni-moda.woff2` | Bodoni Moda roman (variable, 6–96 opsz / 400–900 wght) | Owen Earl / indestructible type* | OFL-1.1 | https://fonts.google.com/specimen/Bodoni+Moda |
-| `bodoni-moda-italic.woff2` | Bodoni Moda **italic** (same axes) | Owen Earl / indestructible type* | OFL-1.1 | https://fonts.google.com/specimen/Bodoni+Moda |
-| `bitter.woff2` | Bitter roman (variable, 300–800 wght) | Sol Matas, Huerta Tipográfica | OFL-1.1 | https://fonts.google.com/specimen/Bitter |
-| `bitter-italic.woff2` | Bitter **italic** (same axis) | Sol Matas, Huerta Tipográfica | OFL-1.1 | https://fonts.google.com/specimen/Bitter |
+| `pirata-one.woff2` | Pirata One (display: names and headings) | Rodrigo Fuenzalida, Nicolás Massi | OFL-1.1 | https://fonts.google.com/specimen/Pirata+One |
+| `alegreya.woff2` | Alegreya roman (variable, 400–900 wght; instrument: labels and figures) | Juan Pablo del Peral, Huerta Tipográfica | OFL-1.1 | https://fonts.google.com/specimen/Alegreya |
+| `im-fell-english-italic.woff2` | IM FELL English **italic** (voice: the storm quote only) | Igino Marini (revival of the Fell types) | OFL-1.1 | https://fonts.google.com/specimen/IM+Fell+English |
 
-Latin subsets only, as served by Google Fonts to a modern browser: 46, 54, 34 and
-33 KB — 167 KB in total, against an 886 KB three.js chunk.
+9, 43 and 58 KB — 110 KB in total. The two faces in the first frame are
+preloaded from `index.html`; the voice face speaks once, at the helm in a
+storm, so the stylesheet is left to discover it.
 
-The italics are shipped rather than synthesised, and that is not completeness for
-its own sake. Declaring only a roman does not disable italic; it makes the
-browser shear the upright letterforms instead. A real Bodoni italic is a
-different alphabet — single-storey `a`, entry and exit strokes, a narrower fit —
-and none of that survives a skew. See `DESIGN.md` for why these two families and
-what each one is for.
+No italic is shipped for Alegreya and none is set: `font-synthesis: none` on
+the document means a stray `font-style: italic` renders upright rather than as
+a sheared roman. See `DESIGN.md` for why these three families and what each one
+is for.
 
 ## Software dependencies
 
