@@ -6,11 +6,11 @@
  * free to echo values back with {@link Panel.setState} (which never re-fires the
  * callbacks, so it is safe to call from inside a change handler).
  *
- * Four sections, in the order a visitor reaches for them: the *look* (preset
- * cards and quality), the sea and sky (the sliders that change the render), the
- * cabin (volume, music and resolution), and — folded away, because they are the
- * author's instruments rather than the visitor's — the shipwright's debug
- * toggles. The ledger folds to its title on desktop and is a bottom sheet under
+ * Sections, in the order a visitor reaches for them: the *look* (preset cards
+ * and quality), weather and water (the sliders that change the render), sound
+ * and screen (volume, music and sharpness), then two folds: the shipwright's
+ * debug toggles, which are the author's instruments rather than the visitor's,
+ * and "About the tech", where the jargon kept out of every label lives. The ledger folds to its title on desktop and is a bottom sheet under
  * 900px.
  *
  * Presets and quality are native radio inputs styled as cards and plaques, so
@@ -45,6 +45,8 @@ type ToggleKey = 'buoyancyProbes' | 'wakeProbes' | 'forceWebGL';
 interface SliderSpec {
   readonly key: SliderKey;
   readonly label: string;
+  /** What moving it does, in words that need no graphics knowledge. Tooltip. */
+  readonly tip: string;
   readonly min: number;
   readonly max: number;
   readonly step: number;
@@ -79,6 +81,7 @@ const SLIDERS: readonly SliderSpec[] = [
   {
     key: 'windSpeed',
     label: 'Wind',
+    tip: 'How hard it blows. More wind raises bigger seas and more whitecaps',
     min: 0.5,
     max: 25,
     step: 0.5,
@@ -89,6 +92,7 @@ const SLIDERS: readonly SliderSpec[] = [
   {
     key: 'peakWavelength',
     label: 'Swell length',
+    tip: 'Distance between the big waves. Long swell rolls; short swell chops',
     min: 10,
     max: 150,
     step: 1,
@@ -96,7 +100,8 @@ const SLIDERS: readonly SliderSpec[] = [
   },
   {
     key: 'cloudCoverage',
-    label: 'Cloud',
+    label: 'Cloud cover',
+    tip: 'How much of the sky is cloud',
     min: 0,
     max: 1,
     step: 0.01,
@@ -105,6 +110,7 @@ const SLIDERS: readonly SliderSpec[] = [
   {
     key: 'fogDensity',
     label: 'Sea fog',
+    tip: 'Haze over the water. Clear shows the far horizon',
     min: 0,
     max: 1,
     step: 0.01,
@@ -112,7 +118,8 @@ const SLIDERS: readonly SliderSpec[] = [
   },
   {
     key: 'timeOfDay',
-    label: 'Hour',
+    label: 'Time of day',
+    tip: 'Moves the sun, or the moon. Each look keeps its own hour until you move this',
     min: 0,
     max: 24,
     step: 0.1,
@@ -125,6 +132,7 @@ const SLIDERS: readonly SliderSpec[] = [
   {
     key: 'volume',
     label: 'Volume',
+    tip: 'Everything you hear: sea, ship, gulls and music',
     min: 0,
     max: 1,
     step: 0.01,
@@ -133,6 +141,7 @@ const SLIDERS: readonly SliderSpec[] = [
   {
     key: 'musicVolume',
     label: 'Music',
+    tip: 'The score, under the sea and the ship. Zero turns it off',
     min: 0,
     max: 1,
     step: 0.01,
@@ -140,7 +149,8 @@ const SLIDERS: readonly SliderSpec[] = [
   },
   {
     key: 'pixelRatio',
-    label: 'Resolution',
+    label: 'Sharpness',
+    tip: 'How many pixels are drawn. Lower runs smoother on a slow device; higher is crisper',
     min: 0.5,
     max: 2,
     step: 0.05,
@@ -149,9 +159,25 @@ const SLIDERS: readonly SliderSpec[] = [
 ];
 
 const TOGGLES: readonly { key: ToggleKey; label: string }[] = [
-  { key: 'buoyancyProbes', label: 'Buoyancy probes' },
-  { key: 'wakeProbes', label: 'Wake probes' },
-  { key: 'forceWebGL', label: 'Force WebGL2' },
+  { key: 'buoyancyProbes', label: 'Show where the hull floats' },
+  { key: 'wakeProbes', label: 'Show where the wake is sampled' },
+  { key: 'forceWebGL', label: 'Draw with WebGL2' },
+];
+
+/**
+ * "About the tech": the jargon, kept out of every label and collected here
+ * for the visitor who wants it. Each line says the plain thing first and
+ * names the technique after it. The README carries the long version.
+ */
+const ABOUT_TECH: readonly string[] = [
+  'Every wave is worked out live on your graphics card, every frame: swell, chop and ripple, '
+    + 'summed by a fast Fourier transform (FFT) from a measured ocean-wave spectrum (JONSWAP).',
+  'Whitecaps form only where the surface really folds over, read from the wave field itself.',
+  'The ship floats on the same waves you see: points along her hull sample the water and the '
+    + 'forces are solved each step.',
+  'Edges are smoothed over several frames (temporal anti-aliasing, TRAA), which is what keeps '
+    + 'the sun glitter from sparkling.',
+  'One set of shaders runs on WebGPU, and on WebGL2 where WebGPU is not available.',
 ];
 
 const QUALITY_LABELS: Record<QualityTier, string> = {
@@ -161,6 +187,9 @@ const QUALITY_LABELS: Record<QualityTier, string> = {
   ultra: 'Ultra',
   max: 'Max',
 };
+
+const QUALITY_TIP =
+  'How much detail to draw. Lower runs smoother; if frames drop for a while, the sea steps down a tier on its own';
 
 const QUALITY_NAMES: Record<QualityTier, string> = {
   low: 'Low',
@@ -300,6 +329,7 @@ export class Panel {
     const qualityField = el('div', 'field');
     const qualityLabel = el('span', 'field__label', 'Quality');
     qualityLabel.id = `${uid}-quality-label`;
+    qualityField.title = QUALITY_TIP;
     const quality = el('div', 'plaques');
     quality.setAttribute('role', 'radiogroup');
     quality.setAttribute('aria-labelledby', qualityLabel.id);
@@ -322,13 +352,13 @@ export class Panel {
     look.append(qualityField);
 
     // ---- Sea & sky ---------------------------------------------------------
-    const seaSky = this.section(body, 'Sea & Sky');
+    const seaSky = this.section(body, 'Weather & Water');
     for (const key of SEA_SKY_SLIDERS) {
       this.buildSlider(seaSky, `${uid}-${key}`, sliderSpec(key));
     }
 
     // ---- Cabin -------------------------------------------------------------
-    const cabin = this.section(body, 'Cabin');
+    const cabin = this.section(body, 'Sound & Screen');
     for (const key of CABIN_SLIDERS) {
       this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
     }
@@ -343,9 +373,20 @@ export class Panel {
     }
     body.append(tools);
 
+    // ---- About the tech ----------------------------------------------------
+    // The same fold as the tools: the jargon is here for whoever opens it and
+    // out of the way of everyone else.
+    const about = el('details', 'ledger-tools ledger-about');
+    const aboutSummary = el('summary', 'ledger-tools__summary');
+    aboutSummary.append(el('span', undefined, 'About the tech'), icon('chevron', 'ledger-tools__chev'));
+    about.append(aboutSummary);
+    for (const line of ABOUT_TECH) about.append(el('p', 'ledger-about__line', line));
+    body.append(about);
+
     // ---- Actions -----------------------------------------------------------
     const actions = el('div', 'panel__actions');
     const source = el('a', 'btn btn--brass', 'View Source');
+    source.title = 'The code, on GitHub';
     source.href = SOURCE_URL;
     source.rel = 'noopener';
     source.target = '_blank';
@@ -460,6 +501,7 @@ export class Panel {
 
   private buildSlider(parent: HTMLElement, id: string, spec: SliderSpec): void {
     const field = el('div', 'field field--slider');
+    field.title = spec.tip;
     const row = el('div', 'field__row');
     const label = el('label', 'field__label', spec.label);
     label.htmlFor = id;

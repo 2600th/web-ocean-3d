@@ -4,10 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0B1A20" />
-    <title>Web Ocean 3D — Realtime WebGPU Ocean</title>
+    <title>Web Ocean 3D — Sail a Live Ocean in Your Browser</title>
     <meta
       name="description"
-      content="A realtime spectral ocean rendered with Three.js, WebGPU and TSL: FFT waves, physically based water lighting, caustics, foam, buoyancy and underwater transitions."
+      content="Take the helm of a square-rigger on a sea worked out live in your browser: sail an island's waters through a day and a squall, haul in drifting cargo, dive under the waves. Three.js, WebGPU and TSL."
     />
     <!--
       Preloaded, not merely linked. The display and instrument faces are both
@@ -41,7 +41,7 @@
         <div class="boot__sheet parchment">
           <div class="boot__inner">
             <h1 class="boot__title">Web Ocean <span class="boot__title-num">3D</span></h1>
-            <p class="boot__standfirst">A spectral sea, solved every frame</p>
+            <p class="boot__standfirst">A ship, an island, a sea raised live</p>
             <div class="boot__flourish" aria-hidden="true"><span></span></div>
             <div id="boot-gate" class="boot__gate"></div>
             <div id="boot-progress" class="boot__progress" hidden>
@@ -51,7 +51,9 @@
                 <span class="boot__port boot__port--to"></span>
                 <span class="boot__ship-track"><span class="boot__ship"></span></span>
               </div>
-              <p class="boot__status" id="boot-status" role="status">Initialising renderer</p>
+              <p class="boot__status" id="boot-status" role="status">Waking the graphics card</p>
+              <!-- A tip or a piece of the world for the wait; LoadingTips.ts rotates it. -->
+              <p class="boot__tip" id="boot-tip" aria-live="off" hidden></p>
               <!-- Shown by CSS only when the status carries the error class. -->
               <button id="boot-retry" class="btn btn--brass boot__retry" type="button">Try again</button>
             </div>

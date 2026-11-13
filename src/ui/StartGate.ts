@@ -1,4 +1,5 @@
 import { icon } from './icons.ts';
+import { startLoadingTips } from './LoadingTips.ts';
 import { MenuSea } from './MenuSea.ts';
 import {
   QUALITY_TIERS,
@@ -47,11 +48,20 @@ const QUALITY_LABELS: Record<QualityTier, string> = {
 
 /** What each tier costs, in a word a visitor can choose by. */
 const QUALITY_DETAILS: Record<QualityTier, string> = {
-  low: 'lightest',
+  low: 'smoothest',
   medium: 'balanced',
   high: 'rich',
   ultra: 'lavish',
   max: 'everything',
+};
+
+/** The same, as a sentence, for the plaque's tooltip. */
+const QUALITY_TIPS: Record<QualityTier, string> = {
+  low: 'Lightest on the device. For phones and older laptops',
+  medium: 'A good balance for most laptops',
+  high: 'Rich detail for a desktop graphics card',
+  ultra: 'Lavish. For a fast graphics card',
+  max: 'Everything at once. For the fastest graphics cards',
 };
 
 function isQualityTier(value: string | null): value is QualityTier {
@@ -123,16 +133,22 @@ function defaultSelection(probe: DeviceProbe): StoredSelection {
   return { backend: 'webgpu', quality: 'high' };
 }
 
+/**
+ * What the probe found, as a plain readout. Instrumentation, not voice: it
+ * says only what the browser reported, and says so when it reported nothing.
+ */
 function describeProbe(probe: DeviceProbe): string {
+  // `deviceMemory` is rounded and capped by the browser (8 GB in Chrome), so
+  // it is quoted as "at least".
   const memory = probe.deviceMemory === null
-    ? 'memory n/a'
-    : String(probe.deviceMemory) + ' GB RAM hint';
+    ? 'memory not reported'
+    : String(probe.deviceMemory) + ' GB+ memory';
   const cores = probe.hardwareConcurrency > 0
-    ? String(probe.hardwareConcurrency) + ' threads'
-    : 'threads n/a';
-  if (!probe.adapter) return 'WebGPU unavailable · WebGL2 ready · ' + cores + ' · ' + memory;
-  const vendor = probe.vendor || 'unreported adapter';
-  return 'WebGPU ' + vendor + ' · ' + cores + ' · ' + memory;
+    ? String(probe.hardwareConcurrency) + ' CPU threads'
+    : 'CPU not reported';
+  if (!probe.adapter) return 'No WebGPU · WebGL2 ready · ' + cores + ' · ' + memory;
+  const vendor = probe.vendor ? probe.vendor + ' graphics' : 'graphics not named';
+  return 'WebGPU on ' + vendor + ' · ' + cores + ' · ' + memory;
 }
 
 /**
@@ -146,6 +162,7 @@ function choiceButton(
   selected: boolean,
   onSelect: () => void,
   advised = false,
+  tip = '',
 ): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
@@ -153,6 +170,7 @@ function choiceButton(
   button.classList.toggle('is-selected', selected);
   button.setAttribute('aria-label', label);
   button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  if (tip) button.title = tip;
   const name = document.createElement('span');
   name.className = 'boot__choice-name';
   name.textContent = label;
@@ -186,6 +204,7 @@ function showProgress(root: HTMLElement): void {
   // The sheet shrinks from the menu to the loading chart; CSS animates the
   // change of content rather than cutting to it.
   root.classList.add('boot--loading');
+  startLoadingTips(root);
 }
 
 /**
@@ -217,7 +236,7 @@ function renderGate(
   const bar = root.querySelector<HTMLElement>('#boot-bar');
   gate.hidden = false;
   if (progress) progress.hidden = true;
-  if (status) status.textContent = 'Choose a profile';
+  if (status) status.textContent = 'Choose your settings';
   if (bar) bar.style.transform = 'scaleX(0)';
 
   let selectedBackend = initial.backend;
@@ -225,11 +244,11 @@ function renderGate(
 
   const intro = document.createElement('p');
   intro.className = 'boot__gate-intro';
-  intro.textContent = 'Choose how this device should render the sea. Both can be changed later from the ledger.';
+  intro.textContent = 'Choose how hard this device should work. The wax tag marks what suits it, and either can be changed later from the ledger.';
 
   const backendLabel = document.createElement('div');
   backendLabel.className = 'boot__gate-label';
-  backendLabel.textContent = 'Renderer';
+  backendLabel.textContent = 'Graphics';
   const backendGroup = document.createElement('div');
   backendGroup.className = 'boot__choices boot__choices--backend';
   backendGroup.setAttribute('role', 'group');
@@ -241,14 +260,16 @@ function renderGate(
   const webgpuAvailable = probe.adapter !== null;
   if (!webgpuAvailable) selectedBackend = 'webgl';
   const backendButtons = [
-    choiceButton('WebGPU', webgpuAvailable ? 'full fidelity' : 'unavailable', selectedBackend === 'webgpu', () => {
+    choiceButton('WebGPU', webgpuAvailable ? 'every effect' : 'not in this browser', selectedBackend === 'webgpu', () => {
       selectedBackend = 'webgpu';
       markSelected(backendButtons, 'WebGPU');
-    }, advised.backend === 'webgpu'),
-    choiceButton('WebGL2', 'compatibility', selectedBackend === 'webgl', () => {
+    }, advised.backend === 'webgpu', webgpuAvailable
+      ? 'The modern graphics path: reflections, the view into the water and rain on the lens'
+      : 'This browser does not offer WebGPU'),
+    choiceButton('WebGL2', 'runs anywhere', selectedBackend === 'webgl', () => {
       selectedBackend = 'webgl';
       markSelected(backendButtons, 'WebGL2');
-    }, advised.backend === 'webgl'),
+    }, advised.backend === 'webgl', 'The older graphics path: the same waves, with fewer effects'),
   ];
   backendGroup.append(...backendButtons);
   const webgpuButton = backendButtons[0];
@@ -264,8 +285,9 @@ function renderGate(
     notice.append(
       icon('warning', 'boot__notice-icon'),
       document.createTextNode(
-        'This browser does not offer WebGPU, so the sea will be drawn with WebGL2 — '
-          + 'the same waves, without planar reflections, refraction or lens rain.',
+        'This browser does not offer WebGPU, so the sea will be drawn with WebGL2: '
+          + 'the same waves, without mirror reflections, the view into the water or rain on the lens. '
+          + 'For the full sea, open this in a current Chrome, Edge or Safari.',
       ),
     );
   }
@@ -281,7 +303,7 @@ function renderGate(
     choiceButton(QUALITY_LABELS[tier], QUALITY_DETAILS[tier], selectedQuality === tier, () => {
       selectedQuality = tier;
       markSelected(qualityButtons, QUALITY_LABELS[tier]);
-    }, advised.quality === tier),
+    }, advised.quality === tier, QUALITY_TIPS[tier]),
   );
   qualityGroup.append(...qualityButtons);
 

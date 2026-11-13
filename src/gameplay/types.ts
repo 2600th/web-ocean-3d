@@ -19,7 +19,7 @@ export type ToastKind = 'info' | 'reward' | 'warning';
 export type SailSetting = 'furled' | 'half' | 'full';
 
 export interface GameObjective {
-  /** Short imperative line, e.g. "Recover the drifting cargo". */
+  /** Short imperative line, e.g. "Haul in the drifting cargo". */
   title: string;
   /** Secondary line: what the target is. */
   detail?: string;

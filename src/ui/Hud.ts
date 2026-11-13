@@ -19,6 +19,7 @@
  * opt back into hit-testing, so nothing here can swallow a camera drag.
  */
 
+import { Coach, type LessonId } from './Coach.ts';
 import { compassRose, icon, type IconName } from './icons.ts';
 import {
   CAMERA_MODES,
@@ -50,6 +51,14 @@ const MODE_DIGITS: Record<CameraMode, string> = {
   cinematic: '4',
 };
 
+/** What each mode is for, in a sentence a first-time visitor can choose by. Tab tooltips. */
+const MODE_TIPS: Record<CameraMode, string> = {
+  orbit: 'Circle the ship and the island',
+  fly: 'Fly anywhere, above the waves or under them',
+  boat: 'Take the wheel and sail her yourself',
+  cinematic: 'Sit back for a guided voyage through a day and a squall',
+};
+
 const MODE_ICONS: Record<CameraMode, IconName> = {
   orbit: 'orbit',
   fly: 'fly',
@@ -59,30 +68,29 @@ const MODE_ICONS: Record<CameraMode, IconName> = {
 
 const HINTS: Record<CameraMode, readonly Hint[]> = {
   orbit: [
-    { action: 'Orbit', key: 'Drag' },
-    { action: 'Pan', key: 'Right drag' },
+    { action: 'Look around', key: 'Drag' },
+    { action: 'Slide', key: 'Right drag' },
     { action: 'Zoom', key: 'Scroll' },
   ],
   fly: [
-    { action: 'Move', key: 'WASD' },
-    { action: 'Look', key: 'Mouse' },
-    { action: 'Speed', key: 'Scroll' },
+    { action: 'Fly', key: 'WASD' },
+    { action: 'Look', key: 'Click, then mouse' },
+    { action: 'Set speed', key: 'Scroll' },
     { action: 'Boost', key: 'Shift' },
   ],
   // W/S step the canvas (furled, half, full) and R lets go or weighs the
   // anchor — see `src/gameplay`.
   boat: [
-    { action: 'Sail', key: 'W S' },
+    { action: 'More or less sail', key: 'W S' },
     { action: 'Steer', key: 'A D' },
     { action: 'Anchor', key: 'R' },
     { action: 'Look', key: 'Drag' },
-    { action: 'Zoom', key: 'Scroll' },
   ],
   // Nothing to drive — the tour holds the wheel. The hint names what the viewer
   // *can* do, which is leave.
   cinematic: [
     { action: 'Take the helm', key: '3' },
-    { action: 'Free look', key: '2' },
+    { action: 'Fly free', key: '2' },
   ],
 };
 
@@ -278,6 +286,13 @@ export class Hud {
   private lastObjectiveWrite = 0;
   private shipHeading: number | null = null;
 
+  // first-minute lessons
+  private readonly coach: Coach;
+  /** The lesson the ribbon is showing, so a redraw happens only on a change. */
+  private shownLesson: LessonId | null = null;
+  /** Ship's head when the steering lesson went up; a real turn from it is the lesson done. */
+  private steerFrom: number | null = null;
+
   constructor(root: HTMLElement, initial: CameraMode, callbacks: UiCallbacks) {
     this.root = root;
     this.callbacks = callbacks;
@@ -386,7 +401,7 @@ export class Hud {
     windBlock.append(windFigure, windFromText, windForceText);
 
     const logBlock = el('div', 'reading reading--log');
-    logBlock.append(el('span', 'reading__label', 'Log'));
+    logBlock.append(el('span', 'reading__label', 'Speed'));
     const logFigure = el('span', 'reading__figure');
     const logKnotsText = el('span', 'reading__value', '0.0');
     logFigure.append(logKnotsText, el('span', 'reading__unit', 'kn'));
@@ -406,7 +421,8 @@ export class Hud {
       const button = el('button', 'tab');
       button.type = 'button';
       button.setAttribute('aria-pressed', mode === this.mode ? 'true' : 'false');
-      button.setAttribute('aria-label', `${MODE_LABELS[mode]} camera (key ${MODE_DIGITS[mode]})`);
+      button.setAttribute('aria-label', `${MODE_LABELS[mode]}: ${MODE_TIPS[mode]} (key ${MODE_DIGITS[mode]})`);
+      button.title = `${MODE_TIPS[mode]} (${MODE_DIGITS[mode]})`;
       button.classList.toggle('is-active', mode === this.mode);
       button.append(
         icon(MODE_ICONS[mode], 'tab__icon'),
@@ -459,6 +475,10 @@ export class Hud {
     this.scoreEl = scoreEl;
 
     this.objectiveMore = objectiveMore;
+    // Lessons are phrased for the hands in use: a phone has no W key.
+    this.coach = new Coach(
+      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches,
+    );
     this.renderHints(this.mode);
     this.root.append(hud);
     this.measureCompass();
@@ -523,7 +543,9 @@ export class Hud {
     this.backendBadge.classList.toggle('is-fallback', fallback);
     this.backendBadge.setAttribute(
       'aria-label',
-      fallback ? 'Renderer backend: WebGL2 fallback, reduced effects' : 'Renderer backend: WebGPU',
+      fallback
+        ? 'Drawn with WebGL2, because WebGPU is not available: no mirror reflections, no view into the water, no rain on the lens'
+        : 'Drawn with WebGPU: every effect on',
     );
   }
 
@@ -575,6 +597,7 @@ export class Hud {
 
     // Ship mark and log appear only while the viewer has the helm.
     this.shipHeading = nav.shipHeadingDeg === null ? null : wrap360(nav.shipHeadingDeg);
+    this.noteHelmProgress(nav.shipKnots);
     this.placeMark(this.shipMark, this.shipHeading);
     // News worth waking for: the wind changing (a new preset) or the ship
     // gaining or losing real way.
@@ -691,6 +714,7 @@ export class Hud {
    */
   setScore(label: string, value: number | string): void {
     if (this.disposed) return;
+    this.noteScore(label, value);
     const text = typeof value === 'number' ? value.toLocaleString('en-GB') : value;
     let entry = this.scoreRows.get(label);
     if (entry === undefined) {
@@ -734,6 +758,8 @@ export class Hud {
     this.mode = m;
     this.hudEl.dataset.mode = m;
     this.root.dataset.mode = m;
+    if (m === 'boat') this.coach.learn('helm');
+    this.steerFrom = null;
     this.wake();
     this.showHints();
     for (const [mode, button] of this.modeButtons) {
@@ -786,6 +812,17 @@ export class Hud {
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
 
+    // The helm's orders, as lessons done. Pressing the key is knowing it; the
+    // gameplay layer carries out the order itself.
+    if (this.mode === 'boat') {
+      const lesson: LessonId | null =
+        event.code === 'KeyW' ? 'sail'
+          : event.code === 'KeyA' || event.code === 'KeyD' ? 'steer'
+            : event.code === 'KeyR' ? 'anchor'
+              : null;
+      if (lesson !== null) this.learn(lesson);
+    }
+
     const index = MODE_DIGITS_ORDER.indexOf(event.key);
     if (index < 0) return;
     const mode = CAMERA_MODES[index];
@@ -837,6 +874,7 @@ export class Hud {
     if (travel < DRAG_SLOP) return;
     this.dragging = true;
     this.root.classList.add('is-dragging');
+    this.learn('look');
   };
 
   private readonly onPointerUp = (): void => {
@@ -851,7 +889,46 @@ export class Hud {
   private showHints(): void {
     this.hudEl.classList.add('hud--hints');
     window.clearTimeout(this.hintTimer);
-    this.hintTimer = window.setTimeout(() => this.hudEl.classList.remove('hud--hints'), HINT_MS);
+    this.hintTimer = window.setTimeout(() => {
+      // A lesson stays up until it is done; only the key list times out.
+      if (this.shownLesson === null) this.hudEl.classList.remove('hud--hints');
+    }, HINT_MS);
+  }
+
+  /** Marks a lesson done and moves the ribbon on to the next one. */
+  private learn(id: LessonId): void {
+    if (!this.coach.learn(id)) return;
+    this.renderHints(this.mode);
+    // The key list for the mode gets its usual few seconds once the last
+    // lesson that applies here is done.
+    if (this.shownLesson === null) this.showHints();
+  }
+
+  /** Score lines the host writes are also the evidence that an order was given. */
+  private noteScore(label: string, value: number | string): void {
+    if (label === 'Sails' && value !== 'Furled') this.learn('sail');
+    else if (label === 'Cargo' && typeof value === 'number' && value > 0) this.learn('cargo');
+    else if (label === 'Anchor') this.learn('anchor');
+  }
+
+  /**
+   * At the helm, the ship's own motion proves a lesson: way on her means the
+   * sail is set, and her head swung well round from where the steering lesson
+   * found it means she has been steered — the same proof for a keyboard and a
+   * thumb on the stick.
+   */
+  private noteHelmProgress(shipKnots: number | null): void {
+    if (shipKnots === null || this.shipHeading === null) {
+      this.steerFrom = null;
+      return;
+    }
+    if (Math.abs(shipKnots) > 2) this.learn('sail');
+    if (this.shownLesson !== 'steer') return;
+    if (this.steerFrom === null) {
+      this.steerFrom = this.shipHeading;
+    } else if (Math.abs(wrap180(this.shipHeading - this.steerFrom)) > 30) {
+      this.learn('steer');
+    }
   }
 
   private setObjectiveExpanded(expanded: boolean): void {
@@ -872,7 +949,20 @@ export class Hud {
   }
 
   private renderHints(mode: CameraMode): void {
+    const lesson = this.coach.current(mode);
+    this.shownLesson = lesson?.id ?? null;
     this.hintList.replaceChildren();
+    this.hintList.classList.toggle('is-coach', lesson !== null);
+    // A lesson is news a screen reader should hear; a key list is not.
+    this.hintList.setAttribute('aria-live', lesson !== null ? 'polite' : 'off');
+    if (lesson !== null) {
+      const row = el('li', 'hud-hints__item hud-hints__item--lesson');
+      if (lesson.key !== undefined) row.append(el('kbd', 'keycap', lesson.key));
+      row.append(el('span', 'hud-hints__action', lesson.text));
+      this.hintList.append(row);
+      this.hudEl.classList.add('hud--hints');
+      return;
+    }
     for (const hint of HINTS[mode]) {
       const row = el('li', 'hud-hints__item');
       row.append(el('kbd', 'keycap', hint.key), el('span', 'hud-hints__action', hint.action));

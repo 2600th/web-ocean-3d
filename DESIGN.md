@@ -209,10 +209,13 @@ Three families, three files, 110 KB, self-hosted (see ASSET_LICENSES.md).
   tabular-nums` (Alegreya's default figures are old-style, which is right for
   prose and wrong for a column that must not jitter) with a `ch` min-width
   behind them.
-- **IM Fell English italic** — the *voice*. The storm quote, and nothing else.
+- **IM Fell English italic** — the *authorial line*. The storm quote, and
+  nothing else.
 
-The voice/instrument split is the one binding brand commitment (PRODUCT.md):
-the quote must never read as one more readout. It used to be carried by Bodoni
+Player-facing copy has a voice (PRODUCT.md › Voice) and speaks it in Alegreya
+and Pirata One like everything else; readouts stay plain. The storm quote is
+the one line that is the author speaking, and its face is what says so: it
+must never read as one more toast or one more readout. It used to be carried by Bodoni
 against Bitter; it is now carried by a seventeenth-century italic against a
 calligraphic book face and a display blackletter, which is a bigger gap than
 before, not a smaller one.
@@ -309,7 +312,8 @@ bottom edge in their darker material, which `:active` removes.
   goes; a brass lubber at the top marks the view. Readings: knots, "from" the
   sixteen-point name, and the Beaufort force and name. The arrow accumulates
   its angle so a change across north turns the short way.
-- **Log** — speed through the water in knots, one decimal, only at the helm.
+- **Log** — labelled *Speed*: speed through the water in knots, one decimal,
+  only at the helm.
 - **Mode tabs** — wood buttons, the active one polished brass; icon, name in
   Pirata One, keycap digit. Keys 1–4 still drive them.
 - **Instrument corner** — the frame rate (green/amber/red, written at ~4 Hz,
@@ -326,22 +330,29 @@ bottom edge in their darker material, which `:active` removes.
 - **Score plaque** — `dl` rows of caps label and gold figure; a changed figure
   bumps once.
 - **Ledger** — sections *The Look* (preset cards painted as tiny sky-and-sea
-  vignettes, quality plaques), *Sea & Sky* (wind with knots, swell length,
-  cloud, sea fog, hour), *Cabin* (volume, resolution), and *Shipwright's
-  tools* folded in a `<details>` because the debug toggles are the author's,
-  not the visitor's. Presets and quality are native radios (arrow keys for
+  vignettes, quality plaques), *Weather & Water* (wind with knots, swell
+  length, cloud cover, sea fog, time of day), *Sound & Screen* (volume,
+  music, sharpness), *Shipwright's tools* folded in a `<details>` because the
+  debug toggles are the author's, not the visitor's, and *About the tech*,
+  folded the same way: the jargon kept out of every label, a sentence each.
+  Every slider and the quality field carry a plain-language tooltip. Presets and quality are native radios (arrow keys for
   free). Sliders are brass rails: an engraved groove filled with brass to the
   reading and a round brass knob. Toggles are an inked box ticked in wax.
 - **Start gate** — a chart sheet with rhumb lines and a rose watermark, the
   title in Pirata One with "3D" in wax, brass plaques for renderer and quality
-  with a wax "advised" tag from the device probe, and the Set Sail button.
+  with a wax "advised" tag from the device probe, a plain tooltip on every
+  plaque, and the Set Sail button.
   The sheet lies on the **menu sea** (below). Loading folds the choices away
   and sails an ink ship from a lighthouse to an island along a dotted course,
   inking the course in wax behind it, with a wet-ink glint running along the
-  line; the ship rides `--boot-progress`, the bar is `transform: scaleX()`.
-  States: *WebGPU unavailable* — the WebGPU plaque is disabled and captioned
-  "unavailable", WebGL2 is chosen, and a margin note with the hazard icon says
-  why; *failed* — the course greys where it stopped, the status turns wax red
+  line; the ship rides `--boot-progress` (never backwards), the bar is
+  `transform: scaleX()`. Under the stage line a second line rotates a tip or
+  a true piece of the world (`LoadingTips.ts`), each held 5.2s from when it
+  went up, faded unless motion is reduced. States: *WebGPU unavailable* — the
+  WebGPU plaque is disabled and captioned "not in this browser", WebGL2 is
+  chosen, and a margin note with the hazard icon says why and where to get the
+  full sea; *failed* — the course greys where it stopped, the status turns wax
+  red and says what to try, the error's own words sit under it in small ink,
   and a brass "Try again" reloads.
 - **Menu sea** (`MenuSea.ts`) — the gate's own living backdrop, painted on a
   2D canvas (never WebGL, so it costs the GPU nothing the real sea needs):
@@ -383,6 +394,16 @@ the view unless it has something to say. `Hud.ts` sets three things on
 Key hints are contextual: they appear with the first input after load and on
 every mode change, for seven seconds, then hide until the mode bar is hovered
 or focused. A tab changed from the keyboard pulses once (`is-arriving`).
+
+**First-minute lessons** (`Coach.ts`) use the same ribbon. Until a lesson is
+done the ribbon holds one line — look around, take the helm, set sail, steer,
+find the cargo, drop anchor, in that order, each in the modes where it makes
+sense — and stays up instead of timing out. Idle dims it to 62%, a camera
+drag to 22%. Doing the thing is what retires it (a drag, the mode, the key,
+the ship's own speed or swing, a score line), and what has been learned is
+kept in localStorage. On a phone in portrait the ribbon is otherwise hidden;
+a lesson shows in the left column above the wind plate, 186px at most, so it
+clears the sail orders and the stick. Landscape phones show none.
 
 ## Motion
 
