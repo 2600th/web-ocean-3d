@@ -102,8 +102,9 @@ reinventing it.
 - [ ] Underwater look: god rays, particulates, colour depth grading, caustics on life
 
 ### I. Sky, clouds and birds (sky agent)
-- [ ] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer
-- [ ] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks
+- [x] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer — clouds resolved by TRAA (own velocity), lit by the measured dome (no white deck at night/dusk), sunset underglow, storm base relief, 2D cirrus; twilight dome, milky way, 22° moon halo. Cost unchanged: cloud layer 2.7 ms at High / 1600x900, same as before the pass
+- [x] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks — M-wing flap/glide in the vertex stage, banking circuits round ship and island, soarers, five perched on the yards and taffrail that take off when she gets under way
+- [ ] Follow-ups: perched and close gulls read as white shapes (no feather/grey-back detail); storm deck is moody but low in structure toward the sun; bright sea horizon line at night is the water/haze, not the sky
 
 ### J. Audio and music (audio agent)
 - [x] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater/tour states, cargo sting, Music slider)
@@ -149,7 +150,7 @@ Audit each against what shipped AAA titles do, fix on evidence, measure cost per
 - [ ] **Shader hygiene:** no NaNs/fireflies, energy-conserving specular, consistent fog/aerial perspective on every material, shader-compile cost kept off the critical path
 
 ### Follow-ups found while merging
-- [ ] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent)
+- [x] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent) — fixed: the prewarm now compiles the frame's real contexts (scene pass target + TRAA MRT + velocity, pinned call depths, reflection), pipelines build in parallel, live frames never build a pipeline synchronously. Same session, High: `isReady` ~48 s → ~17 s, worst frame after ready ~1.8 s → <50 ms, loop start ~17 s → ~7 s.
 - [ ] Night/dusk clouds lit near-white against a black clear sky; dusk sea mirrors it pink (sky agent)
 - [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
 - [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget

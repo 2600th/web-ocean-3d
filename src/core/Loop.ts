@@ -11,9 +11,15 @@ export interface FrameStats {
  * Frame driver. Simulation receives a clamped delta so that a tab switch or a
  * long shader compile cannot teleport the ship across the ocean.
  */
+/**
+ * Draws one frame. `live` is true for the free-running frames `tick` draws and
+ * false for `step`'s deterministic ones, which must come out complete.
+ */
+export type RenderFn = (dt: number, elapsed: number, live: boolean) => void | Promise<void>;
+
 export class Loop {
   private readonly updates: Updatable[] = [];
-  private readonly renderFn: (dt: number, elapsed: number) => void | Promise<void>;
+  private readonly renderFn: RenderFn;
   private running = false;
   private paused = false;
   private last = 0;
@@ -38,7 +44,7 @@ export class Loop {
   private static readonly FPS_SMOOTHING = 0.1;
   private static readonly MAX_DELTA = 1 / 15;
 
-  constructor(renderFn: (dt: number, elapsed: number) => void | Promise<void>) {
+  constructor(renderFn: RenderFn) {
     this.renderFn = renderFn;
   }
 
@@ -148,7 +154,7 @@ export class Loop {
       for (const update of this.updates) update(dt, this.elapsed);
     }
     const started = performance.now();
-    await this.renderFn(dt, this.elapsed);
+    await this.renderFn(dt, this.elapsed, false);
     this.stats.frameMs = performance.now() - started;
   }
 
@@ -174,7 +180,7 @@ export class Loop {
     this.inFlight = true;
     const waiters = this.frameWaiters.splice(0);
     const started = performance.now();
-    const render = this.renderFn(dt, this.elapsed);
+    const render = this.renderFn(dt, this.elapsed, true);
     this.inFlightPromise = Promise.resolve(render).then(
       () => undefined,
       () => undefined,

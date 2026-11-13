@@ -186,9 +186,31 @@ const _creatureSun = new THREE.Color();
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
+/** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
+const _skyRadiance = new THREE.Color();
+const _skyHorizon = new THREE.Color();
+const _skySample = new THREE.Color();
+const _skyDirection = new THREE.Vector3();
 const _litFog = new THREE.Color();
 /** Rec. 709 luminance of a linear colour. */
 const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+
+/** The MRT node type `setMRT` takes; `null` clears it. */
+type SceneMRT = Parameters<THREE.WebGPURenderer['setMRT']>[0];
+
+/**
+ * The render-context call depths `installStableContexts` pins the scene's own
+ * passes to. Far above any depth the post chain reaches, so a pinned context
+ * never shares a key with an ordinary one.
+ */
+const PINNED_DEPTH = { scene: 1001, reflection: 1002, shadow: 1003 } as const;
+
+/**
+ * How long `compileForFrame` waits for the pipelines it started to land. The
+ * prewarm's own 30 s timeout is the one that normally bites first.
+ */
+const PIPELINE_SETTLE_MS = 30_000;
+
 
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
@@ -340,6 +362,18 @@ class App {
   /** This frame's *unjittered* view-projection; see the ocean's velocity. */
   private readonly currViewProjection = uniform(new THREE.Matrix4());
   private traaNode: unknown = null;
+  /** The scene pass the frame draws through; see `compileForFrame`. */
+  private scenePass: ReturnType<typeof pass> | null = null;
+  /** True while a live (loop-driven) frame renders; see `installAsyncPipelines`. */
+  private liveFrame = false;
+  /** Pipelines a live frame asked for that are still being built. */
+  private pendingPipelines = 0;
+  /** `compileForFrame` calls still running; see `installAsyncPipelines`. */
+  private compilesInFlight = 0;
+  /** Bumped when a compile's held state is released early; see `compileForFrame`. */
+  private compileGeneration = 0;
+  /** Restores the renderer state a running `compileForFrame` holds. */
+  private frameStateRelease: (() => void) | null = null;
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -875,11 +909,14 @@ class App {
     // a bandwidth saving that pays for most of the resolve.
     this.taaEnabled =
       this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    this.clouds.setTemporalJitter(this.taaEnabled);
     const scenePass = this.taaEnabled
       ? pass(this.scene, this.camera, { samples: 0 })
       : pass(this.scene, this.camera);
+    this.scenePass = scenePass;
     if (this.taaEnabled) {
       scenePass.setMRT(mrt({ output, velocity }));
+      this.clouds.setPreviousViewProjection(this.prevViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -1086,7 +1123,9 @@ class App {
     // anything back. It also left the deterministic capture path racing a render
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
-    this.loop = new Loop(() => this.renderFrame());
+    this.loop = new Loop((_dt, _elapsed, live) => this.renderFrame(live));
+    this.installAsyncPipelines();
+    this.installStableContexts();
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
@@ -1170,14 +1209,173 @@ class App {
    * needs. Both are read *outside* the render, where TRAA has not yet applied
    * (or has already cleared) its jitter.
    */
-  private async renderFrame(): Promise<void> {
+  private async renderFrame(live = false): Promise<void> {
     this.camera.updateMatrixWorld();
     this.currViewProjection.value.multiplyMatrices(
       this.camera.projectionMatrix,
       this.camera.matrixWorldInverse,
     );
-    await this.post.renderAsync();
+    this.liveFrame = live;
+    try {
+      await this.post.renderAsync();
+    } finally {
+      this.liveFrame = false;
+    }
     this.prevViewProjection.value.copy(this.currViewProjection.value);
+  }
+
+  /**
+   * Gives the scene pass, the reflection and the shadow map one render context
+   * each, whatever depth they are drawn at.
+   *
+   * three keys a render context on the target's format, the MRT and the
+   * renderer's call depth, and keys render objects on the context. The frame
+   * draws the scene pass five calls deep — inside the underwater, fog, TRAA and
+   * post passes — and the reflection and shadow map six; `compileAsync` asks
+   * for depth 0, and the renders it sets off from `updateBefore` for depth 1.
+   * So every render object the prewarm built belonged to a context no frame
+   * ever used, and the first frame to draw the content built them all again:
+   * measured on aaa-pass, a second and a half of node building on the main
+   * thread for the scene pass alone, plus a pipeline per instanced mesh, whose
+   * instance buffer is a new node with a new id in the WGSL every time.
+   *
+   * Depth is in the key so that a render nested inside another render into a
+   * target of the same format does not take over the outer one's context
+   * mid-pass. None of these three targets is ever drawn into from inside a
+   * render of itself, and each gets a depth of its own, so pinning them gives
+   * that up nowhere. Keyed on the targets themselves, so a change to the post
+   * chain that moves them deeper or shallower changes nothing here.
+   */
+  private installStableContexts(): void {
+    if (this.backend !== 'webgpu') return;
+    const contexts = (this.renderer as unknown as {
+      _renderContexts: { get(target: unknown, mrt?: unknown, depth?: number): unknown };
+    })._renderContexts;
+    const get = contexts.get.bind(contexts);
+    contexts.get = (target, mrtArg, depth) => {
+      if (target !== null && target !== undefined) {
+        if (target === this.scenePass?.renderTarget) {
+          return get(target, mrtArg, PINNED_DEPTH.scene);
+        }
+        if (this.reflections?.ownsTarget(target)) {
+          return get(target, mrtArg, PINNED_DEPTH.reflection);
+        }
+        if (target === this.atmosphere?.sunLight.shadow.map) {
+          return get(target, mrtArg, PINNED_DEPTH.shadow);
+        }
+      }
+      return get(target, mrtArg, depth);
+    };
+  }
+
+  /**
+   * Makes a live frame build any pipeline it is missing asynchronously, and
+   * skip that object until it is ready, rather than stopping to build it.
+   *
+   * The prewarm is meant to have built everything first, and with
+   * `compileForFrame` it builds the main pass. But the frame draws the scene
+   * more than once — the planar reflection renders it again from a mirrored
+   * camera into a target of its own, the sun's shadow map renders the casters,
+   * and post is a dozen full-screen passes — and each of those is a render
+   * context with render objects (and, for an instanced mesh, pipelines) of its
+   * own. Any of them a frame met unbuilt was built *synchronously*, on the GPU
+   * process's main thread, where FXC takes 0.1-1.3 s a pipeline; the command
+   * buffer filled up behind it and Blink blocked in `WaitForToken`, the main
+   * thread frozen — no rAF, no input, no CSS transitions — for the whole batch.
+   *
+   * three already does the rest: `_renderObjectDirect` draws an object only
+   * once `Pipelines.isReady` says its pipeline exists, and handing
+   * `getForRender` a promise list is how `compileAsync` gets
+   * `createRenderPipelineAsync`. So a live frame hands it one too. Whatever is
+   * not ready is left out of that frame and drawn from the first frame after
+   * its pipeline lands, which TRAA fades in rather than pops.
+   *
+   * Only live frames. `step` and the capture path draw frames that have to be
+   * complete — the deterministic harness compares them — so they keep the
+   * synchronous build, and `isReady` waits for the asynchronous builds to
+   * drain, so a harness that waits for it never captures a frame with a hole.
+   */
+  private installAsyncPipelines(): void {
+    if (this.backend !== 'webgpu') return;
+    const internals = this.renderer as unknown as {
+      _pipelines: {
+        getForRender(renderObject: unknown, promises?: Promise<unknown>[] | null): unknown;
+      };
+      backend: {
+        createRenderPipeline(renderObject: unknown, promises: Promise<unknown>[] | null): void;
+      };
+    };
+    const pipelines = internals._pipelines;
+    const getForRender = pipelines.getForRender.bind(pipelines);
+    pipelines.getForRender = (renderObject, promises = null) => {
+      if (promises === null && (this.liveFrame || this.compilesInFlight > 0)) {
+        return getForRender(renderObject, []);
+      }
+      return getForRender(renderObject, promises);
+    };
+
+    // Every asynchronous build, the compile's and the frame's, is counted
+    // until its pipeline exists — `isReady` and `prewarm` wait on the count —
+    // and the compile is not made to wait for any one of them.
+    //
+    // `compileAsync` awaits each object's pipeline before it starts the next,
+    // so a compile is the sum of its FXC builds, one after another, while
+    // Dawn has a worker pool for exactly this. Handing it a settled promise
+    // lets the compile do what only it can do — build every object's nodes,
+    // a task at a time — and start every pipeline as it goes, so they build in
+    // parallel; `prewarm` then waits for the count to reach zero. Measured at
+    // High on the FXC path: the content compile from ~31 s to ~4 s.
+    //
+    // It also takes the compile off a hook it used to hang on. A pipeline
+    // Dawn already holds (a second mesh with the same material) comes back
+    // from its cache with no worker task, and its callback waits for the next
+    // device tick, which Chrome only runs while GPU work is in flight — under a
+    // paused loop, never. Traced on aaa-pass: a fish pipeline asked for at
+    // 2.3 s resolved at 31.4 s, when the prewarm's 30 s timeout let a frame
+    // submit; every prewarm timeout this project has logged was that.
+    // `compileForFrame` keeps the device ticking while it waits for the count;
+    // see `pipelinesSettled`.
+    const backend = internals.backend;
+    const createRenderPipeline = backend.createRenderPipeline.bind(backend);
+    backend.createRenderPipeline = (renderObject, promises) => {
+      const before = promises?.length ?? 0;
+      createRenderPipeline(renderObject, promises);
+      if (!promises || promises.length === before) return;
+      const built = promises[promises.length - 1];
+      this.pendingPipelines++;
+      void built.finally(() => {
+        this.pendingPipelines--;
+      });
+      promises[promises.length - 1] = Promise.resolve();
+    };
+  }
+
+  /**
+   * Resolves once every asynchronous pipeline build has landed, or after
+   * `timeoutMs`, whichever is first; true if they all landed.
+   *
+   * While it waits it keeps submitting an empty command buffer and asking for
+   * the queue fence, which is what gets Chrome to tick the device and deliver
+   * the callbacks of pipelines Dawn answered from its cache (see
+   * `installAsyncPipelines`) when no frame is running to do it.
+   */
+  private async pipelinesSettled(timeoutMs: number): Promise<boolean> {
+    const queue = (this.renderer as unknown as {
+      backend?: { device?: { queue?: GPUQueue } };
+    }).backend?.device?.queue;
+    const deadline = performance.now() + timeoutMs;
+    while (this.pendingPipelines > 0 && !this.disposed) {
+      if (performance.now() > deadline) return false;
+      if (queue) {
+        queue.submit([]);
+        await Promise.race([
+          queue.onSubmittedWorkDone().catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 50)),
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
+    return true;
   }
 
   /**
@@ -1367,7 +1565,7 @@ class App {
       if (this.disposed) return;
       for (const mesh of levels) mesh.visible = true;
       try {
-        await this.renderer.compileAsync(this.scene, this.camera);
+        await this.compileForFrame();
       } catch {
         // A compile can fail while the device is reconfiguring. Marking the
         // levels compiled anyway would let an unbuilt pipeline reach a draw, so
@@ -1382,6 +1580,156 @@ class App {
     }
   }
 
+  /**
+   * `compileAsync` for the pass the frame actually draws the scene through.
+   *
+   * Called bare, `compileAsync(scene, camera)` compiles for whatever the
+   * renderer holds — outside a frame that is no target and no MRT, so it falls
+   * back to the frame buffer target: one colour attachment, one output. The
+   * frame draws the scene through `scenePass` instead, into its own target and,
+   * with TRAA, through an `output` + `velocity` MRT, which changes every
+   * material's fragment stage and, for velocity, its vertex stage too. None of
+   * the prewarm's pipelines were the ones the frame then asked for, so every
+   * one was built again synchronously on the first frame that drew it.
+   * Measured on aaa-pass at High on the FXC path: a hundred pipelines in the
+   * first frame after `isReady`, and the main thread frozen while the GPU
+   * process compiled them.
+   *
+   * So the frame's state is reproduced for the compile, and held for all of
+   * it, not just the call: `compileAsync` takes its render context up front but
+   * builds each object's nodes later, one per task, and the node builder reads
+   * the target and the MRT from the renderer when it does. The same goes for
+   * the velocity node, which TRAA hands the unjittered projection for the
+   * length of every frame (`TRAANode.setViewOffset`) and takes back after;
+   * `VelocityNode.setup` emits different code with and without one.
+   *
+   * Holding renderer state across awaits is only safe because nothing renders
+   * meanwhile: every caller compiles with the loop not yet started or paused.
+   * A caller that has to give up waiting calls `releaseFrameState` before it
+   * lets a frame run.
+   */
+  private compileForFrame(): Promise<void> {
+    this.releaseFrameState();
+    const scenePass = this.scenePass;
+    // While it runs, the renders the compile itself sets off — the reflection
+    // and the shadow map, from inside `updateBefore` — build asynchronously
+    // too; see `installAsyncPipelines`.
+    this.compilesInFlight++;
+    const run = async (): Promise<void> => {
+      // WebGL keeps the plain compile: it has neither the MRT nor the FXC
+      // build cost, and compiling into the scene pass's multisampled target
+      // there sets off an invalid depth-stencil blit.
+      if (!scenePass || this.backend !== 'webgpu') {
+        await this.renderer.compileAsync(this.scene, this.camera);
+        return;
+      }
+      const generation = ++this.compileGeneration;
+      await this.compileReflection();
+      // Released while the reflection compiled: the caller gave up waiting
+      // and frames are running, so the main pass cannot hold the renderer.
+      if (generation !== this.compileGeneration) return;
+      await this.compileWithState(
+        scenePass.renderTarget,
+        scenePass.getMRT(),
+        this.camera,
+        this.taaEnabled,
+      );
+      // The compile has only *started* the pipelines (see
+      // `installAsyncPipelines`); this is where they land. A caller that
+      // reveals what it compiled, or tears resources down, after this
+      // resolves needs nothing still building. Not an error if they run long:
+      // a live frame leaves out what is not ready rather than stopping for it.
+      if (!(await this.pipelinesSettled(PIPELINE_SETTLE_MS))) {
+        console.warn('[ocean] pipelines still building after the compile:', this.pendingPipelines);
+      }
+    };
+    return run().finally(() => {
+      this.compilesInFlight--;
+    });
+  }
+
+  /**
+   * Compiles the planar reflection's render ahead of the main pass.
+   *
+   * The reflection renders the whole scene again, from a mirrored camera into
+   * a target of its own, and it does so from the ocean's `updateBefore` — so
+   * the main compile met it when it reached the ocean, and built every render
+   * object in it synchronously, inside a single task: 1.7 s with the main
+   * thread blocked, measured at High. Compiled first, through `compileAsync`,
+   * the same objects are built one task at a time, and the nested render finds
+   * them done. Same target (pinned, see `installStableContexts`), same mirrored
+   * camera, posed by the last frame; the ocean is hidden for the projection,
+   * as the reflector hides it.
+   */
+  private async compileReflection(): Promise<void> {
+    // Before the first frame the mirrored camera has never been posed, so a
+    // compile culled against it would build an arbitrary set — and the boot
+    // prewarm is on the critical path to that first frame. The first frames
+    // build the reflection's few boot-time objects themselves, asynchronously.
+    if (!this.reflections || this.loop.stats.frameMs === 0) return;
+    const setup = this.reflections.renderSetup(this.camera);
+    const ocean = this.water.material;
+    const visible = ocean.visible;
+    // Only for the projection, which `compileAsync` does before it first
+    // yields; what it compiles after that is the list it made then.
+    ocean.visible = false;
+    let compile: Promise<void>;
+    try {
+      compile = this.compileWithState(setup.target, null, setup.camera, false);
+    } finally {
+      ocean.visible = visible;
+    }
+    await compile;
+  }
+
+  /**
+   * One `compileAsync` with the renderer holding `target` and `mrtNode` (and
+   * TRAA's velocity projection, if `velocityProjection`) until it settles or
+   * `releaseFrameState` gives them back; see `compileForFrame`. The projection
+   * is over by the time this returns, so state that only has to hold for it
+   * can be restored as soon as the call does.
+   */
+  private compileWithState(
+    target: THREE.RenderTarget,
+    mrtNode: SceneMRT | null,
+    camera: THREE.Camera,
+    velocityProjection: boolean,
+  ): Promise<void> {
+    const renderer = this.renderer;
+    const previousTarget = renderer.getRenderTarget();
+    const previousMRT = renderer.getMRT();
+    const traaVelocity = velocityProjection
+      ? (velocity as unknown as { setProjectionMatrix(m: THREE.Matrix4 | null): void })
+      : null;
+    renderer.setRenderTarget(target);
+    renderer.setMRT(mrtNode as SceneMRT);
+    traaVelocity?.setProjectionMatrix(this.camera.projectionMatrix);
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      renderer.setRenderTarget(previousTarget);
+      renderer.setMRT(previousMRT as SceneMRT);
+      traaVelocity?.setProjectionMatrix(null);
+      if (this.frameStateRelease === release) this.frameStateRelease = null;
+    };
+    this.frameStateRelease = release;
+    let compile: Promise<void>;
+    try {
+      compile = renderer.compileAsync(this.scene, camera);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    return compile.finally(release);
+  }
+
+  /** Puts back what `compileForFrame` holds, if a compile still holds it. */
+  private releaseFrameState(): void {
+    this.compileGeneration++;
+    this.frameStateRelease?.();
+  }
+
   private async prewarm(timeoutMs = 30_000): Promise<void> {
     let compile: Promise<void> | null = null;
     const timeoutError = new Error(
@@ -1389,7 +1737,7 @@ class App {
     );
     let timer = 0;
     try {
-      compile = this.renderer.compileAsync(this.scene, this.camera);
+      compile = this.compileForFrame();
       const timeout = new Promise<never>((_, reject) => {
         timer = window.setTimeout(() => reject(timeoutError), timeoutMs);
       });
@@ -1397,6 +1745,9 @@ class App {
       this.shadersReady = true;
     } catch (error) {
       console.warn('[ocean] pipeline prewarm skipped', error);
+      // The compile may still be running, and it holds the renderer on the
+      // scene pass's target; the caller is about to let a frame draw.
+      this.releaseFrameState();
       // `compileAsync` has no cancellation API, so a timed-out compile is still
       // running — and on a slow device, which is exactly where the timeout
       // fires, it can still be running when a tier change tears its resources
@@ -1505,6 +1856,8 @@ class App {
     if (shipResult.status === 'fulfilled') {
       const ship = shipResult.value;
       this.ship = ship;
+      // Gulls work the ship and sit on her yards; see `Birds.setShip`.
+      this.birds.setShip(ship.object);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);
@@ -1934,9 +2287,21 @@ class App {
     switch (key) {
       case 'quality':
         return this.requestQuality(this.state.quality);
-      case 'preset':
+      case 'preset': {
+        // A preset brings its own sky. Coverage lives in UI state because the
+        // slider owns it afterwards, and nothing ever copied the preset's value
+        // into it — so choosing Storm drew the storm's deck at whatever the
+        // slider last said, 0.36 by default: blue sky between fair-weather
+        // puffs under a sky lit for a 0.88 overcast. The slider still wins
+        // after this, which is what a slider is for.
+        const coverage = getPreset(this.state.preset).clouds.coverage;
+        if (this.state.cloudCoverage !== coverage) {
+          this.state.cloudCoverage = coverage;
+          this.panel?.setState({ cloudCoverage: coverage });
+        }
         this.applyPreset();
         break;
+      }
       case 'windSpeed':
       case 'peakWavelength':
         // Through `applyPreset`, not straight to the spectrum.
@@ -2608,7 +2973,7 @@ class App {
         // there is nothing outstanding when the loop restarts, and it removes the
         // hitch a first-frame compile would otherwise cause anyway.
         try {
-          await this.renderer.compileAsync(this.scene, this.camera);
+          await this.compileForFrame();
         } catch {
           // A compile can fail while the device is reconfiguring. The next frame
           // rebuilds what it needs; dropping this is better than aborting the
@@ -2681,7 +3046,14 @@ class App {
     // so the island 1.4 km out gets the same shadows the ship does.
     this.atmosphere.setShadowFocus(this.camera.position.x, this.camera.position.z);
     this.atmosphere.update(dt);
-    this.clouds.setSunDirection(this.atmosphere.sunDirection);
+    // The deck is lit in the sun's own colour, and by the moon once the sun has
+    // gone — see `Clouds.setLighting`.
+    this.clouds.setLighting(
+      this.atmosphere.sunDirection,
+      this.atmosphere.sunColor,
+      this.atmosphere.moonDirection,
+      this.atmosphere.getParams().nightIntensity,
+    );
     // The island shadows itself from whatever is currently the key light, which
     // after sunset is the moon — `Atmosphere` retargets the same light.
     this.seafloor.setKeyDirection(this.atmosphere.keyDirection);
@@ -2838,7 +3210,14 @@ class App {
     _keyDirection.copy(key.position).normalize();
     // 3.4 is the sun's full-daylight intensity in `Atmosphere`, so this is
     // "how close to full daylight is it" rather than an arbitrary scale.
-    this.water.setSun(_keyDirection, key.color, key.intensity * 1.8, key.intensity / 3.4);
+    // The *direct* glint fades with the overcast on the same curve the sky uses
+    // to hide the disc (`Atmosphere`: gone by three-quarters cover). The key
+    // light keeps a quarter of its strength under a full deck as diffuse
+    // daylight, but a mirror-sharp sun path on the sea under a sky with no sun
+    // in it is the storm's most obvious lie.
+    const clearSky = Math.max(0, 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) / 0.75);
+    const glint = 0.06 + 0.94 * clearSky * clearSky;
+    this.water.setSun(_keyDirection, key.color, key.intensity * 1.8 * glint, key.intensity / 3.4);
     (this.uKeyDirection.value as THREE.Vector3).copy(_keyDirection);
     // Scaled by the light's own intensity so the term follows the sun down: at
     // dusk a backlit frond should stop glowing along with everything else.
@@ -2903,7 +3282,15 @@ class App {
     );
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
-    this.clouds.setSkyColors(_hazeZenith);
+    //
+    // And by how bright that sky actually *is*: the dome's own radiance at the
+    // zenith and around the horizon, so the deck can never be lit brighter
+    // than the sky it sits in by more than the sun or moon on it justifies.
+    this.clouds.setSkyColors(
+      _hazeZenith,
+      this.measureSkyRadiance(_skyRadiance, _skyHorizon),
+      _skyHorizon,
+    );
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -3233,6 +3620,33 @@ class App {
     this.wake.update(dt, this.renderer);
   }
 
+  /**
+   * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
+   * above the horizon. Five CPU evaluations of the sky model a frame.
+   * `horizon` receives the darkest of the four bearings: the dome away from
+   * the sun's glow, which is the colour of the air under a continuous deck
+   * (see the composite in `Clouds`).
+   */
+  private measureSkyRadiance(out: THREE.Color, horizon: THREE.Color): THREE.Color {
+    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
+    out.multiplyScalar(0.5);
+    let darkest = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const a = (k * Math.PI) / 2;
+      _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
+      this.atmosphere.skyRadiance(_skyDirection, _skySample);
+      out.r += _skySample.r * 0.125;
+      out.g += _skySample.g * 0.125;
+      out.b += _skySample.b * 0.125;
+      const luma = _skySample.r * 0.2126 + _skySample.g * 0.7152 + _skySample.b * 0.0722;
+      if (luma < darkest) {
+        darkest = luma;
+        horizon.copy(_skySample);
+      }
+    }
+    return out;
+  }
+
   private onResize = (): void => {
     // The circle of confusion is measured on a sensor and drawn in pixels, so
     // the conversion between them moves with the frame.
@@ -3326,7 +3740,10 @@ class App {
           clearScore: (...args: Parameters<Hud['clearScore']>) => this.hud.clearScore(...args),
         },
         isReady: () =>
-          this.sceneContentLoaded && this.sampler.ready && this.loop.stats.frameMs > 0,
+          this.sceneContentLoaded &&
+          this.sampler.ready &&
+          this.loop.stats.frameMs > 0 &&
+          this.pendingPipelines === 0,
         sceneContentLoaded: () => this.sceneContentLoaded,
         hasShip: () => this.ship !== null,
         getState: () => ({ ...this.state }),
@@ -3351,7 +3768,15 @@ class App {
             (this.state as unknown as Record<string, unknown>).quality = partial.quality;
             await this.onStateChange('quality');
           }
-          for (const [key, value] of Object.entries(partial)) {
+          // The preset next, before the keys it seeds. Choosing a preset now
+          // resets the cloud coverage to the preset's own, so a caller sending
+          // `{ cloudCoverage, preset }` — which is the order the visual harness
+          // sends them in — has to see its explicit coverage applied after
+          // the preset, not overwritten by it.
+          const entries = Object.entries(partial).sort(
+            ([a], [b]) => Number(b === 'preset') - Number(a === 'preset'),
+          );
+          for (const [key, value] of entries) {
             if (key === 'quality') continue;
             (this.state as unknown as Record<string, unknown>)[key] = value;
             this.onStateChange(key as keyof UiState);

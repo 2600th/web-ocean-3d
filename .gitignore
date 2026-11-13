@@ -95,3 +95,4 @@ tests/_probe*.spec.ts
 # server to screenshot the UI while a design change is being judged. Kept out of
 # `scripts/` because nothing in the build or the suite calls it.
 _shoot.mjs
+.vite-cache/

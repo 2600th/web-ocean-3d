@@ -247,6 +247,15 @@ export class AssetLoader {
     this.ktx2 = new KTX2Loader(this.transcoderManager)
       .setWorkerLimit(Math.max(1, Math.min(4, this.maxConcurrent)))
       .detectSupport(renderer);
+    // Dev only. Vite pre-bundles three into `.vite/deps`, where the loader's own
+    // `new URL('../libs/basis/', import.meta.url)` lands on the SPA fallback and
+    // the transcoder arrives as HTML. The dev server serves node_modules at its
+    // real path, so point there. Excluding the loader from pre-bundling instead
+    // loaded a second copy of three, and lights stopped resolving — a black frame.
+    // The build resolves the default URL to a hashed asset and needs nothing.
+    if (import.meta.env.DEV) {
+      this.ktx2.setTranscoderPath('/node_modules/three/examples/jsm/libs/basis/');
+    }
   }
 
   /**
