@@ -105,7 +105,7 @@ export class Caustics {
 
   private readonly target: THREE.RenderTarget;
   private readonly bakeMaterial: THREE.NodeMaterial;
-  private readonly quad = new THREE.QuadMesh();
+  private readonly quad = new THREE.QuadMesh(new THREE.NodeMaterial());
   /** World centre of the baked region. */
   private readonly uCenter = uniform(new THREE.Vector2());
 

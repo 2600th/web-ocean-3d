@@ -540,7 +540,7 @@ export class Wake {
 
   private readonly buffers: [THREE.RenderTarget, THREE.RenderTarget];
   private readonly output: THREE.RenderTarget;
-  private readonly quad = new THREE.QuadMesh();
+  private readonly quad = new THREE.QuadMesh(new THREE.NodeMaterial());
 
   private readonly accumulate: [THREE.NodeMaterial, THREE.NodeMaterial];
   private readonly copy: [THREE.NodeMaterial, THREE.NodeMaterial];

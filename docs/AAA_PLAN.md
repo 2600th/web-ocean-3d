@@ -74,7 +74,7 @@ reinventing it.
 - [x] Soft sky/sea: not DOF (measured) — clouds re-shaped, clouds removed from the planar mirror, reflection mip cap lowered
 - [x] Storm: re-graded, lightning + thunder, overcast-correct haze, sun disc hidden under the deck
 - [x] Contact foam (Water Pro parity)
-- [ ] Upgrade three r185 → r187
+- [ ] Upgrade three r185 → r187 — **tried and deferred** (branch `three-r187`). Typecheck needs only a `QuadMesh(material)` fix (applied here too), but at runtime: with TRAA a material compiles to an empty WGSL `OutputType` struct; without it `copyFramebufferToTexture` hits bgra8unorm vs rgba16float (the refraction backdrop); `PCFSoftShadowMap` is gone. Each is its own investigation, and r185 costs nothing visible.
 
 ### D. UI and design language (UI agent)
 - [x] Original nautical-adventure UI inspired by Sea of Thieves: parchment, brass, ink, hand-drawn map frames
