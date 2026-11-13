@@ -19,7 +19,7 @@ export type DirectorMode = CameraMode | 'cinematic';
 export interface CameraTarget {
   /** World position the boat camera chases. */
   position: THREE.Vector3;
-  /** Heading in radians for the chase camera to sit behind. */
+  /** Heading in radians, `atan2(forward.z, forward.x)`, for the chase camera to sit behind. */
   heading: number;
 }
 
@@ -523,13 +523,20 @@ export class CameraDirector {
     // Sit behind and above the target, looking slightly down at it — with the
     // viewer's orbit applied on top of the hull's own bearing, so the rig keeps
     // following while the camera can point anywhere.
-    const bearing = this.target.heading + this.chaseYaw;
+    //
+    // `heading` is `atan2(forward.z, forward.x)` — the hull's and the wake's
+    // convention — so the bow points along (cos, sin). This read (sin, cos)
+    // from the start, which put the rig astern only on a heading of 45 degrees
+    // and off the beam or the bow on every other: at the spawn heading the
+    // "chase" camera watched the ship sail across the frame. The yaw offset is
+    // subtracted so a drag still orbits the same way it always did.
+    const bearing = this.target.heading - this.chaseYaw;
     const lift = CHASE_HEIGHT / CHASE_DISTANCE + this.chasePitch;
     const planar = Math.cos(Math.atan(lift));
     const back = this.tmpVec.set(
-      Math.sin(bearing) * planar,
-      0,
       Math.cos(bearing) * planar,
+      0,
+      Math.sin(bearing) * planar,
     );
     this.desiredPosition
       .copy(this.target.position)
