@@ -150,6 +150,10 @@ const CLOUD_LAYER = 3;
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
+/** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
+const _skyRadiance = new THREE.Color();
+const _skySample = new THREE.Color();
+const _skyDirection = new THREE.Vector3();
 const _litFog = new THREE.Color();
 /** Rec. 709 luminance of a linear colour. */
 const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
@@ -2673,7 +2677,11 @@ class App {
     );
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
-    this.clouds.setSkyColors(_hazeZenith);
+    //
+    // And by how bright that sky actually *is*: the dome's own radiance at the
+    // zenith and around the horizon, so the deck can never be lit brighter
+    // than the sky it sits in by more than the sun or moon on it justifies.
+    this.clouds.setSkyColors(_hazeZenith, this.measureSkyRadiance(_skyRadiance));
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -2987,6 +2995,24 @@ class App {
     //
     // Must run outside an active render target; it saves and restores its own.
     this.wake.update(dt, this.renderer);
+  }
+
+  /**
+   * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
+   * above the horizon. Five CPU evaluations of the sky model a frame.
+   */
+  private measureSkyRadiance(out: THREE.Color): THREE.Color {
+    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
+    out.multiplyScalar(0.5);
+    for (let k = 0; k < 4; k++) {
+      const a = (k * Math.PI) / 2;
+      _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
+      this.atmosphere.skyRadiance(_skyDirection, _skySample);
+      out.r += _skySample.r * 0.125;
+      out.g += _skySample.g * 0.125;
+      out.b += _skySample.b * 0.125;
+    }
+    return out;
   }
 
   private onResize = (): void => {

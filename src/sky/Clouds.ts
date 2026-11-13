@@ -327,8 +327,24 @@ const PHASE_ISOTROPIC = 1;
  */
 const WIND_WRAP = 200_000;
 
-/** Moonlight on the deck, relative to sunlight. Enough to silver a cloud edge. */
-const MOON_GAIN = 0.12;
+/**
+ * Moonlight on the deck, relative to sunlight *at the same sky brightness* —
+ * the gain is multiplied by `skyLevel`, so at night this is a multiple of the
+ * night sky, enough to silver an edge without whitening the deck.
+ */
+const MOON_GAIN = 3.5;
+
+/** Ambient gain on the base's shadow colour at a clear noon. */
+const AMBIENT_GAIN = 0.42;
+
+/**
+ * Luminance of the mean of `Atmosphere.skyRadiance` at the zenith and around
+ * the horizon, measured on the default preset at its own noon — the sky the
+ * deck's ambient constants were tuned under. `skyLevel` is relative to it.
+ */
+const DAY_SKY_LUMA = 0.34;
+/** Ceiling on `skyLevel`: a hazy bright sky may lift the deck, not bleach it. */
+const SKY_LEVEL_MAX = 1.4;
 const MOON_CLOUD_COLOR = new THREE.Color(0.62, 0.72, 0.95);
 
 /**
@@ -429,7 +445,13 @@ export class Clouds {
   private readonly uExtinction = uniform(0.0085);
   private readonly uLightStep = uniform(175);
   private readonly uSunGain = uniform(SUN_GAIN);
-  private readonly uAmbientGain = uniform(0.42);
+  /**
+   * Ambient reaching the *base* of the layer: the preset's shadow colour at
+   * `AMBIENT_GAIN`, scaled by how bright the sky is. Written by `setSkyColors`.
+   */
+  private readonly uAmbientBottom: any = uniform(new THREE.Color(0.14, 0.16, 0.2));
+  /** Sky brightness relative to a clear noon; see `setSkyColors`. */
+  private skyLevel = 1;
   /**
    * Ambient reaching the *top* of the layer.
    *
@@ -566,7 +588,21 @@ export class Clouds {
    * The sky the layer is lit by, from the same source the water and the dome
    * read. Uniform writes only.
    */
-  setSkyColors(zenith: THREE.Color): void {
+  setSkyColors(zenith: THREE.Color, skyRadiance?: THREE.Color): void {
+    // How bright the sky actually is, relative to a clear noon. See
+    // `Atmosphere.skyRadiance`, and `DAY_SKY_LUMA` for the reference.
+    //
+    // Everything that lights the deck *from the sky* — both ambient terms, and
+    // the moon, which lights the sky as well as the cloud — scales by this.
+    // Without it the ambient was a fixed fraction of white whatever the hour,
+    // so the night deck rendered near-white against a sky a few hundred times
+    // darker: pale shapes on black, the inversion of a moonlit sky.
+    if (skyRadiance !== undefined) {
+      const skyLuma =
+        skyRadiance.r * 0.2126 + skyRadiance.g * 0.7152 + skyRadiance.b * 0.0722;
+      this.skyLevel = Math.min(SKY_LEVEL_MAX, skyLuma / DAY_SKY_LUMA);
+    }
+
     // Cloud tops are bright: they see the whole upper hemisphere plus what the
     // deck around them bounces. The zenith radiance alone is the sky *behind*
     // them and reads as a grey top, so it is lifted toward the sunlit cloud
@@ -580,8 +616,14 @@ export class Clouds {
     // and blue — and the contrast between that and the gold on the lit side
     // is most of what makes a sunset sky read as glorious rather than tinted.
     const luma = zenith.r * 0.2126 + zenith.g * 0.7152 + zenith.b * 0.0722;
-    _neutral.setRGB(1, 1, 1).multiplyScalar(Math.max(luma * 2.2, 0.35));
-    this.uAmbientTop.value.copy(zenith).lerp(_neutral, 0.45).multiplyScalar(1.35);
+    _neutral.setRGB(1, 1, 1).multiplyScalar(luma * 2.2);
+    this.uAmbientTop.value
+      .copy(zenith)
+      .lerp(_neutral, 0.45)
+      .multiplyScalar(1.35 * this.skyLevel);
+    (this.uAmbientBottom.value as THREE.Color)
+      .copy(this.params.shadowColor)
+      .multiplyScalar(AMBIENT_GAIN * this.skyLevel);
   }
 
   setSunDirection(dir: THREE.Vector3): void {
@@ -622,7 +664,11 @@ export class Clouds {
     } else {
       dir.copy(moonDir).normalize();
       const moonUp = smooth01((dir.y + 0.02) / 0.17);
-      this.uSunGain.value = SUN_GAIN * MOON_GAIN * moonUp * Math.min(1, night);
+      // Scaled with the sky, not absolute: the moon lights the sky as well as
+      // the cloud, so a moonlit edge should stand a few times brighter than
+      // the night sky beside it — silver, not the noon-white an absolute gain
+      // gave against a sky that renders at a few thousandths.
+      this.uSunGain.value = SUN_GAIN * MOON_GAIN * moonUp * Math.min(1, night) * this.skyLevel;
       color.copy(MOON_CLOUD_COLOR);
     }
 
@@ -635,7 +681,14 @@ export class Clouds {
     // fifteen degrees up. And it fades with coverage - under a solid deck
     // nothing gets underneath, which is why a storm sunset is a glow in a slot
     // of clear sky rather than a lit ceiling.
-    const low = smooth01((sunY + 0.1) / 0.08) * (1 - smooth01((sunY - 0.06) / 0.22));
+    //
+    // Through civil twilight too, when the sun is below the sea but still
+    // lighting the deck from underneath — scaled by how bright the sky still
+    // is, so the glow fades with the twilight rather than outlasting it.
+    const low =
+      smooth01((sunY + 0.2) / 0.15) *
+      (1 - smooth01((sunY - 0.06) / 0.22)) *
+      Math.min(1, this.skyLevel);
     const open = Math.min(1, Math.max(0, (1 - this.params.coverage) * 2.4));
     (this.uUnderGlow.value as THREE.Color)
       .copy(sunColor)
@@ -647,7 +700,7 @@ export class Clouds {
     this.uCirrusSun.value =
       cirrusAbove > 0.001 || night <= 0.001
         ? cirrusAbove
-        : MOON_GAIN * smooth01((moonDir.y + 0.02) / 0.17) * Math.min(1, night);
+        : MOON_GAIN * smooth01((moonDir.y + 0.02) / 0.17) * Math.min(1, night) * this.skyLevel;
   }
 
   /**
@@ -1170,7 +1223,7 @@ export class Clouds {
             // the single substitution that makes a puff read as a volume.
             const height = this.heightFraction(p).clamp(0, 1).toVar('cloudH');
             const ambient = mix(
-              this.uShadowColor.mul(this.uAmbientGain),
+              this.uAmbientBottom,
               this.uAmbientTop,
               height,
             ).toVar('cloudAmbient');
@@ -1217,13 +1270,18 @@ export class Clouds {
         // dark fringe where a sunlit cumulus should have its brightest edge.
         // Un-premultiplying here (and re-premultiplying for the composite with
         // the cirrus below) restores it; opaque cores are unchanged.
-        const coverage = float(1).sub(transmittance).toVar('cloudCoverage');
-        const straight = scattered.div(coverage.max(1e-4));
-        const lit =
-          this.aerial === null
-            ? straight
-            : this.aerial.apply(straight, tEnter, rd);
-        result.assign(vec4(lit.mul(coverage), coverage));
+        //
+        // The haze takes the deck by *opacity*, not by colour: a distant cloud
+        // dissolves into the dome behind it. Mixing it toward the shared
+        // haze's inscatter instead painted every far cloud the haze's colour,
+        // and that colour is built from the CPU-side sky tints, which at night
+        // are a mid blue hundreds of times brighter than the dome — the pale
+        // deck on a black sky in the night watch. The dome is the right
+        // radiance in every direction at every hour, so fading to it is.
+        const straight: any = scattered.div(float(1).sub(transmittance).max(1e-4));
+        const air: any = this.aerial === null ? float(1) : this.aerial.transmittance(tEnter, rd);
+        const coverage: any = float(1).sub(transmittance).mul(air).toVar('cloudCoverage');
+        result.assign(vec4(straight.mul(coverage), coverage));
       });
 
       // The cirrus sheet, behind the cumulus. Premultiplied "over": it shows
@@ -1321,8 +1379,8 @@ export class Clouds {
       .mul(this.uLightColor)
       .mul(this.uCirrusSun.mul(forward.add(0.85)))
       .add(this.uAmbientTop.mul(0.5));
-    const lit = this.aerial === null ? radiance : this.aerial.apply(radiance, t, rd);
-    return vec4(lit.mul(alpha), alpha);
+    const faded: any = this.aerial === null ? alpha : alpha.mul(this.aerial.transmittance(t, rd));
+    return vec4(radiance.mul(faded), faded);
   }
 }
 

@@ -226,6 +226,25 @@ function twilightGain(sunY: number): number {
   return 1;
 }
 
+/**
+ * The twilight glow, as a strength 0..1 for a sun elevation (sine).
+ *
+ * Preetham's sun energy is cut off a couple of degrees below the horizon —
+ * `CUTOFF_ANGLE` fakes the earth's shadow — and past it the dome has nothing
+ * but the night term. So the first half-hour after sunset, the most colourful
+ * sky of the day, rendered *black*: the tour's dusk squall at a sun 4.7 degrees
+ * down had a dome a seventieth of noon's under a deck lit for daylight. A real
+ * civil twilight is an orange band on the sun's bearing, a purple belt above
+ * it and a deepening blue overhead, fading out by about twelve degrees down.
+ * This supplies that, peaking just after sunset and gone well before night.
+ */
+function twilightGlow(sunY: number): number {
+  return smoothstepScalar(-0.22, -0.03, sunY) * (1 - smoothstepScalar(0.0, 0.1, sunY)) * 0.9;
+}
+const TWILIGHT_HORIZON = /*@__PURE__*/ new THREE.Color(1.0, 0.42, 0.15);
+const TWILIGHT_BELT = /*@__PURE__*/ new THREE.Color(0.42, 0.3, 0.6);
+const TWILIGHT_ZENITH = /*@__PURE__*/ new THREE.Color(0.08, 0.13, 0.32);
+
 /** Rec. 709 luminance weights. */
 const LUMA = /*@__PURE__*/ new THREE.Vector3(0.2126, 0.7152, 0.0722);
 
@@ -372,6 +391,10 @@ export class Atmosphere {
    */
   private readonly uDayRadiance = uniform(SKY_RADIANCE_SCALE);
   private readonly uNightRadiance = uniform(0);
+  /** Twilight glow strength, radiance units. See `twilightGlow`. */
+  private readonly uTwilight = uniform(0);
+  /** Horizontal unit vector toward the sun, for the twilight glow's bearing. */
+  private readonly uSunFlat = uniform(new THREE.Vector3(1, 0, 0));
   // Colour uniforms are held loosely typed: TSL's declaration file narrows a
   // colour uniform to a float-ish node, which blocks legitimate vec3 chaining.
   private readonly uGround: any = uniform(new THREE.Color(0.05, 0.09, 0.13));
@@ -596,6 +619,89 @@ export class Atmosphere {
    */
   get betaRayleigh(): THREE.Vector3 {
     return this.uBetaR.value as THREE.Vector3;
+  }
+
+  /**
+   * The dome's own radiance in direction `dir`, pre-tonemap — what the sky
+   * shader would draw there, less the sun disc, the stars and the moon.
+   *
+   * A CPU port of `buildSkyNode` for the few directions a caller needs per
+   * frame. It exists because the cloud layer's ambient light was a fixed
+   * fraction of white plus the hemisphere-fill *tint*, and that tint is a hue,
+   * not a brightness: at night it is a mid blue at full scale while the dome
+   * itself renders at a few thousandths. The deck was therefore lit hundreds of
+   * times brighter than the sky around it and came out near-white against
+   * black. Anything that has to sit *in* the sky has to be lit by the sky's
+   * actual radiance, and this is that number.
+   */
+  skyRadiance(dir: THREE.Vector3, out: THREE.Color): THREE.Color {
+    const y = Math.max(0, dir.y);
+    const zenithAngle = Math.acos(Math.min(1, y));
+    const denom =
+      Math.cos(zenithAngle) + 0.15 * Math.pow(93.885 - (zenithAngle * 180) / Math.PI, -1.253);
+    const sR = RAYLEIGH_ZENITH_LENGTH / denom;
+    const sM = MIE_ZENITH_LENGTH / denom;
+    const bR = this.uBetaR.value as THREE.Vector3;
+    const bM = this.uBetaM.value as THREE.Vector3;
+    const sun = this._sunDirection;
+    const cosTheta = dir.x * sun.x + dir.y * sun.y + dir.z * sun.z;
+    const rArg = cosTheta * 0.5 + 0.5;
+    const rPhase = (rArg * rArg + 1) * THREE_OVER_SIXTEEN_PI;
+    const g = this.uMieG.value as number;
+    const mPhase =
+      ((1 - g * g) / Math.pow(1 + g * g - 2 * g * cosTheta, 1.5)) * ONE_OVER_FOUR_PI;
+    const sunE = this.uSunE.value as number;
+    const horizonMix = Math.min(1, Math.max(0, Math.pow(1 - sun.y, 5)));
+
+    const channel = (r: number, m: number): number => {
+      const fex = Math.exp(-(r * sR + m * sM));
+      const scatter = (r * rPhase + m * mPhase) / (r + m);
+      let lin = Math.pow(scatter * sunE * (1 - fex), 1.5);
+      lin *= 1 + (Math.sqrt(Math.max(0, scatter * sunE * fex)) - 1) * horizonMix;
+      return (lin + fex * 0.1) * 0.04;
+    };
+    let dr = channel(bR.x, bM.x);
+    let dg = channel(bR.y, bM.y) + 0.0003;
+    let db = channel(bR.z, bM.z) + 0.00075;
+
+    const overcast = this.uOvercast.value as number;
+    if (overcast > 0) {
+      const luma = dr * LUMA.x + dg * LUMA.y + db * LUMA.z;
+      const tint = this.uOvercastTint.value as THREE.Color;
+      const darken = (this.uOvercastDarken.value as number) * overcast;
+      const k = OVERCAST_DESATURATION;
+      dr += ((dr + (luma - dr) * k) * tint.r * darken - dr * overcast);
+      dg += ((dg + (luma - dg) * k) * tint.g * darken - dg * overcast);
+      db += ((db + (luma - db) * k) * tint.b * darken - db * overcast);
+    }
+
+    const up = Math.min(1, Math.max(0, dir.y * 1.7));
+    const day = this.uDayRadiance.value as number;
+    const night = this.uNightRadiance.value as number;
+
+    const flat = this.uSunFlat.value as THREE.Vector3;
+    const flatLength = Math.max(1e-3, Math.sqrt(dir.x * dir.x + dir.z * dir.z));
+    const bearing = ((dir.x * flat.x + dir.z * flat.z) / flatLength) * 0.5 + 0.5;
+    const h = Math.max(0, dir.y);
+    const tw = this.uTwilight.value as number;
+    const wHorizon = Math.pow(bearing, 3) * Math.exp(-9 * h) * tw;
+    const wBelt = Math.pow(bearing, 1.5) * Math.exp(-3 * h) * 0.5 * tw;
+    const wZenith = (h * 0.5 + 0.5) * 0.35 * tw;
+
+    out.setRGB(
+      dr * day + (0.016 + (0.0016 - 0.016) * up) * night +
+        TWILIGHT_HORIZON.r * wHorizon + TWILIGHT_BELT.r * wBelt + TWILIGHT_ZENITH.r * wZenith,
+      dg * day + (0.022 + (0.0032 - 0.022) * up) * night +
+        TWILIGHT_HORIZON.g * wHorizon + TWILIGHT_BELT.g * wBelt + TWILIGHT_ZENITH.g * wZenith,
+      db * day + (0.044 + (0.0105 - 0.044) * up) * night +
+        TWILIGHT_HORIZON.b * wHorizon + TWILIGHT_BELT.b * wBelt + TWILIGHT_ZENITH.b * wZenith,
+    );
+    const luma = out.r * LUMA.x + out.g * LUMA.y + out.b * LUMA.z;
+    return out.setRGB(
+      Math.max(0, luma + (out.r - luma) * SKY_CHROMA),
+      Math.max(0, luma + (out.g - luma) * SKY_CHROMA),
+      Math.max(0, luma + (out.b - luma) * SKY_CHROMA),
+    );
   }
 
   get betaMie(): THREE.Vector3 {
@@ -829,6 +935,11 @@ export class Atmosphere {
     const base = p.exposure * SKY_RADIANCE_SCALE;
     this.uDayRadiance.value = base * twilightGain(this._sunDirection.y) * (1 - 0.95 * night);
     this.uNightRadiance.value = base * night;
+    this.uTwilight.value =
+      base * twilightGlow(this._sunDirection.y) * (1 - 0.75 * overcast) * (1 - 0.6 * night);
+    (this.uSunFlat.value as THREE.Vector3)
+      .set(this._sunDirection.x, 0, this._sunDirection.z)
+      .normalize();
     this.uGround.value.copy(p.groundColor);
 
     // Preetham's per-frame vertex-stage constants. They depend only on uniforms,
@@ -1130,9 +1241,28 @@ export class Atmosphere {
         nightSky.assign(this.buildNightNode(dir));
       });
 
+      // --- twilight ----------------------------------------------------------
+      // See `twilightGlow`. Zero outside a band of sun elevations around the
+      // horizon, and kept off the ground half.
+      const flatLength = dir.x.mul(dir.x).add(dir.z.mul(dir.z)).sqrt().max(1e-3);
+      const bearing = dir.x
+        .mul(this.uSunFlat.x)
+        .add(dir.z.mul(this.uSunFlat.z))
+        .div(flatLength)
+        .mul(0.5)
+        .add(0.5);
+      const up = max(dir.y, 0.0);
+      const twilight = vec3(TWILIGHT_HORIZON.r, TWILIGHT_HORIZON.g, TWILIGHT_HORIZON.b)
+        .mul(pow(bearing, 3.0).mul(exp(up.mul(-9.0))))
+        .add(vec3(TWILIGHT_BELT.r, TWILIGHT_BELT.g, TWILIGHT_BELT.b).mul(pow(bearing, 1.5).mul(exp(up.mul(-3.0))).mul(0.5)))
+        .add(vec3(TWILIGHT_ZENITH.r, TWILIGHT_ZENITH.g, TWILIGHT_ZENITH.b).mul(up.mul(0.5).add(0.5).mul(0.35)))
+        .mul(belowness.oneMinus())
+        .mul(this.uTwilight);
+
       const color = daySky
         .mul(this.uDayRadiance)
         .add(nightSky.mul(this.uNightRadiance))
+        .add(twilight)
         .toVar('skyColor');
 
       const luma = dot(color, vec3(LUMA.x, LUMA.y, LUMA.z));
