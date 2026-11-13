@@ -134,21 +134,17 @@ const TUFT_SPREAD = 0.07;
 /**
  * Elevation band the grass grows in, metres above mean sea level.
  *
- * The lower edge matches `Seafloor`'s own `BEACH_TOP_METRES`, because that is
- * where the terrain shader stops painting sand and starts painting vegetation —
- * grass that grew below it would be grass on a beach the ground colour says is
- * bare. The upper edge is the treeline, and it is derived rather than typed:
- * `Seafloor` fades its vegetation into bare summit rock between 0.72 and 0.95 of
- * `ISLAND.peak`, so the grass fades out over the same two heights. Written this
- * way because the alternative is two hard-coded numbers that have to be edited
- * together, and the first time the island's height changed they were not — a
- * lawn kept growing over a summit the terrain shader had already turned to
- * stone.
+ * The lower edge sits just above `Seafloor`'s `GROWTH_START_METRES`, where the
+ * terrain shader stops painting sand: grass below it would be grass on a beach
+ * the ground colour says is bare. There is no upper edge any more — the island
+ * no longer has a bald summit cap, and the forest and its clearings run to the
+ * top — so the fade is set past the peak and only exists to keep the ramp
+ * well-formed.
  */
-const GRASS_MIN_HEIGHT = 3.2;
-const GRASS_FULL_HEIGHT = 12;
-const GRASS_FADE_HEIGHT = ISLAND.peak * 0.72;
-const GRASS_MAX_HEIGHT = ISLAND.peak * 0.95;
+const GRASS_MIN_HEIGHT = 2.6;
+const GRASS_FULL_HEIGHT = 7;
+const GRASS_FADE_HEIGHT = ISLAND.peak + 60;
+const GRASS_MAX_HEIGHT = ISLAND.peak + 90;
 
 /**
  * How far outside the island the field bothers to exist, in island radii.
