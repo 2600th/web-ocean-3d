@@ -31,6 +31,24 @@ reinventing it.
    grey sand.
 5. **19 MB of HDRIs ship and are referenced by nothing.** Total payload 90 MB.
 
+## Feature bar: Three.js Water Pro v3.5 — match, then exceed
+
+| Water Pro feature | Us before this pass | Action |
+|---|---|---|
+| FFT waves, physical units | 3-cascade JONSWAP + Hasselmann spreading | — |
+| Depth absorption, refraction, SSR | Beer–Lambert per channel, depth refraction, SSR over planar | — |
+| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks |
+| Foam around objects | **missing** | **add depth-intersection contact foam** |
+| Caustics on floor | animated caustics + world-space god rays | add chromatic dispersion |
+| Interacting wakes | Kelvin wake that displaces the surface | — |
+| GPU buoyancy, multi-point | 4-probe solver on CPU sampler | — |
+| Underwater + waterline | per-pixel waterline, Snell's window, TIR | — |
+| Infinite water, LOD | camera-centred radial grid to 24 km | — |
+| 8 presets, quality levels, determinism | 9 presets, 5 tiers + adaptive, deterministic hooks | — |
+| Hull masking | **missing** | **add depth-only hull interior mask** |
+| WebGL fallback | same TSL source on WebGL2 | — |
+| *Beyond:* | | slope-variance glitter, TAA, spindrift, procedural island + world, game loop, 1/10 the payload |
+
 ## Task list
 
 ### A. Load time and payload (asset agent)

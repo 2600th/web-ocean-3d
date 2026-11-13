@@ -2301,6 +2301,7 @@ class App {
     const submersion = this.director.submersion();
     const surface = this.sampler.height(this.camera.position.x, this.camera.position.z);
     const preset = getPreset(this.state.preset);
+    this.water.setEyeSubmerged(this.camera.position.y < surface);
 
     this.underwater.setParams({
       submersion,
