@@ -16,6 +16,8 @@
  * touchscreen and a mouse — which also makes it drivable from a test.
  */
 
+import { icon, type IconName } from './icons.ts';
+
 /** Travel of the knob from the centre, as a fraction of the pad's radius. */
 const KNOB_TRAVEL = 0.62;
 
@@ -101,11 +103,14 @@ export class TouchControls {
       actions.setAttribute('role', 'group');
       actions.setAttribute('aria-label', 'Sails and anchor');
       actions.hidden = true;
-      const button = (label: string, title: string, run: () => void): void => {
+      const button = (glyph: IconName, label: string, title: string, run: () => void): void => {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'touchhelm__btn';
-        b.textContent = label;
+        const caption = document.createElement('span');
+        caption.className = 'touchhelm__label';
+        caption.textContent = label;
+        b.append(icon(glyph, 'touchhelm__icon'), caption);
         b.title = title;
         b.setAttribute('aria-label', title);
         b.addEventListener(
@@ -120,10 +125,12 @@ export class TouchControls {
         actions!.append(b);
       };
       if (callbacks.onSail) {
-        button('Sail ▲', 'Set more sail', () => callbacks.onSail!(1));
-        button('Sail ▼', 'Take in sail', () => callbacks.onSail!(-1));
+        button('sailUp', 'More', 'Set more sail', () => callbacks.onSail!(1));
+        button('sailDown', 'Less', 'Take in sail', () => callbacks.onSail!(-1));
       }
-      if (callbacks.onAnchor) button('⚓', 'Drop or weigh anchor', () => callbacks.onAnchor!());
+      if (callbacks.onAnchor) {
+        button('anchor', 'Anchor', 'Drop or weigh anchor', () => callbacks.onAnchor!());
+      }
       this.root.append(actions);
     }
     this.actions = actions;
