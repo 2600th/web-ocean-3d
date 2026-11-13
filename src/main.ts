@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   mrt,
+  normalView,
   output,
   pass,
   positionWorld,
@@ -10,7 +11,6 @@ import {
   vec4,
   velocity,
 } from 'three/tsl';
-import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
@@ -76,6 +76,7 @@ import {
   OutputTransform,
 } from './post/OutputTransform';
 import { SpatialAA } from './post/SpatialAA';
+import { PostChain } from './post/PostChain';
 import { CameraDirector } from './cameras/CameraDirector';
 import { CINEMATIC_BEATS, nominalShipXZ } from './cameras/Cinematic';
 import { getPreset } from './presets';
@@ -366,7 +367,8 @@ class App {
   private readonly prevViewProjection = uniform(new THREE.Matrix4());
   /** This frame's *unjittered* view-projection; see the ocean's velocity. */
   private readonly currViewProjection = uniform(new THREE.Matrix4());
-  private traaNode: unknown = null;
+  /** GTAO, the temporal resolve (TRAA/TAAU), sharpen, motion blur, CA, eye adaptation, grain. */
+  private postChain!: PostChain;
   /** The scene pass the frame draws through; see `compileForFrame`. */
   private scenePass: ReturnType<typeof pass> | null = null;
   /** True while a live (loop-driven) frame renders; see `installAsyncPipelines`. */
@@ -917,7 +919,10 @@ class App {
       : pass(this.scene, this.camera);
     this.scenePass = scenePass;
     if (this.taaEnabled) {
-      scenePass.setMRT(mrt({ output, velocity }));
+      // View-space normals for GTAO. Without them it reconstructs normals from
+      // depth, which breaks down on distant ground seen at a grazing angle: the
+      // beach came out as a grid of stripes that TRAA could not average away.
+      scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
       this.clouds.setPreviousViewProjection(this.prevViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
@@ -940,26 +945,28 @@ class App {
           const world = vec4(positionWorld, 1);
           const current = (currViewProjection as any).mul(world);
           const previous = (prevViewProjection as any).mul(world);
-          return current.xy
-            .div(current.w.max(1e-4))
-            .sub(previous.xy.div(previous.w.max(1e-4)));
+          // `.z = 1` marks water for the AO mask in `PostChain`; every other
+          // material's vec2 velocity is widened to (x, y, 0, 1).
+          return vec4(
+            current.xy.div(current.w.max(1e-4)).sub(previous.xy.div(previous.w.max(1e-4))),
+            1,
+            1,
+          );
         })(),
       });
     }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
-    this.traaNode = this.taaEnabled
-      ? traa(
-          scenePass.getTextureNode('output'),
-          sceneDepth,
-          scenePass.getTextureNode('velocity'),
-          this.camera,
-        )
-      : null;
-    const sceneBeauty: any = this.traaNode
-      ? (this.traaNode as any).getTextureNode()
-      : scenePass.getTextureNode();
+    // AO, the temporal resolve and the post-resolve stages live in `PostChain`.
+    this.postChain = new PostChain({
+      renderer: this.renderer,
+      camera: this.camera,
+      scenePass,
+      depth: sceneDepth,
+      temporal: this.taaEnabled,
+    });
+    const sceneBeauty: any = this.postChain.buildResolve();
 
     this.fog = new VolumetricFog();
     // Required: a post pass draws with the post-processor's own orthographic
@@ -1051,9 +1058,14 @@ class App {
     // to be handed over explicitly or the depth buffer cannot be linearised.
     this.dof.setCamera(this.camera);
     this.dof.setFrameHeight(this.renderer.getDrawingBufferSize(_drawingBuffer).y);
-    const focused = this.dof.build(rtt(graded as THREE.Node), sceneDepth);
+    const gradedTexture = rtt(graded as THREE.Node);
+    // Eye adaptation meters this — fog and the underwater pass included, so the
+    // dip below the surface is what it reacts to — and applies its gain ahead
+    // of the bloom, whose threshold assumes the preset's exposure.
+    this.postChain.buildExposure(gradedTexture);
+    const focused = this.dof.build(gradedTexture, sceneDepth);
 
-    const bloomed = this.bloom.build(rtt(focused as THREE.Node));
+    const bloomed = this.bloom.build(rtt(this.postChain.applyExposure(focused) as THREE.Node));
 
     // Flare after the bloom and before the grade: it is light arriving at the
     // sensor through the glass, so it belongs with the other things the lens
@@ -1087,11 +1099,13 @@ class App {
     // move. See `SpatialAA` for why the filter has to sit between the other two
     // rather than at either end of the chain.
     this.post.outputNode = this.outputTransform.applyDither(
-      this.spatialAa.build(
-        this.outputTransform.buildDisplay(
-          this.lensRain.build(rtt(this.colorGrade.build(flared) as THREE.Node)),
-          OUTPUT_TONE_MAPPING,
-          OUTPUT_COLOR_SPACE,
+      this.postChain.applyGrain(
+        this.spatialAa.build(
+          this.outputTransform.buildDisplay(
+            this.lensRain.build(rtt(this.colorGrade.build(flared) as THREE.Node)),
+            OUTPUT_TONE_MAPPING,
+            OUTPUT_COLOR_SPACE,
+          ),
         ),
       ),
     ) as THREE.Node;
@@ -1387,18 +1401,11 @@ class App {
    * otherwise the final frame's sub-pixel offset — and the history under it —
    * depend on how many free-running frames the session drew before the reset.
    *
-   * Reaches into two TRAANode fields (`_jitterIndex`, `_historyRenderTarget`)
-   * that r185 exposes but does not document; shrinking the history target is
-   * what its own `updateBefore` reads as "restart".
+   * `PostChain.resetTemporal` restarts TRAA, the GTAO rotation and the eye
+   * adaptation together.
    */
   private resetTemporal(): void {
-    const node = this.traaNode as
-      | { _jitterIndex: number; _historyRenderTarget: { setSize(w: number, h: number): void } }
-      | null;
-    if (node) {
-      node._jitterIndex = 0;
-      node._historyRenderTarget.setSize(1, 1);
-    }
+    this.postChain.resetTemporal();
     this.camera.updateMatrixWorld();
     this.prevViewProjection.value.multiplyMatrices(
       this.camera.projectionMatrix,
@@ -2530,6 +2537,7 @@ class App {
     // read the volumetric fog already performs there, so nothing new is being
     // asked of the backend.
     this.lensFlare.setEnabled(quality.lensFlare === 1);
+    this.postChain.setTier(tier);
     this.water.setWakeDisplacement(quality.wakeDisplacement);
     // Instance counts only, and safe on a live scene: no geometry is rebuilt and
     // nothing allocates, so this is a tier knob rather than a reload. Null until
@@ -2872,6 +2880,7 @@ class App {
     // the sensor limit — `1 / exposure` is. The presets span 0.42 to 1.35, so a
     // fixed threshold would mean something different in each of the nine.
     this.bloom.setExposure(preset.toneMappingExposure);
+    this.postChain.setPreset(this.state.preset);
     // With the exposure, not instead of it, and the pair is not redundant:
     // exposure decides where the scene sits on the tone curve, the grade decides
     // what colour it is once it gets there. Collapsing them into one number is
@@ -2983,6 +2992,7 @@ class App {
 
   private update = (dt: number, elapsed: number): void => {
     this.director.update(dt);
+    this.postChain.update(dt);
 
     /**
      * The tour owns the sun while it is running.
@@ -3667,6 +3677,8 @@ class App {
           dof: this.dof,
           lensRain: this.lensRain,
           underwater: this.underwater,
+          /** AO, TAAU, sharpen, motion blur, CA, grain, eye adaptation; `setOverride` for A/B. */
+          chain: this.postChain,
         },
         loop: this.loop,
         backend: this.backend,
@@ -3772,6 +3784,7 @@ class App {
           // it captured on entry, so both halves are needed to close the race.
           this.captureOwnsClock = true;
           this.loop.setPaused(true);
+          this.postChain.setDeterministic(true);
           // Settle both things that pause the loop on their own account: the
           // scene load's compile pass and any tier change in flight. Awaiting
           // them is what makes the pause stick — the flag above only stops them
@@ -4107,6 +4120,7 @@ class App {
     this.lensFlare?.dispose();
     this.outputTransform?.dispose();
     this.spatialAa?.dispose();
+    this.postChain?.dispose();
     this.spray?.dispose();
     this.particles?.dispose();
     this.caustics?.dispose();
