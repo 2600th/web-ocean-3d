@@ -58,7 +58,7 @@ API (`https://api.polyhaven.com/files/<slug>`), verifies each file's size and MD
 against the API manifest, checks glTF/HDR/JPEG magic bytes, and is idempotent (existing
 non-empty files are skipped). It exits non-zero on any failure.
 
-**Total size of `public/`: 92,425,273 bytes (88.14 MiB) across 135 files** — which
+**Total size of `public/`: 55,947,175 bytes (53.36 MiB) across 85 files** — which
 is everything a build ships. The raw downloads the optimiser eats are another
 555 MB and live in `assets/source/`, outside the Vite public root and outside git;
 see the note in `.gitignore`.
