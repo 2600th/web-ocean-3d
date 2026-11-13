@@ -2318,6 +2318,34 @@ body {
   font-weight: 700;
 }
 
+/* The error's own words, under the plain ones: for a bug report, not to read. */
+.boot__status-detail {
+  display: block;
+  margin-top: 6px;
+  font: 500 12.5px/1.35 var(--font-body);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* The loading line under the status: a tip or a piece of the world. */
+.boot__tip {
+  max-width: 46ch;
+  min-height: 2.8em;
+  margin: 8px auto 0;
+  font: 500 14px/1.4 var(--font-body);
+  color: var(--ink-soft);
+  opacity: 0.92;
+  transition: opacity 360ms var(--ease);
+}
+
+.boot__tip.is-changing {
+  opacity: 0;
+}
+
+.boot__progress:has(.boot__status--error) .boot__tip {
+  display: none;
+}
+
 /* Failure: the course stops where it was, greyed, and a way to try again. */
 .boot__retry {
   display: none;
@@ -3256,6 +3284,7 @@ body {
   .boot__flourish,
   .boot__gate-intro,
   .boot__gate-readout,
+  .boot__tip,
   .boot__choices--quality .boot__choice-detail {
     display: none;
   }

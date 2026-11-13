@@ -240,12 +240,19 @@ const boot = {
   root: document.getElementById('boot'),
   bar: document.getElementById('boot-bar'),
   status: document.getElementById('boot-status'),
+  /** Furthest the course has been inked; the ship never sails backwards. */
+  reached: 0,
   set(progress: number, message: string) {
     // Scaled rather than resized. Animating `width` puts a layout pass and a
     // paint on the main thread for every update, during the one stretch where
     // that thread is already compiling shaders and decoding assets; a transform
     // is composited and costs neither. The bar is `transform-origin: left`.
-    const clamped = Math.max(0, Math.min(1, progress));
+    //
+    // Monotonic: stages are reported from more than one place (0.85 for the
+    // controls lands before 0.82 for the first frame), and a bar that slides
+    // back reads as something having gone wrong.
+    const clamped = Math.max(this.reached, Math.min(1, progress));
+    this.reached = clamped;
     if (this.bar) {
       (this.bar as HTMLElement).style.transform = `scaleX(${clamped})`;
     }
@@ -256,9 +263,19 @@ const boot = {
   hide() {
     this.root?.classList.add('boot--hidden');
   },
-  fail(message: string) {
+  /**
+   * The failure state: what happened and what to do, in plain words, with the
+   * error's own text under it, smaller, for whoever needs to report it.
+   */
+  fail(message: string, detail = '') {
     if (this.status) {
       this.status.textContent = message;
+      if (detail) {
+        const small = document.createElement('small');
+        small.className = 'boot__status-detail';
+        small.textContent = detail;
+        this.status.append(small);
+      }
       this.status.classList.add('boot__status--error');
     }
   },
@@ -516,7 +533,7 @@ class App {
   }
 
   async start(): Promise<void> {
-    boot.set(0.05, 'Initialising renderer…');
+    boot.set(0.05, 'Waking the graphics card…');
     const rendererOptions: Parameters<typeof createRenderer>[0] = {
       canvas: this.canvas,
       forceWebGL: this.state.forceWebGL,
@@ -619,7 +636,7 @@ class App {
 
     const quality = QUALITY_TIERS[this.state.quality];
 
-    boot.set(0.25, 'Building wave spectrum…');
+    boot.set(0.25, 'Raising the swell…');
     this.simulation = new OceanSimulation(this.renderer, {
       size: quality.fftSize,
       cascadeCount: quality.cascades,
@@ -634,7 +651,7 @@ class App {
     // sky purely so the ordering is impossible to get wrong.
     this.clouds = new Clouds();
 
-    boot.set(0.4, 'Building seafloor…');
+    boot.set(0.4, 'Laying the seabed…');
     // The seafloor must exist before the water material: the surface samples its
     // depth to shade shallows, and that binding is baked into the node graph.
     this.seafloor = new Seafloor(SEAFLOOR_EXTENT);
@@ -683,7 +700,7 @@ class App {
       this.ssr.setCamera(this.camera);
     }
 
-    boot.set(0.5, 'Compiling water shaders…');
+    boot.set(0.5, 'Teaching the water to catch the light…');
     this.water = this.buildWaterMaterial();
     this.oceanMesh = new OceanMesh(this.water.material, {
       radialSegments: quality.meshRings,
@@ -694,7 +711,7 @@ class App {
     this.water.setVertexSpacing(this.oceanMesh.spacingPerMetre);
     this.scene.add(this.oceanMesh.mesh);
 
-    boot.set(0.7, 'Building atmosphere…');
+    boot.set(0.7, 'Hanging the sky…');
     this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
 
@@ -824,7 +841,7 @@ class App {
     // earshot is skipped rather than invented.
     this.audio.setGullLocator((out: GullFix) => this.locateGull(out));
 
-    boot.set(0.8, 'Building underwater pass…');
+    boot.set(0.8, 'Filling the deep…');
     this.underwater = new UnderwaterPass();
     // Required, not optional: a post pass is drawn with the post-processor's own
     // orthographic quad camera, so the built-in camera nodes resolve to that quad
@@ -1079,7 +1096,7 @@ class App {
       ),
     ) as THREE.Node;
 
-    boot.set(0.85, 'Wiring controls…');
+    boot.set(0.85, 'Rigging the helm…');
     this.director = new CameraDirector({
       camera: this.camera,
       domElement: this.canvas,
@@ -1155,13 +1172,13 @@ class App {
     // See `requestSceneContent`.
     void this.requestSceneContent();
 
-    boot.set(0.82, 'Preparing the first frame…');
+    boot.set(0.82, 'Readying the first view…');
     await this.prewarm();
     this.loop.start();
-    boot.set(0.84, 'Streaming island content…');
+    boot.set(0.84, 'Bringing the ship and island in…');
     window.setTimeout(() => boot.hide(), 350);
 
-    boot.set(0.86, 'Loading ship and island…');
+    boot.set(0.86, 'Bringing the ship and island in…');
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
@@ -1175,8 +1192,8 @@ class App {
     // deals itself after that takes the path every other late level does — the
     // frame update hands it to `compileLodLevels`.
 
-    boot.set(0.98, 'Island arriving…');
-    boot.set(1, 'Ready');
+    boot.set(0.98, 'Island in sight…');
+    boot.set(1, 'Fair winds');
   }
 
   /**
@@ -1784,7 +1801,7 @@ class App {
         const progress = 0.86 + fraction * 0.1;
         boot.set(
           progress,
-          'Loading island content ' + itemsLoaded + '/' + itemsTotal + '…',
+          'Bringing the ship and island in · ' + itemsLoaded + ' of ' + itemsTotal,
         );
       },
     });
@@ -4115,14 +4132,18 @@ const canvas = document.getElementById('viewport') as HTMLCanvasElement | null;
 const uiRoot = document.getElementById('ui-root');
 
 if (!canvas || !uiRoot) {
-  boot.fail('Failed to start: page markup is missing #viewport or #ui-root.');
+  boot.fail('The page did not load completely. Reload to try again.');
 } else {
   void openStartGate(boot.root as HTMLElement)
     .then((selection) => new App(canvas, uiRoot, selection).start())
     .catch((error: unknown) => {
     console.error(error);
+    // What happened and what to do about it; the error's own words go under
+    // it. Try again reloads to the menu, where a lighter choice can be made.
     boot.fail(
-      error instanceof Error ? `Failed to start: ${error.message}` : 'Failed to start.',
+      'The sea could not be launched on this device. '
+        + 'Try again, and if it fails twice, choose WebGL2 and Low on the menu.',
+      error instanceof Error ? error.message : '',
     );
     });
 }
