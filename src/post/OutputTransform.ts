@@ -106,7 +106,11 @@ export class OutputTransform {
     // The renderer's own output node, with the renderer's own settings. This
     // includes `toneMappingExposure` — the tone-mapping node reads it as a
     // uniform — so the per-preset exposure keeps working untouched.
-    return Fn(() => vec4(renderOutput(src, toneMapping, colorSpace)))();
+    return Fn(() => {
+      const c = vec4(src);
+      const trimmed = OUTPUT_TONE_TRIM === 1 ? c : vec4(c.rgb.mul(OUTPUT_TONE_TRIM), c.a);
+      return vec4(renderOutput(trimmed, toneMapping, colorSpace));
+    })();
   }
 
   /** The dither, which must be the last thing that touches the frame. */
@@ -151,6 +155,36 @@ export class OutputTransform {
   dispose(): void {}
 }
 
+/**
+ * The tone curve, with `?tonemap=aces|agx|neutral` for A/B.
+ *
+ * The query exists for the comparison in `docs/AAA_PLAN.md` section N and is
+ * read once at boot: the operator is compiled into the output node, so
+ * switching it live would be a recompile.
+ */
+function chooseToneMapping(): THREE.ToneMapping {
+  const query =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('tonemap') : null;
+  switch (query) {
+    case 'agx':
+      return THREE.AgXToneMapping;
+    case 'neutral':
+      return THREE.NeutralToneMapping;
+    case 'aces':
+    default:
+      return THREE.ACESFilmicToneMapping;
+  }
+}
+
 /** Re-exported so `main` does not have to import three twice to name these. */
-export const OUTPUT_TONE_MAPPING: THREE.ToneMapping = THREE.ACESFilmicToneMapping;
+export const OUTPUT_TONE_MAPPING: THREE.ToneMapping = chooseToneMapping();
+/**
+ * Linear gain ahead of the curve that puts scene middle grey (0.18) at the same
+ * display value under every operator, so a comparison compares *curves* rather
+ * than exposures. Three's ACES divides by 0.6 internally; AgX lands within
+ * 0.01 EV of it; Khronos Neutral needs +0.49 EV. Computed by
+ * evaluating three's own curve formulas on a grey ramp.
+ */
+export const OUTPUT_TONE_TRIM: number =
+  OUTPUT_TONE_MAPPING === THREE.NeutralToneMapping ? 1.406 : OUTPUT_TONE_MAPPING === THREE.AgXToneMapping ? 1.008 : 1;
 export const OUTPUT_COLOR_SPACE = THREE.SRGBColorSpace;

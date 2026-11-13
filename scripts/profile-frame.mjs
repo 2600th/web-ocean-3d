@@ -446,6 +446,52 @@ const SCENARIOS = `
         return () => { bloom.setEnabled(true); };
       },
     },
+    // --- the AAA-pass stages in src/post/PostChain.ts -----------------------
+    // Each is a uniform or a skipped pass, never a recompile. Motion blur is
+    // withheld under the deterministic reset this harness uses, so its row
+    // opts back in and fakes a 40 px pan with the resolve's motion bias.
+    ...[
+      ['GTAO', 'ao', 'half-resolution GTAO plus its share of the pre-resolve composite'],
+      ['auto exposure', 'autoExposure', '16x16 meter, 1x1 reduction; disabled skips both passes'],
+      ['sharpen', 'sharpen', 'RCAS lobe only; the resolve pass itself always runs'],
+      ['chromatic aberration', 'aberration', 'two extra taps in the resolve pass'],
+      ['film grain', 'grain', 'four hashes in the output pass'],
+    ].map(([label, key, note]) => ({
+      label: 'post: ' + label + ' off',
+      note,
+      apply: () => {
+        const chain = ocean.post?.chain;
+        if (!chain || typeof chain.setOverride !== 'function') return null;
+        chain.setOverride(key, false);
+        return () => chain.setOverride(key, null);
+      },
+    })),
+    {
+      label: 'post: motion blur on (40 px pan)',
+      note: 'opts the capture into the blur and biases every velocity by a 40 px horizontal pan',
+      apply: () => {
+        const chain = ocean.post?.chain;
+        if (!chain || typeof chain.setMotionBlurInCapture !== 'function') return null;
+        chain.setMotionBlurInCapture(true);
+        chain.setOverride('motionBlur', true);
+        chain.resolve.uMotionBias.value.set((40 / window.innerHeight) * 2, 0);
+        return () => {
+          chain.setMotionBlurInCapture(false);
+          chain.setOverride('motionBlur', null);
+          chain.resolve.uMotionBias.value.set(0, 0);
+        };
+      },
+    },
+    ...[0.77, 0.67].map((scale) => ({
+      label: 'post: render scale ' + scale,
+      note: 'scene pass below native, TRAA at that size, chain upsamples; the Medium and Low settings',
+      apply: () => {
+        const chain = ocean.post?.chain;
+        if (!chain || typeof chain.setOverride !== 'function') return null;
+        chain.setOverride('renderScale', scale);
+        return () => chain.setOverride('renderScale', null);
+      },
+    })),
     {
       label: 'lens rain',
       note: 'lensRainQuality 3 at High. A clear frame is documented as costing one compare at any level',
