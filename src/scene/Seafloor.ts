@@ -23,6 +23,8 @@ import {
 // unqualified name; see `smoothstepDown` below.
 import { smoothstepDown as smoothstepDownNode } from '../core/tslMath';
 import { occludeLight } from '../core/lightOcclusion';
+// Shore hook: the swash wetting the sand. Self-contained; see `ocean/Surf`.
+import { applySwashToGround, swashRoughness } from '../ocean/Surf';
 import { SEEDS, mulberry32 } from '../core/random';
 
 /**
@@ -1076,6 +1078,8 @@ export class Seafloor {
     this.material.name = 'seafloor-sand';
     this.material.roughness = 0.93;
     this.material.metalness = 0;
+    // Shore hook: sand the swash just left is glossy. See `ocean/Surf`.
+    this.material.roughnessNode = Fn(() => swashRoughness(float(0.93), positionWorld))();
     /**
      * The sky is a source of light on this surface, not a mirror in it.
      *
@@ -1453,13 +1457,17 @@ export class Seafloor {
       const seabedMottle: Node = mix(float(1), patch.mul(0.45).add(0.72), float(1).sub(aboveWater));
       const mottled: Node = damp.mul(seabedMottle).toVar();
 
-      if (caustics === null) return vec4(mottled, 1);
+      // Shore hook: the swash darkens the sand it reaches and it dries over
+      // seconds. Scales whatever the palette above produced; see `ocean/Surf`.
+      const surfed = applySwashToGround(mottled, wp).toVar();
+
+      if (caustics === null) return vec4(surfed, 1);
 
       // Caustics only exist under water, and fade out as the floor gets deep
       // enough that the surface pattern has diverged into ambient light.
-      const reach: Node = smoothstepDownNode(depth, 2, 48).mul(float(1).sub(aboveWater)).toVar();
-      const lit: Node = mix(float(1), caustics, reach.mul(strength)).toVar();
-      return vec4(mottled.mul(lit), 1);
+      const reach = smoothstepDownNode(depth, 2, 48).mul(float(1).sub(aboveWater)).toVar();
+      const lit = mix(float(1), caustics, reach.mul(strength)).toVar();
+      return vec4(surfed.mul(lit), 1);
     })();
 
     // Wet sand is a mirror for a moment after each wave; dry sand is chalk.

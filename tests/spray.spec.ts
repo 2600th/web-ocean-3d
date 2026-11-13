@@ -11,44 +11,27 @@ import { bootOcean } from './lib/capture';
  */
 
 /**
- * PARKED — the system emits and does not draw, and this test is the evidence.
+ * Still `fixme`, but no longer because the system draws nothing — it draws.
  *
- * `test.fixme` rather than `test.skip`, because nothing here is wrong with the
- * test: it is a correct assertion about a subsystem that does not yet satisfy
- * it, and it should start passing the moment the defect below is fixed. Deleting
- * it or loosening it would throw away the only thing that knows.
+ * What was actually wrong, found by injecting an impact of known strength in
+ * front of a fixed camera (it draws a clear sheet, so the dynamic uniform-array
+ * index this note used to blame was never the problem):
  *
- * What is established:
+ *   - The real impacts were too weak to see. Probes on the waterline, strength
+ *     `speed / 6` (about 0.2 for a real slam), launch `sqrt(speed) * 2.6`: a
+ *     half-metre puff of 10-30 cm quads at a fifth of their opacity, unlit.
+ *   - In this preset they were fogged out entirely. `VolumetricFog` applies
+ *     aerial perspective from scene depth, and a particle that writes no depth is
+ *     fogged as whatever is behind it — the sky at the far plane, in a storm, is
+ *     total. `Spray` now writes its cores' depth in a separate pass.
  *
- *   - Impacts are detected. The probe crossing test fires and the ring fills;
- *     `sprayLiveEvents()` reports 4 in twenty seconds of a 21 m/s sea, with one
- *     still airborne at the moment of capture.
- *   - The mesh is real and reaches the renderer. Queried at runtime: in the
- *     scene, `visible: true`, `instanceCount: 960`, indexed, both instanced
- *     attributes present, `MeshBasicNodeMaterial`, and the graph compiles on
- *     both backends.
- *   - Nothing is rasterised. 0 of 1,440,000 pixels differ between spray at full
- *     strength and spray at zero.
- *
- * Four fixes were attempted and none moved the pixel count: four `smoothstep`
- * calls with reversed edges (a real bug, and fixed — reversed edges are
- * undefined in GLSL and WGSL); capturing while the table was empty (a real test
- * bug, and fixed); a degenerate billboard basis when a droplet is directly
- * overhead (a real latent NaN, and fixed); and building the varying outside an
- * `Fn` flow so its `toVar` declarations had no flow to belong to.
- *
- * The surviving hypothesis, which fits every observation above and which the
- * four attempts do not touch, is the dynamic uniform-array index: every
- * instance reads `uOrigin.element(attribute('sprayEvent').x.toInt())`, and if
- * that index does not resolve per instance then all 960 read slot 0, whose
- * emission time is the sentinel -1000, whose age is therefore enormous, and
- * whose `alive` term is zero — permanently, whatever the table contains.
- *
- * The fix that follows from it is to carry the event table in a small
- * `DataTexture` read with `textureLoad`, which is how `OceanSimulation` already
- * indexes its per-cascade spectrum atlas, and which removes the dynamic uniform
- * index entirely. That is an architecture change rather than another patch,
- * which is the point at which this was parked.
+ * Why this assertion still cannot be trusted as written: in a storm with rain
+ * and TRAA, two consecutive `capturePixels()` calls with nothing changed differ
+ * in roughly a third of the frame's pixels, so "pixels changed by spray" is
+ * below the noise floor of the measurement. It needs a control pair (two
+ * captures with spray at the same strength) and a threshold relative to it, or
+ * rain forced off with `setRainOverride(0)`, before it is promoted back to
+ * `test`.
  */
 test.fixme('a hull driven through a storm throws spray, and it is drawn', async ({ page }) => {
   test.setTimeout(600_000);
