@@ -2808,7 +2808,14 @@ class App {
     _keyDirection.copy(key.position).normalize();
     // 3.4 is the sun's full-daylight intensity in `Atmosphere`, so this is
     // "how close to full daylight is it" rather than an arbitrary scale.
-    this.water.setSun(_keyDirection, key.color, key.intensity * 1.8, key.intensity / 3.4);
+    // The *direct* glint fades with the overcast on the same curve the sky uses
+    // to hide the disc (`Atmosphere`: gone by three-quarters cover). The key
+    // light keeps a quarter of its strength under a full deck as diffuse
+    // daylight, but a mirror-sharp sun path on the sea under a sky with no sun
+    // in it is the storm's most obvious lie.
+    const clearSky = Math.max(0, 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) / 0.75);
+    const glint = 0.06 + 0.94 * clearSky * clearSky;
+    this.water.setSun(_keyDirection, key.color, key.intensity * 1.8 * glint, key.intensity / 3.4);
     (this.uKeyDirection.value as THREE.Vector3).copy(_keyDirection);
     // Scaled by the light's own intensity so the term follows the sun down: at
     // dusk a backlit frond should stop glowing along with everything else.
