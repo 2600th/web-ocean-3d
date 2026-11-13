@@ -425,6 +425,12 @@ class App {
   private compileGeneration = 0;
   /** Restores the renderer state a running `compileForFrame` holds. */
   private frameStateRelease: (() => void) | null = null;
+  /**
+   * Compiles still running after their held state was released, by the render
+   * context they build for: each entry puts that state back and returns the
+   * undo. See `installOrphanedCompileGuard`.
+   */
+  private readonly orphanedCompiles = new Map<object, () => () => void>();
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -1190,6 +1196,7 @@ class App {
     this.loop = new Loop((_dt, _elapsed, live) => this.renderFrame(live));
     this.installAsyncPipelines();
     this.installStableContexts();
+    this.installOrphanedCompileGuard();
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
@@ -1289,6 +1296,46 @@ class App {
   }
 
   /**
+   * Builds the rest of a released compile under the state it was started with.
+   *
+   * `compileAsync` cannot be cancelled, and it builds each object's nodes
+   * later, a task at a time, reading the target and the MRT from the renderer
+   * as it goes (`NodeMaterial.setup`). A prewarm that times out has to give
+   * the renderer back so a frame can draw, and every build after that saw no
+   * target and no MRT: one output for a three-attachment pass, cached against
+   * the scene pass's context for the rest of the session. Frames cannot simply
+   * borrow the renderer around a held state either — tried, and the compile's
+   * open context collided with the frame's ("RenderPassEncoder was already
+   * ended").
+   *
+   * So a released compile's remaining builds for its context are made
+   * synchronously here, with its state put back for exactly the length of
+   * each build: no frame can run inside one, and none is built against the
+   * wrong state. A main-thread cost per object, on a path that only a device
+   * slow enough to time out the prewarm ever takes.
+   */
+  private installOrphanedCompileGuard(): void {
+    if (this.backend !== 'webgpu') return;
+    const nodes = (this.renderer as unknown as {
+      _nodes: {
+        getForRender(renderObject: unknown): unknown;
+        getForRenderAsync(renderObject: unknown): Promise<unknown>;
+      };
+    })._nodes;
+    const getForRenderAsync = nodes.getForRenderAsync.bind(nodes);
+    nodes.getForRenderAsync = (renderObject) => {
+      const hold = this.orphanedCompiles.get((renderObject as { context: object }).context);
+      if (hold === undefined) return getForRenderAsync(renderObject);
+      const restore = hold();
+      try {
+        return Promise.resolve(nodes.getForRender(renderObject));
+      } finally {
+        restore();
+      }
+    };
+  }
+
+  /**
    * Gives the scene pass, the reflection and the shadow map one render context
    * each, whatever depth they are drawn at.
    *
@@ -1324,7 +1371,7 @@ class App {
         if (this.reflections?.ownsTarget(target)) {
           return get(target, mrtArg, PINNED_DEPTH.reflection);
         }
-        if (target === this.atmosphere?.sunLight.shadow.map) {
+        if (this.lighting?.shadows.ownsTarget(target) || target === this.atmosphere?.sunLight.shadow.map) {
           return get(target, mrtArg, PINNED_DEPTH.shadow);
         }
       }
@@ -1758,9 +1805,23 @@ class App {
     const traaVelocity = velocityProjection
       ? (velocity as unknown as { setProjectionMatrix(m: THREE.Matrix4 | null): void })
       : null;
-    renderer.setRenderTarget(target);
-    renderer.setMRT(mrtNode as SceneMRT);
-    traaVelocity?.setProjectionMatrix(this.camera.projectionMatrix);
+    // The context `compileAsync` will build for: the same lookup it makes.
+    const context = (
+      renderer as unknown as { _renderContexts: { get(t: unknown, m: unknown): object } }
+    )._renderContexts.get(target, mrtNode);
+    const hold = (): (() => void) => {
+      const heldTarget = renderer.getRenderTarget();
+      const heldMRT = renderer.getMRT();
+      renderer.setRenderTarget(target);
+      renderer.setMRT(mrtNode as SceneMRT);
+      traaVelocity?.setProjectionMatrix(this.camera.projectionMatrix);
+      return () => {
+        renderer.setRenderTarget(heldTarget);
+        renderer.setMRT(heldMRT as SceneMRT);
+        traaVelocity?.setProjectionMatrix(null);
+      };
+    };
+    hold();
     let released = false;
     const release = (): void => {
       if (released) return;
@@ -1769,6 +1830,9 @@ class App {
       renderer.setMRT(previousMRT as SceneMRT);
       traaVelocity?.setProjectionMatrix(null);
       if (this.frameStateRelease === release) this.frameStateRelease = null;
+      // Still building: what is left is built under this state, one object at
+      // a time, by `installOrphanedCompileGuard`.
+      this.orphanedCompiles.set(context, hold);
     };
     this.frameStateRelease = release;
     let compile: Promise<void>;
@@ -1776,9 +1840,13 @@ class App {
       compile = renderer.compileAsync(this.scene, camera);
     } catch (error) {
       release();
+      this.orphanedCompiles.delete(context);
       throw error;
     }
-    return compile.finally(release);
+    return compile.finally(() => {
+      release();
+      if (this.orphanedCompiles.get(context) === hold) this.orphanedCompiles.delete(context);
+    });
   }
 
   /** Puts back what `compileForFrame` holds, if a compile still holds it. */
@@ -2994,6 +3062,10 @@ class App {
    * viewer dragging a quality selector across five tiers wants.
    */
   private async drainQualityRequests(): Promise<void> {
+    // An LOD compile already running owns the pause and gives it back when it
+    // ends; taking the loop before that would read its pause as ours and let
+    // its `finally` restart frames in the middle of the teardown.
+    await this.lodCompile?.catch(() => undefined);
     const wasPaused = this.loop.isPaused;
     this.loop.setPaused(true);
     // Pause *then* settle, in that order. Pausing stops new frames; settling
@@ -3134,7 +3206,16 @@ class App {
     // island and the near LODs are wanted for the first time. `updateLod` leaves
     // them hidden and hands them over here; drawing one before its pipeline
     // exists is the inline gameplay compile this project rules out.
-    if (this.props !== null && this.lodCompile === null) {
+    // Never beside another compile: a tier change destroys what an LOD compile
+    // is building against, and either one releasing the renderer's frame state
+    // would leave the other building with none. The levels stay hidden and are
+    // offered again once nothing else is compiling.
+    if (
+      this.props !== null &&
+      this.lodCompile === null &&
+      this.qualityApply === null &&
+      this.pendingCompile === null
+    ) {
       const pending = this.props.takeUncompiledLevels();
       if (pending.length > 0) this.lodCompile = this.compileLodLevels(pending);
     }
