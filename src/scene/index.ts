@@ -16,6 +16,7 @@ export { SurfaceWetness } from './Wetness';
 export { Props, type Floater, type PropsOptions } from './Props';
 export {
   ISLAND,
+  SEAFLOOR_EXTENT,
   Seafloor,
   seafloorDepth,
   seafloorHeight,

@@ -102,9 +102,6 @@ const MANIFEST = [
   // direction — see the `rock_slab_a` note in the Sketchfab manifest below for
   // the measurement and the replacement.
 
-  { kind: 'model', slug: 'pachira_aquatica_01', res: '1k', dir: 'assets/source/models/pachira_aquatica_01', note: 'Tropical tree' },
-  { kind: 'model', slug: 'fern_02', res: '1k', dir: 'assets/source/models/fern_02', note: 'Undergrowth' },
-  { kind: 'model', slug: 'shrub_sorrel_01', res: '1k', dir: 'assets/source/models/shrub_sorrel_01', note: 'Undergrowth' },
 
   // ---- Tropical planting ---------------------------------------------------
   //
@@ -113,15 +110,11 @@ const MANIFEST = [
   // the one silhouette everyone associates with it. `pachira_aquatica` above is
   // the closest tree they publish; these two are genuine tropical understorey
   // from the same cove collection.
-  { kind: 'model', slug: 'anthurium_botany_01', res: '1k', dir: 'assets/source/models/anthurium_botany_01', note: 'Tropical broadleaf' },
-  { kind: 'model', slug: 'calathea_orbifolia_01', res: '1k', dir: 'assets/source/models/calathea_orbifolia_01', note: 'Tropical broadleaf' },
   // Three more canopy forms. Nine copies of one tree is not a wood, however
   // many of them there are — the eye finds the repeat long before it runs out
   // of trees, and a grove needs different silhouettes more than it needs more
   // instances. `jacaranda` is the broadest crown Poly Haven publishes, which is
   // what a tropical canopy is mostly made of.
-  { kind: 'model', slug: 'island_tree_02', res: '1k', dir: 'assets/source/models/island_tree_02', note: 'Island tree' },
-  { kind: 'model', slug: 'jacaranda_tree', res: '1k', dir: 'assets/source/models/jacaranda_tree', note: 'Broad canopy tree' },
 
   // ---- Pirate cove ---------------------------------------------------------
   //
@@ -159,8 +152,6 @@ const MANIFEST = [
   // grass 15 cm tall, and scaled up far enough to be visible on a hillside it
   // stops being grass and becomes a bush made of knives. `IslandMeadow` owns
   // close-in turf now, so there was nothing left for it to do.
-  { kind: 'model', slug: 'grass_medium_01', res: '1k', dir: 'assets/source/models/grass_medium_01', note: 'Meadow grass tuft' },
-  { kind: 'model', slug: 'grass_medium_02', res: '1k', dir: 'assets/source/models/grass_medium_02', note: 'Meadow grass tuft' },
 
   // ---- Environment maps (day / sunset / foggy / moonlit) ------------------
   { kind: 'hdri', slug: 'kloofendal_43d_clear_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: day' },
@@ -228,33 +219,6 @@ const SKETCHFAB = [
     page: 'https://sketchfab.com/3d-models/goniastrea-favulus-526ede8a83f943ee868d6991a6d5a533',
   },
   {
-    // ---- Trees that look like trees --------------------------------------
-    //
-    // Poly Haven's `island_tree_01` and `_03` used to carry this island's
-    // half-bare coastal scrub. They scan beautifully and they are the wrong
-    // *plant*: on a tropical island they read as dead sticks, which is exactly
-    // how they read. These two are botanical models rather than scans — a royal
-    // poinciana in flower and a Hong Kong orchid tree — and between them they
-    // give the island a canopy and a colour it never had.
-    //
-    // Both arrive at six figures of triangles, which is what the LOD chain in
-    // `optimize-assets.mjs` is for.
-    slug: 'tree_poinciana',
-    uid: '066ca51810ad483aa34ef738c0b7ae6a',
-    note: 'Royal poinciana in flower (Delonix regia)',
-    licence: 'CC-BY-4.0',
-    author: 'PlantCatalog',
-    page: 'https://sketchfab.com/3d-models/realistic-hd-royal-poinciana-1740-066ca51810ad483aa34ef738c0b7ae6a',
-  },
-  {
-    slug: 'tree_orchid',
-    uid: '160de59f02b946b0aa51f1c0f34ecbdd',
-    note: 'Hong Kong orchid tree (Bauhinia blakeana)',
-    licence: 'CC-BY-4.0',
-    author: 'PlantCatalog',
-    page: 'https://sketchfab.com/3d-models/realistic-hd-hong-kong-orchid-tree-4040-160de59f02b946b0aa51f1c0f34ecbdd',
-  },
-  {
     // ---- Rock that works from every side ---------------------------------
     //
     // Poly Haven's coastal set is authored for a *shore*, and it shows in the
@@ -291,33 +255,6 @@ const SKETCHFAB = [
     licence: 'CC-BY-4.0',
     author: '3dhdscan',
     page: 'https://sketchfab.com/3d-models/big-boulder-d25c7784bc68468d88add544db970e3f',
-  },
-  {
-    // The island's palms. Poly Haven has no coconut palm — `fetch-assets.mjs`
-    // has said so since the first revision, and `Remains.ts` grew a procedural
-    // one because of it. That palm was a good piece of engineering and a bad
-    // tree: its fronds rode on `emissiveNode` to fake transmission, which is not
-    // shadowed and not tone-mapped like the rest of the scene, so on a clear day
-    // the whole grove came out chrome blue.
-    //
-    // Two species rather than one. A grove of a single silhouette repeated
-    // forty-eight times reads as wallpaper from any distance, and these two are
-    // usefully different: a low double-trunk bearing fruit, and a tall slender
-    // single.
-    slug: 'palm_coconut',
-    uid: '26e787f2ff2e4c0fb004c3b0210805a3',
-    note: 'Coconut palm, double trunk with fruit',
-    licence: 'CC-BY-4.0',
-    author: 'evolveduk',
-    page: 'https://sketchfab.com/3d-models/coconut-palm-26e787f2ff2e4c0fb004c3b0210805a3',
-  },
-  {
-    slug: 'palm_tall',
-    uid: '08ccca74a0594fd999acaf4cfbd597e0',
-    note: 'Tall slender palm',
-    licence: 'CC-BY-4.0',
-    author: 'Šimon Ustal',
-    page: 'https://sketchfab.com/3d-models/tropical-palm-08ccca74a0594fd999acaf4cfbd597e0',
   },
   {
     // The one imported *animal*. Everything that swims in this project is drawn
