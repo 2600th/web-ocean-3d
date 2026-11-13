@@ -150,6 +150,9 @@ const CLOUD_LAYER = 3;
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
+const _litFog = new THREE.Color();
+/** Rec. 709 luminance of a linear colour. */
+const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
 
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
@@ -2621,13 +2624,24 @@ class App {
     // deck's grey, not the clear-sky blue the CPU-side horizon and zenith still
     // describe. Fed raw, a kilometre of storm haze repainted the dark cloud base
     // in clear-sky blue and the storm read as a fine evening.
+    //
+    // The preset's fog colour is authored for *its* hour, and the tour and the
+    // time slider take it to others. At night or deep dusk it is far brighter
+    // than any sky there is, and under a squall the pull above leaned the whole
+    // haze toward it: the far cloud deck lit pale while the near clouds, lit by
+    // the real dark sky, stood out as black blobs, and the sea mirrored it pink.
+    // So the fog is dimmed to the sky's own brightness whenever the sky is the
+    // darker of the two — never brightened, so a preset's daytime look is kept.
+    const skyLuma = luma(this.atmosphere.horizonColor);
+    const fogLuma = luma(fogPreset.color);
+    _litFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, skyLuma / fogLuma) : 1);
     const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
-    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(fogPreset.color, overcastPull);
-    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(fogPreset.color, overcastPull);
+    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(_litFog, overcastPull);
+    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(_litFog, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
-      fogPreset.color,
+      _litFog,
       hazeDensity,
       _hazeHorizon,
       _hazeZenith,
