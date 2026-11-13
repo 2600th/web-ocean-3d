@@ -8,7 +8,15 @@ export type {
   AudioQualitySettings,
   AudioSceneParams,
   AudioSystemOptions,
+  GullFix,
+  MusicState,
+  MusicSting,
+  UiCue,
 } from './AudioSystem';
+
+export { MusicEngine, MUSIC_STATES } from './music/MusicEngine';
+export { ShipSfx } from './ShipSfx';
+export { SlapDetector } from './SlapDetector';
 
 export { NoiseBed } from './NoiseBed';
 export type { NoiseBedOptions } from './NoiseBed';

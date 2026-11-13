@@ -168,8 +168,8 @@ const PROFILES: Readonly<Record<MusicState, Profile>> = {
     song: 'squall',
     order: 'storm',
     tempo: [80, 92],
-    low: mix({ drone: 0.85, reeds: 0.45, fiddle: 0.75, pluck: 0.0, drum: 0.75, bass: 0.85 }),
-    high: mix({ drone: 0.9, reeds: 0.5, fiddle: 0.8, pluck: 0.0, drum: 0.9, bass: 0.95 }),
+    low: mix({ drone: 1.4, reeds: 0.8, fiddle: 1.4, drum: 1.35, bass: 1.5 }),
+    high: mix({ drone: 1.5, reeds: 0.9, fiddle: 1.5, drum: 1.6, bass: 1.7 }),
     tune: 'fiddle',
     harmony: 'fiddle',
     pluck: 'none',
@@ -248,7 +248,7 @@ const STATE_HOLD_WATER = 0.35;
 const ENERGY_TAU = 2.5;
 
 /** Overall music level at a music volume of 1. Set by measurement against the ambience. */
-const MUSIC_LEVEL = 0.55;
+const MUSIC_LEVEL = 0.45;
 
 /** Base octave the plucked-string buffers are rendered in; others are replayed at 2^n. */
 const PLUCK_BASE = 48;
