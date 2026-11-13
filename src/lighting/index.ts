@@ -8,6 +8,7 @@ export { SunShadows } from './SunShadows';
 export { LocalLights, SHIP_LANTERN_LOCAL } from './LocalLights';
 export { LightningLight } from './LightningLight';
 export { applySpecularAA, applySpecularAATo } from './SpecularAA';
+export { sanitizeDielectrics } from './PbrAudit';
 export { applyThinTransmission, applyThinTransmissionTo, SAIL_TRANSMITTANCE } from './Translucency';
 
 /**

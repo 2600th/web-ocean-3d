@@ -64,7 +64,7 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
-import { LightingRig, applySpecularAATo, applyThinTransmissionTo } from './lighting';
+import { LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
 import { VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
@@ -1961,6 +1961,7 @@ class App {
       // Props share materials with the hull through the loader's cache;
       // `adopt` de-duplicates, so this is a no-op for anything already tracked.
       this.wetness.adopt(props.object, 'island');
+      sanitizeDielectrics(props.object);
       applySpecularAATo(props.object);
       this.lighting.local.setIsland(props.lightAnchors(), props.object);
       // Everything placed on the ground learns about the ground: contact
