@@ -1,8 +1,6 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn,
-  cameraProjectionMatrix,
-  cameraViewMatrix,
   mrt,
   output,
   pass,
@@ -264,6 +262,9 @@ class App {
   private taaEnabled = false;
   /** Last frame's view-projection, for the ocean's world-space velocity. */
   private readonly prevViewProjection = uniform(new THREE.Matrix4());
+  /** This frame's *unjittered* view-projection; see the ocean's velocity. */
+  private readonly currViewProjection = uniform(new THREE.Matrix4());
+  private traaNode: unknown = null;
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -756,26 +757,41 @@ class App {
       // world. Stock velocity would read that re-centring as motion and smear
       // the whole sea; reproject its world position through last frame's
       // camera instead.
+      //
+      // Both ends are *unjittered*. TRAA jitters the projection only for the
+      // duration of the scene pass and hands the stock velocity its original
+      // matrix, so velocity is jitter-free everywhere else; using the jittered
+      // in-shader projection here put up to half a pixel of Halton offset into
+      // every sea pixel's motion, which resampled (blurred) its history each
+      // frame and raised the current-frame weight enough to undo the AA on the
+      // very glints it was added for. Both matrices are captured outside the
+      // pipeline render — see `renderFrame`.
       const prevViewProjection = this.prevViewProjection;
+      const currViewProjection = this.currViewProjection;
       this.water.material.mrtNode = mrt({
         velocity: Fn(() => {
           const world = vec4(positionWorld, 1);
-          const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(world);
+          const current = (currViewProjection as any).mul(world);
           const previous = (prevViewProjection as any).mul(world);
-          return current.xy.div(current.w).sub(previous.xy.div(previous.w));
+          return current.xy
+            .div(current.w.max(1e-4))
+            .sub(previous.xy.div(previous.w.max(1e-4)));
         })(),
       });
     }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
-    const sceneBeauty: any = this.taaEnabled
-      ? (traa(
+    this.traaNode = this.taaEnabled
+      ? traa(
           scenePass.getTextureNode('output'),
           sceneDepth,
           scenePass.getTextureNode('velocity'),
           this.camera,
-        ) as any).getTextureNode()
+        )
+      : null;
+    const sceneBeauty: any = this.traaNode
+      ? (this.traaNode as any).getTextureNode()
       : scenePass.getTextureNode();
 
     this.fog = new VolumetricFog();
@@ -942,14 +958,7 @@ class App {
     // anything back. It also left the deterministic capture path racing a render
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
-    this.loop = new Loop(async () => {
-      await this.post.renderAsync();
-      // After the frame, so next frame's velocity reprojects against this one.
-      this.prevViewProjection.value.multiplyMatrices(
-        this.camera.projectionMatrix,
-        this.camera.matrixWorldInverse,
-      );
-    });
+    this.loop = new Loop(() => this.renderFrame());
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
@@ -1042,6 +1051,47 @@ class App {
    * ends up somewhere slightly different every run, and so does its wake. Here we
    * pay the stall, once per step, and get the same hull position every time.
    */
+  /**
+   * One pipeline render, bracketed by the view-projections the ocean's velocity
+   * needs. Both are read *outside* the render, where TRAA has not yet applied
+   * (or has already cleared) its jitter.
+   */
+  private async renderFrame(): Promise<void> {
+    this.camera.updateMatrixWorld();
+    this.currViewProjection.value.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+    await this.post.renderAsync();
+    this.prevViewProjection.value.copy(this.currViewProjection.value);
+  }
+
+  /**
+   * Restarts temporal accumulation from the next frame: jitter sequence back to
+   * its start, history re-seeded from the current frame, and no motion assumed
+   * since the last one. The deterministic capture path calls it, because
+   * otherwise the final frame's sub-pixel offset — and the history under it —
+   * depend on how many free-running frames the session drew before the reset.
+   *
+   * Reaches into two TRAANode fields (`_jitterIndex`, `_historyRenderTarget`)
+   * that r185 exposes but does not document; shrinking the history target is
+   * what its own `updateBefore` reads as "restart".
+   */
+  private resetTemporal(): void {
+    const node = this.traaNode as
+      | { _jitterIndex: number; _historyRenderTarget: { setSize(w: number, h: number): void } }
+      | null;
+    if (node) {
+      node._jitterIndex = 0;
+      node._historyRenderTarget.setSize(1, 1);
+    }
+    this.camera.updateMatrixWorld();
+    this.prevViewProjection.value.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+  }
+
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
     this.deterministic = true;
     try {
@@ -1107,7 +1157,7 @@ class App {
     //
     // Settling is the caller's job instead, and the harness already does it by
     // discarding warm-up captures before the one it keeps.
-    await this.post.renderAsync();
+    await this.renderFrame();
     this.renderer.setRenderTarget(previous);
 
     const raw = (await this.renderer.readRenderTargetPixelsAsync(
@@ -1950,7 +2000,13 @@ class App {
       peakWavelength: this.state.peakWavelength,
     });
 
-    this.water.setAppearance(preset.water);
+    // `setAppearance` only writes what it is given, and only some presets name
+    // `crestGlow` — so it is reset here or Tropical's value leaks into every
+    // preset visited after it.
+    this.water.setAppearance({
+      crestGlow: DEFAULT_APPEARANCE.crestGlow,
+      ...preset.water,
+    });
     // The surface needs the wind to stretch its glitter along the crests.
     this.water.setWind(preset.sea.windDirection, this.state.windSpeed);
 
@@ -2909,6 +2965,7 @@ class App {
           await this.contentReady?.catch(() => undefined);
           await this.qualityApply?.catch(() => undefined);
           this.loop.setPaused(true);
+          this.resetTemporal();
 
           // Settle the LOD levels for wherever this shot's camera is, and build
           // any pipeline it newly needs, *before* the capture rather than during
