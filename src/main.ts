@@ -12,6 +12,7 @@ import {
   KelpForest,
   Props,
   Remains,
+  SEAFLOOR_EXTENT,
   Seafloor,
   seafloorHeight,
   ISLAND,
@@ -488,7 +489,7 @@ class App {
     boot.set(0.4, 'Building seafloor…');
     // The seafloor must exist before the water material: the surface samples its
     // depth to shade shallows, and that binding is baked into the node graph.
-    this.seafloor = new Seafloor(4000);
+    this.seafloor = new Seafloor(SEAFLOOR_EXTENT);
     // And the cloud shade before anything asks the seafloor for its combined key
     // occlusion — the canopy does, at its own construction.
     // Three octaves rather than four: the seafloor is shaded under the whole

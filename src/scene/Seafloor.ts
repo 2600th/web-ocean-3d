@@ -646,6 +646,47 @@ function islandRelief(dx: number, dz: number, ux: number, uz: number, t: number)
   return y;
 }
 
+/**
+ * The floor mesh's own extent and subdivision, as `main` builds it. Exported
+ * for `seafloorMeshHeight`, which has to agree with the triangles actually drawn.
+ */
+export const SEAFLOOR_EXTENT = 4000;
+export const SEAFLOOR_SEGMENTS = 256;
+
+/**
+ * Height of the *rendered* floor at (x, z): the triangle the mesh actually
+ * draws there, interpolated, rather than the analytic field.
+ *
+ * The two differ by up to a few decimetres, because the mesh samples the field
+ * every fifteen metres and lerps between. That is invisible for anything with
+ * height to it and fatal for anything lying flat — a strand of weed or a shell
+ * seated on the analytic surface is buried under one triangle and floating
+ * over the next. Mirrors `PlaneGeometry`'s layout after `rotateX(-pi/2)`: rows
+ * run along +z, and each cell is split on the diagonal from (ix, iz+1) to
+ * (ix+1, iz).
+ */
+export function seafloorMeshHeight(
+  x: number,
+  z: number,
+  extent = SEAFLOOR_EXTENT,
+  segments = SEAFLOOR_SEGMENTS,
+): number {
+  const step = extent / segments;
+  const gx = (x + extent / 2) / step;
+  const gz = (z + extent / 2) / step;
+  const ix = Math.floor(gx);
+  const iz = Math.floor(gz);
+  const u = gx - ix;
+  const v = gz - iz;
+  const vx = (i: number) => i * step - extent / 2;
+  const ha = seafloorHeight(vx(ix), vx(iz));
+  const hb = seafloorHeight(vx(ix), vx(iz + 1));
+  const hc = seafloorHeight(vx(ix + 1), vx(iz + 1));
+  const hd = seafloorHeight(vx(ix + 1), vx(iz));
+  if (u + v <= 1) return ha + (hd - ha) * u + (hb - ha) * v;
+  return hc + (hb - hc) * (1 - u) + (hd - hc) * (1 - v);
+}
+
 /** Positive metres of water above the floor at (x, z); 0 where the floor is dry. */
 export function seafloorDepth(x: number, z: number): number {
   return Math.max(0, -seafloorHeight(x, z));
@@ -1001,7 +1042,7 @@ export class Seafloor {
 
   constructor(extent: number, options: SeafloorOptions = {}) {
     this.extent = extent;
-    const segments = options.segments ?? 256;
+    const segments = options.segments ?? SEAFLOOR_SEGMENTS;
 
     this.noiseTexture = createNoiseTexture();
     this.sandNormal = createSandNormalTexture();
