@@ -167,6 +167,9 @@ const CLOCK_WRAP = 3600;
  */
 const DOWNWELL_SCALE = 0.55;
 
+/** Fraction of the achromatic (scattering) floor that downwelling still loses. */
+const DOWNWELL_SCATTER = 0.25;
+
 /**
  * The water column's brightness by view elevation, as multipliers on the medium
  * colour: looking straight down into the deep, horizontally, and straight up at
@@ -1091,8 +1094,16 @@ export class UnderwaterPass {
     // Sunlight reaching a submerged surface has come down through the column
     // above it, so its colour is the colour of that depth. Weaker than the view
     // path's extinction because the light arriving at a reef is mostly diffuse
-    // downwelling from a wide cone, not one straight ray.
-    (this.uDownwell.value as THREE.Vector3).copy(this.uSigma.value as THREE.Vector3).multiplyScalar(DOWNWELL_SCALE);
+    // downwelling from a wide cone, not one straight ray. And the achromatic
+    // floor is mostly scattering, which turns light aside rather than removing
+    // it: what one ray loses the cone around it largely regains, so the floor
+    // dims downwelling far less than it dims a line of sight.
+    const scatterKept = floorSigma * DOWNWELL_SCATTER;
+    (this.uDownwell.value as THREE.Vector3).set(
+      (this.uSigma.value.x - floorSigma) * DOWNWELL_SCALE + scatterKept,
+      (this.uSigma.value.y - floorSigma) * DOWNWELL_SCALE + scatterKept,
+      (this.uSigma.value.z - floorSigma) * DOWNWELL_SCALE + scatterKept,
+    );
 
     const depth = Math.max(0, p.cameraDepth);
     this.uCameraDepth.value = depth;
