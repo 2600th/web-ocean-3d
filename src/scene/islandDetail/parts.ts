@@ -205,12 +205,17 @@ export function createDecalMaterial(): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({
     map: getLeafAtlas(),
     vertexColors: true,
-    alphaTest: 0.5,
+    // Blended, not cut out. Alpha-to-coverage needs MSAA and the scene pass has
+    // none since TRAA replaced it, so a 0.5 cutout drew the wrack as hard,
+    // pixel-stepped smears at every viewing distance. Lying flat on the sand,
+    // these never overlap anything they would need sorting against.
+    transparent: true,
+    depthWrite: false,
+    alphaTest: 0.02,
     roughness: 0.9,
     metalness: 0,
   });
   m.name = 'island-beach-decal';
-  m.alphaToCoverage = true;
   m.polygonOffset = true;
   m.polygonOffsetFactor = -2;
   m.polygonOffsetUnits = -2;
