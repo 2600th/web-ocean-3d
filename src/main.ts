@@ -178,6 +178,7 @@ const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
 /** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
 const _skyRadiance = new THREE.Color();
+const _skyHorizon = new THREE.Color();
 const _skySample = new THREE.Color();
 const _skyDirection = new THREE.Vector3();
 const _litFog = new THREE.Color();
@@ -2872,7 +2873,11 @@ class App {
     // And by how bright that sky actually *is*: the dome's own radiance at the
     // zenith and around the horizon, so the deck can never be lit brighter
     // than the sky it sits in by more than the sun or moon on it justifies.
-    this.clouds.setSkyColors(_hazeZenith, this.measureSkyRadiance(_skyRadiance));
+    this.clouds.setSkyColors(
+      _hazeZenith,
+      this.measureSkyRadiance(_skyRadiance, _skyHorizon),
+      _skyHorizon,
+    );
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -3203,10 +3208,14 @@ class App {
   /**
    * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
    * above the horizon. Five CPU evaluations of the sky model a frame.
+   * `horizon` receives the darkest of the four bearings: the dome away from
+   * the sun's glow, which is the colour of the air under a continuous deck
+   * (see the composite in `Clouds`).
    */
-  private measureSkyRadiance(out: THREE.Color): THREE.Color {
+  private measureSkyRadiance(out: THREE.Color, horizon: THREE.Color): THREE.Color {
     this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
     out.multiplyScalar(0.5);
+    let darkest = Infinity;
     for (let k = 0; k < 4; k++) {
       const a = (k * Math.PI) / 2;
       _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
@@ -3214,6 +3223,11 @@ class App {
       out.r += _skySample.r * 0.125;
       out.g += _skySample.g * 0.125;
       out.b += _skySample.b * 0.125;
+      const luma = _skySample.r * 0.2126 + _skySample.g * 0.7152 + _skySample.b * 0.0722;
+      if (luma < darkest) {
+        darkest = luma;
+        horizon.copy(_skySample);
+      }
     }
     return out;
   }

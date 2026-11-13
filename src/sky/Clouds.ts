@@ -453,6 +453,13 @@ export class Clouds {
   /** Sky brightness relative to a clear noon; see `setSkyColors`. */
   private skyLevel = 1;
   /**
+   * The dome's mean radiance just above the horizon, which a distant
+   * *continuous* deck fades toward. See the composite in `buildCloudNode`.
+   */
+  private readonly uHaze: any = uniform(new THREE.Color(0.6, 0.7, 0.8));
+  /** 0 for broken cloud, 1 for a continuous deck; from the coverage. */
+  private readonly uDeckHold = uniform(0);
+  /**
    * Ambient reaching the *top* of the layer.
    *
    * Written from the atmosphere's zenith colour, so the light a cloud top
@@ -588,7 +595,13 @@ export class Clouds {
    * The sky the layer is lit by, from the same source the water and the dome
    * read. Uniform writes only.
    */
-  setSkyColors(zenith: THREE.Color, skyRadiance?: THREE.Color): void {
+  setSkyColors(zenith: THREE.Color, skyRadiance?: THREE.Color, horizonRadiance?: THREE.Color): void {
+    if (horizonRadiance !== undefined) (this.uHaze.value as THREE.Color).copy(horizonRadiance);
+    // Broken cloud below about 0.6 coverage, a continuous deck from about 0.85.
+    const c = this.params.coverage;
+    const t = Math.min(1, Math.max(0, (c - 0.6) / 0.25));
+    this.uDeckHold.value = t * t * (3 - 2 * t);
+
     // How bright the sky actually is, relative to a clear noon. See
     // `Atmosphere.skyRadiance`, and `DAY_SKY_LUMA` for the reference.
     //
@@ -1278,10 +1291,25 @@ export class Clouds {
         // are a mid blue hundreds of times brighter than the dome — the pale
         // deck on a black sky in the night watch. The dome is the right
         // radiance in every direction at every hour, so fading to it is.
+        //
+        // Except for a continuous deck. Fading a storm ceiling to transparent
+        // uncovered the dome's sun glow behind it — a bright hole where the
+        // cloud is thickest — because a deck has no gaps for the dome to show
+        // through: the air between the viewer and a distant overcast is lit by
+        // the overcast. So, by how continuous the deck is, a far cloud keeps
+        // its opacity and its *colour* goes to `uHaze` instead, the dome's own
+        // measured radiance near the horizon, which is right at every hour for
+        // the same reason the dome is.
         const straight: any = scattered.div(float(1).sub(transmittance).max(1e-4));
         const air: any = this.aerial === null ? float(1) : this.aerial.transmittance(tEnter, rd);
-        const coverage: any = float(1).sub(transmittance).mul(air).toVar('cloudCoverage');
-        result.assign(vec4(straight.mul(coverage), coverage));
+        const hold: any = this.uDeckHold;
+        const hazed: any = mix(this.uHaze, straight, air);
+        const lit: any = mix(straight, hazed, hold);
+        const coverage: any = float(1)
+          .sub(transmittance)
+          .mul(mix(air, float(1), hold))
+          .toVar('cloudCoverage');
+        result.assign(vec4(lit.mul(coverage), coverage));
       });
 
       // The cirrus sheet, behind the cumulus. Premultiplied "over": it shows
