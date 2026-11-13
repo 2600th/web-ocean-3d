@@ -1,5 +1,16 @@
 import * as THREE from 'three/webgpu';
-import { pass, positionWorld, rtt, uniform } from 'three/tsl';
+import {
+  Fn,
+  mrt,
+  normalView,
+  output,
+  pass,
+  positionWorld,
+  rtt,
+  uniform,
+  vec4,
+  velocity,
+} from 'three/tsl';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
@@ -10,8 +21,11 @@ import {
   IslandCanopy,
   IslandMeadow,
   KelpForest,
+  ReefLife,
+  SeaCreatures,
   Props,
   Remains,
+  SEAFLOOR_EXTENT,
   Seafloor,
   seafloorHeight,
   ISLAND,
@@ -20,7 +34,15 @@ import {
   FoliageWind,
   applyGroundShadingTo,
 } from './scene';
-import { AudioSystem, DEFAULT_AUDIO_SCENE_PARAMS } from './audio';
+import {
+  AudioSystem,
+  DEFAULT_AUDIO_SCENE_PARAMS,
+  SlapDetector,
+  type GullFix,
+  type MusicState,
+} from './audio';
+import { attachUiSounds } from './ui/sounds';
+import { Gameplay, type GameUiSink, type SailSetting } from './gameplay';
 import {
   BuoyancySystem,
   BuoyantBody,
@@ -29,6 +51,7 @@ import {
   Wake,
   createRadialProbes,
   type ShipControlState,
+  type SprayImpact,
 } from './physics';
 import { Loop } from './core/Loop';
 import { AdaptiveQuality, QUALITY_TIERS, type QualityTier } from './core/QualityManager';
@@ -40,6 +63,7 @@ import { DEFAULT_SSR_STEPS, ScreenSpaceReflection } from './ocean/ScreenSpaceRef
 import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
+import { Lightning } from './sky/Lightning';
 import { VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
@@ -52,6 +76,7 @@ import {
   OutputTransform,
 } from './post/OutputTransform';
 import { SpatialAA } from './post/SpatialAA';
+import { PostChain } from './post/PostChain';
 import { CameraDirector } from './cameras/CameraDirector';
 import { CINEMATIC_BEATS, nominalShipXZ } from './cameras/Cinematic';
 import { getPreset } from './presets';
@@ -82,6 +107,9 @@ if (!localHost && !navigator.webdriver) {
   inject();
 }
 
+/** How the HUD plaque names each sail setting. See the gameplay block in `loadSceneContent`. */
+const SAIL_LABEL: Record<SailSetting, string> = { furled: 'Furled', half: 'Half sail', full: 'Full sail' };
+
 /** Scratch for the test-hook camera pin; the hook must not allocate either. */
 const _pinPosition = new THREE.Vector3();
 const _pinTarget = new THREE.Vector3();
@@ -89,6 +117,15 @@ const _pinTarget = new THREE.Vector3();
 const _keyDirection = new THREE.Vector3();
 /** Scratch for the camera forward axis, read every frame. */
 const _keyDirection2 = new THREE.Vector3();
+const _impactForward = new THREE.Vector3();
+const _impactRight = new THREE.Vector3();
+const _impactOffset = new THREE.Vector3();
+
+/** The impact sounds `AudioSystem` is gaining in parallel; optional until it has them. */
+interface ImpactAudio {
+  hullImpact?(strength: number): void;
+  waveSlap?(strength: number, pan: number): void;
+}
 /** Scratch for the hull occluder pushed to the underwater pass each frame. */
 const _hullCenter = new THREE.Vector3();
 const _hullRadius = new THREE.Vector3(1, 1, 1);
@@ -118,10 +155,87 @@ const TOUR_ENV_ELEVATION_STEP = 0.035;
  * Trunks and fronds only. A rock that swayed would be memorable for the wrong
  * reason, and the fort, the jetty and the wreck are all structures.
  */
-const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
+const FOLIAGE_MESHES = /^flora-/;
+
+/** Render layer the cloud dome lives on, so the planar mirror can skip it. */
+const CLOUD_LAYER = 3;
+
+/**
+ * Render layer for the life under the surface — reef, kelp, fish, creatures.
+ *
+ * The planar mirror renders the whole scene again from below the surface plane
+ * and clips it, so without this every coral, blade and fish was drawn a second
+ * time per frame to produce pixels the clip plane then threw away. The surface
+ * seen from *below* takes its mirror image from the screen-space backdrop, not
+ * from this reflector, so nothing visible depends on it.
+ */
+const UNDERWATER_LAYER = 4;
+
+/** Scratch for the sea creatures' key light. */
+const _creatureSun = new THREE.Color();
+
+/** Haze sky colours, pulled toward the deck's grey under an overcast. */
+const _hazeHorizon = new THREE.Color();
+const _hazeZenith = new THREE.Color();
+/** Mean dome radiance for the cloud ambient; see `App.measureSkyRadiance`. */
+const _skyRadiance = new THREE.Color();
+const _skyHorizon = new THREE.Color();
+const _skySample = new THREE.Color();
+const _skyDirection = new THREE.Vector3();
+const _litFog = new THREE.Color();
+/** Rec. 709 luminance of a linear colour. */
+const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+
+/** The MRT node type `setMRT` takes; `null` clears it. */
+type SceneMRT = Parameters<THREE.WebGPURenderer['setMRT']>[0];
+
+/**
+ * The render-context call depths `installStableContexts` pins the scene's own
+ * passes to. Far above any depth the post chain reaches, so a pinned context
+ * never shares a key with an ordinary one.
+ */
+const PINNED_DEPTH = { scene: 1001, reflection: 1002, shadow: 1003 } as const;
+
+/**
+ * How long `compileForFrame` waits for the pipelines it started to land. The
+ * prewarm's own 30 s timeout is the one that normally bites first.
+ */
+const PIPELINE_SETTLE_MS = 30_000;
+
 
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
+/** Scratch for the HUD's view heading. */
+const _hudView = new THREE.Vector3();
+
+// Audio scratch: the ship's axes, the listener's right, a bird, a hull probe.
+const _audioAxis = new THREE.Vector3();
+const _audioRight = new THREE.Vector3();
+const _audioRel = new THREE.Vector3();
+const _audioBird = new THREE.Vector3();
+const _audioProbe = new THREE.Vector3();
+
+/**
+ * Hull probes for wave slaps, in the hull's frame as fractions of (half length,
+ * height above the waterline in metres, half beam). Bow and waist, both sides:
+ * the bow is where a sea arrives first, the waist is where a beam sea slaps.
+ */
+const SLAP_PROBES: readonly (readonly [number, number, number])[] = [
+  [0.7, 0.35, -0.75],
+  [0.7, 0.35, 0.75],
+  [0.05, 0.3, -1],
+  [0.05, 0.3, 1],
+];
+
+/**
+ * Compass bearing of a world XZ direction: degrees clockwise from north, with
+ * north = −Z and east = +X (the HUD's convention, see `NavReadout`).
+ */
+function compassBearing(x: number, z: number): number {
+  return (Math.atan2(x, -z) * 180) / Math.PI;
+}
+
+const MS_TO_KNOTS = 1.943844;
 
 const boot = {
   root: document.getElementById('boot'),
@@ -132,9 +246,12 @@ const boot = {
     // paint on the main thread for every update, during the one stretch where
     // that thread is already compiling shaders and decoding assets; a transform
     // is composited and costs neither. The bar is `transform-origin: left`.
+    const clamped = Math.max(0, Math.min(1, progress));
     if (this.bar) {
-      (this.bar as HTMLElement).style.transform = `scaleX(${Math.max(0, Math.min(1, progress))})`;
+      (this.bar as HTMLElement).style.transform = `scaleX(${clamped})`;
     }
+    // The ship on the boot chart sails to the same fraction.
+    this.root?.style.setProperty('--boot-progress', String(clamped));
     if (this.status) this.status.textContent = message;
   },
   hide() {
@@ -178,13 +295,11 @@ class App {
   private atmosphere!: Atmosphere;
   private aerial!: AerialPerspective;
   /**
-   * The gust the island's planting sways on. Four systems share it — the near
-   * meshes, the imposter cards that replace them, the meadow and the distant
-   * canopy — so none of the handovers between them is a change of phase.
-   *
-   * There are two handovers now, and neither is the 320-520 m one this comment
-   * used to name: a plant becomes a card at 60 m (understorey) or 120 m
-   * (trees), and the canopy field fades in over 90-180 m behind both.
+   * The gust the island's planting sways on. Three systems share it — the
+   * procedural plants, the meadow and the distant canopy cards — so the
+   * handover between them is not a change of character. The plants carry their
+   * own LOD chain to any range; the canopy field fades in over 90-180 m behind
+   * them.
    */
   private readonly foliageWind = new FoliageWind();
   /**
@@ -199,12 +314,15 @@ class App {
   private readonly uKeyColor: any = uniform(new THREE.Color(1, 1, 1));
   private clouds!: Clouds;
   private weather!: Weather;
+  private lightning!: Lightning;
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
   private fish!: FishSchool;
   private kelp!: KelpForest;
+  private reefLife!: ReefLife;
+  private creatures!: SeaCreatures;
   private meadow!: IslandMeadow;
   private canopy!: IslandCanopy;
   private remains!: Remains;
@@ -219,8 +337,33 @@ class App {
   private audio!: AudioSystem;
   /** Hoisted: `update` reads these every frame and must not allocate. */
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
+  /** Sail state for the audio, polled from gameplay without allocating. */
+  private readonly sailAudio = { active: false, sailFill: 0, sailLuff: 0 };
+  private readonly slaps = new SlapDetector(SLAP_PROBES.length);
+  /** Weather hysteresis for the score, so a squall at the threshold does not flip it. */
+  private musicStormy = false;
+  private detachUiSounds: (() => void) | null = null;
 
   private post!: THREE.RenderPipeline;
+  private taaEnabled = false;
+  /** Last frame's view-projection, for the ocean's world-space velocity. */
+  private readonly prevViewProjection = uniform(new THREE.Matrix4());
+  /** This frame's *unjittered* view-projection; see the ocean's velocity. */
+  private readonly currViewProjection = uniform(new THREE.Matrix4());
+  /** GTAO, the temporal resolve (TRAA/TAAU), sharpen, motion blur, CA, eye adaptation, grain. */
+  private postChain!: PostChain;
+  /** The scene pass the frame draws through; see `compileForFrame`. */
+  private scenePass: ReturnType<typeof pass> | null = null;
+  /** True while a live (loop-driven) frame renders; see `installAsyncPipelines`. */
+  private liveFrame = false;
+  /** Pipelines a live frame asked for that are still being built. */
+  private pendingPipelines = 0;
+  /** `compileForFrame` calls still running; see `installAsyncPipelines`. */
+  private compilesInFlight = 0;
+  /** Bumped when a compile's held state is released early; see `compileForFrame`. */
+  private compileGeneration = 0;
+  /** Restores the renderer state a running `compileForFrame` holds. */
+  private frameStateRelease: (() => void) | null = null;
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -234,6 +377,10 @@ class App {
   private caustics!: Caustics;
 
   private assets!: AssetLoader;
+  /** The model requests, started early; see `requestSceneContent`. */
+  private contentRequests: ReturnType<App['startContentRequests']> | null = null;
+  /** Whether the boot bar belongs to the content load yet; see `requestSceneContent`. */
+  private contentOwnsBootBar = false;
   private seafloor!: Seafloor;
   private ship: Ship | null = null;
   private props: Props | null = null;
@@ -241,6 +388,8 @@ class App {
   private wake!: Wake;
   private shipBody: BuoyantBody | null = null;
   private shipControls: ShipController | null = null;
+  /** Helm-mode sailing, anchor and cargo. See `src/gameplay`. */
+  private gameplay: Gameplay | null = null;
   /** Rain wetting for the ship and the floating props. */
   private readonly wetness = new SurfaceWetness();
 
@@ -490,7 +639,7 @@ class App {
     boot.set(0.4, 'Building seafloor…');
     // The seafloor must exist before the water material: the surface samples its
     // depth to shade shallows, and that binding is baked into the node graph.
-    this.seafloor = new Seafloor(4000);
+    this.seafloor = new Seafloor(SEAFLOOR_EXTENT);
     // And the cloud shade before anything asks the seafloor for its combined key
     // occlusion — the canopy does, at its own construction.
     // Three octaves rather than four: the seafloor is shaded under the whole
@@ -531,6 +680,7 @@ class App {
     if (this.backend === 'webgpu') {
       this.reflections = new Reflections(QUALITY_TIERS[this.state.quality].reflectionScale);
       this.scene.add(this.reflections.plane);
+      this.reflections.excludeLayer(this.camera, CLOUD_LAYER);
       this.ssr = new ScreenSpaceReflection();
       this.ssr.setCamera(this.camera);
     }
@@ -568,9 +718,17 @@ class App {
     this.clouds.setAerialPerspective(this.aerial);
 
     this.scene.add(this.clouds.mesh);
+    // Clouds stay out of the planar mirror. Through a roughness-blurred, half-
+    // resolution, haze-tinted reflection a cumulus came back as a khaki smear
+    // lying on the sea — the pale blotches in the near field. SSR still
+    // reflects the clouds that are on screen, sharply and in the right place.
+    this.clouds.mesh.layers.set(CLOUD_LAYER);
+    this.camera.layers.enable(CLOUD_LAYER);
 
     this.weather = new Weather();
     this.scene.add(this.weather.object);
+    this.lightning = new Lightning();
+    this.scene.add(this.lightning.object);
 
     // Birds go in with the sky rather than with the props: they are lit by the
     // atmosphere and nothing else, and they never touch the water.
@@ -583,6 +741,10 @@ class App {
     this.spray = new Spray();
     this.spray.setStrength(quality.spray);
     this.scene.add(this.spray.mesh);
+    // One detector, several consumers: the impact a probe registers drives the
+    // spray it draws, the camera shake, the audio, the foam it leaves on the
+    // water and the water it puts on the deck. See `onSprayImpact`.
+    this.spray.onImpact((impact) => this.onSprayImpact(impact));
 
     this.fish = new FishSchool(quality.fish);
     this.scene.add(this.fish.object);
@@ -633,8 +795,8 @@ class App {
     // The wreck's owner. Poly Haven publishes no skeleton and every CC0 source
     // that does is low-poly stylised and would sit badly against photoscanned
     // rock — so it is built, which is also how this project solves gulls and
-    // the pelagic fish. The island's palms used to be built here too and are
-    // now `palm_coconut` and `palm_tall`, scattered by `Props.dressIsland`.
+    // the pelagic fish. The island's palms are built too, in `scene/flora`, and
+    // scattered by `Props.dressIsland`.
 
     this.remains = new Remains();
     // Above the tideline on the cove's own bearing, but off to one side of the
@@ -653,8 +815,16 @@ class App {
     }
     this.scene.add(this.remains.object);
 
-    this.audio = new AudioSystem({ volume: this.state.volume, quality: this.state.quality });
+    this.audio = new AudioSystem({
+      volume: this.state.volume,
+      musicVolume: this.state.musicVolume,
+      quality: this.state.quality,
+    });
     this.audio.resumeOnGesture();
+    // Gull cries come from a real bird in the flock, placed by distance and
+    // bearing from the listener. Tries a few birds; a cry with none in
+    // earshot is skipped rather than invented.
+    this.audio.setGullLocator((out: GullFix) => this.locateGull(out));
 
     boot.set(0.8, 'Building underwater pass…');
     this.underwater = new UnderwaterPass();
@@ -680,13 +850,106 @@ class App {
     // be told after the field exists — see `uCausticsTexel`.
     this.underwater.setCausticsTexelSize(this.caustics.extent / this.caustics.resolution);
 
+    // The procedural reef. Built after the caustics because it takes the same
+    // ground treatment the props do — caustics on every coral, the cloud deck's
+    // shade, contact darkening at the base — and that binding is compiled in.
+    this.reefLife = new ReefLife(quality.reefLife, {
+      shading: {
+        light: this.atmosphere.sunLight,
+        keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+        caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+        groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
+      },
+    });
+    this.scene.add(this.reefLife.object);
+
+    // The animals that live on it, homed on the same sites.
+    this.creatures = new SeaCreatures(quality.seaCreatures, {
+      sites: this.reefLife.sites,
+      caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+    });
+    this.scene.add(this.creatures.object);
+
+    // Everything that lives under the surface goes on its own layer, kept out of
+    // the planar mirror — see `UNDERWATER_LAYER`.
+    this.camera.layers.enable(UNDERWATER_LAYER);
+    this.reflections?.excludeLayer(this.camera, UNDERWATER_LAYER);
+    for (const root of [
+      this.reefLife.object,
+      this.creatures.object,
+      this.kelp.object,
+      this.fish.object,
+      this.particles.object,
+    ]) {
+      root.traverse((node) => node.layers.set(UNDERWATER_LAYER));
+    }
+
     // `RenderPipeline`, not the `PostProcessing` alias: the latter is deprecated
     // as of r183 and warns on every boot.
     this.post = new THREE.RenderPipeline(this.renderer);
-    const scenePass = pass(this.scene, this.camera);
+    // Temporal reprojection AA, WebGPU only and opt-out with `?taa=0`.
+    //
+    // The water's remaining aliasing — thresholded foam at mid distance, glitter
+    // spikes, the rigging — is sub-pixel signal that no spatial filter can
+    // recover; the shader comments say so in as many words. TRAA integrates it
+    // over frames instead. It also replaces 4x MSAA on the scene pass, which is
+    // a bandwidth saving that pays for most of the resolve.
+    this.taaEnabled =
+      this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    this.clouds.setTemporalJitter(this.taaEnabled);
+    const scenePass = this.taaEnabled
+      ? pass(this.scene, this.camera, { samples: 0 })
+      : pass(this.scene, this.camera);
+    this.scenePass = scenePass;
+    if (this.taaEnabled) {
+      // View-space normals for GTAO. Without them it reconstructs normals from
+      // depth, which breaks down on distant ground seen at a grazing angle: the
+      // beach came out as a grid of stripes that TRAA could not average away.
+      scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
+      this.clouds.setPreviousViewProjection(this.prevViewProjection);
+      // The ocean mesh is re-centred under the camera every frame, so its model
+      // matrix moves with the eye while the surface it draws is anchored to the
+      // world. Stock velocity would read that re-centring as motion and smear
+      // the whole sea; reproject its world position through last frame's
+      // camera instead.
+      //
+      // Both ends are *unjittered*. TRAA jitters the projection only for the
+      // duration of the scene pass and hands the stock velocity its original
+      // matrix, so velocity is jitter-free everywhere else; using the jittered
+      // in-shader projection here put up to half a pixel of Halton offset into
+      // every sea pixel's motion, which resampled (blurred) its history each
+      // frame and raised the current-frame weight enough to undo the AA on the
+      // very glints it was added for. Both matrices are captured outside the
+      // pipeline render — see `renderFrame`.
+      const prevViewProjection = this.prevViewProjection;
+      const currViewProjection = this.currViewProjection;
+      this.water.material.mrtNode = mrt({
+        velocity: Fn(() => {
+          const world = vec4(positionWorld, 1);
+          const current = (currViewProjection as any).mul(world);
+          const previous = (prevViewProjection as any).mul(world);
+          // `.z = 1` marks water for the AO mask in `PostChain`; every other
+          // material's vec2 velocity is widened to (x, y, 0, 1).
+          return vec4(
+            current.xy.div(current.w.max(1e-4)).sub(previous.xy.div(previous.w.max(1e-4))),
+            1,
+            1,
+          );
+        })(),
+      });
+    }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
+    // AO, the temporal resolve and the post-resolve stages live in `PostChain`.
+    this.postChain = new PostChain({
+      renderer: this.renderer,
+      camera: this.camera,
+      scenePass,
+      depth: sceneDepth,
+      temporal: this.taaEnabled,
+    });
+    const sceneBeauty: any = this.postChain.buildResolve();
 
     this.fog = new VolumetricFog();
     // Required: a post pass draws with the post-processor's own orthographic
@@ -713,7 +976,7 @@ class App {
 
     const graded = this.fog.build(
       this.underwater.build(
-        scenePass.getTextureNode(),
+        sceneBeauty,
         sceneDepth,
         // The shafts are an integral of this field along the view ray, so
         // passing it here is what makes them and the seafloor pattern the same
@@ -778,9 +1041,14 @@ class App {
     // to be handed over explicitly or the depth buffer cannot be linearised.
     this.dof.setCamera(this.camera);
     this.dof.setFrameHeight(this.renderer.getDrawingBufferSize(_drawingBuffer).y);
-    const focused = this.dof.build(rtt(graded as THREE.Node), sceneDepth);
+    const gradedTexture = rtt(graded as THREE.Node);
+    // Eye adaptation meters this — fog and the underwater pass included, so the
+    // dip below the surface is what it reacts to — and applies its gain ahead
+    // of the bloom, whose threshold assumes the preset's exposure.
+    this.postChain.buildExposure(gradedTexture);
+    const focused = this.dof.build(gradedTexture, sceneDepth);
 
-    const bloomed = this.bloom.build(rtt(focused as THREE.Node));
+    const bloomed = this.bloom.build(rtt(this.postChain.applyExposure(focused) as THREE.Node));
 
     // Flare after the bloom and before the grade: it is light arriving at the
     // sensor through the glass, so it belongs with the other things the lens
@@ -807,16 +1075,20 @@ class App {
     // comment asks for and what a drop of water on glass actually does.
     this.outputTransform = new OutputTransform();
     this.spatialAa = new SpatialAA();
+    // TRAA already resolved the edges; FXAA on top only softens them again.
+    if (this.taaEnabled) this.spatialAa.setStrength(0);
     this.post.outputColorTransform = false;
     // Tone map, anti-alias, dither — in that order, and none of the three can
     // move. See `SpatialAA` for why the filter has to sit between the other two
     // rather than at either end of the chain.
     this.post.outputNode = this.outputTransform.applyDither(
-      this.spatialAa.build(
-        this.outputTransform.buildDisplay(
-          this.lensRain.build(rtt(this.colorGrade.build(flared) as THREE.Node)),
-          OUTPUT_TONE_MAPPING,
-          OUTPUT_COLOR_SPACE,
+      this.postChain.applyGrain(
+        this.spatialAa.build(
+          this.outputTransform.buildDisplay(
+            this.lensRain.build(rtt(this.colorGrade.build(flared) as THREE.Node)),
+            OUTPUT_TONE_MAPPING,
+            OUTPUT_COLOR_SPACE,
+          ),
         ),
       ),
     ) as THREE.Node;
@@ -850,7 +1122,9 @@ class App {
     // anything back. It also left the deterministic capture path racing a render
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
-    this.loop = new Loop(() => this.post.renderAsync());
+    this.loop = new Loop((_dt, _elapsed, live) => this.renderFrame(live));
+    this.installAsyncPipelines();
+    this.installStableContexts();
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
@@ -891,6 +1165,10 @@ class App {
     // harness can observe rather than a silence it has to time out on.
     this.exposeTestHooks();
 
+    // The model requests go out now, under the prewarm, rather than after it.
+    // See `requestSceneContent`.
+    void this.requestSceneContent();
+
     boot.set(0.82, 'Preparing the first frame…');
     await this.prewarm();
     this.loop.start();
@@ -901,33 +1179,15 @@ class App {
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
-    // Prewarm behind the boot overlay. Every pipeline the first frame will need
-    // is compiled here rather than on first draw — otherwise the frame that
-    // first shows the water pays for compiling it, which is exactly the spike
-    // this project previously measured at ~57 ms when scene content arrived.
-    //
-    // One prewarm, not two. Running it before the content load compiled the sea
-    // and the sky, and `loadSceneContent` then ran a second pass for everything
-    // it had just added; with the load moved ahead of this line, a single pass
-    // covers both and the boot pays for compilation exactly once.
-    // Choose each prop's LOD *before* compiling, so the prewarm builds pipelines
-    // for the levels the opening frame will actually draw and skips the rest.
-    //
-    // The deal used to happen in the frame update, which is after this line — so
-    // at compile time every kind still held the state `seal` left it in, with
-    // LOD0 carrying the whole population and the lower levels empty, and
-    // `compileAsync` walking all of them regardless because `traverseVisible`
-    // does not look at `count`. Dealing here costs one pass over a few thousand
-    // distance tests and takes the boot from 177 pipelines to 73.
-    //
-    // The levels that come back uncompiled are claimed immediately rather than
-    // deferred: this *is* the compile pass they were waiting for, and there is
-    // no loop running yet, so revealing them here is free.
-    this.props?.updateLod(this.camera.position);
-    this.props?.markCompiled(this.props.takeUncompiledLevels());
-
-    boot.set(0.95, 'Compiling pipelines…');
-    await this.prewarm();
+    // No second pass here. This used to deal the LODs, mark every level the
+    // deal handed back as compiled, and prewarm again — written for a boot that
+    // loaded the content before `loop.start()`. The loop now starts first, so by
+    // this line frames are running, and marking a level compiled *before* the
+    // compile under it lets a frame draw it with no pipeline: the inline compile
+    // `compileLodLevels` exists to prevent. The deal now happens in
+    // `loadSceneContent`, ahead of its paused compile, and any level the camera
+    // deals itself after that takes the path every other late level does — the
+    // frame update hands it to `compileLodLevels`.
 
     boot.set(0.98, 'Island arriving…');
     boot.set(1, 'Ready');
@@ -943,6 +1203,238 @@ class App {
    * ends up somewhere slightly different every run, and so does its wake. Here we
    * pay the stall, once per step, and get the same hull position every time.
    */
+  /**
+   * One pipeline render, bracketed by the view-projections the ocean's velocity
+   * needs. Both are read *outside* the render, where TRAA has not yet applied
+   * (or has already cleared) its jitter.
+   */
+  private async renderFrame(live = false): Promise<void> {
+    this.camera.updateMatrixWorld();
+    this.currViewProjection.value.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+    this.liveFrame = live;
+    try {
+      await this.post.renderAsync();
+    } finally {
+      this.liveFrame = false;
+    }
+    this.prevViewProjection.value.copy(this.currViewProjection.value);
+  }
+
+  /**
+   * Gives the scene pass, the reflection and the shadow map one render context
+   * each, whatever depth they are drawn at.
+   *
+   * three keys a render context on the target's format, the MRT and the
+   * renderer's call depth, and keys render objects on the context. The frame
+   * draws the scene pass five calls deep — inside the underwater, fog, TRAA and
+   * post passes — and the reflection and shadow map six; `compileAsync` asks
+   * for depth 0, and the renders it sets off from `updateBefore` for depth 1.
+   * So every render object the prewarm built belonged to a context no frame
+   * ever used, and the first frame to draw the content built them all again:
+   * measured on aaa-pass, a second and a half of node building on the main
+   * thread for the scene pass alone, plus a pipeline per instanced mesh, whose
+   * instance buffer is a new node with a new id in the WGSL every time.
+   *
+   * Depth is in the key so that a render nested inside another render into a
+   * target of the same format does not take over the outer one's context
+   * mid-pass. None of these three targets is ever drawn into from inside a
+   * render of itself, and each gets a depth of its own, so pinning them gives
+   * that up nowhere. Keyed on the targets themselves, so a change to the post
+   * chain that moves them deeper or shallower changes nothing here.
+   */
+  private installStableContexts(): void {
+    if (this.backend !== 'webgpu') return;
+    const contexts = (this.renderer as unknown as {
+      _renderContexts: { get(target: unknown, mrt?: unknown, depth?: number): unknown };
+    })._renderContexts;
+    const get = contexts.get.bind(contexts);
+    contexts.get = (target, mrtArg, depth) => {
+      if (target !== null && target !== undefined) {
+        if (target === this.scenePass?.renderTarget) {
+          return get(target, mrtArg, PINNED_DEPTH.scene);
+        }
+        if (this.reflections?.ownsTarget(target)) {
+          return get(target, mrtArg, PINNED_DEPTH.reflection);
+        }
+        if (target === this.atmosphere?.sunLight.shadow.map) {
+          return get(target, mrtArg, PINNED_DEPTH.shadow);
+        }
+      }
+      return get(target, mrtArg, depth);
+    };
+  }
+
+  /**
+   * Makes a live frame build any pipeline it is missing asynchronously, and
+   * skip that object until it is ready, rather than stopping to build it.
+   *
+   * The prewarm is meant to have built everything first, and with
+   * `compileForFrame` it builds the main pass. But the frame draws the scene
+   * more than once — the planar reflection renders it again from a mirrored
+   * camera into a target of its own, the sun's shadow map renders the casters,
+   * and post is a dozen full-screen passes — and each of those is a render
+   * context with render objects (and, for an instanced mesh, pipelines) of its
+   * own. Any of them a frame met unbuilt was built *synchronously*, on the GPU
+   * process's main thread, where FXC takes 0.1-1.3 s a pipeline; the command
+   * buffer filled up behind it and Blink blocked in `WaitForToken`, the main
+   * thread frozen — no rAF, no input, no CSS transitions — for the whole batch.
+   *
+   * three already does the rest: `_renderObjectDirect` draws an object only
+   * once `Pipelines.isReady` says its pipeline exists, and handing
+   * `getForRender` a promise list is how `compileAsync` gets
+   * `createRenderPipelineAsync`. So a live frame hands it one too. Whatever is
+   * not ready is left out of that frame and drawn from the first frame after
+   * its pipeline lands, which TRAA fades in rather than pops.
+   *
+   * Only live frames. `step` and the capture path draw frames that have to be
+   * complete — the deterministic harness compares them — so they keep the
+   * synchronous build, and `isReady` waits for the asynchronous builds to
+   * drain, so a harness that waits for it never captures a frame with a hole.
+   */
+  private installAsyncPipelines(): void {
+    if (this.backend !== 'webgpu') return;
+    const internals = this.renderer as unknown as {
+      _pipelines: {
+        getForRender(renderObject: unknown, promises?: Promise<unknown>[] | null): unknown;
+      };
+      backend: {
+        createRenderPipeline(renderObject: unknown, promises: Promise<unknown>[] | null): void;
+      };
+    };
+    const pipelines = internals._pipelines;
+    const getForRender = pipelines.getForRender.bind(pipelines);
+    pipelines.getForRender = (renderObject, promises = null) => {
+      if (promises === null && (this.liveFrame || this.compilesInFlight > 0)) {
+        return getForRender(renderObject, []);
+      }
+      return getForRender(renderObject, promises);
+    };
+
+    // Every asynchronous build, the compile's and the frame's, is counted
+    // until its pipeline exists — `isReady` and `prewarm` wait on the count —
+    // and the compile is not made to wait for any one of them.
+    //
+    // `compileAsync` awaits each object's pipeline before it starts the next,
+    // so a compile is the sum of its FXC builds, one after another, while
+    // Dawn has a worker pool for exactly this. Handing it a settled promise
+    // lets the compile do what only it can do — build every object's nodes,
+    // a task at a time — and start every pipeline as it goes, so they build in
+    // parallel; `prewarm` then waits for the count to reach zero. Measured at
+    // High on the FXC path: the content compile from ~31 s to ~4 s.
+    //
+    // It also takes the compile off a hook it used to hang on. A pipeline
+    // Dawn already holds (a second mesh with the same material) comes back
+    // from its cache with no worker task, and its callback waits for the next
+    // device tick, which Chrome only runs while GPU work is in flight — under a
+    // paused loop, never. Traced on aaa-pass: a fish pipeline asked for at
+    // 2.3 s resolved at 31.4 s, when the prewarm's 30 s timeout let a frame
+    // submit; every prewarm timeout this project has logged was that.
+    // `compileForFrame` keeps the device ticking while it waits for the count;
+    // see `pipelinesSettled`.
+    const backend = internals.backend;
+    const createRenderPipeline = backend.createRenderPipeline.bind(backend);
+    backend.createRenderPipeline = (renderObject, promises) => {
+      const before = promises?.length ?? 0;
+      createRenderPipeline(renderObject, promises);
+      if (!promises || promises.length === before) return;
+      const built = promises[promises.length - 1];
+      this.pendingPipelines++;
+      void built.finally(() => {
+        this.pendingPipelines--;
+      });
+      promises[promises.length - 1] = Promise.resolve();
+    };
+  }
+
+  /**
+   * Resolves once every asynchronous pipeline build has landed, or after
+   * `timeoutMs`, whichever is first; true if they all landed.
+   *
+   * While it waits it keeps submitting an empty command buffer and asking for
+   * the queue fence, which is what gets Chrome to tick the device and deliver
+   * the callbacks of pipelines Dawn answered from its cache (see
+   * `installAsyncPipelines`) when no frame is running to do it.
+   */
+  private async pipelinesSettled(timeoutMs: number): Promise<boolean> {
+    const queue = (this.renderer as unknown as {
+      backend?: { device?: { queue?: GPUQueue } };
+    }).backend?.device?.queue;
+    const deadline = performance.now() + timeoutMs;
+    while (this.pendingPipelines > 0 && !this.disposed) {
+      if (performance.now() > deadline) return false;
+      if (queue) {
+        queue.submit([]);
+        await Promise.race([
+          queue.onSubmittedWorkDone().catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 50)),
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
+    return true;
+  }
+
+  /**
+   * Restarts temporal accumulation from the next frame: jitter sequence back to
+   * its start, history re-seeded from the current frame, and no motion assumed
+   * since the last one. The deterministic capture path calls it, because
+   * otherwise the final frame's sub-pixel offset — and the history under it —
+   * depend on how many free-running frames the session drew before the reset.
+   *
+   * `PostChain.resetTemporal` restarts TRAA, the GTAO rotation and the eye
+   * adaptation together.
+   */
+  private resetTemporal(): void {
+    this.postChain.resetTemporal();
+    this.camera.updateMatrixWorld();
+    this.prevViewProjection.value.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+  }
+
+  /**
+   * Fans one hull or float impact out to everything that reacts to it.
+   *
+   * The audio calls go through an optional-method view of `AudioSystem` because
+   * `hullImpact` and `waveSlap` are being added to it in parallel; this compiles
+   * and runs silently until they exist, and plays them as soon as they do.
+   */
+  private onSprayImpact(impact: SprayImpact): void {
+    const s = impact.strength;
+    const p = impact.position;
+    if (!impact.hull) {
+      // A buoy or a barrel: a small patch of foam where it came down.
+      this.wake.splash(p.x, p.z, 1.2, 0.35 + 0.4 * s);
+      return;
+    }
+
+    this.gameplay?.reportImpact(impact.kind, s);
+
+    // Stereo position of the impact relative to the listener's view, -1..1.
+    this.camera.getWorldDirection(_impactForward);
+    _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
+    _impactOffset.copy(p).sub(this.camera.position);
+    const distance = Math.max(1, _impactOffset.length());
+    const pan = Math.max(-1, Math.min(1, _impactOffset.dot(_impactRight) / distance));
+    // Heard less the further away it is, not at all past a few hundred metres.
+    const audible = s * Math.min(1, 30 / distance);
+    const audio = this.audio as unknown as ImpactAudio | undefined;
+    if (audible > 0.02) {
+      if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
+      else audio?.hullImpact?.(audible);
+    }
+
+    // White water where it hit, and water on the deck when it came aboard.
+    const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
+    this.wake.splash(p.x, p.z, radius, 0.4 + 0.6 * s);
+    if (impact.kind === 'wash') this.wetness.douse(0.55 * s);
+    else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s);
+  }
+
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
     this.deterministic = true;
     try {
@@ -1008,7 +1500,7 @@ class App {
     //
     // Settling is the caller's job instead, and the harness already does it by
     // discarding warm-up captures before the one it keeps.
-    await this.post.renderAsync();
+    await this.renderFrame();
     this.renderer.setRenderTarget(previous);
 
     const raw = (await this.renderer.readRenderTargetPixelsAsync(
@@ -1064,7 +1556,7 @@ class App {
       if (this.disposed) return;
       for (const mesh of levels) mesh.visible = true;
       try {
-        await this.renderer.compileAsync(this.scene, this.camera);
+        await this.compileForFrame();
       } catch {
         // A compile can fail while the device is reconfiguring. Marking the
         // levels compiled anyway would let an unbuilt pipeline reach a draw, so
@@ -1079,6 +1571,156 @@ class App {
     }
   }
 
+  /**
+   * `compileAsync` for the pass the frame actually draws the scene through.
+   *
+   * Called bare, `compileAsync(scene, camera)` compiles for whatever the
+   * renderer holds — outside a frame that is no target and no MRT, so it falls
+   * back to the frame buffer target: one colour attachment, one output. The
+   * frame draws the scene through `scenePass` instead, into its own target and,
+   * with TRAA, through an `output` + `velocity` MRT, which changes every
+   * material's fragment stage and, for velocity, its vertex stage too. None of
+   * the prewarm's pipelines were the ones the frame then asked for, so every
+   * one was built again synchronously on the first frame that drew it.
+   * Measured on aaa-pass at High on the FXC path: a hundred pipelines in the
+   * first frame after `isReady`, and the main thread frozen while the GPU
+   * process compiled them.
+   *
+   * So the frame's state is reproduced for the compile, and held for all of
+   * it, not just the call: `compileAsync` takes its render context up front but
+   * builds each object's nodes later, one per task, and the node builder reads
+   * the target and the MRT from the renderer when it does. The same goes for
+   * the velocity node, which TRAA hands the unjittered projection for the
+   * length of every frame (`TRAANode.setViewOffset`) and takes back after;
+   * `VelocityNode.setup` emits different code with and without one.
+   *
+   * Holding renderer state across awaits is only safe because nothing renders
+   * meanwhile: every caller compiles with the loop not yet started or paused.
+   * A caller that has to give up waiting calls `releaseFrameState` before it
+   * lets a frame run.
+   */
+  private compileForFrame(): Promise<void> {
+    this.releaseFrameState();
+    const scenePass = this.scenePass;
+    // While it runs, the renders the compile itself sets off — the reflection
+    // and the shadow map, from inside `updateBefore` — build asynchronously
+    // too; see `installAsyncPipelines`.
+    this.compilesInFlight++;
+    const run = async (): Promise<void> => {
+      // WebGL keeps the plain compile: it has neither the MRT nor the FXC
+      // build cost, and compiling into the scene pass's multisampled target
+      // there sets off an invalid depth-stencil blit.
+      if (!scenePass || this.backend !== 'webgpu') {
+        await this.renderer.compileAsync(this.scene, this.camera);
+        return;
+      }
+      const generation = ++this.compileGeneration;
+      await this.compileReflection();
+      // Released while the reflection compiled: the caller gave up waiting
+      // and frames are running, so the main pass cannot hold the renderer.
+      if (generation !== this.compileGeneration) return;
+      await this.compileWithState(
+        scenePass.renderTarget,
+        scenePass.getMRT(),
+        this.camera,
+        this.taaEnabled,
+      );
+      // The compile has only *started* the pipelines (see
+      // `installAsyncPipelines`); this is where they land. A caller that
+      // reveals what it compiled, or tears resources down, after this
+      // resolves needs nothing still building. Not an error if they run long:
+      // a live frame leaves out what is not ready rather than stopping for it.
+      if (!(await this.pipelinesSettled(PIPELINE_SETTLE_MS))) {
+        console.warn('[ocean] pipelines still building after the compile:', this.pendingPipelines);
+      }
+    };
+    return run().finally(() => {
+      this.compilesInFlight--;
+    });
+  }
+
+  /**
+   * Compiles the planar reflection's render ahead of the main pass.
+   *
+   * The reflection renders the whole scene again, from a mirrored camera into
+   * a target of its own, and it does so from the ocean's `updateBefore` — so
+   * the main compile met it when it reached the ocean, and built every render
+   * object in it synchronously, inside a single task: 1.7 s with the main
+   * thread blocked, measured at High. Compiled first, through `compileAsync`,
+   * the same objects are built one task at a time, and the nested render finds
+   * them done. Same target (pinned, see `installStableContexts`), same mirrored
+   * camera, posed by the last frame; the ocean is hidden for the projection,
+   * as the reflector hides it.
+   */
+  private async compileReflection(): Promise<void> {
+    // Before the first frame the mirrored camera has never been posed, so a
+    // compile culled against it would build an arbitrary set — and the boot
+    // prewarm is on the critical path to that first frame. The first frames
+    // build the reflection's few boot-time objects themselves, asynchronously.
+    if (!this.reflections || this.loop.stats.frameMs === 0) return;
+    const setup = this.reflections.renderSetup(this.camera);
+    const ocean = this.water.material;
+    const visible = ocean.visible;
+    // Only for the projection, which `compileAsync` does before it first
+    // yields; what it compiles after that is the list it made then.
+    ocean.visible = false;
+    let compile: Promise<void>;
+    try {
+      compile = this.compileWithState(setup.target, null, setup.camera, false);
+    } finally {
+      ocean.visible = visible;
+    }
+    await compile;
+  }
+
+  /**
+   * One `compileAsync` with the renderer holding `target` and `mrtNode` (and
+   * TRAA's velocity projection, if `velocityProjection`) until it settles or
+   * `releaseFrameState` gives them back; see `compileForFrame`. The projection
+   * is over by the time this returns, so state that only has to hold for it
+   * can be restored as soon as the call does.
+   */
+  private compileWithState(
+    target: THREE.RenderTarget,
+    mrtNode: SceneMRT | null,
+    camera: THREE.Camera,
+    velocityProjection: boolean,
+  ): Promise<void> {
+    const renderer = this.renderer;
+    const previousTarget = renderer.getRenderTarget();
+    const previousMRT = renderer.getMRT();
+    const traaVelocity = velocityProjection
+      ? (velocity as unknown as { setProjectionMatrix(m: THREE.Matrix4 | null): void })
+      : null;
+    renderer.setRenderTarget(target);
+    renderer.setMRT(mrtNode as SceneMRT);
+    traaVelocity?.setProjectionMatrix(this.camera.projectionMatrix);
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      renderer.setRenderTarget(previousTarget);
+      renderer.setMRT(previousMRT as SceneMRT);
+      traaVelocity?.setProjectionMatrix(null);
+      if (this.frameStateRelease === release) this.frameStateRelease = null;
+    };
+    this.frameStateRelease = release;
+    let compile: Promise<void>;
+    try {
+      compile = renderer.compileAsync(this.scene, camera);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    return compile.finally(release);
+  }
+
+  /** Puts back what `compileForFrame` holds, if a compile still holds it. */
+  private releaseFrameState(): void {
+    this.compileGeneration++;
+    this.frameStateRelease?.();
+  }
+
   private async prewarm(timeoutMs = 30_000): Promise<void> {
     let compile: Promise<void> | null = null;
     const timeoutError = new Error(
@@ -1086,7 +1728,7 @@ class App {
     );
     let timer = 0;
     try {
-      compile = this.renderer.compileAsync(this.scene, this.camera);
+      compile = this.compileForFrame();
       const timeout = new Promise<never>((_, reject) => {
         timer = window.setTimeout(() => reject(timeoutError), timeoutMs);
       });
@@ -1094,6 +1736,9 @@ class App {
       this.shadersReady = true;
     } catch (error) {
       console.warn('[ocean] pipeline prewarm skipped', error);
+      // The compile may still be running, and it holds the renderer on the
+      // scene pass's target; the caller is about to let a frame draw.
+      this.releaseFrameState();
       // `compileAsync` has no cancellation API, so a timed-out compile is still
       // running — and on a slow device, which is exactly where the timeout
       // fires, it can still be running when a tier change tears its resources
@@ -1114,7 +1759,25 @@ class App {
     }
   }
 
-  private async loadSceneContent(): Promise<void> {
+  /**
+   * Starts the model requests — ship, dressing, reef fish — and returns them.
+   * Idempotent: the first call starts them, every later one gets the same
+   * promise.
+   *
+   * Split from `loadSceneContent` so the boot can start these *before* the
+   * first prewarm rather than after it. That prewarm is the sea and the sky
+   * compiling on the GPU, five-odd seconds in which the main thread is mostly
+   * idle — and the requests are network, worker transcodes and `Props`'
+   * placement, all of which can happen underneath it. Nothing here touches the
+   * scene: the results wait, unadded, until `loadSceneContent` takes them, so
+   * the order in which things become visible and get compiled is unchanged.
+   */
+  private requestSceneContent(): NonNullable<App['contentRequests']> {
+    this.contentRequests ??= this.startContentRequests();
+    return this.contentRequests;
+  }
+
+  private startContentRequests() {
     this.assets = new AssetLoader({
       // KTX2Loader has to ask the device which compressed formats it can
       // transcode to — ASTC, ETC2, BC — and it can only ask a renderer that
@@ -1122,6 +1785,9 @@ class App {
       // arrives untranscoded, which is the whole saving handed straight back.
       renderer: this.renderer,
       onProgress: ({ fraction, itemsLoaded, itemsTotal }) => {
+        // The requests start under the first prewarm, while the boot bar is
+        // still reporting it; they take the bar over once `start` hands it on.
+        if (!this.contentOwnsBootBar) return;
         const progress = 0.86 + fraction * 0.1;
         boot.set(
           progress,
@@ -1134,10 +1800,7 @@ class App {
     // features and must fail separately: one unreachable prop asset previously
     // rejected the whole batch, taking the ship, buoyancy and the wake with it
     // and leaving an empty ocean with nothing but a console error to show for it.
-    /** Roots added hidden, revealed together once their pipelines exist. */
-    const loaded: THREE.Object3D[] = [];
-
-    const [shipResult, propsResult, reefFishResult] = await Promise.allSettled([
+    return Promise.allSettled([
       Ship.load(this.assets),
       Props.load(this.assets, {
         // The tier decides whether the island's vegetation is meshes or cards,
@@ -1151,37 +1814,46 @@ class App {
       // its request overlaps the ship's rather than queueing behind it.
       loadReefFish(this.assets),
     ]);
+  }
+
+  private async loadSceneContent(): Promise<void> {
+    /** Roots added hidden, revealed together once their pipelines exist. */
+    const loaded: THREE.Object3D[] = [];
+
+    this.contentOwnsBootBar = true;
+    const [shipResult, propsResult, reefFishResult] = await this.requestSceneContent();
+    if (this.disposed) return;
+
+    // One frame first, before any of it joins the scene. The requests start
+    // under the first prewarm and are usually done by the time the loop starts,
+    // so without this the compile pause below landed before a single frame had
+    // been drawn: the overlay lifted on an empty canvas, and the camera director
+    // had never run, so the LODs were dealt for a camera still at its
+    // constructor position and every level the real opening shot needs was
+    // compiled again, mid-session, the moment it moved. Waiting *here* rather
+    // than just before the pause matters too: once `this.props` is set, the
+    // frame's own LOD pass claims the new levels and starts a second compile
+    // racing this one.
+    if (this.loop.isRunning && !this.loop.isPaused) await this.loop.nextFrame();
     if (this.disposed) return;
 
     if (reefFishResult.status === 'fulfilled' && reefFishResult.value) {
       this.fish.setSpecies('reef', reefFishResult.value);
+      // The species arrives as a new mesh; it joins the rest of the life on the
+      // underwater layer.
+      this.fish.object.traverse((node) => node.layers.set(UNDERWATER_LAYER));
     }
 
     if (shipResult.status === 'fulfilled') {
       const ship = shipResult.value;
       this.ship = ship;
+      // Gulls work the ship and sit on her yards; see `Birds.setShip`.
+      this.birds.setShip(ship.object);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);
       this.scene.add(ship.object);
       this.wetness.adopt(ship.object);
-      // Four probes along the centreline, weighted forward. A hull throws water
-      // where it is finest and moving fastest through the vertical — the
-      // forefoot does nearly all of it, the midships some, and the quarters
-      // effectively none, which is why the weights fall off so sharply rather
-      // than being spread evenly along the length.
-      // The hull's forward direction is +X and its beam runs along Z — see
-      // `forwardLocal` in `Ship`, and note that getting this the wrong way round
-      // puts the spray over the quarters of a vessel that is throwing it off the
-      // stem.
-      const halfLength = ship.hullLength * 0.5;
-      const halfBeam = ship.hullBeam * 0.5;
-      this.spray.setProbes([
-        { offset: new THREE.Vector3(halfLength * 0.92, 0, 0), weight: 1 },
-        { offset: new THREE.Vector3(halfLength * 0.6, 0, halfBeam * 0.85), weight: 0.7 },
-        { offset: new THREE.Vector3(halfLength * 0.6, 0, -halfBeam * 0.85), weight: 0.7 },
-        { offset: new THREE.Vector3(-halfLength * 0.35, 0, 0), weight: 0.25 },
-      ]);
       // The hull gets the same treatment the dressing does, and the part of it
       // that matters here is the caustics: `underwater.png` shows the submerged
       // hull as a flat black cutout, because the one thing lighting a shape down
@@ -1212,6 +1884,34 @@ class App {
         horizontalDrag: 0,
       });
       this.buoyancy.add(this.shipBody);
+
+      // Where this hull meets the water hard enough to throw it: the stem, the
+      // shoulders either side of it, the topsides amidships for a beam sea, and
+      // the quarters. Weighted forward — a hull slams where it is finest and
+      // moving fastest through the vertical, so the forefoot does most of it and
+      // the quarters very little. The hull's forward direction is +X and its
+      // beam runs along Z (see `forwardLocal` in `Ship`). Heights are above the
+      // waterline: the side probes sit up the topsides so a crest has to climb
+      // the hull to reach them, which is what a slap is.
+      {
+        const halfLength = ship.hullLength * 0.5;
+        const halfBeam = ship.hullBeam * 0.5;
+        this.spray.setHull({
+          object: ship.object,
+          velocity: this.shipBody.velocity,
+          hullLength: ship.hullLength,
+          hullBeam: ship.hullBeam,
+          probes: [
+            { offset: new THREE.Vector3(halfLength * 0.9, 0.35, 0), weight: 1, role: 'bow' },
+            { offset: new THREE.Vector3(halfLength * 0.6, 0.45, halfBeam * 0.85), weight: 0.75, role: 'shoulder' },
+            { offset: new THREE.Vector3(halfLength * 0.6, 0.45, -halfBeam * 0.85), weight: 0.75, role: 'shoulder' },
+            { offset: new THREE.Vector3(0, 0.7, halfBeam * 0.98), weight: 0.6, role: 'side' },
+            { offset: new THREE.Vector3(0, 0.7, -halfBeam * 0.98), weight: 0.6, role: 'side' },
+            { offset: new THREE.Vector3(-halfLength * 0.7, 0.4, halfBeam * 0.8), weight: 0.3, role: 'quarter' },
+            { offset: new THREE.Vector3(-halfLength * 0.7, 0.4, -halfBeam * 0.8), weight: 0.3, role: 'quarter' },
+          ],
+        });
+      }
 
       // The controller exists from load but stays inert until Boat mode selects
       // it, so W/S and A/D cannot steer a ship the viewer is not driving.
@@ -1275,18 +1975,75 @@ class App {
       });
 
       for (const floater of props.floaters) {
-        this.buoyancy.add(
-          new BuoyantBody({
-            object: floater.object,
-            probePoints: createRadialProbes(floater.radius),
-            // Rough displacement for a hollow float of this size.
-            mass: 40 * floater.radius * floater.radius * floater.radius,
-          }),
-        );
+        const body = new BuoyantBody({
+          object: floater.object,
+          probePoints: createRadialProbes(floater.radius),
+          // Rough displacement for a hollow float of this size.
+          mass: 40 * floater.radius * floater.radius * floater.radius,
+        });
+        this.buoyancy.add(body);
+        // A buoy coming down off a swell smacks the water too. One probe, a
+        // small crown, and only tested within range of the eye.
+        this.spray.addFloat(floater.object, floater.radius, body.velocity);
       }
     } else {
       console.error('[ocean] scene props failed to load', propsResult.reason);
     }
+
+    // --- gameplay (src/gameplay) --------------------------------------------
+    // Helm-mode sails, anchor and cargo. Needs the hull; the floating barrel it
+    // clones for cargo is optional. Added hidden with the rest of `loaded`, so
+    // the reveal-and-compile below builds its pipelines before it is drawn.
+    if (this.ship && this.shipBody && this.shipControls) {
+      // The HUD is the sink. Speed, heading and wind are already on its dial via
+      // `updateHudNav`, so the instruments add only what the dial cannot show —
+      // the sail set and the anchor — as plaque lines, and leaving the helm
+      // clears the plaque the gameplay filled.
+      const ui: GameUiSink = {
+        toast: (text, kind) => {
+          this.hud.toast(text, kind);
+          // The reward toast has its chime already; the others get a cue of their own.
+          if (kind === 'warning') this.audio.uiTick('warn');
+          else if (kind !== 'reward') this.audio.uiTick('info');
+        },
+        setObjective: (objective) => this.hud.setObjective(objective),
+        setScore: (label, value) => this.hud.setScore(label, value),
+        setShipTelemetry: (telemetry) => {
+          if (telemetry === null) {
+            this.hud.clearScore();
+            return;
+          }
+          this.hud.setScore('Sails', SAIL_LABEL[telemetry.sail]);
+          if (telemetry.anchored) this.hud.setScore('Anchor', 'Down');
+          else this.hud.clearScore('Anchor');
+        },
+      };
+      this.gameplay = new Gameplay({
+        body: this.shipBody,
+        controller: this.shipControls,
+        hullLength: this.ship.hullLength,
+        hullBeam: this.ship.hullBeam,
+        mass: 90_000,
+        sampler: this.sampler,
+        floorHeight: (x, z) => seafloorHeight(x, z),
+        wind: () => ({
+          towardRad: getPreset(this.state.preset).sea.windDirection,
+          speed: this.state.windSpeed,
+        }),
+        isHelm: () => this.state.cameraMode === 'boat',
+        camera: this.camera,
+        lootTemplate: this.props?.object.getObjectByName('barrel-0') ?? null,
+        audio: this.audio,
+        ui,
+        shake: this.director,
+      });
+      this.gameplay.object.visible = false;
+      loaded.push(this.gameplay.object);
+      this.scene.add(this.gameplay.object);
+      const hooks = (window as unknown as { __ocean?: Record<string, unknown> }).__ocean;
+      if (hooks) hooks.gameplay = this.gameplay.testHandle;
+    }
+    // --- end gameplay ---------------------------------------------------------
 
     // Compile what just arrived, before it is first drawn.
     //
@@ -1326,7 +2083,24 @@ class App {
     this.loop.setPaused(true);
     await this.loop.settle();
     for (const object of loaded) object.visible = true;
+    // Deal the LODs for where the camera is *before* compiling, so the compile
+    // builds the levels the next frame will draw and nothing else.
+    //
+    // This is the boot path now — the loop starts before the content load, so
+    // this branch, not the one above, is what every session takes — and it was
+    // compiling every level of every kind: `seal` leaves LOD0 holding the whole
+    // population and the lower levels visible, and `compileAsync` walks
+    // `traverseVisible` without looking at `count`. `start` deals the LODs too,
+    // but only after this pass had already built the lot. Measured at High on
+    // the FXC path the harness forces: the content compile was ~30 s of a ~38 s
+    // boot. `updateLod` hides every level the camera cannot see and hands back
+    // the ones it can; levels skipped here are compiled when a camera first
+    // needs them, by the same path a fly-in to the island always used.
+    this.props?.updateLod(this.camera.position);
+    const wanted = this.props?.takeUncompiledLevels() ?? [];
+    for (const mesh of wanted) mesh.visible = true;
     await this.prewarm();
+    this.props?.markCompiled(wanted);
     // `captureOwnsClock` for the same reason `drainQualityRequests` checks it,
     // and this is the site that actually bit: `prewarm` compiles every material
     // the scene just loaded, which grew from twenty models to nearly sixty files
@@ -1338,6 +2112,128 @@ class App {
     this.sceneContentLoaded = true;
   }
 
+  /**
+   * Compass, wind dial and log. Bearings go out as compass bearings and speeds
+   * in knots; the HUD diffs and throttles its own writes, so this is called
+   * every frame.
+   */
+  private updateHudNav(): void {
+    this.camera.getWorldDirection(_hudView);
+    // The spectrum's wind direction is the way the sea runs, so the wind
+    // blows *from* the opposite bearing.
+    const windAngle = getPreset(this.state.preset).sea.windDirection;
+    const windTo = compassBearing(Math.cos(windAngle), Math.sin(windAngle));
+    const atHelm = this.state.cameraMode === 'boat' && (this.shipControls?.isEnabled ?? false);
+    const ship = atHelm ? this.shipControls?.getState(this.shipStateOut) ?? null : null;
+    this.hud.setNav({
+      headingDeg: compassBearing(_hudView.x, _hudView.z),
+      windFromDeg: windTo + 180,
+      windKnots: this.state.windSpeed * MS_TO_KNOTS,
+      shipHeadingDeg: ship ? compassBearing(Math.cos(ship.heading), Math.sin(ship.heading)) : null,
+      shipKnots: ship ? ship.speed * MS_TO_KNOTS : null,
+    });
+  }
+
+  /**
+   * The ship as the audio hears it: how far and which side, how she is
+   * rolling and pitching, what the canvas is doing, and wave slaps from four
+   * hull probes. Allocation-free.
+   */
+  private updateShipAudio(dt: number, audio: typeof this.audioParams): void {
+    const ship = this.ship;
+    if (ship === null) {
+      audio.shipDistance = Number.POSITIVE_INFINITY;
+      audio.sailFill = 0;
+      audio.sailLuff = 0;
+      return;
+    }
+    const hull = ship.object;
+    const cam = this.camera.position;
+    _audioRel.copy(hull.position).sub(cam);
+    const distance = _audioRel.length();
+    _audioRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    audio.shipDistance = distance;
+    audio.shipPan = distance > 1e-3 ? _audioRel.dot(_audioRight) / distance : 0;
+
+    // Roll: the beam axis (+Z, starboard) tilting out of the horizontal;
+    // pitch: the bow axis (+X) rising. The same frame `Gameplay` uses.
+    _audioAxis.set(0, 0, 1).applyQuaternion(hull.quaternion);
+    audio.shipHeel = -Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+    _audioAxis.set(1, 0, 0).applyQuaternion(hull.quaternion);
+    audio.shipPitch = Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+
+    const sails = this.gameplay?.audioState(this.sailAudio) ?? null;
+    audio.sailFill = sails?.sailFill ?? 0;
+    audio.sailLuff = sails?.sailLuff ?? 0;
+
+    // Wave slaps: water climbing past a point on the planking, fast. Only
+    // within earshot, since each probe is a sea-surface sample.
+    if (!this.sampler.ready || distance > 120 || !(dt > 0)) return;
+    hull.updateMatrixWorld();
+    const halfLength = ship.hullLength * 0.5;
+    const halfBeam = ship.hullBeam * 0.5;
+    for (let i = 0; i < SLAP_PROBES.length; i++) {
+      const [along, up, across] = SLAP_PROBES[i];
+      _audioProbe.set(along * halfLength, up, across * halfBeam).applyMatrix4(hull.matrixWorld);
+      const immersion = this.sampler.height(_audioProbe.x, _audioProbe.z) - _audioProbe.y;
+      const strength = this.slaps.update(i, immersion, dt);
+      if (strength > 0) {
+        // Placed within the ship's own image by which side of the listener the probe is on.
+        _audioRel.copy(_audioProbe).sub(hull.position);
+        const pan = THREE.MathUtils.clamp(_audioRel.dot(_audioRight) / Math.max(1, halfBeam), -1, 1);
+        this.audio.waveSlap(strength, pan);
+      }
+    }
+  }
+
+  /**
+   * Which arrangement the score should play. Priority: under water, then
+   * weather, then the tour, then sailing (at the helm and moving or with
+   * canvas set), else calm. The audio system holds a state for a couple of
+   * seconds before following it, so calling this every frame is the intent.
+   */
+  private chooseMusicState(raining: number, submersion: number): MusicState {
+    if (submersion > 0.5) return 'underwater';
+    const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
+    const gale = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
+    const weather = Math.max(raining, coverage * gale, this.state.preset === 'storm' ? 1 : 0);
+    if (weather > 0.5) this.musicStormy = true;
+    else if (weather < 0.3) this.musicStormy = false;
+    if (this.musicStormy) return 'storm';
+    if (this.state.cameraMode === 'cinematic') return 'tour';
+    if (this.state.cameraMode === 'boat' && this.sailAudio.active) {
+      const speed = this.audioParams.hullSpeed;
+      if (speed > 1 || this.sailAudio.sailFill > 0.2) return 'sailing';
+    }
+    return 'calm';
+  }
+
+  /** 0..1 for the score: ship speed against a brisk 7.5 m/s (~15 knots). */
+  private musicEnergy(): number {
+    return THREE.MathUtils.clamp(this.audioParams.hullSpeed / 7.5, 0, 1);
+  }
+
+  /** `setGullLocator`'s callback: one drawn bird near enough to hear. */
+  private locateGull(out: GullFix): boolean {
+    const count = this.birds.getCount();
+    if (count === 0) return false;
+    const cam = this.camera.position;
+    _audioRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // Deterministic per draw is not needed here: which bird calls is not
+      // part of any captured frame, and the audio itself is muted in captures.
+      const index = Math.floor(Math.random() * count);
+      if (!this.birds.positionOf(index, _audioBird)) continue;
+      _audioRel.copy(_audioBird).sub(cam);
+      const distance = _audioRel.length();
+      if (distance > 240) continue;
+      out.distance = distance;
+      out.pan = distance > 1e-3 ? _audioRel.dot(_audioRight) / distance : 0;
+      return true;
+    }
+    return false;
+  }
+
   private buildUi(): void {
     const callbacks = {
       onChange: <K extends keyof UiState>(key: K, value: UiState[K]) => {
@@ -1347,6 +2243,9 @@ class App {
     };
     this.panel = new Panel(this.uiRoot, this.state, callbacks);
     this.hud = new Hud(this.uiRoot, this.state.cameraMode, callbacks);
+    // Clicks, ticks and rustles for the ledger and the HUD. The UI reports
+    // what happened as a cue name and never sees the audio system.
+    this.detachUiSounds = attachUiSounds(this.uiRoot, (cue, value) => this.audio.uiTick(cue, value));
     this.stormQuote = new StormQuote(this.uiRoot);
     this.hud.setBackend(this.backend);
 
@@ -1357,6 +2256,8 @@ class App {
     if (TouchControls.isTouchDevice()) {
       this.touchControls = new TouchControls(this.uiRoot, {
         onInput: (throttle, rudder) => this.shipControls?.setInput(throttle, rudder),
+        onSail: (direction) => this.gameplay?.stepSail(direction),
+        onAnchor: () => this.gameplay?.toggleAnchor(),
       });
       this.touchControls.setVisible(this.state.cameraMode === 'boat');
     }
@@ -1366,9 +2267,21 @@ class App {
     switch (key) {
       case 'quality':
         return this.requestQuality(this.state.quality);
-      case 'preset':
+      case 'preset': {
+        // A preset brings its own sky. Coverage lives in UI state because the
+        // slider owns it afterwards, and nothing ever copied the preset's value
+        // into it — so choosing Storm drew the storm's deck at whatever the
+        // slider last said, 0.36 by default: blue sky between fair-weather
+        // puffs under a sky lit for a 0.88 overcast. The slider still wins
+        // after this, which is what a slider is for.
+        const coverage = getPreset(this.state.preset).clouds.coverage;
+        if (this.state.cloudCoverage !== coverage) {
+          this.state.cloudCoverage = coverage;
+          this.panel?.setState({ cloudCoverage: coverage });
+        }
         this.applyPreset();
         break;
+      }
       case 'windSpeed':
       case 'peakWavelength':
         // Through `applyPreset`, not straight to the spectrum.
@@ -1437,6 +2350,9 @@ class App {
       }
       case 'volume':
         this.audio.setVolume(this.state.volume);
+        break;
+      case 'musicVolume':
+        this.audio.setMusicVolume(this.state.musicVolume);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
@@ -1568,6 +2484,8 @@ class App {
     this.spray.setStrength(quality.spray);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
+    this.reefLife.setDetail(quality.reefLife);
+    this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
     this.audio.setQuality(tier);
@@ -1602,6 +2520,7 @@ class App {
     // read the volumetric fog already performs there, so nothing new is being
     // asked of the backend.
     this.lensFlare.setEnabled(quality.lensFlare === 1);
+    this.postChain.setTier(tier);
     this.water.setWakeDisplacement(quality.wakeDisplacement);
     // Instance counts only, and safe on a live scene: no geometry is rebuilt and
     // nothing allocates, so this is a tier knob rather than a reload. Null until
@@ -1775,7 +2694,13 @@ class App {
       peakWavelength: this.state.peakWavelength,
     });
 
-    this.water.setAppearance(preset.water);
+    // `setAppearance` only writes what it is given, and only some presets name
+    // `crestGlow` — so it is reset here or Tropical's value leaks into every
+    // preset visited after it.
+    this.water.setAppearance({
+      crestGlow: DEFAULT_APPEARANCE.crestGlow,
+      ...preset.water,
+    });
     // The surface needs the wind to stretch its glitter along the crests.
     this.water.setWind(preset.sea.windDirection, this.state.windSpeed);
 
@@ -1938,6 +2863,7 @@ class App {
     // the sensor limit — `1 / exposure` is. The presets span 0.42 to 1.35, so a
     // fixed threshold would mean something different in each of the nine.
     this.bloom.setExposure(preset.toneMappingExposure);
+    this.postChain.setPreset(this.state.preset);
     // With the exposure, not instead of it, and the pair is not redundant:
     // exposure decides where the scene sits on the tone curve, the grade decides
     // what colour it is once it gets there. Collapsing them into one number is
@@ -2027,7 +2953,7 @@ class App {
         // there is nothing outstanding when the loop restarts, and it removes the
         // hitch a first-frame compile would otherwise cause anyway.
         try {
-          await this.renderer.compileAsync(this.scene, this.camera);
+          await this.compileForFrame();
         } catch {
           // A compile can fail while the device is reconfiguring. The next frame
           // rebuilds what it needs; dropping this is better than aborting the
@@ -2049,6 +2975,7 @@ class App {
 
   private update = (dt: number, elapsed: number): void => {
     this.director.update(dt);
+    this.postChain.update(dt);
 
     /**
      * The tour owns the sun while it is running.
@@ -2100,7 +3027,14 @@ class App {
     // so the island 1.4 km out gets the same shadows the ship does.
     this.atmosphere.setShadowFocus(this.camera.position.x, this.camera.position.z);
     this.atmosphere.update(dt);
-    this.clouds.setSunDirection(this.atmosphere.sunDirection);
+    // The deck is lit in the sun's own colour, and by the moon once the sun has
+    // gone — see `Clouds.setLighting`.
+    this.clouds.setLighting(
+      this.atmosphere.sunDirection,
+      this.atmosphere.sunColor,
+      this.atmosphere.moonDirection,
+      this.atmosphere.getParams().nightIntensity,
+    );
     // The island shadows itself from whatever is currently the key light, which
     // after sunset is the moon — `Atmosphere` retargets the same light.
     this.seafloor.setKeyDirection(this.atmosphere.keyDirection);
@@ -2138,6 +3072,28 @@ class App {
     );
     this.kelp.update(dt);
 
+    // The reef sways with the same swell; it is hidden outright when the eye is
+    // high enough above the sea that none of it could resolve.
+    this.reefLife.setSwell(
+      getPreset(this.state.preset).sea.windDirection,
+      this.state.windSpeed,
+      this.state.peakWavelength,
+    );
+    this.reefLife.setCameraPosition(this.camera.position);
+    this.reefLife.update(dt);
+
+    // The animals take the same sun the fish do — its colour, scaled as `Fish`
+    // scales its own, and gone when the sun is.
+    {
+      const sunUp = THREE.MathUtils.smoothstep(this.atmosphere.sunDirection.y, -0.06, 0.1);
+      this.creatures.setSun(
+        this.atmosphere.sunDirection,
+        _creatureSun.copy(this.atmosphere.sunColor).multiplyScalar(0.7 * sunUp),
+      );
+      this.creatures.setCameraHeight(this.camera.position.y);
+      this.creatures.update(dt);
+    }
+
     // The grass field follows the camera, so unlike everything else on the
     // island it has to be told where that is every frame. Two uniform writes.
     this.meadow.setSunDirection(this.atmosphere.sunDirection);
@@ -2167,7 +3123,7 @@ class App {
     // cycle. That is what the handover distances are chosen around.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
-    // And the imposter cards sway on it too, for the same reason.
+    // The island's animated set dressing reads the same wind.
     this.props?.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.props?.update(dt);
 
@@ -2176,6 +3132,24 @@ class App {
 
     this.clouds.update(dt);
     this.weather.update(dt, this.camera.position);
+
+    // Lightning, in heavy weather only, and never while a capture owns the
+    // clock — a baseline must not depend on whether a strike happened to land.
+    {
+      const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
+      const wind = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
+      this.lightning.setCloudBase(getPreset(this.state.preset).clouds.altitude ?? 900);
+      const strike = this.lightning.update(
+        dt,
+        this.camera,
+        coverage * wind,
+        !this.captureOwnsClock && this.director.submersion() < 0.5,
+      );
+      if (strike) {
+        this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+      }
+      this.colorGrade.setFlash(this.lightning.flashIntensity);
+    }
 
     // The key light, whichever body is providing it, at its actual strength.
     //
@@ -2188,7 +3162,14 @@ class App {
     _keyDirection.copy(key.position).normalize();
     // 3.4 is the sun's full-daylight intensity in `Atmosphere`, so this is
     // "how close to full daylight is it" rather than an arbitrary scale.
-    this.water.setSun(_keyDirection, key.color, key.intensity * 1.8, key.intensity / 3.4);
+    // The *direct* glint fades with the overcast on the same curve the sky uses
+    // to hide the disc (`Atmosphere`: gone by three-quarters cover). The key
+    // light keeps a quarter of its strength under a full deck as diffuse
+    // daylight, but a mirror-sharp sun path on the sea under a sky with no sun
+    // in it is the storm's most obvious lie.
+    const clearSky = Math.max(0, 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) / 0.75);
+    const glint = 0.06 + 0.94 * clearSky * clearSky;
+    this.water.setSun(_keyDirection, key.color, key.intensity * 1.8 * glint, key.intensity / 3.4);
     (this.uKeyDirection.value as THREE.Vector3).copy(_keyDirection);
     // Scaled by the light's own intensity so the term follows the sun down: at
     // dusk a backlit frond should stop glowing along with everything else.
@@ -2218,19 +3199,46 @@ class App {
     );
     // Everything the haze has to agree with, from the same atmosphere the dome
     // and the water read. Uniform writes; no rebuild.
+    //
+    // Under an overcast the light the haze scatters toward the eye is the
+    // deck's grey, not the clear-sky blue the CPU-side horizon and zenith still
+    // describe. Fed raw, a kilometre of storm haze repainted the dark cloud base
+    // in clear-sky blue and the storm read as a fine evening.
+    //
+    // The preset's fog colour is authored for *its* hour, and the tour and the
+    // time slider take it to others. At night or deep dusk it is far brighter
+    // than any sky there is, and under a squall the pull above leaned the whole
+    // haze toward it: the far cloud deck lit pale while the near clouds, lit by
+    // the real dark sky, stood out as black blobs, and the sea mirrored it pink.
+    // So the fog is dimmed to the sky's own brightness whenever the sky is the
+    // darker of the two — never brightened, so a preset's daytime look is kept.
+    const skyLuma = luma(this.atmosphere.horizonColor);
+    const fogLuma = luma(fogPreset.color);
+    _litFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, skyLuma / fogLuma) : 1);
+    const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
+    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(_litFog, overcastPull);
+    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(_litFog, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
-      fogPreset.color,
+      _litFog,
       hazeDensity,
-      this.atmosphere.horizonColor,
-      this.atmosphere.zenithColor,
+      _hazeHorizon,
+      _hazeZenith,
       this.atmosphere.sunDirection,
       this.atmosphere.sunColor,
     );
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
-    this.clouds.setSkyColors(this.atmosphere.zenithColor);
+    //
+    // And by how bright that sky actually *is*: the dome's own radiance at the
+    // zenith and around the horizon, so the deck can never be lit brighter
+    // than the sky it sits in by more than the sun or moon on it justifies.
+    this.clouds.setSkyColors(
+      _hazeZenith,
+      this.measureSkyRadiance(_skyRadiance, _skyHorizon),
+      _skyHorizon,
+    );
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -2247,7 +3255,12 @@ class App {
     this.water.setRain(raining, elapsed);
     // The shore break runs off the same clock the rest of the sea does, so a
     // deterministic rewind puts the surf sets back where they were.
-    this.water.setSurf(elapsed, this.foamOverride ?? 1);
+    this.water.setSurf(
+      elapsed,
+      this.foamOverride ?? 1,
+      this.state.peakWavelength,
+      this.wake.shoreNear,
+    );
     // Agitation: heavy rain whitens a sea surface on its own, independently of
     // whether the waves are steep enough to break.
     this.wake.setRainAgitation(raining);
@@ -2272,12 +3285,19 @@ class App {
     // it this frame — the buoyancy solve above — and it samples the same wave
     // field the buoyancy did, so the surface it tests against is the one the
     // hull is actually floating on rather than a second opinion about it.
-    this.spray.update(
-      dt,
-      elapsed,
-      this.ship?.object ?? null,
-      (x, z) => this.sampler.height(x, z),
+    // Spray drifts with the near-surface wind and is lit by the same key light
+    // and sky as the foam it comes off.
+    this.spray.setWind(
+      Math.cos(driftBearing) * this.state.windSpeed * 0.6,
+      Math.sin(driftBearing) * this.state.windSpeed * 0.6,
     );
+    this.spray.setLighting(
+      _keyDirection,
+      this.atmosphere.sunLight.color,
+      this.atmosphere.sunLight.intensity / 3.4,
+      this.atmosphere.zenithColor,
+    );
+    this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.
     this.wetness.update(dt, raining);
@@ -2301,6 +3321,7 @@ class App {
     const submersion = this.director.submersion();
     const surface = this.sampler.height(this.camera.position.x, this.camera.position.z);
     const preset = getPreset(this.state.preset);
+    this.water.setEyeSubmerged(this.camera.position.y < surface);
 
     this.underwater.setParams({
       submersion,
@@ -2353,6 +3374,8 @@ class App {
     // so a sky with no birds in it stays silent instead of the audio inventing
     // some. Low draws none, and hears none.
     audio.birdCount = this.birds.getCount();
+    this.updateShipAudio(dt, audio);
+    this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);
 
     // Rain on the lens. Placed here rather than with the other rain wiring
@@ -2370,7 +3393,9 @@ class App {
     // anchor the flare where the sun is not, and paint it warm on a blue moon.
     // `_keyDirection` is already derived from `sunLight.position` further up, so
     // it follows the retarget; the colour has to come from the same object.
-    this.lensFlare.setSource(_keyDirection, key.color, key.intensity / 3.4);
+    // A deck thick enough to call an overcast leaves no disc to flare on.
+    const flareThrough = 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.97;
+    this.lensFlare.setSource(_keyDirection, key.color, (key.intensity / 3.4) * flareThrough);
     this.lensFlare.setSubmersion(submersion);
 
     this.lensRain.setSubmersion(submersion);
@@ -2445,6 +3470,7 @@ class App {
     this.water.setFoamCenter(this.wake.centerX, this.wake.centerZ);
 
     this.hud.setFps(this.loop.stats.fps);
+    this.updateHudNav();
 
     // The line, when the viewer takes the helm in weather. Driven from `elapsed`
     // rather than a wall clock so a deterministic rewind puts it back where it
@@ -2493,6 +3519,9 @@ class App {
       this.shipControls.setInput(orders.throttle, orders.rudder);
     }
     this.shipControls?.update(dt);
+    // Sails, anchor and cargo: adds to the forces the controller just set, so
+    // it runs between the controller and the solve. See `src/gameplay`.
+    this.gameplay?.update(dt);
 
     // Safe before the sampler's first readback resolves: it reports height 0 and
     // bodies simply settle to flat water rather than producing NaN.
@@ -2537,6 +3566,33 @@ class App {
     this.wake.update(dt, this.renderer);
   }
 
+  /**
+   * Mean of the dome's radiance at the zenith and at four bearings 6 degrees
+   * above the horizon. Five CPU evaluations of the sky model a frame.
+   * `horizon` receives the darkest of the four bearings: the dome away from
+   * the sun's glow, which is the colour of the air under a continuous deck
+   * (see the composite in `Clouds`).
+   */
+  private measureSkyRadiance(out: THREE.Color, horizon: THREE.Color): THREE.Color {
+    this.atmosphere.skyRadiance(_skyDirection.set(0, 1, 0), out);
+    out.multiplyScalar(0.5);
+    let darkest = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const a = (k * Math.PI) / 2;
+      _skyDirection.set(Math.cos(a), 0.1, Math.sin(a)).normalize();
+      this.atmosphere.skyRadiance(_skyDirection, _skySample);
+      out.r += _skySample.r * 0.125;
+      out.g += _skySample.g * 0.125;
+      out.b += _skySample.b * 0.125;
+      const luma = _skySample.r * 0.2126 + _skySample.g * 0.7152 + _skySample.b * 0.0722;
+      if (luma < darkest) {
+        darkest = luma;
+        horizon.copy(_skySample);
+      }
+    }
+    return out;
+  }
+
   private onResize = (): void => {
     // The circle of confusion is measured on a sensor and drawn in pixels, so
     // the conversion between them moves with the frame.
@@ -2561,6 +3617,8 @@ class App {
         scene: this.scene,
         camera: this.camera,
         director: this.director,
+        /** The audio system: `musicDebug`, `getMusicState()`, and the hooks. */
+        audio: this.audio,
         simulation: this.simulation,
         /**
          * Reflection layers, exposed so a test can isolate them.
@@ -2573,6 +3631,8 @@ class App {
          */
         reflections: this.reflections,
         ssr: this.ssr,
+        /** Storm lightning, so a test can wait for a strike. */
+        lightning: this.lightning,
         sampler: this.sampler,
         atmosphere: this.atmosphere,
         /**
@@ -2600,18 +3660,36 @@ class App {
           dof: this.dof,
           lensRain: this.lensRain,
           underwater: this.underwater,
+          /** AO, TAAU, sharpen, motion blur, CA, grain, eye adaptation; `setOverride` for A/B. */
+          chain: this.postChain,
         },
         loop: this.loop,
         backend: this.backend,
         wake: this.wake,
         water: this.water,
+        /** The procedural reef, so a harness can find its sites and count it. */
+        reefLife: this.reefLife,
+        creatures: this.creatures,
         /**
          * Readiness signals. `sceneContentLoaded` settles whether or not the
          * models arrived, so a harness can distinguish "still loading" from
          * "loaded, and the ship legitimately is not there".
          */
+        /**
+         * The gameplay-facing HUD surfaces: toasts, the objective scroll and
+         * the score plaque. See `Hud` for the signatures.
+         */
+        ui: {
+          toast: (...args: Parameters<Hud['toast']>) => this.hud.toast(...args),
+          setObjective: (...args: Parameters<Hud['setObjective']>) => this.hud.setObjective(...args),
+          setScore: (...args: Parameters<Hud['setScore']>) => this.hud.setScore(...args),
+          clearScore: (...args: Parameters<Hud['clearScore']>) => this.hud.clearScore(...args),
+        },
         isReady: () =>
-          this.sceneContentLoaded && this.sampler.ready && this.loop.stats.frameMs > 0,
+          this.sceneContentLoaded &&
+          this.sampler.ready &&
+          this.loop.stats.frameMs > 0 &&
+          this.pendingPipelines === 0,
         sceneContentLoaded: () => this.sceneContentLoaded,
         hasShip: () => this.ship !== null,
         getState: () => ({ ...this.state }),
@@ -2636,7 +3714,15 @@ class App {
             (this.state as unknown as Record<string, unknown>).quality = partial.quality;
             await this.onStateChange('quality');
           }
-          for (const [key, value] of Object.entries(partial)) {
+          // The preset next, before the keys it seeds. Choosing a preset now
+          // resets the cloud coverage to the preset's own, so a caller sending
+          // `{ cloudCoverage, preset }` — which is the order the visual harness
+          // sends them in — has to see its explicit coverage applied after
+          // the preset, not overwritten by it.
+          const entries = Object.entries(partial).sort(
+            ([a], [b]) => Number(b === 'preset') - Number(a === 'preset'),
+          );
+          for (const [key, value] of entries) {
             if (key === 'quality') continue;
             (this.state as unknown as Record<string, unknown>)[key] = value;
             this.onStateChange(key as keyof UiState);
@@ -2681,6 +3767,7 @@ class App {
           // it captured on entry, so both halves are needed to close the race.
           this.captureOwnsClock = true;
           this.loop.setPaused(true);
+          this.postChain.setDeterministic(true);
           // Settle both things that pause the loop on their own account: the
           // scene load's compile pass and any tier change in flight. Awaiting
           // them is what makes the pause stick — the flag above only stops them
@@ -2689,6 +3776,7 @@ class App {
           await this.contentReady?.catch(() => undefined);
           await this.qualityApply?.catch(() => undefined);
           this.loop.setPaused(true);
+          this.resetTemporal();
 
           // Settle the LOD levels for wherever this shot's camera is, and build
           // any pipeline it newly needs, *before* the capture rather than during
@@ -2781,6 +3869,8 @@ class App {
           this.spray.resetClock(start);
           this.fish.resetClock(start);
           this.kelp.resetClock(start);
+          this.reefLife.resetClock(start);
+          this.creatures.resetClock(start);
           this.meadow.resetClock(start);
           this.stormQuote.reset();
           this.canopy.resetClock(start);
@@ -2809,6 +3899,8 @@ class App {
           // `ShipController.resetInput` — this was the whole of the shot-ordering
           // dependence.
           this.shipControls?.resetInput();
+          // Sails furled, anchor up, score and cargo sequence back to the seed.
+          this.gameplay?.reset();
           // Set, not settled. Wetness dries with a 26 s time constant, so a
           // capture that inherited a storm's wet hull would still be visibly damp
           // three hundred settle steps later.
@@ -2943,6 +4035,8 @@ class App {
         setSprayStrength: (strength: number) => this.spray.setStrength(strength),
         /** Live impact events, for the spray test. */
         sprayLiveEvents: () => this.spray.liveEvents(),
+        /** The spray system itself, for probing its event table. */
+        spray: this.spray,
         /** The tour's environment curves, for the seam and coverage tests. */
         cinematicEnvironment: (time?: number) => ({
           ...this.director.cinematicEnvironment(time),
@@ -2976,6 +4070,8 @@ class App {
     window.removeEventListener('resize', this.onResize);
     this.loop?.stop();
     this.panel?.dispose();
+    this.detachUiSounds?.();
+    this.detachUiSounds = null;
     this.hud?.dispose();
     this.touchControls?.dispose();
     this.director?.dispose();
@@ -3007,10 +4103,12 @@ class App {
     this.lensFlare?.dispose();
     this.outputTransform?.dispose();
     this.spatialAa?.dispose();
+    this.postChain?.dispose();
     this.spray?.dispose();
     this.particles?.dispose();
     this.caustics?.dispose();
     this.shipControls?.dispose();
+    this.gameplay?.dispose();
     // Restores the dry roughness and colour on materials the loader's cache
     // shares, so a re-created App does not inherit a permanently wet ship.
     this.wetness.dispose();

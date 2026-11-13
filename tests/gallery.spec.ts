@@ -27,7 +27,13 @@ import { describeStack, isSoftwareRenderer } from './lib/stack';
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const IMAGE_DIR = join(HERE, '..', 'docs', 'images');
+/**
+ * `GALLERY_OUT` redirects the images (progress captures during a change, so the
+ * published gallery is only rewritten deliberately); `GALLERY_ONLY` is a
+ * comma-separated list of file names to restrict the run to.
+ */
+const IMAGE_DIR = process.env.GALLERY_OUT ?? join(HERE, '..', 'docs', 'images');
+const ONLY = process.env.GALLERY_ONLY?.split(',').map((s) => s.trim()).filter(Boolean);
 
 /**
  * 1600x900, not the baselines' 1280x720.
@@ -133,6 +139,7 @@ test.describe('gallery', () => {
     mkdirSync(IMAGE_DIR, { recursive: true });
 
     for (const { file, shot } of GALLERY) {
+      if (ONLY && !ONLY.includes(file)) continue;
       // A fresh page per image.
       //
       // `resetDeterministic` does not make a shot completely independent of the
@@ -142,7 +149,7 @@ test.describe('gallery', () => {
       // is recorded as one; what it must not do is decide what the front page of
       // the repository looks like. Reloading costs a few seconds per image and
       // removes the entire class from the published output.
-      await page.goto('/?gate=0&quality=high');
+      await page.goto(`/?gate=0&quality=high${process.env.GALLERY_QUERY ?? ''}`);
       await bootOcean(page);
       await applyShot(page, shot);
       const image = await capture(page);
@@ -150,6 +157,7 @@ test.describe('gallery', () => {
       console.log(`[gallery] ${file}.png  ${image.width}x${image.height}  (${shot.id})`);
     }
 
+    if (ONLY && !ONLY.includes('interface')) return;
     // The interface shot, with the overlay: a compositor screenshot rather than
     // a render, because the panel and HUD are DOM.
     await page.goto('/?gate=0&quality=high');

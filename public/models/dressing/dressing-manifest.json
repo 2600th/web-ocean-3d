@@ -2,69 +2,6 @@
   "version": 1,
   "basePath": "/models/dressing/",
   "models": {
-    "pachira_aquatica_01": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/pachira_aquatica_01.glb"
-        }
-      ]
-    },
-    "island_tree_02": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/island_tree_02.glb"
-        }
-      ]
-    },
-    "jacaranda_tree": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/jacaranda_tree.glb"
-        }
-      ]
-    },
-    "fern_02": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/fern_02.glb"
-        }
-      ]
-    },
-    "shrub_sorrel_01": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/shrub_sorrel_01.glb"
-        }
-      ]
-    },
-    "grass_medium_01": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/grass_medium_01.glb"
-        }
-      ]
-    },
-    "grass_medium_02": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/grass_medium_02.glb"
-        }
-      ]
-    },
     "coast_line_01": {
       "lods": [
         {
@@ -176,24 +113,6 @@
           "level": 2,
           "ratio": 0.07,
           "url": "/models/dressing/coast_rocks_03_lod2.glb"
-        }
-      ]
-    },
-    "anthurium_botany_01": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/anthurium_botany_01.glb"
-        }
-      ]
-    },
-    "calathea_orbifolia_01": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/calathea_orbifolia_01.glb"
         }
       ]
     },
@@ -374,48 +293,6 @@
         }
       ]
     },
-    "stylaster_coral": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/stylaster_coral.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/stylaster_coral_lod1.glb"
-        }
-      ]
-    },
-    "seriatopora_coral": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/seriatopora_coral.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/seriatopora_coral_lod1.glb"
-        }
-      ]
-    },
-    "goniastrea_coral": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/goniastrea_coral.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/goniastrea_coral_lod1.glb"
-        }
-      ]
-    },
     "soft_coral_set": {
       "lods": [
         {
@@ -436,24 +313,6 @@
           "level": 0,
           "ratio": 1,
           "url": "/models/dressing/emperor_angelfish.glb"
-        }
-      ]
-    },
-    "tree_poinciana": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/tree_poinciana.glb"
-        }
-      ]
-    },
-    "tree_orchid": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/tree_orchid.glb"
         }
       ]
     },
@@ -511,24 +370,6 @@
           "level": 2,
           "ratio": 0.09,
           "url": "/models/dressing/rock_boulder_lod2.glb"
-        }
-      ]
-    },
-    "palm_coconut": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/palm_coconut.glb"
-        }
-      ]
-    },
-    "palm_tall": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/palm_tall.glb"
         }
       ]
     }
