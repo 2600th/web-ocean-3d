@@ -1,4 +1,5 @@
 import { icon } from './icons.ts';
+import { MenuSea } from './MenuSea.ts';
 import {
   QUALITY_TIERS,
   type QualityTier,
@@ -182,6 +183,24 @@ function showProgress(root: HTMLElement): void {
   const progress = root.querySelector<HTMLElement>('#boot-progress');
   if (gate) gate.hidden = true;
   if (progress) progress.hidden = false;
+  // The sheet shrinks from the menu to the loading chart; CSS animates the
+  // change of content rather than cutting to it.
+  root.classList.add('boot--loading');
+}
+
+/**
+ * The painted seascape behind the gate and the loading chart, and the retry
+ * control the failure state shows. Neither may stop the boot: a browser
+ * without a 2D canvas still gets the gate on its plain background.
+ */
+function dressBoot(root: HTMLElement): void {
+  try {
+    new MenuSea(root).start();
+  } catch {
+    // No 2D context: the gradient behind the sheet stands in for the sea.
+  }
+  const retry = root.querySelector<HTMLButtonElement>('#boot-retry');
+  retry?.addEventListener('click', () => window.location.reload(), { once: true });
 }
 
 function renderGate(
@@ -215,8 +234,14 @@ function renderGate(
   backendGroup.className = 'boot__choices boot__choices--backend';
   backendGroup.setAttribute('role', 'group');
   backendGroup.setAttribute('aria-label', 'Renderer backend');
+  // Without an adapter WebGPU is not a choice, and saying so plainly is the
+  // gate's error state: the plaque is struck through and a note says what the
+  // fallback costs, rather than letting the visitor pick a backend that would
+  // silently become WebGL2 anyway.
+  const webgpuAvailable = probe.adapter !== null;
+  if (!webgpuAvailable) selectedBackend = 'webgl';
   const backendButtons = [
-    choiceButton('WebGPU', 'full fidelity', selectedBackend === 'webgpu', () => {
+    choiceButton('WebGPU', webgpuAvailable ? 'full fidelity' : 'unavailable', selectedBackend === 'webgpu', () => {
       selectedBackend = 'webgpu';
       markSelected(backendButtons, 'WebGPU');
     }, advised.backend === 'webgpu'),
@@ -226,6 +251,24 @@ function renderGate(
     }, advised.backend === 'webgl'),
   ];
   backendGroup.append(...backendButtons);
+  const webgpuButton = backendButtons[0];
+  let notice: HTMLElement | null = null;
+  if (!webgpuAvailable && webgpuButton) {
+    webgpuButton.disabled = true;
+    webgpuButton.classList.add('is-unavailable');
+    webgpuButton.setAttribute('aria-describedby', 'boot-notice');
+    notice = document.createElement('p');
+    notice.className = 'boot__notice';
+    notice.id = 'boot-notice';
+    notice.setAttribute('role', 'note');
+    notice.append(
+      icon('warning', 'boot__notice-icon'),
+      document.createTextNode(
+        'This browser does not offer WebGPU, so the sea will be drawn with WebGL2 — '
+          + 'the same waves, without planar reflections, refraction or lens rain.',
+      ),
+    );
+  }
 
   const qualityLabel = document.createElement('div');
   qualityLabel.className = 'boot__gate-label';
@@ -258,6 +301,7 @@ function renderGate(
     intro,
     backendLabel,
     backendGroup,
+    ...(notice ? [notice] : []),
     qualityLabel,
     qualityGroup,
     probeReadout,
@@ -306,10 +350,12 @@ export async function openStartGate(root: HTMLElement): Promise<StartSelection> 
     // launch onto WebGL2 — including every benchmark and profile run nominally
     // measuring WebGPU.
     const quality = requestedQuality ?? stored?.quality ?? 'high';
+    dressBoot(root);
     showProgress(root);
     return { quality, backend, forceWebGL: backend === 'webgl', adapter: undefined };
   }
 
+  dressBoot(root);
   const probe = await probeDevice();
   const defaults = defaultSelection(probe);
   const initial: StoredSelection = {

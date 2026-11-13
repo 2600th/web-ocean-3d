@@ -106,6 +106,19 @@
 
   --panel-width: 328px;
   --gutter: 20px;
+  /* Edges respect the notch and the home indicator (viewport-fit=cover). */
+  --edge-t: max(var(--gutter), env(safe-area-inset-top, 0px));
+  --edge-r: max(var(--gutter), env(safe-area-inset-right, 0px));
+  --edge-b: max(var(--gutter), env(safe-area-inset-bottom, 0px));
+  --edge-l: max(var(--gutter), env(safe-area-inset-left, 0px));
+
+  /* Wood over the scene is stained glass-free translucency: alpha, never blur. */
+  --wood-a: rgba(42, 27, 15, 0.84);
+  --wood-deep-a: rgba(23, 14, 7, 0.88);
+
+  /* Attention: fade slowly out, come back at once. */
+  --fade-out: 1.4s;
+  --fade-in: 220ms;
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.55, 0, 0.9, 0.4);
@@ -277,11 +290,11 @@ body {
   background:
     linear-gradient(180deg, rgba(255, 220, 160, 0.07), rgba(0, 0, 0, 0.22)) padding-box,
     url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
-    linear-gradient(180deg, var(--wood-hi), var(--wood) 60%, var(--wood-deep)) padding-box,
+    linear-gradient(180deg, rgba(61, 42, 24, 0.86), var(--wood-a) 60%, var(--wood-deep-a)) padding-box,
     var(--brass-grad) border-box;
   box-shadow:
     0 0 0 1px var(--brass-edge),
-    0 8px 18px rgba(5, 3, 1, 0.45),
+    0 8px 18px rgba(5, 3, 1, 0.38),
     inset 0 1px 0 rgba(255, 230, 170, 0.14);
   color: var(--on-wood);
 }
@@ -337,12 +350,12 @@ body {
 
 .panel {
   position: absolute;
-  top: var(--gutter);
-  right: var(--gutter);
+  top: var(--edge-t);
+  right: var(--edge-r);
   z-index: 6;
   width: var(--panel-width);
   /* Clear of the instrument corner below it. */
-  max-height: calc(100% - var(--gutter) * 2 - 46px);
+  max-height: calc(100% - var(--edge-t) - var(--edge-b) - 46px);
   display: flex;
   flex-direction: column;
   padding: 16px 20px 14px 22px;
@@ -804,8 +817,8 @@ body {
 .panel-toggle {
   display: none;
   position: absolute;
-  right: var(--gutter);
-  bottom: calc(var(--gutter) + env(safe-area-inset-bottom, 0px));
+  right: var(--edge-r);
+  bottom: var(--edge-b);
   z-index: 7;
   flex-direction: column;
   align-items: center;
@@ -868,9 +881,9 @@ body {
 
 .hud-compass {
   position: absolute;
-  top: var(--gutter);
+  top: var(--edge-t);
   left: 50%;
-  width: clamp(280px, calc(100% - var(--panel-width) * 2 - var(--gutter) * 6), 580px);
+  width: clamp(280px, calc(100% - 640px), 560px);
   transform: translateX(-50%);
   transition: opacity 400ms var(--ease);
 }
@@ -887,9 +900,9 @@ body {
   background:
     linear-gradient(180deg, rgba(0, 0, 0, 0.25), rgba(255, 220, 160, 0.05) 45%, rgba(0, 0, 0, 0.35)) padding-box,
     url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
-    linear-gradient(180deg, var(--wood), var(--wood-deep)) padding-box,
+    linear-gradient(180deg, var(--wood-a), var(--wood-deep-a)) padding-box,
     var(--brass-grad) border-box;
-  box-shadow: 0 0 0 1px var(--brass-edge), 0 8px 18px rgba(5, 3, 1, 0.45);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 8px 18px rgba(5, 3, 1, 0.38);
 }
 
 /* The tape fades into the frame at both ends, like a card under glass. */
@@ -906,12 +919,12 @@ body {
 
 .hud-compass__window::before {
   left: 0;
-  background: linear-gradient(90deg, var(--wood-deep) 8%, transparent);
+  background: linear-gradient(90deg, var(--wood-deep-a) 8%, transparent);
 }
 
 .hud-compass__window::after {
   right: 0;
-  background: linear-gradient(270deg, var(--wood-deep) 8%, transparent);
+  background: linear-gradient(270deg, var(--wood-deep-a) 8%, transparent);
 }
 
 /* 2.6px per degree: majors every 15° (39px), minors every 5° (13px). The
@@ -1066,7 +1079,7 @@ body {
 
 .hud-toasts {
   position: absolute;
-  top: calc(var(--gutter) + 84px);
+  top: calc(var(--edge-t) + 84px);
   left: 50%;
   width: min(430px, calc(100% - var(--gutter) * 2));
   transform: translateX(-50%);
@@ -1177,8 +1190,8 @@ body {
 
 .hud-quest {
   position: absolute;
-  top: var(--gutter);
-  left: var(--gutter);
+  top: var(--edge-t);
+  left: var(--edge-l);
   width: 310px;
   display: flex;
   flex-direction: column;
@@ -1248,7 +1261,7 @@ body {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 400;
-  font-size: 24px;
+  font-size: 25px;
   line-height: 1.02;
   color: var(--ink);
   text-wrap: balance;
@@ -1348,8 +1361,8 @@ body {
 
 .hud-instruments {
   position: absolute;
-  left: var(--gutter);
-  bottom: var(--gutter);
+  left: var(--edge-l);
+  bottom: var(--edge-b);
   display: flex;
   align-items: center;
   transition: opacity 400ms var(--ease);
@@ -1514,7 +1527,7 @@ body {
 .hud-helm {
   position: absolute;
   left: 50%;
-  bottom: var(--gutter);
+  bottom: var(--edge-b);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1523,6 +1536,9 @@ body {
 }
 
 .hud-hints {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 500ms var(--ease), transform 500ms var(--ease);
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -1562,9 +1578,9 @@ body {
   border-radius: 15px;
   background:
     url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
-    linear-gradient(180deg, var(--wood), var(--wood-deep)) padding-box,
+    linear-gradient(180deg, var(--wood-a), var(--wood-deep-a)) padding-box,
     var(--brass-grad) border-box;
-  box-shadow: 0 0 0 1px var(--brass-edge), 0 10px 22px rgba(5, 3, 1, 0.5);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 10px 22px rgba(5, 3, 1, 0.42);
 }
 
 .tab {
@@ -1647,8 +1663,8 @@ body {
 
 .hud-corner {
   position: absolute;
-  right: var(--gutter);
-  bottom: var(--gutter);
+  right: var(--edge-r);
+  bottom: var(--edge-b);
   display: flex;
   align-items: baseline;
   gap: 4px;
@@ -1688,7 +1704,7 @@ body {
   padding: 3px 6px 2px;
   border-radius: 4px;
   border: 1px solid rgba(200, 151, 63, 0.55);
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--brass-hi);
@@ -1710,40 +1726,220 @@ body {
 }
 
 /* ==========================================================================
+   Attention — the HUD steps back when it is not being used
+
+   Hud.ts sets `.is-idle` and `.is-dragging` and `data-mode` on #ui-root. The
+   levels are chosen per element by how much the viewer needs it at a glance:
+   the compass and the wind dial stay faintly legible, the mode bar becomes a
+   ghost, toasts and an open ledger are never faded because they are being
+   read. Fading out is slow (it should not be noticed); coming back is
+   immediate (it should feel like it was always there).
+   ========================================================================== */
+
+.hud-compass,
+.hud-instruments,
+.hud-modes,
+.hud-corner,
+.score,
+.objective,
+.panel-toggle,
+.touchpad,
+.touchhelm {
+  transition: opacity var(--fade-in) var(--ease);
+}
+
+.hud--hints .hud-hints,
+.hud-helm:hover .hud-hints,
+.hud-helm:focus-within .hud-hints {
+  opacity: 1;
+  transform: none;
+}
+
+#ui-root.is-idle :is(.hud-compass, .hud-instruments, .hud-modes, .hud-corner, .score, .panel--collapsed, .panel-toggle, .touchpad, .touchhelm) {
+  transition-duration: var(--fade-out);
+}
+
+#ui-root.is-idle .hud-compass {
+  opacity: 0.34;
+}
+
+#ui-root.is-idle .hud-instruments {
+  opacity: 0.38;
+}
+
+#ui-root.is-idle .hud-modes {
+  opacity: 0.26;
+}
+
+#ui-root.is-idle .hud-corner {
+  opacity: 0.45;
+}
+
+#ui-root.is-idle .score {
+  opacity: 0.6;
+}
+
+#ui-root.is-idle .panel--collapsed,
+#ui-root.is-idle .panel-toggle,
+#ui-root.is-idle .touchpad,
+#ui-root.is-idle .touchhelm {
+  opacity: 0.5;
+}
+
+/* Pointing at or keyboard-focusing anything brings it back regardless. Only a
+   real hover counts (a tap leaves `:hover` stuck on touch screens) and only
+   keyboard focus (a tapped button keeps plain focus). */
+@media (hover: hover) {
+  #ui-root .hud-modes:hover,
+  #ui-root .panel:hover {
+    opacity: 1;
+    transition-duration: var(--fade-in);
+  }
+}
+
+#ui-root .hud-modes:has(:focus-visible),
+#ui-root .panel:has(:focus-visible) {
+  opacity: 1;
+  transition-duration: var(--fade-in);
+}
+
+/* Dragging the camera: the viewer is looking at the sea, so let them. */
+#ui-root.is-dragging :is(.hud-compass, .hud-instruments, .hud-modes, .hud-corner) {
+  opacity: 0.18;
+  transition-duration: 300ms;
+}
+
+#ui-root.is-dragging :is(.hud-quest, .panel--collapsed, .panel-toggle) {
+  opacity: 0.35;
+  transition-duration: 300ms;
+}
+
+#ui-root.is-dragging .panel:not(.panel--collapsed) {
+  opacity: 0.6;
+  transition-duration: 300ms;
+}
+
+/* The tour is a film: instruments, quest and corner go; the mode bar stays
+   as a way out, and goes too once the viewer settles in to watch. */
+#ui-root[data-mode='cinematic'] :is(.hud-compass, .hud-instruments, .hud-quest, .hud-corner) {
+  opacity: 0;
+  transition-duration: 700ms;
+}
+
+#ui-root[data-mode='cinematic'].is-idle :is(.hud-modes, .panel--collapsed, .panel-toggle) {
+  opacity: 0;
+}
+
+/* A mode change made from the keyboard is seen on the bar too. */
+.tab.is-arriving {
+  animation: tab-arrive 420ms var(--ease);
+}
+
+@keyframes tab-arrive {
+  from {
+    transform: scale(0.9);
+    filter: brightness(1.35);
+  }
+  to {
+    transform: none;
+    filter: none;
+  }
+}
+
+/* The objective chip's unfold control; only phones show it (see Responsive). */
+.objective__more {
+  display: none;
+}
+
+/* ==========================================================================
    Boot — the chart on the captain's table
    ========================================================================== */
 
+/*
+ * The menu is a scene, not a dialog: the painted sea (MenuSea.ts) fills the
+ * screen and the chart lies to one side of it on a wide screen, low on a
+ * phone, so the ship and the lighthouse stay in view. When the live sea is
+ * ready the whole overlay dissolves into it — a 900 ms cross-fade from a
+ * painted dusk to the rendered one, never a cut through black.
+ */
 .boot {
   position: fixed;
   inset: 0;
   z-index: 50;
-  /* Centred by auto margins rather than place-items, so a sheet taller than
+  /* Placed by auto margins rather than place-items, so a sheet taller than
      the viewport scrolls from its top instead of being cut off above it. */
   display: grid;
   overflow-y: auto;
-  padding: 28px 16px;
-  background:
-    radial-gradient(90% 70% at 50% 42%, rgba(40, 92, 104, 0.55), transparent 70%),
-    radial-gradient(140% 110% at 50% 40%, #12313a 0%, #0b1d24 48%, #040b0e 100%);
+  padding:
+    max(28px, env(safe-area-inset-top, 0px)) max(5vw, 24px, env(safe-area-inset-right, 0px))
+    max(28px, env(safe-area-inset-bottom, 0px)) max(6vw, 24px, env(safe-area-inset-left, 0px));
+  /* Paints before the canvas does: the same dusk, flattened. */
+  background: linear-gradient(180deg, #081b25 0%, #183f4c 40%, #b9845c 56%, #24515a 57%, #04111a 100%);
   opacity: 1;
   visibility: visible;
-  transform: translateY(0);
-  transition: opacity 620ms var(--ease), transform 700ms var(--ease), visibility 0s linear 0s;
+  transition: opacity 900ms var(--ease), visibility 0s linear 0s;
 }
 
 .boot--hidden {
   opacity: 0;
-  transform: translateY(-2.5%);
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 620ms var(--ease), transform 700ms var(--ease), visibility 0s linear 700ms;
+  transition: opacity 900ms var(--ease), visibility 0s linear 900ms;
+}
+
+.boot__sea {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .boot__sheet {
-  width: min(740px, 100%);
-  margin: auto;
-  padding: 46px 58px 42px;
+  position: relative;
+  z-index: 1;
+  width: min(660px, 100%);
+  margin: auto auto auto 0;
+  padding: 42px 52px 38px;
   filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.6)) drop-shadow(0 4px 6px rgba(0, 0, 0, 0.4));
+  animation: sheet-arrive 900ms var(--ease) both;
+}
+
+/* The chart is laid on the table: a short drop and settle, once. */
+@keyframes sheet-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(18px) rotate(-0.6deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Loading: the menu's choices fold away and the course is charted. */
+.boot--loading .boot__progress {
+  animation: chart-in 640ms var(--ease) both;
+}
+
+@keyframes chart-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Under ~1000px there is no room beside the chart: centre it. */
+@media (max-width: 999px) {
+  .boot__sheet {
+    margin: auto;
+  }
 }
 
 /* The portolan's rhumb lines, faint under the writing. */
@@ -2047,10 +2243,23 @@ body {
   width: 100%;
   height: 100%;
   border-radius: 2px;
-  background: var(--wax);
+  background:
+    linear-gradient(90deg, transparent 0 40%, rgba(255, 210, 160, 0.75) 50%, transparent 60% 100%) 0 0 / 300% 100% no-repeat,
+    var(--wax);
   transform: scaleX(0);
   transform-origin: left center;
   transition: transform 600ms var(--ease);
+  animation: ink-wet 2.4s linear infinite;
+}
+
+/* Wet ink catching the light as it runs along the course. */
+@keyframes ink-wet {
+  from {
+    background-position: 150% 0, 0 0;
+  }
+  to {
+    background-position: -50% 0, 0 0;
+  }
 }
 
 .boot__ship-track {
@@ -2095,6 +2304,71 @@ body {
 
 .boot__status--error {
   color: var(--wax);
+  font-weight: 700;
+}
+
+/* Failure: the course stops where it was, greyed, and a way to try again. */
+.boot__retry {
+  display: none;
+  width: auto;
+  margin: 14px auto 0;
+  padding-inline: 26px;
+}
+
+.boot__progress:has(.boot__status--error) .boot__retry {
+  display: inline-block;
+}
+
+.boot__progress:has(.boot__status--error) .boot__route {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+.boot__progress:has(.boot__status--error) .boot__ship {
+  animation: none;
+  transform: rotate(14deg) translateY(6px);
+}
+
+/* WebGPU unavailable: a plain note, set like a correction in the margin. */
+.boot__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 52ch;
+  margin: 14px auto 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(142, 27, 23, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(142, 27, 23, 0.35);
+  font: 500 14px/1.4 var(--font-body);
+  color: var(--ink);
+  text-align: left;
+}
+
+.boot__notice-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  color: var(--wax);
+}
+
+.boot__choice.is-unavailable,
+.boot__choice:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.85) brightness(0.8);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 2px 0 var(--brass-edge);
+}
+
+.boot__choice.is-unavailable .boot__choice-name {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+
+.boot__choice.is-unavailable:hover,
+.boot__choice.is-unavailable:active {
+  filter: grayscale(0.85) brightness(0.8);
+  transform: none;
 }
 
 /* ==========================================================================
@@ -2103,10 +2377,10 @@ body {
 
 .touchpad {
   position: absolute;
-  right: var(--gutter);
-  bottom: calc(var(--gutter) + 92px + env(safe-area-inset-bottom, 0px));
-  width: min(38vw, 160px);
-  height: min(38vw, 160px);
+  right: var(--edge-r);
+  bottom: calc(var(--edge-b) + 76px);
+  width: min(38vw, 150px);
+  height: min(38vw, 150px);
   display: grid;
   place-items: center;
   touch-action: none;
@@ -2165,6 +2439,70 @@ body {
   bottom: 11px;
 }
 
+/* Sail and anchor orders, stacked beside the stick. */
+.touchhelm {
+  position: absolute;
+  right: calc(var(--edge-r) + min(38vw, 150px) + 10px);
+  bottom: calc(var(--edge-b) + 76px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 3;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touchhelm[hidden] {
+  display: none;
+}
+
+.touchhelm__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 58px;
+  min-height: 52px;
+  padding: 4px 8px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  font: 800 13px/1 var(--font-body);
+  letter-spacing: 0.04em;
+  color: var(--on-wood, #f1e2bf);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 240, 200, 0.12), transparent 70%) padding-box,
+    linear-gradient(rgba(42, 27, 15, 0.92), rgba(23, 14, 7, 0.95)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 3px 0 var(--brass-edge), 0 6px 14px rgba(5, 3, 1, 0.45);
+  cursor: pointer;
+  transition: transform 100ms var(--ease), box-shadow 100ms var(--ease), filter 140ms;
+}
+
+.touchhelm__btn:active {
+  transform: translateY(3px);
+  filter: brightness(1.2);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 0 0 var(--brass-edge), 0 2px 5px rgba(5, 3, 1, 0.45);
+}
+
+.touchhelm__icon {
+  width: 24px;
+  height: 24px;
+  color: var(--brass-hi);
+}
+
+.touchhelm__label {
+  font: 800 10px/1 var(--font-body);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.touchhelm__btn:focus-visible {
+  outline: 2px solid var(--gold, #ecc66c);
+  outline-offset: 2px;
+}
+
 /* ==========================================================================
    Storm quote — the voice. IM Fell English italic, and nowhere else.
 
@@ -2213,6 +2551,14 @@ body {
 
 /* ==========================================================================
    Responsive
+
+   Three layouts, each laid out around where the ship sits in the chase view:
+
+     desktop        the frame's four corners and its top and bottom centre;
+     phone portrait a top band (compass, objective chip, score ribbon) and a
+                    bottom band (dial, stick, sail orders, icon mode bar), the
+                    middle of the screen left to the hull;
+     phone landscape a left column and a right column, the centre left clear.
    ========================================================================== */
 
 /* Not enough width for named tabs beside the instruments: icons and keys. */
@@ -2225,6 +2571,8 @@ body {
     padding-inline: 11px;
   }
 }
+
+/* ---- Phones and narrow windows ------------------------------------------ */
 
 @media (max-width: 900px) {
   :root {
@@ -2239,9 +2587,10 @@ body {
     left: 0;
     width: auto;
     max-height: min(76vh, 620px);
-    padding: 18px 18px calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: 18px max(18px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px))
+      max(18px, env(safe-area-inset-left, 0px));
     transform: translateY(105%);
-    transition: transform 0.38s var(--ease);
+    transition: transform 0.38s var(--ease), opacity var(--fade-in) var(--ease);
     will-change: transform;
   }
 
@@ -2249,8 +2598,19 @@ body {
     transform: translateY(0);
   }
 
+  /* On a phone the folded state is the sheet being away, not a title bar. */
+  .panel--collapsed:not(.panel--open) {
+    visibility: hidden;
+  }
+
+  .panel__collapse svg {
+    transform: none;
+  }
+
   .panel-toggle {
     display: flex;
+    width: 52px;
+    height: 52px;
   }
 
   .panel--open ~ .panel-toggle {
@@ -2258,122 +2618,251 @@ body {
     pointer-events: none;
   }
 
-  /* -- HUD -- */
+  /* -- compass -- */
   .hud-compass {
-    width: calc(100% - var(--gutter) * 2);
-    max-width: 460px;
+    width: calc(100% - var(--edge-l) - var(--edge-r));
+    max-width: 440px;
   }
 
   .hud-compass__window {
-    height: 38px;
-  }
-
-  .hud-compass__readout {
-    top: 36px;
-    font-size: 14px;
-  }
-
-  .hud-compass__label.is-cardinal {
-    font-size: 18px;
-  }
-
-  .panel__collapse svg {
-    transform: none;
-  }
-
-  .hud-quest {
-    top: calc(var(--gutter) + 70px);
-    width: min(290px, calc(100% - 146px));
-    gap: 8px;
-  }
-
-  .objective {
-    padding: 12px 15px 11px 12px;
-    gap: 10px;
-  }
-
-  .objective__seal {
-    width: 34px;
     height: 34px;
   }
 
-  .objective__seal svg {
-    width: 16px;
-    height: 16px;
+  .hud-compass__label {
+    top: 5px;
+    font-size: 11px;
   }
 
-  .objective__title {
-    font-size: 19px;
-  }
-
-  .objective__detail {
+  .hud-compass__label.is-inter {
+    top: 3px;
     font-size: 13px;
   }
 
+  .hud-compass__label.is-cardinal {
+    top: 1px;
+    font-size: 17px;
+  }
+
+  .hud-compass__readout {
+    top: 32px;
+    padding: 2px 10px 3px;
+    font-size: 13px;
+  }
+
+  .hud-compass__mark--objective {
+    top: 12px;
+    width: 17px;
+    height: 17px;
+    margin-left: -8.5px;
+  }
+
+  /* -- top band: objective chip and score ribbon -- */
+  .hud-quest {
+    top: calc(var(--edge-t) + 60px);
+    width: min(272px, calc(100% - var(--edge-l) - var(--edge-r) - 100px));
+    gap: 6px;
+  }
+
+  .objective {
+    align-items: center;
+    gap: 9px;
+    padding: 8px 34px 8px 10px;
+  }
+
+  .objective__seal {
+    width: 30px;
+    height: 30px;
+  }
+
+  .objective__seal svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .objective__title {
+    font-size: 17px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .objective__detail {
+    display: none;
+    font-size: 13px;
+  }
+
+  .objective__bearing {
+    margin-top: 3px;
+    font-size: 12px;
+  }
+
+  .objective__arrow {
+    width: 17px;
+    height: 17px;
+  }
+
+  .objective__arrow::before {
+    top: 1.5px;
+    width: 6px;
+    height: 11px;
+    margin-left: -3px;
+  }
+
+  .objective.is-expanded {
+    align-items: flex-start;
+  }
+
+  .objective.is-expanded .objective__title {
+    white-space: normal;
+  }
+
+  .objective.is-expanded .objective__detail:not([hidden]) {
+    display: block;
+  }
+
+  /* The whole chip is the button; the chevron sits at its right edge. */
+  .objective__more {
+    display: grid;
+    place-items: center end;
+    position: absolute;
+    inset: 0;
+    padding: 0 10px 0 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink-soft);
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .objective__more svg {
+    width: 18px;
+    height: 18px;
+    transition: transform 240ms var(--ease);
+  }
+
+  .objective.is-expanded .objective__more {
+    place-items: start end;
+    padding-top: 14px;
+  }
+
+  .objective.is-expanded .objective__more svg {
+    transform: rotate(180deg);
+  }
+
+  /* Score: one ribbon of label-value pairs instead of a tall plaque. */
   .score {
-    min-width: 140px;
-    padding: 7px 12px 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    min-width: 0;
+    max-width: calc(100vw - var(--edge-l) - var(--edge-r));
+    width: max-content;
+    padding: 5px 11px;
+    border-radius: 8px;
+  }
+
+  .score__row {
+    gap: 5px;
+  }
+
+  .score__label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
   }
 
   .score__value {
-    font-size: 18px;
+    font-size: 14px;
+    /* In the ribbon the label sits to the left, so the bump grows rightward. */
+    transform-origin: left center;
   }
 
+  /* -- toasts: top centre, narrow, clear of the quest column below it (an
+     unfolded objective and the score ribbon end ~180px down) and over the
+     mast tops rather than the hull -- */
   .hud-toasts {
-    top: auto;
-    bottom: calc(var(--gutter) + 296px);
+    top: calc(var(--edge-t) + 192px);
+    width: min(300px, calc(100% - var(--edge-l) - var(--edge-r)));
+    z-index: 3;
   }
 
   .toast {
-    padding: 9px 18px 9px 11px;
+    gap: 9px;
+    padding: 8px 14px 8px 9px;
   }
 
   .toast__medal {
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .toast__medal svg {
+    width: 18px;
+    height: 18px;
   }
 
   .toast__text {
-    font-size: 15px;
+    font-size: 14px;
   }
 
+  .toast__detail {
+    font-size: 13px;
+  }
+
+  /* -- instrument corner: small, top right -- */
   .hud-corner {
-    top: calc(var(--gutter) + 72px);
+    top: calc(var(--edge-t) + 60px);
     bottom: auto;
-    padding: 4px 6px 4px 8px;
+    padding: 3px 5px 3px 7px;
+    font-size: 10px;
+  }
+
+  .hud-corner__fps {
+    font-size: 13px;
   }
 
   .hud-corner__backend {
     margin-left: 3px;
+    padding: 2px 4px 1px;
+    font-size: 10px;
   }
 
+  /* -- bottom band: dial and readings above the mode bar -- */
   .hud-instruments {
-    bottom: calc(var(--gutter) + 82px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(var(--edge-b) + 64px);
   }
 
   .dial {
-    width: 84px;
-    height: 84px;
-    padding: 5px;
+    width: 64px;
+    height: 64px;
+    padding: 4px;
   }
 
-  /* Stacked rows, figures only: the stick sits to the right at the helm. */
+  .dial::before {
+    inset: 4px;
+  }
+
+  .dial__lubber {
+    width: 10px;
+    height: 8px;
+  }
+
   .hud-readings {
     flex-direction: column;
-    gap: 5px;
-    margin-left: -16px;
-    padding: 8px 14px 8px 24px;
+    gap: 3px;
+    margin-left: -14px;
+    padding: 6px 11px 6px 20px;
   }
 
   .reading {
     flex-direction: row;
     align-items: baseline;
-    gap: 7px;
+    gap: 6px;
     min-width: 0;
   }
 
   .reading--log {
-    padding: 5px 0 0;
+    padding: 3px 0 0;
     border-left: 0;
     border-top: 1px solid rgba(200, 151, 63, 0.4);
   }
@@ -2388,7 +2877,11 @@ body {
   }
 
   .reading__value {
-    font-size: 22px;
+    font-size: 18px;
+  }
+
+  .reading__unit {
+    font-size: 11px;
   }
 
   .reading__sub {
@@ -2396,9 +2889,9 @@ body {
   }
 
   .hud-helm {
-    left: var(--gutter);
-    right: calc(var(--gutter) + 68px);
-    bottom: calc(var(--gutter) + env(safe-area-inset-bottom, 0px));
+    left: var(--edge-l);
+    right: calc(var(--edge-r) + 60px);
+    bottom: var(--edge-b);
     transform: none;
     align-items: center;
   }
@@ -2407,32 +2900,169 @@ body {
     display: none;
   }
 
-  /* A thumb's row on a phone; not a plank across a tablet. */
+  /* Icons only: four thumb targets, not a plank across a tablet. */
   .hud-modes {
     width: 100%;
-    max-width: 440px;
+    max-width: 300px;
     justify-content: space-between;
     gap: 4px;
     padding: 4px;
+    border-radius: 13px;
   }
 
   .tab {
     flex: 1;
-    flex-direction: column;
     justify-content: center;
-    gap: 3px;
-    min-height: 50px;
-    padding: 5px 4px;
+    min-height: 44px;
+    padding: 6px 4px;
   }
 
   .tab__name {
-    display: block;
-    font-size: 15px;
+    display: none;
   }
 
   .tab__icon {
-    width: 21px;
-    height: 21px;
+    width: 23px;
+    height: 23px;
+  }
+
+  /* -- touch helm: the stick bottom right, the sail orders above it -- */
+  .touchpad {
+    bottom: calc(var(--edge-b) + 64px);
+    width: min(34vw, 132px);
+    height: min(34vw, 132px);
+  }
+
+  .touchhelm {
+    right: var(--edge-r);
+    bottom: calc(var(--edge-b) + 64px + min(34vw, 132px) + 10px);
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  .touchhelm__btn {
+    min-width: 50px;
+    min-height: 46px;
+    padding: 3px 6px;
+  }
+
+  .touchhelm__icon {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+/* ---- Phone landscape: two columns, the centre left to the ship ----------- */
+
+@media (max-height: 520px) and (orientation: landscape) {
+  :root {
+    --gutter: 10px;
+  }
+
+  .hud-compass {
+    width: min(340px, 42vw);
+  }
+
+  .hud-compass__window {
+    height: 30px;
+  }
+
+  .hud-compass__label.is-cardinal {
+    font-size: 15px;
+  }
+
+  .hud-compass__readout {
+    top: 28px;
+    font-size: 12px;
+  }
+
+  .hud-quest {
+    top: var(--edge-t);
+    width: min(250px, 29vw);
+  }
+
+  /* The centre belongs to the ship: news goes in the left column, under the
+     quest and above the wind, one strip at a time. */
+  .hud-toasts {
+    top: calc(var(--edge-t) + 128px);
+    left: var(--edge-l);
+    width: min(250px, 29vw);
+    transform: none;
+    align-items: flex-start;
+  }
+
+  .hud-toasts .toast:not(:first-child) {
+    display: none;
+  }
+
+  .hud-corner {
+    top: var(--edge-t);
+    right: calc(var(--edge-r) + 54px);
+  }
+
+  .panel-toggle {
+    top: var(--edge-t);
+    bottom: auto;
+    width: 46px;
+    height: 46px;
+  }
+
+  .panel-toggle__text {
+    display: none;
+  }
+
+  /* The ledger slides in from the right as a drawer rather than up as a sheet. */
+  .panel {
+    top: 0;
+    left: auto;
+    width: min(420px, 58vw);
+    max-height: none;
+    padding-top: max(14px, env(safe-area-inset-top, 0px));
+    transform: translateX(105%);
+  }
+
+  .panel--open {
+    transform: none;
+  }
+
+  .hud-instruments {
+    bottom: calc(var(--edge-b) + 58px);
+  }
+
+  .dial {
+    width: 56px;
+    height: 56px;
+  }
+
+  .hud-helm {
+    right: auto;
+    bottom: var(--edge-b);
+  }
+
+  .hud-modes {
+    width: auto;
+  }
+
+  .tab {
+    flex: none;
+    width: 46px;
+    min-height: 40px;
+  }
+
+  .touchpad {
+    bottom: var(--edge-b);
+    width: min(32vh, 120px);
+    height: min(32vh, 120px);
+  }
+
+  .touchhelm {
+    right: calc(var(--edge-r) + min(32vh, 120px) + 8px);
+    bottom: var(--edge-b);
+    flex-direction: column;
+  }
+
+  .touchhelm__btn {
+    min-height: 40px;
   }
 }
 
@@ -2462,39 +3092,198 @@ body {
   }
 }
 
-@media (max-width: 560px) {
+/* ---- The menu on a short desktop (a 720p laptop) ------------------------- */
+
+@media (max-height: 820px) and (min-height: 521px) and (min-width: 601px) {
   .boot__sheet {
-    padding: 34px 22px 30px;
+    width: min(600px, 100%);
+    padding: 30px 40px 28px;
+  }
+
+  .boot__title {
+    font-size: 66px;
   }
 
   .boot__standfirst {
-    font-size: 12px;
-    letter-spacing: 0.18em;
+    margin-top: 8px;
+    font-size: 13px;
   }
 
-  .boot__choices--quality {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
+  .boot__flourish {
+    margin: 12px auto;
   }
 
-  .boot__choices--quality .boot__choice {
-    flex: 0 0 calc((100% - 24px) / 3);
+  .boot__gate-intro {
+    font-size: 15px;
+  }
+
+  .boot__gate-label {
+    margin: 14px 0 9px;
+  }
+
+  .boot__choice {
+    padding: 9px 4px 8px;
   }
 
   .boot__choice-name {
-    font-size: 22px;
+    font-size: 21px;
+  }
+
+  .boot__notice {
+    margin-top: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .boot__gate-readout {
+    margin-top: 10px;
   }
 
   .cta {
-    font-size: 32px;
-    padding: 12px 32px 13px 24px;
+    margin-top: 16px;
+    font-size: 31px;
+    padding: 11px 36px 12px 26px;
   }
 }
 
-@media (max-width: 380px) {
-  .tab__name {
-    font-size: 13px;
+/* ---- The menu on a phone ------------------------------------------------- */
+
+/* Portrait: the chart is a card at the bottom, the sea and ship above it. */
+@media (max-width: 600px) and (orientation: portrait) {
+  .boot {
+    padding: max(16px, env(safe-area-inset-top, 0px)) 12px max(14px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .boot__sheet {
+    margin: auto 0 0;
+    padding: 28px 20px 24px;
+  }
+
+  .boot__title {
+    font-size: 50px;
+  }
+
+  .boot__standfirst {
+    margin-top: 8px;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+  }
+
+  .boot__flourish {
+    margin: 12px auto 10px;
+  }
+
+  .boot__gate-intro {
+    font-size: 14px;
+  }
+
+  .boot__gate-label {
+    margin: 14px 0 9px;
+  }
+
+  .boot__choices {
+    gap: 8px;
+  }
+
+  .boot__choices--quality {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .boot__choice {
+    padding: 9px 2px 8px;
+    border-width: 2px;
+  }
+
+  .boot__choice-name {
+    font-size: 20px;
+  }
+
+  .boot__choices--quality .boot__choice-name {
+    font-size: 16px;
+  }
+
+  .boot__choices--quality .boot__choice-detail {
+    display: none;
+  }
+
+  .boot__gate-readout {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+
+  .cta {
+    margin-top: 14px;
+    font-size: 31px;
+    padding: 11px 30px 12px 22px;
+  }
+
+  .cta__icon {
+    width: 26px;
+    height: 26px;
+  }
+}
+
+/* Landscape phone: a compact chart on the left, the ship on the right. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .boot {
+    padding: max(12px, env(safe-area-inset-top, 0px)) 16px max(12px, env(safe-area-inset-bottom, 0px))
+      max(20px, env(safe-area-inset-left, 0px));
+  }
+
+  .boot__sheet {
+    width: min(520px, 64vw);
+    margin: auto auto auto 0;
+    padding: 20px 26px 18px;
+  }
+
+  .boot__title {
+    font-size: 40px;
+  }
+
+  .boot__standfirst,
+  .boot__flourish,
+  .boot__gate-intro,
+  .boot__gate-readout,
+  .boot__choices--quality .boot__choice-detail {
+    display: none;
+  }
+
+  .boot__gate-label {
+    margin: 10px 0 7px;
+    font-size: 11px;
+  }
+
+  .boot__choices {
+    gap: 6px;
+  }
+
+  .boot__choice {
+    padding: 7px 2px 6px;
+    border-width: 2px;
+  }
+
+  .boot__choice-name {
+    font-size: 18px;
+  }
+
+  .boot__choice-detail {
+    font-size: 11px;
+  }
+
+  .cta {
+    margin-top: 12px;
+    font-size: 25px;
+    padding: 9px 26px 10px 18px;
+  }
+
+  .cta__icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .boot__route {
+    height: 52px;
   }
 }
 

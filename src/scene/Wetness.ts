@@ -75,6 +75,9 @@ interface Tracked {
   wired: boolean;
   roughness: number;
   color: THREE.Color;
+  /** The node graphs the material had before wetting wrapped them, restored on dispose. */
+  colorNode: unknown;
+  roughnessNode: unknown;
 }
 
 export class SurfaceWetness {
@@ -119,6 +122,8 @@ export class SurfaceWetness {
           wired: false,
           roughness: standard.roughness,
           color: standard.color.clone(),
+          colorNode: (standard as unknown as { colorNode?: unknown }).colorNode ?? null,
+          roughnessNode: (standard as unknown as { roughnessNode?: unknown }).roughnessNode ?? null,
         };
         this.wire(entry);
         this.tracked.push(entry);
@@ -164,8 +169,14 @@ export class SurfaceWetness {
     // `materialColor` and `materialRoughness` are three's own compositions of the
     // material's scalars with its maps, so wrapping them preserves the glTF's
     // textures exactly and works whether or not a given material has any.
-    material.colorNode = materialColor.mul(mix(float(1), float(WET_ALBEDO), wet));
-    material.roughnessNode = mix(materialRoughness, float(WET_ROUGHNESS), wet);
+    //
+    // A material that already carries its own colour or roughness graph — the
+    // island's procedural rock and set dressing — has that graph wrapped instead,
+    // so wetting composes with it rather than replacing it.
+    const dryColor = (entry.colorNode ?? materialColor) as typeof materialColor;
+    const dryRoughness = (entry.roughnessNode ?? materialRoughness) as typeof materialRoughness;
+    material.colorNode = dryColor.mul(mix(float(1), float(WET_ALBEDO), wet));
+    material.roughnessNode = mix(dryRoughness, float(WET_ROUGHNESS), wet);
     material.needsUpdate = true;
     entry.wired = true;
   }
@@ -215,12 +226,13 @@ export class SurfaceWetness {
     this.setWetness(0);
     for (const entry of this.tracked) {
       if (!entry.wired) continue;
-      const material = entry.material as THREE.MeshStandardMaterial & {
+      const material = entry.material as unknown as {
         colorNode: unknown;
         roughnessNode: unknown;
+        needsUpdate: boolean;
       };
-      material.colorNode = null;
-      material.roughnessNode = null;
+      material.colorNode = entry.colorNode;
+      material.roughnessNode = entry.roughnessNode;
       material.needsUpdate = true;
     }
     this.tracked.length = 0;

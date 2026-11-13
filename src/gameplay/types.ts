@@ -68,6 +68,24 @@ export interface GameAudio {
   playSplash(intensity?: number): void;
   playChime(): void;
   playAnchorChain(seconds?: number): void;
+  /** The hull striking a wave face or the bottom. Optional so a test double can omit it. */
+  hullImpact?(strength: number, grind?: boolean): void;
+}
+
+/**
+ * What the audio needs from the sails each frame. Written by
+ * `Gameplay.audioState` into a caller's object, so polling it allocates nothing.
+ */
+export interface GameplayAudioState {
+  /** At the helm. Everything below is 0 when not. */
+  active: boolean;
+  /** Canvas set, 0..1. */
+  sailFill: number;
+  /**
+   * How hard the canvas is luffing, 0..1: head to wind, spilled at anchor, or
+   * flogging while it is being set or taken in.
+   */
+  sailLuff: number;
 }
 
 /** A sink that drops everything; the default when nothing is attached. */

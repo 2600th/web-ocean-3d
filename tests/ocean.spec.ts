@@ -1867,6 +1867,11 @@ test.describe('responsiveness', () => {
     await page.goto('/?gate=0&quality=high');
     await waitForOcean(page, 1200);
 
+    // The ledger ships folded so the sea leads; unfold it the way a visitor
+    // does before measuring what it holds.
+    const fold = page.locator('.panel__collapse');
+    if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+
     const geometry = await page.evaluate(() => {
       const panel = document.querySelector('.panel') as HTMLElement;
       const body = document.querySelector('.panel__body') as HTMLElement;
@@ -1902,6 +1907,7 @@ test.describe('responsiveness', () => {
       [
         'cloudCoverage',
         'fogDensity',
+        'musicVolume',
         'peakWavelength',
         'pixelRatio',
         'timeOfDay',

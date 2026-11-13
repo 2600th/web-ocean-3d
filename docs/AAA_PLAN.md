@@ -59,10 +59,14 @@ reinventing it.
 - [ ] Measure: `dist/` size and time-to-first-frame before/after
 
 ### B. Procedural island and vegetation (island agent)
-- [ ] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs
-- [ ] Procedural broadleaf canopy trees replacing the jacaranda/poinciana/orchid/island_tree GLBs
-- [ ] Procedural rocks (displaced icosphere + TSL noise + bumpNormal) where scans are not hero pieces
-- [ ] Island ground: warm coral sand, wet-sand band, grass/jungle, rock — no bald grey dome
+- [x] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs
+- [x] Procedural broadleaf canopy trees replacing the jacaranda/poinciana/orchid/island_tree GLBs
+- [x] Procedural rocks (displaced icosphere + TSL noise + bumpNormal) where scans are not hero pieces
+- [x] Island ground: warm coral sand, wet-sand band, grass/jungle, rock — no bald grey dome
+
+- [x] World detail: skull rock, sea arch, summit spires, strata outcrops, wet barnacled waterlines, beach wrack and driftwood, camp with fire/smoke/torches. 12.8 MB of vegetation GLBs and the imposter atlas removed.
+- [x] Lower slopes no longer read as lawn: open ground is scrub (tufts, straw-dry patches, bare soil) in the terrain shader
+- [ ] Follow-ups: sand swirl/grid pattern at close range (shore agent owns the sand); shell litter is at true scale and reads only up close — accepted
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky
@@ -88,8 +92,8 @@ reinventing it.
 - [ ] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
 
 ### G. Cinematic camera (camera agent)
-- [ ] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
-- [ ] Smooth handoff between tour and free cameras
+- [x] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
+- [x] Smooth handoff between tour and free cameras (lens and Dutch angle ease back with the pose)
 
 ### H. Underwater and sea-floor life (underwater agent)
 - [ ] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
@@ -101,8 +105,9 @@ reinventing it.
 - [ ] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks
 
 ### J. Audio and music (audio agent)
-- [ ] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater states)
-- [ ] SFX polish: hull creaks, sail luffing, rigging, wave slaps, seabirds, underwater muffling, UI clicks
+- [x] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater/tour states, cargo sting, Music slider)
+- [x] SFX polish: hull creaks, sail luffing, rigging, wave slaps, seabirds, underwater muffling, UI clicks
+- [x] Hooks for other systems: `hullImpact`, `waveSlap`, `uiTick`, `setMusicState`, `playSting` (documented at the top of `AudioSystem.ts`)
 
 ### K. Shore and ship–wave interaction (shore agent)
 - [ ] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace
@@ -111,7 +116,26 @@ reinventing it.
 ### L. Game feel and polish (lead)
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
 
+### M. UI finish pass (UI agent, round 2)
+- [x] Main menu with a living background: animated illustrated seascape (parallax swell, drifting clouds, gulls, sun glints, spray particles) that costs nothing on low-end devices and respects reduced motion — `src/ui/MenuSea.ts`, 2D canvas, cross-fades into the live sea
+- [x] Nothing half-baked: every screen, state and transition finished (loading, errors, empty states, hover/press, focus) — WebGPU-unavailable gate, failed-boot retry, icon touch orders
+- [x] HUD never blocks the view on PC or mobile: ledger collapsed by default, idle-fade of non-critical HUD, translucency over the scene, context-sensitive elements, compact mobile HUD, safe areas — the techniques AAA games use (DESIGN.md › Attention, Layout)
+- [x] Sleek: consistent spacing, type scale and motion; reviewed at 1920x1080, 1280x720, 390x844, 844x390
+
+### N. Post-processing to current AAA practice (post agent)
+Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens DOF, occludable lens flare, ASC CDL grade + cos⁴ vignette, volumetric fog/god rays, lens rain, triangular dither, ACES. Missing against what shipped AAA titles run:
+- [ ] Tone mapping: compare ACES vs AgX vs Khronos PBR Neutral on the gallery; pick on evidence (web-ocean ships AgX)
+- [ ] Auto-exposure / eye adaptation (log-average luminance, asymmetric adaptation), so dawn, noon, storm, night and the underwater dip each expose themselves
+- [ ] Ambient occlusion: GTAO (`GTAONode`) on the ship, island, rocks and props — not the water
+- [ ] Motion blur from the existing velocity MRT (`MotionBlur`), shutter-angle based, strongest on tour whips and fast orbits; off with reduced motion
+- [ ] Post-TAA sharpening (`SharpenNode`/CAS) to win back what the temporal resolve softens
+- [ ] Temporal upscaling (`TAAUNode`, FSR1 fallback) for Low/Medium and phones — render below native, resolve to native
+- [ ] Screen-space contact shadows (`SSSNode`) for small-scale grounding of props and deck detail
+- [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
+- [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
 - [ ] Codex review of the final diff
+- [x] Capture determinism: hero shot differs 0.22% run-to-run on this branch vs 0.18% on `main`, same patch beside the ship — pre-existing, not introduced here

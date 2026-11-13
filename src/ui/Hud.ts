@@ -100,6 +100,27 @@ const TAPE_PX_PER_DEG = 2.6;
 const TAPE_PAD_DEG = 180;
 
 const TOAST_LIMIT = 4;
+
+/**
+ * Attention model. AAA HUDs earn their pixels by not keeping them: anything
+ * the viewer is not using fades back so the sea fills the frame.
+ *
+ *  - IDLE_MS without input and the non-critical chrome (compass, dial, mode
+ *    bar, instrument corner) fades to a low opacity: `.is-idle` on #ui-root;
+ *  - while the camera is being dragged it drops further: `.is-dragging`;
+ *  - key hints show for HINT_MS after a mode is entered, then go;
+ *  - any input, a new objective, a toast, a score change or a real change in
+ *    speed or wind wakes everything at once.
+ *
+ * The classes live on #ui-root rather than on `.hud`, so the ledger and the
+ * touch controls take part in the same fade from CSS alone.
+ */
+const IDLE_MS = 4500;
+const HINT_MS = 7000;
+/** Pointer travel, px, before a press on the canvas counts as a camera drag. */
+const DRAG_SLOP = 6;
+/** Speed change, knots, that counts as news worth waking the HUD for. */
+const SPEED_WAKE_KNOTS = 1.5;
 const TOAST_DEFAULT_MS = 3800;
 
 const POINTS_16 = [
@@ -231,6 +252,19 @@ export class Hud {
   private fpsTimer = 0;
   private disposed = false;
 
+  private lastInput = performance.now();
+  private idle = false;
+  /** Whether the viewer has given any input since the HUD was built. */
+  private engaged = false;
+  private idleTimer = 0;
+  private hintTimer = 0;
+  private dragStart: { x: number; y: number } | null = null;
+  private dragging = false;
+  private wakeKnots: number | null = null;
+  private wakeWind = Number.NaN;
+  private objectiveChipTimer = 0;
+  private readonly objectiveMore: HTMLButtonElement;
+
   private heading = 0;
   private writtenTapeX = Number.NaN;
   private writtenCard = Number.NaN;
@@ -311,7 +345,20 @@ export class Hud {
     const bearingText = el('span', 'objective__bearing-text');
     bearingRow.append(objectiveArrow, bearingText);
     objectiveText.append(objectiveTitle, objectiveDetail, bearingRow);
-    objectiveEl.append(seal, objectiveText);
+    // On a phone the scroll folds to a chip (seal, title, bearing); this
+    // button unfolds it. A wide screen has room for the whole scroll and
+    // never shows it.
+    const objectiveMore = el('button', 'objective__more');
+    objectiveMore.type = 'button';
+    objectiveMore.setAttribute('aria-expanded', 'false');
+    objectiveMore.setAttribute('aria-label', 'Show objective details');
+    objectiveMore.append(icon('chevron'));
+    objectiveMore.addEventListener(
+      'click',
+      () => this.setObjectiveExpanded(!this.objectiveEl.classList.contains('is-expanded')),
+      { signal },
+    );
+    objectiveEl.append(seal, objectiveText, objectiveMore);
 
     const scoreEl = el('dl', 'score plate');
     scoreEl.hidden = true;
@@ -411,12 +458,30 @@ export class Hud {
     this.objectiveBearingText = bearingText;
     this.scoreEl = scoreEl;
 
+    this.objectiveMore = objectiveMore;
     this.renderHints(this.mode);
     this.root.append(hud);
     this.measureCompass();
     this.placeTape(0);
 
     window.addEventListener('keydown', this.onKeyDown, { signal });
+
+    // Every kind of input counts as attention. Captured and passive: these
+    // only read a timestamp and must never delay the camera's own handlers.
+    const opts = { signal, capture: true, passive: true } as const;
+    const touch = (): void => this.noteInput();
+    window.addEventListener('pointermove', touch, opts);
+    window.addEventListener('keydown', touch, opts);
+    window.addEventListener('wheel', touch, opts);
+    window.addEventListener('pointerdown', this.onPointerDown, opts);
+    window.addEventListener('pointerup', this.onPointerUp, opts);
+    window.addEventListener('pointercancel', this.onPointerUp, opts);
+    this.root.dataset.mode = initial;
+    this.idleTimer = window.setInterval(() => this.checkIdle(), 400);
+    // The HUD is built behind the boot overlay, so nothing here may start
+    // counting yet: the first hints stay up, and nothing fades, until the
+    // viewer has actually done something.
+    this.hudEl.classList.add('hud--hints');
     window.addEventListener('resize', () => this.measureCompass(), { signal });
   }
 
@@ -511,6 +576,22 @@ export class Hud {
     // Ship mark and log appear only while the viewer has the helm.
     this.shipHeading = nav.shipHeadingDeg === null ? null : wrap360(nav.shipHeadingDeg);
     this.placeMark(this.shipMark, this.shipHeading);
+    // News worth waking for: the wind changing (a new preset) or the ship
+    // gaining or losing real way.
+    if (!Number.isNaN(this.wakeWind) && Math.abs(nav.windKnots - this.wakeWind) > 2) this.wake();
+    this.wakeWind = nav.windKnots;
+    if (nav.shipKnots !== null) {
+      const knots = Math.abs(nav.shipKnots);
+      if (this.wakeKnots === null) {
+        this.wakeKnots = knots;
+      } else if (Math.abs(knots - this.wakeKnots) > SPEED_WAKE_KNOTS) {
+        this.wakeKnots = knots;
+        this.wake();
+      }
+    } else {
+      this.wakeKnots = null;
+    }
+
     const atHelm = nav.shipKnots !== null;
     if (this.logBlock.hidden === atHelm) {
       this.logBlock.hidden = !atHelm;
@@ -547,6 +628,7 @@ export class Hud {
     if (options.detail) body.append(el('p', 'toast__detail', options.detail));
     node.append(medal, body);
     this.toastStack.prepend(node);
+    this.wake();
 
     // Oldest out first. They leave immediately rather than animating, so the
     // stack never grows past the limit even for a burst.
@@ -583,6 +665,13 @@ export class Hud {
     }
 
     const fresh = previous === null || previous.title !== objective.title;
+    if (fresh) {
+      this.wake();
+      // A new objective arrives unfolded, then settles to a chip on a phone.
+      this.setObjectiveExpanded(true);
+      window.clearTimeout(this.objectiveChipTimer);
+      this.objectiveChipTimer = window.setTimeout(() => this.setObjectiveExpanded(false), 6000);
+    }
     setText(this.objectiveTitle, objective.title);
     setText(this.objectiveDetail, objective.detail ?? '');
     this.objectiveDetail.hidden = !objective.detail;
@@ -615,6 +704,7 @@ export class Hud {
       return;
     }
     entry.value.textContent = text;
+    this.wake();
     this.scoreEl.hidden = false;
     if (!reducedMotion()) {
       entry.row.classList.remove('is-bump');
@@ -643,12 +733,33 @@ export class Hud {
     if (this.disposed || m === this.mode) return;
     this.mode = m;
     this.hudEl.dataset.mode = m;
+    this.root.dataset.mode = m;
+    this.wake();
+    this.showHints();
     for (const [mode, button] of this.modeButtons) {
       const active = mode === m;
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
     this.renderHints(m);
+    // The newly chosen tab settles in with a small press, so a mode change
+    // made from the keyboard is seen on the bar too.
+    const tab = this.modeButtons.get(m);
+    if (tab && !reducedMotion()) {
+      tab.classList.remove('is-arriving');
+      void tab.offsetWidth;
+      tab.classList.add('is-arriving');
+    }
+  }
+
+  /** Brings every faded element back, as if the viewer had moved the mouse. */
+  wake(): void {
+    if (this.disposed) return;
+    this.lastInput = performance.now();
+    if (this.idle) {
+      this.idle = false;
+      this.root.classList.remove('is-idle');
+    }
   }
 
   dispose(): void {
@@ -659,6 +770,11 @@ export class Hud {
       this.fpsTimer = 0;
     }
     this.controller.abort();
+    window.clearInterval(this.idleTimer);
+    window.clearTimeout(this.hintTimer);
+    window.clearTimeout(this.objectiveChipTimer);
+    this.root.classList.remove('is-idle', 'is-dragging');
+    delete this.root.dataset.mode;
     this.hudEl.remove();
     this.modeButtons.clear();
     this.scoreRows.clear();
@@ -683,6 +799,68 @@ export class Hud {
     if (mode === this.mode) return;
     this.setCameraMode(mode);
     this.callbacks.onChange('cameraMode', mode);
+  }
+
+  private noteInput(): void {
+    this.lastInput = performance.now();
+    if (!this.engaged) {
+      this.engaged = true;
+      this.showHints();
+    }
+    if (this.idle) this.wake();
+  }
+
+  private checkIdle(): void {
+    if (!this.engaged || this.idle || this.dragging) return;
+    if (performance.now() - this.lastInput < IDLE_MS) return;
+    // Something the viewer is reading or operating keeps the chrome up.
+    if (this.toastStack.querySelector('.toast:not(.is-leaving)') !== null) return;
+    if (this.root.querySelector(':focus-visible') !== null) return;
+    this.idle = true;
+    this.root.classList.add('is-idle');
+  }
+
+  /** A press on the canvas becomes a camera drag once it travels a few pixels. */
+  private readonly onPointerDown = (event: PointerEvent): void => {
+    this.noteInput();
+    if (!(event.target instanceof HTMLCanvasElement)) return;
+    this.dragStart = { x: event.clientX, y: event.clientY };
+    window.addEventListener('pointermove', this.onDragMove, {
+      passive: true,
+      signal: this.controller.signal,
+    });
+  };
+
+  private readonly onDragMove = (event: PointerEvent): void => {
+    if (this.dragStart === null || this.dragging) return;
+    const travel = Math.hypot(event.clientX - this.dragStart.x, event.clientY - this.dragStart.y);
+    if (travel < DRAG_SLOP) return;
+    this.dragging = true;
+    this.root.classList.add('is-dragging');
+  };
+
+  private readonly onPointerUp = (): void => {
+    window.removeEventListener('pointermove', this.onDragMove);
+    this.dragStart = null;
+    if (!this.dragging) return;
+    this.dragging = false;
+    this.root.classList.remove('is-dragging');
+    this.lastInput = performance.now();
+  };
+
+  private showHints(): void {
+    this.hudEl.classList.add('hud--hints');
+    window.clearTimeout(this.hintTimer);
+    this.hintTimer = window.setTimeout(() => this.hudEl.classList.remove('hud--hints'), HINT_MS);
+  }
+
+  private setObjectiveExpanded(expanded: boolean): void {
+    this.objectiveEl.classList.toggle('is-expanded', expanded);
+    this.objectiveMore.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    this.objectiveMore.setAttribute(
+      'aria-label',
+      expanded ? 'Hide objective details' : 'Show objective details',
+    );
   }
 
   private flushFps(now: number): void {

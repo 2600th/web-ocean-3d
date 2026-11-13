@@ -391,6 +391,33 @@ export class Birds {
     this.resetPerches();
   }
 
+  /**
+   * Where bird `index` is now, world space, computed on the CPU from the same
+   * closed form the vertex stage evaluates (the body only — no wing pose).
+   *
+   * For the audio, which places a gull's cry on a bird that is actually up
+   * there. Allocation-free. False for an index the flock is not drawing.
+   */
+  positionOf(index: number, out: THREE.Vector3): boolean {
+    if (!(index >= 0 && index < this.count)) return false;
+    const orbit = this.geometry.getAttribute('orbit').array;
+    const harmonics = this.geometry.getAttribute('harmonics').array;
+    const bob = this.geometry.getAttribute('bob').array;
+    const b = index * 4;
+    const theta = orbit[b + 1] * this.clock + orbit[b + 2];
+    const second = theta * 2 + harmonics[b + 1];
+    const third = theta * 3 + harmonics[b + 3];
+    const climb = theta * 2 + bob[b + 1];
+    const radius = orbit[b];
+    const anchor = this.uAnchor.value as THREE.Vector3;
+    out.set(
+      anchor.x + radius * Math.cos(theta) + harmonics[b] * Math.cos(second) + harmonics[b + 2] * Math.cos(third),
+      anchor.y + orbit[b + 3] + bob[b] * Math.sin(climb),
+      anchor.z + radius * Math.sin(theta) + harmonics[b] * Math.sin(second) + harmonics[b + 2] * Math.sin(third),
+    );
+    return true;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

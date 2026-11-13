@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { CameraMode } from '../ui/types';
-import { type CinematicEnvironment, CinematicDirector, type CinematicShipInput } from './Cinematic';
+import {
+  type CinematicEnvironment,
+  CinematicDirector,
+  type CinematicPose,
+  type CinematicShipInput,
+} from './Cinematic';
 
 /**
  * Modes the director can be put into.
@@ -139,11 +144,22 @@ export class CameraDirector {
   private shakeApplied = false;
 
   // Cinematic state
-  private readonly cinematic = new CinematicDirector();
-  private readonly cinematicPose = {
+  private readonly cinematic: CinematicDirector;
+  private readonly cinematicPose: CinematicPose = {
     position: new THREE.Vector3(),
     target: new THREE.Vector3(),
+    fov: 50,
+    roll: 0,
   };
+  /**
+   * The lens every mode but Cinematic uses, degrees: whatever the camera was
+   * built with. The tour changes focal length shot to shot, and leaving it has
+   * to hand this back — eased with the rest of the pose rather than snapped.
+   */
+  private readonly baseFov: number;
+  private fromFov = 0;
+  private readonly rollQuat = new THREE.Quaternion();
+  private readonly motionQuery: MediaQueryList | null;
   /**
    * The hull orders the active mode is issuing, republished every frame.
    *
@@ -174,6 +190,16 @@ export class CameraDirector {
     this.camera = options.camera;
     this.domElement = options.domElement;
     this.surfaceHeight = options.surfaceHeight;
+    this.baseFov = this.camera.fov;
+    this.fromFov = this.camera.fov;
+    // The tour lifts itself over the crests on the same wave query the chase
+    // camera uses, and over the terrain on the heightfield's own function.
+    this.cinematic = new CinematicDirector({ surfaceHeight: options.surfaceHeight });
+    this.motionQuery =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null;
+    this.cinematic.setReducedMotion(this.motionQuery?.matches ?? false);
 
     this.orbit = new OrbitControls(this.camera, this.domElement);
     this.orbit.enableDamping = true;
@@ -194,6 +220,11 @@ export class CameraDirector {
     // while the fly camera is using it.
     this.domElement.addEventListener('wheel', this.onWheel, { signal, passive: false });
     window.addEventListener('mouseup', this.onMouseUp, { signal });
+    this.motionQuery?.addEventListener(
+      'change',
+      (event) => this.cinematic.setReducedMotion(event.matches),
+      { signal },
+    );
   }
 
   get currentMode(): DirectorMode {
@@ -294,6 +325,7 @@ export class CameraDirector {
     // Capture the current pose so the new rig can be eased into rather than cut to.
     this.fromPosition.copy(this.camera.position);
     this.fromQuaternion.copy(this.camera.quaternion);
+    this.fromFov = this.camera.fov;
     this.transition = 1;
 
     if (this.mode === 'fly') this.exitPointerLock();
@@ -352,6 +384,7 @@ export class CameraDirector {
 
     this.desiredPosition.copy(position);
     this.desiredQuaternion.copy(this.tmpQuat);
+    this.applyFov(this.mode === 'cinematic' ? (this.cinematicPose.fov ?? this.baseFov) : this.baseFov);
 
     switch (this.mode) {
       case 'orbit':
@@ -410,6 +443,7 @@ export class CameraDirector {
     this.updateCinematic(0);
     this.camera.position.copy(this.desiredPosition);
     this.camera.quaternion.copy(this.desiredQuaternion);
+    this.applyFov(this.cinematicPose.fov ?? this.baseFov);
     this.camera.updateMatrixWorld(true);
   }
 
@@ -430,11 +464,16 @@ export class CameraDirector {
         break;
     }
 
+    const desiredFov =
+      this.mode === 'cinematic' ? (this.cinematicPose.fov ?? this.baseFov) : this.baseFov;
     if (this.transition > 0) {
       this.transition = Math.max(0, this.transition - dt / CameraDirector.TRANSITION_SECONDS);
       const t = easeInOutCubic(1 - this.transition);
       this.camera.position.lerpVectors(this.fromPosition, this.desiredPosition, t);
       this.camera.quaternion.slerpQuaternions(this.fromQuaternion, this.desiredQuaternion, t);
+      this.applyFov(this.fromFov + (desiredFov - this.fromFov) * t);
+    } else {
+      this.applyFov(desiredFov);
     }
 
     this.applyShake();
@@ -577,7 +616,11 @@ export class CameraDirector {
    * around.
    */
   private updateCinematic(dt: number): void {
-    const orders = this.cinematic.update(dt, this.cinematicPose);
+    // The live hull, so the shots framed on the ship frame the ship rather than
+    // where the flight expected it to be. `target` is republished every frame by
+    // main whatever the mode, and is null only until the ship has loaded, when
+    // the tour falls back on its nominal circuit.
+    const orders = this.cinematic.update(dt, this.cinematicPose, this.target);
     this.shipOrders.throttle = orders.throttle;
     this.shipOrders.rudder = orders.rudder;
 
@@ -585,6 +628,9 @@ export class CameraDirector {
     this.tmpQuat.setFromRotationMatrix(
       lookAtMatrix(this.cinematicPose.position, this.cinematicPose.target, UP),
     );
+    // Dutch angle and handheld roll, about the view axis (camera −z).
+    const roll = this.cinematicPose.roll ?? 0;
+    if (roll !== 0) this.tmpQuat.multiply(this.rollQuat.setFromAxisAngle(VIEW_AXIS, roll));
     this.desiredQuaternion.copy(this.tmpQuat);
 
     if (this.transition === 0) {
@@ -711,12 +757,20 @@ export class CameraDirector {
     return this.flySpeed;
   }
 
+  /** Sets the lens, touching the projection only when it actually changes. */
+  private applyFov(fov: number): void {
+    if (!Number.isFinite(fov) || Math.abs(this.camera.fov - fov) < 1e-4) return;
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+  }
+
   private exitPointerLock(): void {
     if (document.pointerLockElement === this.domElement) document.exitPointerLock();
   }
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
+const VIEW_AXIS = new THREE.Vector3(0, 0, -1);
 const scratchMatrix = new THREE.Matrix4();
 
 function lookAtMatrix(eye: THREE.Vector3, target: THREE.Vector3, up: THREE.Vector3): THREE.Matrix4 {

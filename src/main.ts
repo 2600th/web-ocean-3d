@@ -1,8 +1,6 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn,
-  cameraProjectionMatrix,
-  cameraViewMatrix,
   mrt,
   output,
   pass,
@@ -25,6 +23,7 @@ import {
   KelpForest,
   Props,
   Remains,
+  SEAFLOOR_EXTENT,
   Seafloor,
   seafloorHeight,
   ISLAND,
@@ -33,7 +32,14 @@ import {
   FoliageWind,
   applyGroundShadingTo,
 } from './scene';
-import { AudioSystem, DEFAULT_AUDIO_SCENE_PARAMS } from './audio';
+import {
+  AudioSystem,
+  DEFAULT_AUDIO_SCENE_PARAMS,
+  SlapDetector,
+  type GullFix,
+  type MusicState,
+} from './audio';
+import { attachUiSounds } from './ui/sounds';
 import { Gameplay, type GameUiSink, type SailSetting } from './gameplay';
 import {
   BuoyancySystem,
@@ -136,7 +142,7 @@ const TOUR_ENV_ELEVATION_STEP = 0.035;
  * Trunks and fronds only. A rock that swayed would be memorable for the wrong
  * reason, and the fort, the jetty and the wreck are all structures.
  */
-const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
+const FOLIAGE_MESHES = /^flora-/;
 
 /** Render layer the cloud dome lives on, so the planar mirror can skip it. */
 const CLOUD_LAYER = 3;
@@ -144,11 +150,33 @@ const CLOUD_LAYER = 3;
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
 const _hazeZenith = new THREE.Color();
+const _litFog = new THREE.Color();
+/** Rec. 709 luminance of a linear colour. */
+const luma = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
 
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
 /** Scratch for the HUD's view heading. */
 const _hudView = new THREE.Vector3();
+
+// Audio scratch: the ship's axes, the listener's right, a bird, a hull probe.
+const _audioAxis = new THREE.Vector3();
+const _audioRight = new THREE.Vector3();
+const _audioRel = new THREE.Vector3();
+const _audioBird = new THREE.Vector3();
+const _audioProbe = new THREE.Vector3();
+
+/**
+ * Hull probes for wave slaps, in the hull's frame as fractions of (half length,
+ * height above the waterline in metres, half beam). Bow and waist, both sides:
+ * the bow is where a sea arrives first, the waist is where a beam sea slaps.
+ */
+const SLAP_PROBES: readonly (readonly [number, number, number])[] = [
+  [0.7, 0.35, -0.75],
+  [0.7, 0.35, 0.75],
+  [0.05, 0.3, -1],
+  [0.05, 0.3, 1],
+];
 
 /**
  * Compass bearing of a world XZ direction: degrees clockwise from north, with
@@ -218,13 +246,11 @@ class App {
   private atmosphere!: Atmosphere;
   private aerial!: AerialPerspective;
   /**
-   * The gust the island's planting sways on. Four systems share it — the near
-   * meshes, the imposter cards that replace them, the meadow and the distant
-   * canopy — so none of the handovers between them is a change of phase.
-   *
-   * There are two handovers now, and neither is the 320-520 m one this comment
-   * used to name: a plant becomes a card at 60 m (understorey) or 120 m
-   * (trees), and the canopy field fades in over 90-180 m behind both.
+   * The gust the island's planting sways on. Three systems share it — the
+   * procedural plants, the meadow and the distant canopy cards — so the
+   * handover between them is not a change of character. The plants carry their
+   * own LOD chain to any range; the canopy field fades in over 90-180 m behind
+   * them.
    */
   private readonly foliageWind = new FoliageWind();
   /**
@@ -260,11 +286,20 @@ class App {
   private audio!: AudioSystem;
   /** Hoisted: `update` reads these every frame and must not allocate. */
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
+  /** Sail state for the audio, polled from gameplay without allocating. */
+  private readonly sailAudio = { active: false, sailFill: 0, sailLuff: 0 };
+  private readonly slaps = new SlapDetector(SLAP_PROBES.length);
+  /** Weather hysteresis for the score, so a squall at the threshold does not flip it. */
+  private musicStormy = false;
+  private detachUiSounds: (() => void) | null = null;
 
   private post!: THREE.RenderPipeline;
   private taaEnabled = false;
   /** Last frame's view-projection, for the ocean's world-space velocity. */
   private readonly prevViewProjection = uniform(new THREE.Matrix4());
+  /** This frame's *unjittered* view-projection; see the ocean's velocity. */
+  private readonly currViewProjection = uniform(new THREE.Matrix4());
+  private traaNode: unknown = null;
   private underwater!: UnderwaterPass;
   private fog!: VolumetricFog;
   private lensRain!: LensRain;
@@ -536,7 +571,7 @@ class App {
     boot.set(0.4, 'Building seafloor…');
     // The seafloor must exist before the water material: the surface samples its
     // depth to shade shallows, and that binding is baked into the node graph.
-    this.seafloor = new Seafloor(4000);
+    this.seafloor = new Seafloor(SEAFLOOR_EXTENT);
     // And the cloud shade before anything asks the seafloor for its combined key
     // occlusion — the canopy does, at its own construction.
     // Three octaves rather than four: the seafloor is shaded under the whole
@@ -688,8 +723,8 @@ class App {
     // The wreck's owner. Poly Haven publishes no skeleton and every CC0 source
     // that does is low-poly stylised and would sit badly against photoscanned
     // rock — so it is built, which is also how this project solves gulls and
-    // the pelagic fish. The island's palms used to be built here too and are
-    // now `palm_coconut` and `palm_tall`, scattered by `Props.dressIsland`.
+    // the pelagic fish. The island's palms are built too, in `scene/flora`, and
+    // scattered by `Props.dressIsland`.
 
     this.remains = new Remains();
     // Above the tideline on the cove's own bearing, but off to one side of the
@@ -708,8 +743,16 @@ class App {
     }
     this.scene.add(this.remains.object);
 
-    this.audio = new AudioSystem({ volume: this.state.volume, quality: this.state.quality });
+    this.audio = new AudioSystem({
+      volume: this.state.volume,
+      musicVolume: this.state.musicVolume,
+      quality: this.state.quality,
+    });
     this.audio.resumeOnGesture();
+    // Gull cries come from a real bird in the flock, placed by distance and
+    // bearing from the listener. Tries a few birds; a cry with none in
+    // earshot is skipped rather than invented.
+    this.audio.setGullLocator((out: GullFix) => this.locateGull(out));
 
     boot.set(0.8, 'Building underwater pass…');
     this.underwater = new UnderwaterPass();
@@ -759,26 +802,41 @@ class App {
       // world. Stock velocity would read that re-centring as motion and smear
       // the whole sea; reproject its world position through last frame's
       // camera instead.
+      //
+      // Both ends are *unjittered*. TRAA jitters the projection only for the
+      // duration of the scene pass and hands the stock velocity its original
+      // matrix, so velocity is jitter-free everywhere else; using the jittered
+      // in-shader projection here put up to half a pixel of Halton offset into
+      // every sea pixel's motion, which resampled (blurred) its history each
+      // frame and raised the current-frame weight enough to undo the AA on the
+      // very glints it was added for. Both matrices are captured outside the
+      // pipeline render — see `renderFrame`.
       const prevViewProjection = this.prevViewProjection;
+      const currViewProjection = this.currViewProjection;
       this.water.material.mrtNode = mrt({
         velocity: Fn(() => {
           const world = vec4(positionWorld, 1);
-          const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(world);
+          const current = (currViewProjection as any).mul(world);
           const previous = (prevViewProjection as any).mul(world);
-          return current.xy.div(current.w).sub(previous.xy.div(previous.w));
+          return current.xy
+            .div(current.w.max(1e-4))
+            .sub(previous.xy.div(previous.w.max(1e-4)));
         })(),
       });
     }
     // Must be the depth *texture* node: both passes linearise it to find where
     // the scene stops, which is what bounds their marches.
     const sceneDepth = scenePass.getTextureNode('depth');
-    const sceneBeauty: any = this.taaEnabled
-      ? (traa(
+    this.traaNode = this.taaEnabled
+      ? traa(
           scenePass.getTextureNode('output'),
           sceneDepth,
           scenePass.getTextureNode('velocity'),
           this.camera,
-        ) as any).getTextureNode()
+        )
+      : null;
+    const sceneBeauty: any = this.traaNode
+      ? (this.traaNode as any).getTextureNode()
       : scenePass.getTextureNode();
 
     this.fog = new VolumetricFog();
@@ -945,14 +1003,7 @@ class App {
     // anything back. It also left the deterministic capture path racing a render
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
-    this.loop = new Loop(async () => {
-      await this.post.renderAsync();
-      // After the frame, so next frame's velocity reprojects against this one.
-      this.prevViewProjection.value.multiplyMatrices(
-        this.camera.projectionMatrix,
-        this.camera.matrixWorldInverse,
-      );
-    });
+    this.loop = new Loop(() => this.renderFrame());
     this.loop.add(this.update);
 
     // Models load **behind the boot overlay**, not after it.
@@ -1045,6 +1096,47 @@ class App {
    * ends up somewhere slightly different every run, and so does its wake. Here we
    * pay the stall, once per step, and get the same hull position every time.
    */
+  /**
+   * One pipeline render, bracketed by the view-projections the ocean's velocity
+   * needs. Both are read *outside* the render, where TRAA has not yet applied
+   * (or has already cleared) its jitter.
+   */
+  private async renderFrame(): Promise<void> {
+    this.camera.updateMatrixWorld();
+    this.currViewProjection.value.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+    await this.post.renderAsync();
+    this.prevViewProjection.value.copy(this.currViewProjection.value);
+  }
+
+  /**
+   * Restarts temporal accumulation from the next frame: jitter sequence back to
+   * its start, history re-seeded from the current frame, and no motion assumed
+   * since the last one. The deterministic capture path calls it, because
+   * otherwise the final frame's sub-pixel offset — and the history under it —
+   * depend on how many free-running frames the session drew before the reset.
+   *
+   * Reaches into two TRAANode fields (`_jitterIndex`, `_historyRenderTarget`)
+   * that r185 exposes but does not document; shrinking the history target is
+   * what its own `updateBefore` reads as "restart".
+   */
+  private resetTemporal(): void {
+    const node = this.traaNode as
+      | { _jitterIndex: number; _historyRenderTarget: { setSize(w: number, h: number): void } }
+      | null;
+    if (node) {
+      node._jitterIndex = 0;
+      node._historyRenderTarget.setSize(1, 1);
+    }
+    this.camera.updateMatrixWorld();
+    this.prevViewProjection.value.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+  }
+
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
     this.deterministic = true;
     try {
@@ -1110,7 +1202,7 @@ class App {
     //
     // Settling is the caller's job instead, and the harness already does it by
     // discarding warm-up captures before the one it keeps.
-    await this.post.renderAsync();
+    await this.renderFrame();
     this.renderer.setRenderTarget(previous);
 
     const raw = (await this.renderer.readRenderTargetPixelsAsync(
@@ -1404,6 +1496,9 @@ class App {
       const ui: GameUiSink = {
         toast: (text, kind) => {
           this.hud.toast(text, kind);
+          // The reward toast has its chime already; the others get a cue of their own.
+          if (kind === 'warning') this.audio.uiTick('warn');
+          else if (kind !== 'reward') this.audio.uiTick('info');
         },
         setObjective: (objective) => this.hud.setObjective(objective),
         setScore: (label, value) => this.hud.setScore(label, value),
@@ -1516,6 +1611,106 @@ class App {
     });
   }
 
+  /**
+   * The ship as the audio hears it: how far and which side, how she is
+   * rolling and pitching, what the canvas is doing, and wave slaps from four
+   * hull probes. Allocation-free.
+   */
+  private updateShipAudio(dt: number, audio: typeof this.audioParams): void {
+    const ship = this.ship;
+    if (ship === null) {
+      audio.shipDistance = Number.POSITIVE_INFINITY;
+      audio.sailFill = 0;
+      audio.sailLuff = 0;
+      return;
+    }
+    const hull = ship.object;
+    const cam = this.camera.position;
+    _audioRel.copy(hull.position).sub(cam);
+    const distance = _audioRel.length();
+    _audioRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    audio.shipDistance = distance;
+    audio.shipPan = distance > 1e-3 ? _audioRel.dot(_audioRight) / distance : 0;
+
+    // Roll: the beam axis (+Z, starboard) tilting out of the horizontal;
+    // pitch: the bow axis (+X) rising. The same frame `Gameplay` uses.
+    _audioAxis.set(0, 0, 1).applyQuaternion(hull.quaternion);
+    audio.shipHeel = -Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+    _audioAxis.set(1, 0, 0).applyQuaternion(hull.quaternion);
+    audio.shipPitch = Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+
+    const sails = this.gameplay?.audioState(this.sailAudio) ?? null;
+    audio.sailFill = sails?.sailFill ?? 0;
+    audio.sailLuff = sails?.sailLuff ?? 0;
+
+    // Wave slaps: water climbing past a point on the planking, fast. Only
+    // within earshot, since each probe is a sea-surface sample.
+    if (!this.sampler.ready || distance > 120 || !(dt > 0)) return;
+    hull.updateMatrixWorld();
+    const halfLength = ship.hullLength * 0.5;
+    const halfBeam = ship.hullBeam * 0.5;
+    for (let i = 0; i < SLAP_PROBES.length; i++) {
+      const [along, up, across] = SLAP_PROBES[i];
+      _audioProbe.set(along * halfLength, up, across * halfBeam).applyMatrix4(hull.matrixWorld);
+      const immersion = this.sampler.height(_audioProbe.x, _audioProbe.z) - _audioProbe.y;
+      const strength = this.slaps.update(i, immersion, dt);
+      if (strength > 0) {
+        // Placed within the ship's own image by which side of the listener the probe is on.
+        _audioRel.copy(_audioProbe).sub(hull.position);
+        const pan = THREE.MathUtils.clamp(_audioRel.dot(_audioRight) / Math.max(1, halfBeam), -1, 1);
+        this.audio.waveSlap(strength, pan);
+      }
+    }
+  }
+
+  /**
+   * Which arrangement the score should play. Priority: under water, then
+   * weather, then the tour, then sailing (at the helm and moving or with
+   * canvas set), else calm. The audio system holds a state for a couple of
+   * seconds before following it, so calling this every frame is the intent.
+   */
+  private chooseMusicState(raining: number, submersion: number): MusicState {
+    if (submersion > 0.5) return 'underwater';
+    const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
+    const gale = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
+    const weather = Math.max(raining, coverage * gale, this.state.preset === 'storm' ? 1 : 0);
+    if (weather > 0.5) this.musicStormy = true;
+    else if (weather < 0.3) this.musicStormy = false;
+    if (this.musicStormy) return 'storm';
+    if (this.state.cameraMode === 'cinematic') return 'tour';
+    if (this.state.cameraMode === 'boat' && this.sailAudio.active) {
+      const speed = this.audioParams.hullSpeed;
+      if (speed > 1 || this.sailAudio.sailFill > 0.2) return 'sailing';
+    }
+    return 'calm';
+  }
+
+  /** 0..1 for the score: ship speed against a brisk 7.5 m/s (~15 knots). */
+  private musicEnergy(): number {
+    return THREE.MathUtils.clamp(this.audioParams.hullSpeed / 7.5, 0, 1);
+  }
+
+  /** `setGullLocator`'s callback: one drawn bird near enough to hear. */
+  private locateGull(out: GullFix): boolean {
+    const count = this.birds.getCount();
+    if (count === 0) return false;
+    const cam = this.camera.position;
+    _audioRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // Deterministic per draw is not needed here: which bird calls is not
+      // part of any captured frame, and the audio itself is muted in captures.
+      const index = Math.floor(Math.random() * count);
+      if (!this.birds.positionOf(index, _audioBird)) continue;
+      _audioRel.copy(_audioBird).sub(cam);
+      const distance = _audioRel.length();
+      if (distance > 240) continue;
+      out.distance = distance;
+      out.pan = distance > 1e-3 ? _audioRel.dot(_audioRight) / distance : 0;
+      return true;
+    }
+    return false;
+  }
+
   private buildUi(): void {
     const callbacks = {
       onChange: <K extends keyof UiState>(key: K, value: UiState[K]) => {
@@ -1525,6 +1720,9 @@ class App {
     };
     this.panel = new Panel(this.uiRoot, this.state, callbacks);
     this.hud = new Hud(this.uiRoot, this.state.cameraMode, callbacks);
+    // Clicks, ticks and rustles for the ledger and the HUD. The UI reports
+    // what happened as a cue name and never sees the audio system.
+    this.detachUiSounds = attachUiSounds(this.uiRoot, (cue, value) => this.audio.uiTick(cue, value));
     this.stormQuote = new StormQuote(this.uiRoot);
     this.hud.setBackend(this.backend);
 
@@ -1535,6 +1733,8 @@ class App {
     if (TouchControls.isTouchDevice()) {
       this.touchControls = new TouchControls(this.uiRoot, {
         onInput: (throttle, rudder) => this.shipControls?.setInput(throttle, rudder),
+        onSail: (direction) => this.gameplay?.stepSail(direction),
+        onAnchor: () => this.gameplay?.toggleAnchor(),
       });
       this.touchControls.setVisible(this.state.cameraMode === 'boat');
     }
@@ -1627,6 +1827,9 @@ class App {
       }
       case 'volume':
         this.audio.setVolume(this.state.volume);
+        break;
+      case 'musicVolume':
+        this.audio.setMusicVolume(this.state.musicVolume);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
@@ -1965,7 +2168,13 @@ class App {
       peakWavelength: this.state.peakWavelength,
     });
 
-    this.water.setAppearance(preset.water);
+    // `setAppearance` only writes what it is given, and only some presets name
+    // `crestGlow` — so it is reset here or Tropical's value leaks into every
+    // preset visited after it.
+    this.water.setAppearance({
+      crestGlow: DEFAULT_APPEARANCE.crestGlow,
+      ...preset.water,
+    });
     // The surface needs the wind to stretch its glitter along the crests.
     this.water.setWind(preset.sea.windDirection, this.state.windSpeed);
 
@@ -2364,7 +2573,7 @@ class App {
     // cycle. That is what the handover distances are chosen around.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
-    // And the imposter cards sway on it too, for the same reason.
+    // The island's animated set dressing reads the same wind.
     this.props?.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.props?.update(dt);
 
@@ -2438,13 +2647,24 @@ class App {
     // deck's grey, not the clear-sky blue the CPU-side horizon and zenith still
     // describe. Fed raw, a kilometre of storm haze repainted the dark cloud base
     // in clear-sky blue and the storm read as a fine evening.
+    //
+    // The preset's fog colour is authored for *its* hour, and the tour and the
+    // time slider take it to others. At night or deep dusk it is far brighter
+    // than any sky there is, and under a squall the pull above leaned the whole
+    // haze toward it: the far cloud deck lit pale while the near clouds, lit by
+    // the real dark sky, stood out as black blobs, and the sea mirrored it pink.
+    // So the fog is dimmed to the sky's own brightness whenever the sky is the
+    // darker of the two — never brightened, so a preset's daytime look is kept.
+    const skyLuma = luma(this.atmosphere.horizonColor);
+    const fogLuma = luma(fogPreset.color);
+    _litFog.copy(fogPreset.color).multiplyScalar(fogLuma > 1e-5 ? Math.min(1, skyLuma / fogLuma) : 1);
     const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
-    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(fogPreset.color, overcastPull);
-    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(fogPreset.color, overcastPull);
+    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(_litFog, overcastPull);
+    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(_litFog, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
-      fogPreset.color,
+      _litFog,
       hazeDensity,
       _hazeHorizon,
       _hazeZenith,
@@ -2577,6 +2797,8 @@ class App {
     // so a sky with no birds in it stays silent instead of the audio inventing
     // some. Low draws none, and hears none.
     audio.birdCount = this.birds.getCount();
+    this.updateShipAudio(dt, audio);
+    this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);
 
     // Rain on the lens. Placed here rather than with the other rain wiring
@@ -2791,6 +3013,8 @@ class App {
         scene: this.scene,
         camera: this.camera,
         director: this.director,
+        /** The audio system: `musicDebug`, `getMusicState()`, and the hooks. */
+        audio: this.audio,
         simulation: this.simulation,
         /**
          * Reflection layers, exposed so a test can isolate them.
@@ -2939,6 +3163,7 @@ class App {
           await this.contentReady?.catch(() => undefined);
           await this.qualityApply?.catch(() => undefined);
           this.loop.setPaused(true);
+          this.resetTemporal();
 
           // Settle the LOD levels for wherever this shot's camera is, and build
           // any pipeline it newly needs, *before* the capture rather than during
@@ -3228,6 +3453,8 @@ class App {
     window.removeEventListener('resize', this.onResize);
     this.loop?.stop();
     this.panel?.dispose();
+    this.detachUiSounds?.();
+    this.detachUiSounds = null;
     this.hud?.dispose();
     this.touchControls?.dispose();
     this.director?.dispose();

@@ -21,6 +21,7 @@ import {
 import {
   NULL_UI_SINK,
   type GameAudio,
+  type GameplayAudioState,
   type GameObjective,
   type GameUiSink,
   type SailSetting,
@@ -465,6 +466,23 @@ export class Gameplay {
     this.placeLoot(x, z);
   }
 
+  /** Sail state for the audio, written into `out`. Allocation-free; call every frame. */
+  audioState(out: GameplayAudioState): GameplayAudioState {
+    out.active = this.active;
+    if (!this.active) {
+      out.sailFill = 0;
+      out.sailLuff = 0;
+      return out;
+    }
+    // The same in-irons ramp `applyHeel` uses for the canvas *not* pulling.
+    const irons = 1 - smoothstep(IRONS_DEG - 8, IRONS_DEG + 15, this.offWind);
+    const spilled = this.anchor === 'up' ? 0 : 0.7;
+    const handling = Math.abs(SAIL_FILL[this.sail] - this.sailFill) > 0.01 ? 0.6 : 0;
+    out.sailFill = this.sailFill;
+    out.sailLuff = Math.min(1, Math.max(this.sailFill * Math.max(irons, spilled), handling));
+    return out;
+  }
+
   snapshot(): GameplaySnapshot {
     const body = this.o.body;
     const wind = this.o.wind();
@@ -538,7 +556,14 @@ export class Gameplay {
     this.pushAllUi();
     if (!this.greeted) {
       this.greeted = true;
-      this.ui.toast('At the helm — W/S set and take in sail, A/D steer, R anchor', 'info');
+      // Phrased for the hands the visitor is actually using: a phone has no W key.
+      const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+      this.ui.toast(
+        touch
+          ? 'At the helm — More/Less for sail, the pad to steer, Anchor to stop'
+          : 'At the helm — W/S set and take in sail, A/D steer, R anchor',
+        'info',
+      );
     }
   }
 
@@ -753,7 +778,10 @@ export class Gameplay {
       if (this.bowPrimed) {
         const speed = (this.bowPrevious - height) / dt;
         if (this.bowPrevious > 0 && height <= 0 && speed > SLAM_SPEED) {
-          this.addTrauma(Math.min(0.45, (speed - SLAM_SPEED) * 0.1 + 0.08));
+          const slam = Math.min(0.45, (speed - SLAM_SPEED) * 0.1 + 0.08);
+          this.addTrauma(slam);
+          this.o.audio?.hullImpact?.((slam / 0.45) * 0.55);
+          this.o.audio?.playSplash(0.35 + slam);
         }
       }
       this.bowPrevious = height;
@@ -765,7 +793,10 @@ export class Gameplay {
     const depth = -this.o.floorHeight(p.x, p.z);
     const speed = Math.hypot(body.velocity.x, body.velocity.z);
     const grounded = depth < GROUND_DEPTH && speed > 0.8;
-    if (grounded && !this.grounded) this.addTrauma(Math.min(0.7, 0.3 + speed * 0.08));
+    if (grounded && !this.grounded) {
+      this.addTrauma(Math.min(0.7, 0.3 + speed * 0.08));
+      this.o.audio?.hullImpact?.(Math.min(1, 0.4 + speed * 0.1), true);
+    }
     if (grounded) this.trauma = Math.max(this.trauma, Math.min(0.45, speed * 0.1));
     this.grounded = grounded;
     this.shoalCooldown = Math.max(0, this.shoalCooldown - dt);

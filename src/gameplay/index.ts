@@ -1,6 +1,7 @@
 export { Gameplay, type GameplayOptions, type GameplaySnapshot, type AnchorState } from './Gameplay';
 export type {
   GameAudio,
+  GameplayAudioState,
   GameObjective,
   GameUiSink,
   SailSetting,

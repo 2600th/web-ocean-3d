@@ -149,7 +149,7 @@ test.describe('gallery', () => {
       // is recorded as one; what it must not do is decide what the front page of
       // the repository looks like. Reloading costs a few seconds per image and
       // removes the entire class from the published output.
-      await page.goto('/?gate=0&quality=high');
+      await page.goto(`/?gate=0&quality=high${process.env.GALLERY_QUERY ?? ''}`);
       await bootOcean(page);
       await applyShot(page, shot);
       const image = await capture(page);

@@ -46,6 +46,14 @@ const ICONS = {
   anchor:
     '<circle cx="12" cy="4.6" r="2"/><path d="M12 6.6v14.6M8 10h8"/>' +
     '<path d="M4 13.4c.4 4.3 3.7 7.8 8 7.8s7.6-3.5 8-7.8"/><path d="M2.6 15.2L4 13.4l1.9 1.5M21.4 15.2L20 13.4l-1.9 1.5"/>',
+  /** Touch helm: set more sail — a full square sail with a rising arrow. */
+  sailUp:
+    '<path d="M7 4.5h9.5M7 4.5v13M7 6c3.6.6 5.6 2.8 5.6 5.6S10.6 16.6 7 17.2"/>' +
+    '<path d="M18 19.5V9M15.2 11.8L18 9l2.8 2.8"/>',
+  /** Touch helm: take in sail — a furled yard with a falling arrow. */
+  sailDown:
+    '<path d="M3.5 6h12M5 6c.8 2 2.6 3 4.5 3s3.7-1 4.5-3"/><path d="M9.5 9v11"/>' +
+    '<path d="M18 6.5V17M15.2 14.2L18 17l2.8-2.8"/>',
   /** Collapse / expand chevron. */
   chevron: '<path d="M6.5 9.5l5.5 5.5 5.5-5.5"/>',
   /** Mobile ledger toggle: a bound ledger. */
