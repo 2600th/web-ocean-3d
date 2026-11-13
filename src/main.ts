@@ -2513,7 +2513,12 @@ class App {
     this.water.setRain(raining, elapsed);
     // The shore break runs off the same clock the rest of the sea does, so a
     // deterministic rewind puts the surf sets back where they were.
-    this.water.setSurf(elapsed, this.foamOverride ?? 1);
+    this.water.setSurf(
+      elapsed,
+      this.foamOverride ?? 1,
+      this.state.peakWavelength,
+      this.wake.shoreNear,
+    );
     // Agitation: heavy rain whitens a sea surface on its own, independently of
     // whether the waves are steep enough to break.
     this.wake.setRainAgitation(raining);

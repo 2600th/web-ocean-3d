@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { Fn, If, float, mix, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
 import { seafloorDepth } from '../scene/Seafloor';
+import { breaker } from '../ocean/Surf';
 
 /**
  * World-anchored wake buffer: foam in R, surface elevation in G.
@@ -427,26 +428,16 @@ const SHOAL_OUTER = 0.03;
 const SURF_RATE = 0.28;
 
 /**
- * How much of the surf deposit the arriving swell modulates, versus a floor.
+ * How much of the surf deposit the passing bores drive, versus a floor.
  *
  * All pulse and no floor and the beach blinks off between sets; all floor and no
- * pulse and it is a painted stripe. 0.55 leaves the band running at a bit under
- * half rate continuously with each set driving it to white, which against a 5 s
- * time constant reads as a band that breathes rather than one that flashes.
+ * pulse and it is a painted stripe. The pulse is the bore from `ocean/Surf` —
+ * the same roller the surface draws — so the foam left standing in this buffer
+ * is laid down by the white water the viewer just watched pass, and drifts and
+ * decays from there. It used to be the open-water fold field, whose crests run
+ * on the wind bearing and have nothing to do with the breakers.
  */
-const SURF_PULSE = 0.55;
-
-/**
- * Fold values the swell modulation ramps between.
- *
- * Far looser than `uBreakThreshold`, and deliberately: that threshold asks "is
- * this water folding", which only a few percent of the sea ever is, while this
- * asks "is a crest arriving here", which is most of what a shore sees. Ramping
- * over the same tight window would have the surf pulse only on the rare texels
- * that whitecap on their own, which is not what makes a shore break.
- */
-const SURF_FOLD_INNER = 0.15;
-const SURF_FOLD_OUTER = 0.95;
+const SURF_PULSE = 0.75;
 
 /** World scale of the second `wakeBoil` octave, relative to the first. */
 const SURF_CELL_SCALE = 0.31;
@@ -967,6 +958,15 @@ export class Wake {
     this.debugObject.visible = v;
   }
 
+  /**
+   * Whether a shoreline is inside the buffer's footprint, as of the last
+   * update. The surf's vertex stage uses it to skip the heightfield entirely
+   * when there is no shore anywhere near the viewer.
+   */
+  get shoreNear(): boolean {
+    return (this.uShoreActive.value as number) > 0.5;
+  }
+
   /** Converts a world point to this buffer's uv, for the water shader. */
   uvAt(x: number, z: number, out: THREE.Vector2): THREE.Vector2 {
     return out.set((x - this.centerX_) / this.extent + 0.5, (z - this.centerZ_) / this.extent + 0.5);
@@ -1316,14 +1316,15 @@ export class Wake {
             .smoothstep(SHOAL_INNER, SHOAL_OUTER)
             .toVar();
 
-          // The sets. `fold` is already this texel's steepness in the open-water
-          // wave field, so borrowing it costs nothing and ties each pulse of the
-          // band to a crest the viewer can watch arrive. The floor under it is
-          // what keeps the surf running between sets. See `SURF_FOLD_INNER`.
-          const surge = smoothstepDown(fold, SURF_FOLD_INNER, SURF_FOLD_OUTER)
-            .mul(SURF_PULSE)
-            .add(1 - SURF_PULSE)
+          // The bores. Deposited where the roller of a broken crest is passing,
+          // so each set lays down its own foam. See `SURF_PULSE`.
+          const wave = breaker(depth.max(0), world);
+          const roller = wave.s
+            .smoothstep(-0.07, -0.015)
+            .mul(smoothstepDown(wave.s, 0.06, 0.3))
+            .mul(depth.lessThan(wave.breakDepth).select(float(1), float(0)))
             .toVar();
+          const surge = roller.mul(SURF_PULSE).add(1 - SURF_PULSE).toVar();
 
           // Two scales of `wakeBoil`, because a surf line is a row of breaking
           // cells with gaps between them and one scale gives an even stipple —
