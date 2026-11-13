@@ -698,11 +698,11 @@ export class Atmosphere {
     const wZenith = (h * 0.5 + 0.5) * 0.35 * tw;
 
     out.setRGB(
-      dr * day + (0.016 + (0.0016 - 0.016) * up) * night +
+      dr * day + (NIGHT_HORIZON.r + (NIGHT_ZENITH.r - NIGHT_HORIZON.r) * up) * night +
         TWILIGHT_HORIZON.r * wHorizon + TWILIGHT_BELT.r * wBelt + TWILIGHT_ZENITH.r * wZenith,
-      dg * day + (0.022 + (0.0032 - 0.022) * up) * night +
+      dg * day + (NIGHT_HORIZON.g + (NIGHT_ZENITH.g - NIGHT_HORIZON.g) * up) * night +
         TWILIGHT_HORIZON.g * wHorizon + TWILIGHT_BELT.g * wBelt + TWILIGHT_ZENITH.g * wZenith,
-      db * day + (0.044 + (0.0105 - 0.044) * up) * night +
+      db * day + (NIGHT_HORIZON.b + (NIGHT_ZENITH.b - NIGHT_HORIZON.b) * up) * night +
         TWILIGHT_HORIZON.b * wHorizon + TWILIGHT_BELT.b * wBelt + TWILIGHT_ZENITH.b * wZenith,
     );
     const luma = out.r * LUMA.x + out.g * LUMA.y + out.b * LUMA.z;
@@ -1050,7 +1050,14 @@ export class Atmosphere {
 
     // Hemisphere fill approximates the dome's own irradiance: blue-dominant when
     // the sun is high, sun-tinted at low elevations, near-black at night.
-    _skyTint.setRGB(0.32, 0.48, 0.82).lerp(this._sunColor, (1 - day) * 0.6);
+    //
+    // Sun-tinted only while there is a sun to tint it. Below the horizon the
+    // extinction colour goes on reporting a deep red, and mixing that into the
+    // blue fill made the whole blue hour purple-pink — the sea at the dusk
+    // squall mirrored it as a flat mauve under a sky that is blue everywhere
+    // but its sunward horizon. The dome keeps that warm band itself.
+    const sunAbove = smoothstepScalar(-0.06, 0.02, this._sunDirection.y);
+    _skyTint.setRGB(0.32, 0.48, 0.82).lerp(this._sunColor, (1 - day) * 0.6 * sunAbove);
     _skyTint.lerp(NIGHT_SKY_TINT, night);
     // Overcast desaturates the fill along with the dome it stands in for, or a
     // grey sky would keep casting blue light into the shadows.
@@ -1289,10 +1296,10 @@ export class Atmosphere {
   }
 
   private buildNightNode(d: any): any {
-    // Faintly brighter toward the horizon, as real night skies are.
+    // Brighter toward the horizon, as real night skies are. See `NIGHT_HORIZON`.
     const base = mix(
-      vec3(0.016, 0.022, 0.044),
-      vec3(0.0016, 0.0032, 0.0105),
+      vec3(NIGHT_HORIZON.r, NIGHT_HORIZON.g, NIGHT_HORIZON.b),
+      vec3(NIGHT_ZENITH.r, NIGHT_ZENITH.g, NIGHT_ZENITH.b),
       saturate(d.y.mul(1.7)),
     );
 
@@ -1404,6 +1411,18 @@ const GALACTIC_CENTRE = /*@__PURE__*/ new THREE.Vector3(-0.857, 0.12, 0.501)
   .projectOnPlane(GALACTIC_POLE)
   .normalize();
 const NIGHT_SKY_TINT = /*@__PURE__*/ new THREE.Color(0.12, 0.2, 0.42);
+/**
+ * The night dome's own glow, before `uNightRadiance` (0.168 at full night), at
+ * the horizon and overhead. Shared by the shader and `skyRadiance`.
+ *
+ * A deep teal-navy, the colour a night at sea is painted in, rather than
+ * black: at a fifth of these values the sky rendered near black while the sea,
+ * which reflects the fill tint, sat at mid blue — a dark sky over a bright sea
+ * meeting in a hard step. The horizon is about three times the zenith, a
+ * soft lighter band and not a line.
+ */
+const NIGHT_HORIZON = /*@__PURE__*/ new THREE.Color(0.083, 0.19, 0.286);
+const NIGHT_ZENITH = /*@__PURE__*/ new THREE.Color(0.024, 0.054, 0.1);
 /** Colour moonlight fills shadows with — cool, and never quite neutral. */
 const MOON_FILL_COLOR = /*@__PURE__*/ new THREE.Color(0.42, 0.55, 0.86);
 /** Light coming back up off the sea at night. */
