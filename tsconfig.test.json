@@ -9,7 +9,8 @@
     // `page.evaluate` callbacks are type-checked here but execute in the browser,
     // and they probe `navigator.gpu` to decide whether a GPU assertion is even
     // meaningful. Without it `npm run typecheck` fails on a clean checkout.
-    "types": ["node", "@playwright/test", "@webgpu/types"],
+    // `vite/client` because tests import app modules that read `import.meta.env`.
+    "types": ["node", "@playwright/test", "@webgpu/types", "vite/client"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": ["tests", "playwright.config.ts"]
