@@ -21,6 +21,7 @@ import {
   applyGroundShadingTo,
 } from './scene';
 import { AudioSystem, DEFAULT_AUDIO_SCENE_PARAMS } from './audio';
+import { Gameplay, type GameUiSink } from './gameplay';
 import {
   BuoyancySystem,
   BuoyantBody,
@@ -241,6 +242,8 @@ class App {
   private wake!: Wake;
   private shipBody: BuoyantBody | null = null;
   private shipControls: ShipController | null = null;
+  /** Helm-mode sailing, anchor and cargo. See `src/gameplay`. */
+  private gameplay: Gameplay | null = null;
   /** Rain wetting for the ship and the floating props. */
   private readonly wetness = new SurfaceWetness();
 
@@ -1287,6 +1290,49 @@ class App {
     } else {
       console.error('[ocean] scene props failed to load', propsResult.reason);
     }
+
+    // --- gameplay (src/gameplay) --------------------------------------------
+    // Helm-mode sails, anchor and cargo. Needs the hull; the floating barrel it
+    // clones for cargo is optional. Added hidden with the rest of `loaded`, so
+    // the reveal-and-compile below builds its pipelines before it is drawn.
+    if (this.ship && this.shipBody && this.shipControls) {
+      // TEMPORARY adapter until the HUD implements `GameUiSink`: forwards to the
+      // HUD wherever it already has the method, and logs otherwise.
+      const hud = () => this.hud as unknown as Partial<GameUiSink> | undefined;
+      const ui: GameUiSink = {
+        toast: (text, kind) =>
+          hud()?.toast ? hud()!.toast!(text, kind) : console.debug('[gameplay]', kind ?? 'info', text),
+        setObjective: (objective) => hud()?.setObjective?.(objective),
+        setScore: (label, value) =>
+          hud()?.setScore ? hud()!.setScore!(label, value) : console.debug('[gameplay]', label, value),
+        setShipTelemetry: (telemetry) => hud()?.setShipTelemetry?.(telemetry),
+      };
+      this.gameplay = new Gameplay({
+        body: this.shipBody,
+        controller: this.shipControls,
+        hullLength: this.ship.hullLength,
+        hullBeam: this.ship.hullBeam,
+        mass: 90_000,
+        sampler: this.sampler,
+        floorHeight: (x, z) => seafloorHeight(x, z),
+        wind: () => ({
+          towardRad: getPreset(this.state.preset).sea.windDirection,
+          speed: this.state.windSpeed,
+        }),
+        isHelm: () => this.state.cameraMode === 'boat',
+        camera: this.camera,
+        lootTemplate: this.props?.object.getObjectByName('barrel-0') ?? null,
+        audio: this.audio,
+        ui,
+        shake: this.director,
+      });
+      this.gameplay.object.visible = false;
+      loaded.push(this.gameplay.object);
+      this.scene.add(this.gameplay.object);
+      const hooks = (window as unknown as { __ocean?: Record<string, unknown> }).__ocean;
+      if (hooks) hooks.gameplay = this.gameplay.testHandle;
+    }
+    // --- end gameplay ---------------------------------------------------------
 
     // Compile what just arrived, before it is first drawn.
     //
@@ -2493,6 +2539,9 @@ class App {
       this.shipControls.setInput(orders.throttle, orders.rudder);
     }
     this.shipControls?.update(dt);
+    // Sails, anchor and cargo: adds to the forces the controller just set, so
+    // it runs between the controller and the solve. See `src/gameplay`.
+    this.gameplay?.update(dt);
 
     // Safe before the sampler's first readback resolves: it reports height 0 and
     // bodies simply settle to flat water rather than producing NaN.
@@ -2809,6 +2858,8 @@ class App {
           // `ShipController.resetInput` — this was the whole of the shot-ordering
           // dependence.
           this.shipControls?.resetInput();
+          // Sails furled, anchor up, score and cargo sequence back to the seed.
+          this.gameplay?.reset();
           // Set, not settled. Wetness dries with a 26 s time constant, so a
           // capture that inherited a storm's wet hull would still be visibly damp
           // three hundred settle steps later.
@@ -3011,6 +3062,7 @@ class App {
     this.particles?.dispose();
     this.caustics?.dispose();
     this.shipControls?.dispose();
+    this.gameplay?.dispose();
     // Restores the dry roughness and colour on materials the loader's cache
     // shares, so a re-created App does not inherit a permanently wet ship.
     this.wetness.dispose();
