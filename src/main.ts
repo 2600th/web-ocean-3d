@@ -234,6 +234,10 @@ class App {
   private caustics!: Caustics;
 
   private assets!: AssetLoader;
+  /** The model requests, started early; see `requestSceneContent`. */
+  private contentRequests: ReturnType<App['startContentRequests']> | null = null;
+  /** Whether the boot bar belongs to the content load yet; see `requestSceneContent`. */
+  private contentOwnsBootBar = false;
   private seafloor!: Seafloor;
   private ship: Ship | null = null;
   private props: Props | null = null;
@@ -891,6 +895,10 @@ class App {
     // harness can observe rather than a silence it has to time out on.
     this.exposeTestHooks();
 
+    // The model requests go out now, under the prewarm, rather than after it.
+    // See `requestSceneContent`.
+    void this.requestSceneContent();
+
     boot.set(0.82, 'Preparing the first frame…');
     await this.prewarm();
     this.loop.start();
@@ -901,33 +909,15 @@ class App {
     this.contentReady = this.loadSceneContent();
     await this.contentReady;
 
-    // Prewarm behind the boot overlay. Every pipeline the first frame will need
-    // is compiled here rather than on first draw — otherwise the frame that
-    // first shows the water pays for compiling it, which is exactly the spike
-    // this project previously measured at ~57 ms when scene content arrived.
-    //
-    // One prewarm, not two. Running it before the content load compiled the sea
-    // and the sky, and `loadSceneContent` then ran a second pass for everything
-    // it had just added; with the load moved ahead of this line, a single pass
-    // covers both and the boot pays for compilation exactly once.
-    // Choose each prop's LOD *before* compiling, so the prewarm builds pipelines
-    // for the levels the opening frame will actually draw and skips the rest.
-    //
-    // The deal used to happen in the frame update, which is after this line — so
-    // at compile time every kind still held the state `seal` left it in, with
-    // LOD0 carrying the whole population and the lower levels empty, and
-    // `compileAsync` walking all of them regardless because `traverseVisible`
-    // does not look at `count`. Dealing here costs one pass over a few thousand
-    // distance tests and takes the boot from 177 pipelines to 73.
-    //
-    // The levels that come back uncompiled are claimed immediately rather than
-    // deferred: this *is* the compile pass they were waiting for, and there is
-    // no loop running yet, so revealing them here is free.
-    this.props?.updateLod(this.camera.position);
-    this.props?.markCompiled(this.props.takeUncompiledLevels());
-
-    boot.set(0.95, 'Compiling pipelines…');
-    await this.prewarm();
+    // No second pass here. This used to deal the LODs, mark every level the
+    // deal handed back as compiled, and prewarm again — written for a boot that
+    // loaded the content before `loop.start()`. The loop now starts first, so by
+    // this line frames are running, and marking a level compiled *before* the
+    // compile under it lets a frame draw it with no pipeline: the inline compile
+    // `compileLodLevels` exists to prevent. The deal now happens in
+    // `loadSceneContent`, ahead of its paused compile, and any level the camera
+    // deals itself after that takes the path every other late level does — the
+    // frame update hands it to `compileLodLevels`.
 
     boot.set(0.98, 'Island arriving…');
     boot.set(1, 'Ready');
@@ -1114,7 +1104,25 @@ class App {
     }
   }
 
-  private async loadSceneContent(): Promise<void> {
+  /**
+   * Starts the model requests — ship, dressing, reef fish — and returns them.
+   * Idempotent: the first call starts them, every later one gets the same
+   * promise.
+   *
+   * Split from `loadSceneContent` so the boot can start these *before* the
+   * first prewarm rather than after it. That prewarm is the sea and the sky
+   * compiling on the GPU, five-odd seconds in which the main thread is mostly
+   * idle — and the requests are network, worker transcodes and `Props`'
+   * placement, all of which can happen underneath it. Nothing here touches the
+   * scene: the results wait, unadded, until `loadSceneContent` takes them, so
+   * the order in which things become visible and get compiled is unchanged.
+   */
+  private requestSceneContent(): NonNullable<App['contentRequests']> {
+    this.contentRequests ??= this.startContentRequests();
+    return this.contentRequests;
+  }
+
+  private startContentRequests() {
     this.assets = new AssetLoader({
       // KTX2Loader has to ask the device which compressed formats it can
       // transcode to — ASTC, ETC2, BC — and it can only ask a renderer that
@@ -1122,6 +1130,9 @@ class App {
       // arrives untranscoded, which is the whole saving handed straight back.
       renderer: this.renderer,
       onProgress: ({ fraction, itemsLoaded, itemsTotal }) => {
+        // The requests start under the first prewarm, while the boot bar is
+        // still reporting it; they take the bar over once `start` hands it on.
+        if (!this.contentOwnsBootBar) return;
         const progress = 0.86 + fraction * 0.1;
         boot.set(
           progress,
@@ -1134,10 +1145,7 @@ class App {
     // features and must fail separately: one unreachable prop asset previously
     // rejected the whole batch, taking the ship, buoyancy and the wake with it
     // and leaving an empty ocean with nothing but a console error to show for it.
-    /** Roots added hidden, revealed together once their pipelines exist. */
-    const loaded: THREE.Object3D[] = [];
-
-    const [shipResult, propsResult, reefFishResult] = await Promise.allSettled([
+    return Promise.allSettled([
       Ship.load(this.assets),
       Props.load(this.assets, {
         // The tier decides whether the island's vegetation is meshes or cards,
@@ -1151,6 +1159,27 @@ class App {
       // its request overlaps the ship's rather than queueing behind it.
       loadReefFish(this.assets),
     ]);
+  }
+
+  private async loadSceneContent(): Promise<void> {
+    /** Roots added hidden, revealed together once their pipelines exist. */
+    const loaded: THREE.Object3D[] = [];
+
+    this.contentOwnsBootBar = true;
+    const [shipResult, propsResult, reefFishResult] = await this.requestSceneContent();
+    if (this.disposed) return;
+
+    // One frame first, before any of it joins the scene. The requests start
+    // under the first prewarm and are usually done by the time the loop starts,
+    // so without this the compile pause below landed before a single frame had
+    // been drawn: the overlay lifted on an empty canvas, and the camera director
+    // had never run, so the LODs were dealt for a camera still at its
+    // constructor position and every level the real opening shot needs was
+    // compiled again, mid-session, the moment it moved. Waiting *here* rather
+    // than just before the pause matters too: once `this.props` is set, the
+    // frame's own LOD pass claims the new levels and starts a second compile
+    // racing this one.
+    if (this.loop.isRunning && !this.loop.isPaused) await this.loop.nextFrame();
     if (this.disposed) return;
 
     if (reefFishResult.status === 'fulfilled' && reefFishResult.value) {
@@ -1326,7 +1355,24 @@ class App {
     this.loop.setPaused(true);
     await this.loop.settle();
     for (const object of loaded) object.visible = true;
+    // Deal the LODs for where the camera is *before* compiling, so the compile
+    // builds the levels the next frame will draw and nothing else.
+    //
+    // This is the boot path now — the loop starts before the content load, so
+    // this branch, not the one above, is what every session takes — and it was
+    // compiling every level of every kind: `seal` leaves LOD0 holding the whole
+    // population and the lower levels visible, and `compileAsync` walks
+    // `traverseVisible` without looking at `count`. `start` deals the LODs too,
+    // but only after this pass had already built the lot. Measured at High on
+    // the FXC path the harness forces: the content compile was ~30 s of a ~38 s
+    // boot. `updateLod` hides every level the camera cannot see and hands back
+    // the ones it can; levels skipped here are compiled when a camera first
+    // needs them, by the same path a fly-in to the island always used.
+    this.props?.updateLod(this.camera.position);
+    const wanted = this.props?.takeUncompiledLevels() ?? [];
+    for (const mesh of wanted) mesh.visible = true;
     await this.prewarm();
+    this.props?.markCompiled(wanted);
     // `captureOwnsClock` for the same reason `drainQualityRequests` checks it,
     // and this is the site that actually bit: `prewarm` compiles every material
     // the scene just loaded, which grew from twenty models to nearly sixty files
