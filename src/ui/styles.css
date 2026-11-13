@@ -2400,14 +2400,17 @@ body {
     right: calc(var(--gutter) + 68px);
     bottom: calc(var(--gutter) + env(safe-area-inset-bottom, 0px));
     transform: none;
-    align-items: stretch;
+    align-items: center;
   }
 
   .hud-hints {
     display: none;
   }
 
+  /* A thumb's row on a phone; not a plank across a tablet. */
   .hud-modes {
+    width: 100%;
+    max-width: 440px;
     justify-content: space-between;
     gap: 4px;
     padding: 4px;
