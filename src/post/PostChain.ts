@@ -108,7 +108,7 @@ const _drawingBuffer = new THREE.Vector2();
  * resolves at 0.77 and the chain upsamples it from there. What it does not do
  * is keep the previous depth: its copy is guarded by "history matches the
  * drawing buffer", which is never true below native, so the depth it rejects
- * history against would stay whatever the last native frame left — or empty on
+ * history against would stay whatever the last native frame left â€” or empty on
  * a session that booted on Low, which rejects everything and silently turns
  * the AA off. This performs the same copy against the size that actually
  * matters, the input's.
@@ -120,8 +120,8 @@ class ScaledTRAA extends (TRAANode as unknown as new (...args: any[]) => any) {
     //
     // Stock TRAA is a FRAME node, and three's frame counter advances on the
     // renderer's own rAF loop, not on renders. The deterministic harness
-    // renders several times between rAF ticks — settle steps, warm-up
-    // captures — so a FRAME node resolves for some of those renders and is
+    // renders several times between rAF ticks â€” settle steps, warm-up
+    // captures â€” so a FRAME node resolves for some of those renders and is
     // skipped for others, depending on how the browser happened to schedule
     // them. The jitter, meanwhile, advances on every render. RENDER makes the
     // resolve follow the same count the jitter does. The same change is made
@@ -216,7 +216,7 @@ export class PostChain {
   };
 
   /**
-   * `?post=0`: the chain as it was before this file existed — TRAA straight off
+   * `?post=0`: the chain as it was before this file existed â€” TRAA straight off
    * the scene pass, no AO, no resolve pass, no adaptation, no grain. The
    * fixed-cost half of the A/B in `docs/AAA_PLAN.md` section N, and a kill
    * switch.
@@ -283,7 +283,7 @@ export class PostChain {
     // lock left dark specks through the island canopy's alpha-tested edges,
     // which TRAA does not. TRAA resolves into a drawing-buffer-sized history
     // and samples its input by UV, so a scene pass rendered smaller is
-    // upsampled by the same accumulation that anti-aliases it — the jitter is
+    // upsampled by the same accumulation that anti-aliases it â€” the jitter is
     // half an *output* pixel, which still lands every frame's samples at a new
     // sub-pixel offset of the smaller grid. `docs/AAA_PLAN.md` section N has
     // the comparison frames.
@@ -370,7 +370,7 @@ export class PostChain {
     this.aoComposite?.setResolutionScale?.(scale);
     // Resize both now rather than at their next `updateBefore`. They resize at
     // different points of the frame, and TRAA reads its input's size before
-    // the input has re-rendered — for one frame the depth it copies and the
+    // the input has re-rendered â€” for one frame the depth it copies and the
     // target it copies into disagree, which WebGPU rejects as a validation
     // error on every live tier change across the native boundary.
     this.options.renderer.getDrawingBufferSize(_drawingBuffer);

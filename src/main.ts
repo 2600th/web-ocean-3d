@@ -1038,8 +1038,8 @@ class App {
     this.dof.setCamera(this.camera);
     this.dof.setFrameHeight(this.renderer.getDrawingBufferSize(_drawingBuffer).y);
     const gradedTexture = rtt(graded as THREE.Node);
-    // Eye adaptation meters this — fog and the underwater pass included, so the
-    // dip below the surface is what it reacts to — and applies its gain ahead
+    // Eye adaptation meters this â€” fog and the underwater pass included, so the
+    // dip below the surface is what it reacts to â€” and applies its gain ahead
     // of the bloom, whose threshold assumes the preset's exposure.
     this.postChain.buildExposure(gradedTexture);
     const focused = this.dof.build(gradedTexture, sceneDepth);

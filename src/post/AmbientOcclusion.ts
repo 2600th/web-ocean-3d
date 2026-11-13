@@ -27,7 +27,7 @@ class SequencedGTAO extends GTAONode {
   constructor(depth: any, normal: any, camera: THREE.Camera) {
     super(depth, normal, camera);
     // Per pipeline render rather than per animation frame, so the rotation
-    // phase counts renders — which a capture controls — and not rAF ticks,
+    // phase counts renders â€” which a capture controls â€” and not rAF ticks,
     // which it does not. See `ScaledTRAA` in `PostChain.ts`.
     this.updateBeforeType = THREE.NodeUpdateType.RENDER;
   }
@@ -123,7 +123,7 @@ export class AmbientOcclusion {
       const a = aoTexture.sample(p).r;
       // Near field only. A half-metre occluder is sub-pixel past a hundred
       // metres anyway, and beyond that the normals GTAO rebuilds from a
-      // perspective depth buffer degrade into vertical streaks — measured on
+      // perspective depth buffer degrade into vertical streaks â€” measured on
       // the island's tree line at a kilometre before this fade existed.
       const distance = perspectiveDepthToViewZ(depth.sample(p).r, near, far).negate();
       const fade = float(1).sub(smoothstep(this.fadeStart, this.fadeEnd, distance));

@@ -95,7 +95,7 @@ class ExposureAdaptNode extends THREE.TempNode {
     this.previous.texture.name = 'AutoExposure.previous';
     this.textureNode = texture(this.current.texture);
     this.material.name = 'AutoExposure.adapt';
-    // Once per pipeline render, not once per animation frame — see the note on
+    // Once per pipeline render, not once per animation frame â€” see the note on
     // `ScaledTRAA` in `PostChain.ts` for why FRAME is not deterministic here.
     this.updateBeforeType = THREE.NodeUpdateType.RENDER;
   }
@@ -117,8 +117,8 @@ class ExposureAdaptNode extends THREE.TempNode {
       const avgLog = sumLog.div(sumWeight.max(1e-4)).toVar('aeAvgLog');
       // How far this frame is from where the preset was graded, corrected by a
       // fraction and clamped. Positive means "brighten".
-      // A dead zone first: ordinary reframing inside a preset — a hull filling
-      // more of the frame, a little more sky — is part of the authored look and
+      // A dead zone first: ordinary reframing inside a preset â€” a hull filling
+      // more of the frame, a little more sky â€” is part of the authored look and
       // is left alone. Only the excess beyond it is corrected.
       const deviation = u.anchorLog.sub(avgLog).toVar('aeDev');
       const excess = deviation.sign().mul(deviation.abs().sub(u.deadZone).max(0));
@@ -140,7 +140,7 @@ class ExposureAdaptNode extends THREE.TempNode {
 
   updateBefore(frame: any): boolean | undefined {
     const renderer = frame.renderer;
-    // Disabled: one more pass to write a zero correction, then nothing — the
+    // Disabled: one more pass to write a zero correction, then nothing â€” the
     // meter and the reduction cost nothing while the gain sits at exactly 1.
     const enabled = this.u.enabled.value > 0.5;
     if (!enabled && this.wroteDisabled) return undefined;
@@ -233,7 +233,7 @@ export class AutoExposure {
   constructor(sourceNode: any) {
     // A plain texture node on the same GPU texture, *not* the RTT node itself.
     // `RTTNode` re-renders once per render call that samples it, and this
-    // meter is its own render call — sampling the RTT here re-ran the whole
+    // meter is its own render call â€” sampling the RTT here re-ran the whole
     // fog and underwater composite a second time, measured at 0.95 ms on its
     // own. By the time this node's `updateBefore` runs, the chain's consumer
     // has already rendered the texture this frame.
