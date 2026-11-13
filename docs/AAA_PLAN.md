@@ -59,10 +59,13 @@ reinventing it.
 - [ ] Measure: `dist/` size and time-to-first-frame before/after
 
 ### B. Procedural island and vegetation (island agent)
-- [ ] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs
-- [ ] Procedural broadleaf canopy trees replacing the jacaranda/poinciana/orchid/island_tree GLBs
-- [ ] Procedural rocks (displaced icosphere + TSL noise + bumpNormal) where scans are not hero pieces
-- [ ] Island ground: warm coral sand, wet-sand band, grass/jungle, rock — no bald grey dome
+- [x] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs
+- [x] Procedural broadleaf canopy trees replacing the jacaranda/poinciana/orchid/island_tree GLBs
+- [x] Procedural rocks (displaced icosphere + TSL noise + bumpNormal) where scans are not hero pieces
+- [x] Island ground: warm coral sand, wet-sand band, grass/jungle, rock — no bald grey dome
+
+- [x] World detail: skull rock, sea arch, summit spires, strata outcrops, wet barnacled waterlines, beach wrack and driftwood, camp with fire/smoke/torches. 12.8 MB of vegetation GLBs and the imposter atlas removed.
+- [ ] Follow-ups: lower jungle slopes read as lawn; shell litter too small; sand swirl/grid pattern at close range; some short palms read as sticks
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky
