@@ -1364,7 +1364,11 @@ class App {
     })._renderContexts;
     const get = contexts.get.bind(contexts);
     contexts.get = (target, mrtArg, depth) => {
-      if (target !== null && target !== undefined) {
+      // Depth -1 is `Renderer.clear()` asking for a context of its own, apart
+      // from any render in progress on the same target. Pinning it would hand
+      // a clear the reflection's live context (the reflector clears instead of
+      // rendering with the eye under water).
+      if (depth !== -1 && target !== null && target !== undefined) {
         if (target === this.scenePass?.renderTarget) {
           return get(target, mrtArg, PINNED_DEPTH.scene);
         }
@@ -3080,7 +3084,12 @@ class App {
     // cancelled, so the only safe thing to do with one still in flight is wait
     // for it — destroying the resources it is compiling against is precisely
     // the crash the comment below describes.
-    await this.pendingCompile?.catch(() => undefined);
+    //
+    // WebGPU only. The crash is an asynchronous pipeline build meeting a texture
+    // destroyed under it, which WebGL's synchronous programs cannot do; and
+    // there a timed-out boot compile can run for a minute and more (measured
+    // ~80 s), so waiting for it left a tier change hanging that long.
+    if (this.backend === 'webgpu') await this.pendingCompile?.catch(() => undefined);
     try {
       while (this.pendingQuality !== null && !this.disposed) {
         const tier = this.pendingQuality;
