@@ -52,11 +52,11 @@ reinventing it.
 ## Task list
 
 ### A. Load time and payload (asset agent)
-- [ ] Delete unreferenced assets (HDRIs, unused dressing GLBs / LODs) and their fetch-script entries
-- [ ] Ship textures → KTX2 at 1k (hull/sails/rigging), meshopt geometry
-- [ ] Buoy/barrel textures → KTX2 or procedural
-- [ ] Imposter atlas → KTX2/WebP
-- [ ] Measure: `dist/` size and time-to-first-frame before/after
+- [x] Delete unreferenced assets (HDRIs, unused dressing GLBs / LODs) and their fetch-script entries — HDRIs (19 MB) gone; every dressing GLB and LOD on disk is loaded, so none removed. Draco decoder and the duplicate `public/basis` transcoder dropped from the build.
+- [x] Ship textures → KTX2 at 1k (hull/sails/rigging), meshopt geometry — one `/models/hero/dutch_ship_medium.glb`, 26.4 → 13.5 MB; hull colour and normal stay 2k (1k was visibly soft at the close-up).
+- [x] Buoy/barrel textures → KTX2 or procedural — KTX2 + Meshopt; buoy 2.9 → 0.77 MB, barrel 0.56 MB either way at a quarter of the VRAM.
+- [x] Imposter atlas → KTX2/WebP — WebP, 1.8 → 0.37 MB.
+- [x] Measure: `dist/` size and time-to-first-frame before/after — `public/` 88 → 53 MiB, `dist/` 100 → 64 MiB; High on the FXC path: first frame ~7 s → ~6 s, `isReady` ~39 s → ~20 s.
 
 ### B. Procedural island and vegetation (island agent)
 - [x] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs

@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
+import { HERO_ANISOTROPY, dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
 import { IslandDetail, applyTideline } from './islandDetail';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
@@ -50,8 +50,10 @@ import { SEEDS, mulberry32 } from '../core/random';
  * rather than the horizon, which is why the detail scale thins it hardest.
  */
 
-const BUOY_URL = '/models/ocean_buoy/ocean_buoy_1k.gltf';
-const BARREL_URL = '/models/barrel_03/barrel_03_1k.gltf';
+// KTX2 + Meshopt builds of the Poly Haven 1k glTFs; see `HERO_ASSETS` in
+// `scripts/optimize-assets.mjs`.
+const BUOY_URL = '/models/hero/ocean_buoy.glb';
+const BARREL_URL = '/models/hero/barrel_03.glb';
 
 /** Scene-dressing library. Every entry is optional: a 404 thins the scene. */
 const DRESSING_URLS = {
@@ -778,7 +780,10 @@ export class Props {
     const urlKeys = Object.keys(DRESSING_URLS) as UrlKey[];
 
     const [hero, manifest] = await Promise.all([
-      Promise.all([loader.load(BUOY_URL), loader.load(BARREL_URL)]),
+      Promise.all([
+        loader.load(BUOY_URL, { anisotropy: HERO_ANISOTROPY }),
+        loader.load(BARREL_URL, { anisotropy: HERO_ANISOTROPY }),
+      ]),
       loadDressingManifest().catch((error: unknown) => {
         console.warn('[ocean] dressing manifest unavailable; loading base models only', error);
         return null;

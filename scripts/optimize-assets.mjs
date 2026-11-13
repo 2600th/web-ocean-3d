@@ -97,12 +97,47 @@ async function decodeImage(buffer) {
   };
 }
 
+/**
+ * Index of basisu's box filter in its resampler table, for `setMipFilter`.
+ *
+ * basisu builds mip chains with a Kaiser filter by default, which is softer
+ * than the 2x2 box three.js uses when it generates mips for an uncompressed
+ * texture on the GPU — measured on the ship's hull map, level 1 carried 11% less
+ * high-frequency energy than the GPU's own chain read back from the JPEG build.
+ * With the box filter the KTX2 levels match that chain (389 vs 391 at level 1,
+ * 449 vs 466 at level 2), so a hero model's mips look like the ones it had.
+ */
+const BASIS_MIP_FILTER_BOX = 0;
+
+/**
+ * The encoder package does not expose basisu's mip filter, so the worker reaches
+ * the encoder class it uses and has `setMipGen` — which the package always calls
+ * — apply the filter as well. The module is a singleton, so this is the same
+ * class `encodeToKTX2` instantiates.
+ */
+let mipFilterForNextEncode = null;
+async function installMipFilterHook() {
+  const loader = new URL('../basis/loadBasisNode.js', import.meta.resolve('babylonpress-ktx2-encoder'));
+  const { loadNodeBasisModule } = await import(loader.href);
+  const prototype = (await loadNodeBasisModule()).BasisEncoder.prototype;
+  const setMipGen = prototype.setMipGen;
+  prototype.setMipGen = function (generate) {
+    setMipGen.call(this, generate);
+    if (generate && mipFilterForNextEncode !== null) this.setMipFilter(mipFilterForNextEncode);
+  };
+}
+
 async function startKTX2Worker() {
   if (!parentPort) return;
+  await installMipFilterHook();
   parentPort.on('message', async (job) => {
     try {
+      const { mipFilter, ...options } = job.options;
+      // One job at a time per worker (the pool only hands an idle worker a job),
+      // so a module-level slot is not shared between concurrent encodes.
+      mipFilterForNextEncode = mipFilter === 'box' ? BASIS_MIP_FILTER_BOX : null;
       const encoded = await encodeToKTX2(new Uint8Array(job.image), {
-        ...job.options,
+        ...options,
         imageDecoder: decodeImage,
       });
       const data = new Uint8Array(encoded);
@@ -364,6 +399,69 @@ const LOD_RATIOS = {
   soft_coral_set: [0.45],
 };
 
+/**
+ * The hero models: the ship and the two floaters.
+ *
+ * These are not dressing — nothing decimates them, they have no LOD chain and
+ * they are not in the manifest — but they were the largest thing the project
+ * shipped, and for no reason a pipeline could not remove. Poly Haven's
+ * `dutch_ship_medium` is nine 2k JPEGs and a raw float32 `.bin`: 26 MB to
+ * download, then every map decoded on the main thread and uploaded as RGBA8 with
+ * a full mip chain — about 200 MB of video memory for one ship. The buoy and
+ * barrel are the same shape of problem at 1k.
+ *
+ * So they take the dressing's back half and nothing else: textures capped per
+ * map, KTX2 through the same encoder pool and the same per-slot colour-space
+ * rule, Meshopt geometry, one self-contained `.glb` each.
+ *
+ * The encoder choices are tighter than the dressing's because these are the
+ * objects the camera is closest to, and every one of them was settled by a
+ * deterministic side-by-side against the JPEG build (hull close-up from 9 m):
+ *
+ *  - `keep`: the hull's colour and normal maps stay 2k. At 1k the carved rail
+ *    and the plank seams went visibly soft; the hull fills the frame from the
+ *    boat camera and the tour, and its UV layout spends few texels per metre.
+ *    The rigging, the sails and every roughness map drop to 1k with no
+ *    difference the comparison could find.
+ *  - `uastc` names the maps that take UASTC instead of ETC1S: colour and
+ *    normals. ETC1S on the 1k hull colour lost the carving outright (34.6 dB);
+ *    metallic-roughness stays ETC1S — smooth fields, and nobody sees a block in
+ *    a roughness value.
+ *  - `supercompress` adds Zstandard over UASTC. Without it a UASTC 1k map is
+ *    1.4 MB on the wire, because RDO only buys anything once something
+ *    entropy-codes the result; `KTX2Loader` decodes Zstandard itself. The RDO
+ *    level stays at the default: level 3 saved 1.7 MB and put visible grain in
+ *    the planking.
+ *  - `mipFilter: 'box'`. See `BASIS_MIP_FILTER_BOX`.
+ *  - Positions keep 16 bits and UVs 14 rather than Meshopt's 14 and 12. The
+ *    rigging is centimetre-thick rope across a 23 m model, which is exactly
+ *    where a 14-bit grid starts to show.
+ *
+ * Two runtime counterparts. The loader asks for anisotropic filtering on these
+ * textures (`HERO_ANISOTROPY` in `src/scene/AssetLoader.ts`), without which the
+ * KTX2 hull was softer than the JPEG one even at 2k. And Meshopt quantisation
+ * moves each mesh's dequantisation scale onto its node, so `Ship` multiplies its
+ * sail billow into the scale it loaded with rather than overwriting it.
+ */
+const HERO_ASSETS = [
+  {
+    slug: 'dutch_ship_medium',
+    source: 'dutch_ship_medium_2k.gltf',
+    texture: 1024,
+    normal: 1024,
+    keep: [{ match: /hull_(diff|nor_gl)/, size: 2048 }],
+    ktx2: { uastc: /_(diff|nor_gl)/, supercompress: true, mipFilter: 'box' },
+  },
+  // The floaters are a metre or two tall and never fill the frame, so they take
+  // the dressing's trade instead: ETC1S colour, and normals at half size. UASTC
+  // colour would make the barrel's textures three times the JPEGs they replace;
+  // as built it is the same size on the wire and a quarter of the video memory.
+  { slug: 'ocean_buoy', source: 'ocean_buoy_1k.gltf', texture: 1024, normal: 512, ktx2: { supercompress: true, mipFilter: 'box' } },
+  { slug: 'barrel_03', source: 'barrel_03_1k.gltf', texture: 1024, normal: 512, ktx2: { supercompress: true, mipFilter: 'box' } },
+];
+const HERO_OUT = join(ROOT, 'public', 'models', 'hero');
+const HERO_MESHOPT = { quantizePosition: 16, quantizeTexcoord: 14, quantizeNormal: 10 };
+
 for (const asset of ASSETS) {
   if (asset.lods === undefined && LOD_RATIOS[asset.slug]) {
     asset.lods = LOD_RATIOS[asset.slug];
@@ -561,6 +659,12 @@ async function main() {
     }
   }
 
+  const heroes = await buildHeroes(io, ktx2Pool, ktx2Stats, ktx2Jobs);
+  inTotal += heroes.inTotal;
+  outTotal += heroes.outTotal;
+  built += heroes.built;
+  failed += heroes.failed;
+
   const manifest = { version: 1, basePath: '/models/dressing/', models: {} };
   for (const asset of ASSETS) {
     const base = join(OUT, asset.slug + '.glb');
@@ -599,6 +703,96 @@ async function main() {
     console.error(`  FAILED   : ${failed}`);
     process.exitCode = 1;
   }
+}
+
+/** Builds `HERO_ASSETS` into `public/models/hero/`. See the note on the table. */
+async function buildHeroes(io, pool, stats, inFlight) {
+  const totals = { inTotal: 0, outTotal: 0, built: 0, failed: 0 };
+  mkdirSync(HERO_OUT, { recursive: true });
+
+  for (const asset of HERO_ASSETS) {
+    if (ONLY.length && !ONLY.some((needle) => asset.slug.includes(needle))) continue;
+    const source = join(MODELS, asset.slug, asset.source);
+    const dest = join(HERO_OUT, `${asset.slug}.glb`);
+
+    if (!existsSync(source)) {
+      // Unlike the Sketchfab half of the dressing there is no fallback to the
+      // committed output: it is already KTX2, and re-encoding an encoded
+      // texture is the lossy loop the dressing's note warns about.
+      if (existsSync(dest)) {
+        console.log(`  keep     hero/${asset.slug}.glb (${bytes(statSync(dest).size)}) — source not fetched`);
+        totals.outTotal += statSync(dest).size;
+      } else {
+        console.error(`  MISSING  ${asset.slug} — run: node scripts/fetch-assets.mjs`);
+        totals.failed += 1;
+      }
+      continue;
+    }
+    if (existsSync(dest) && !FORCE) {
+      console.log(`  skip     hero/${asset.slug}.glb (${bytes(statSync(dest).size)})`);
+      totals.outTotal += statSync(dest).size;
+      continue;
+    }
+
+    try {
+      const sourceSize = directorySize(join(MODELS, asset.slug));
+      const document = await io.read(source);
+      await document.transform(weld(), dedup(), prune());
+      await resizeTextures(document, (texture) => {
+        const name = `${texture.getName()} ${texture.getURI()}`;
+        const kept = asset.keep?.find((rule) => rule.match.test(name));
+        if (kept) return kept.size;
+        return listTextureSlots(texture).includes('normalTexture') ? asset.normal : asset.texture;
+      });
+      await compressDocumentTextures(document, pool, stats, inFlight, asset);
+      await document.transform(meshopt({ encoder: MeshoptEncoder, level: 'high', ...HERO_MESHOPT }));
+      await io.write(dest, document);
+
+      const destSize = statSync(dest).size;
+      totals.inTotal += sourceSize;
+      totals.outTotal += destSize;
+      totals.built += 1;
+      console.log(
+        `  build    hero/${asset.slug}.glb  ${bytes(sourceSize)} -> ${bytes(destSize)}  ` +
+          `${countTriangles(document).toLocaleString('en-US')} tris, textures <= ${asset.texture}, normals <= ${asset.normal}` +
+          (asset.keep ? `, ${asset.keep.map((rule) => `${rule.match.source} at ${rule.size}`).join(', ')}` : ''),
+      );
+    } catch (error) {
+      console.error(`  ERROR    ${asset.slug}: ${error instanceof Error ? error.message : error}`);
+      totals.failed += 1;
+    }
+  }
+  return totals;
+}
+
+/**
+ * Caps every texture at `sizeFor(texture)` on the long edge, losslessly
+ * re-encoded.
+ *
+ * PNG rather than the dressing's WebP step: the next stop is the KTX2 encoder,
+ * and a lossy intermediate would be a second generation of loss for nothing.
+ */
+async function resizeTextures(document, sizeFor) {
+  await Promise.all(
+    document
+      .getRoot()
+      .listTextures()
+      .map(async (texture) => {
+        const image = texture.getImage();
+        if (!image) return;
+        const metadata = await sharp(image).metadata();
+        if (!metadata.width || !metadata.height) return;
+        const maxDimension = sizeFor(texture);
+        if (Math.max(metadata.width, metadata.height) <= maxDimension && texture.getMimeType() === 'image/png') return;
+        const resized = await sharp(image)
+          .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+          .png()
+          .toBuffer();
+        texture.setImage(resized).setMimeType('image/png');
+        const uri = texture.getURI();
+        if (uri && !uri.startsWith('data:')) texture.setURI(uri.replace(/\.[^./]+$/i, '.png'));
+      }),
+  );
 }
 
 /**
@@ -1129,7 +1323,12 @@ async function compressDocumentTextures(document, pool, stats, inFlight, asset) 
       const channelMask = getTextureChannelMask(texture);
       const normal = slots.includes('normalTexture');
       const leafCutout = isLeafCutoutTexture(document, asset, texture, slots, channelMask);
-      const uastc = normal || leafCutout;
+      const uastcRule = asset?.ktx2?.uastc;
+      const uastc =
+        normal ||
+        leafCutout ||
+        uastcRule === true ||
+        (uastcRule instanceof RegExp && uastcRule.test(`${texture.getName()} ${texture.getURI()}`));
       // Colour data is sRGB; everything that encodes *numbers* rather than
       // colour is linear. Normal maps store directions, metallic-roughness and
       // occlusion store coefficients — de-gamma any of them on read and a
@@ -1154,7 +1353,12 @@ async function compressDocumentTextures(document, pool, stats, inFlight, asset) 
         isSetKTX2SRGBTransferFunc: perceptual,
         generateMipmap: true,
         enableRDO: uastc,
-        rdoQualityLevel: uastc ? UASTC_RDO_QUALITY : undefined,
+        rdoQualityLevel: uastc ? (asset?.ktx2?.rdo ?? UASTC_RDO_QUALITY) : undefined,
+        // Only set when asked for, so the dressing's cache keys — which hash
+        // these options — are exactly what they were before heroes existed.
+        ...(uastc && asset?.ktx2?.supercompress ? { needSupercompression: true } : {}),
+        ...(!uastc && asset?.ktx2?.etc1sQuality ? { qualityLevel: asset.ktx2.etc1sQuality } : {}),
+        ...(asset?.ktx2?.mipFilter ? { mipFilter: asset.ktx2.mipFilter } : {}),
       };
       const key = textureCacheKey(image, options);
 
