@@ -143,6 +143,18 @@ const _hazeZenith = new THREE.Color();
 
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
+/** Scratch for the HUD's view heading. */
+const _hudView = new THREE.Vector3();
+
+/**
+ * Compass bearing of a world XZ direction: degrees clockwise from north, with
+ * north = −Z and east = +X (the HUD's convention, see `NavReadout`).
+ */
+function compassBearing(x: number, z: number): number {
+  return (Math.atan2(x, -z) * 180) / Math.PI;
+}
+
+const MS_TO_KNOTS = 1.943844;
 
 const boot = {
   root: document.getElementById('boot'),
@@ -153,9 +165,12 @@ const boot = {
     // paint on the main thread for every update, during the one stretch where
     // that thread is already compiling shaders and decoding assets; a transform
     // is composited and costs neither. The bar is `transform-origin: left`.
+    const clamped = Math.max(0, Math.min(1, progress));
     if (this.bar) {
-      (this.bar as HTMLElement).style.transform = `scaleX(${Math.max(0, Math.min(1, progress))})`;
+      (this.bar as HTMLElement).style.transform = `scaleX(${clamped})`;
     }
+    // The ship on the boot chart sails to the same fraction.
+    this.root?.style.setProperty('--boot-progress', String(clamped));
     if (this.status) this.status.textContent = message;
   },
   hide() {
@@ -1417,6 +1432,28 @@ class App {
     this.sceneContentLoaded = true;
   }
 
+  /**
+   * Compass, wind dial and log. Bearings go out as compass bearings and speeds
+   * in knots; the HUD diffs and throttles its own writes, so this is called
+   * every frame.
+   */
+  private updateHudNav(): void {
+    this.camera.getWorldDirection(_hudView);
+    // The spectrum's wind direction is the way the sea runs, so the wind
+    // blows *from* the opposite bearing.
+    const windAngle = getPreset(this.state.preset).sea.windDirection;
+    const windTo = compassBearing(Math.cos(windAngle), Math.sin(windAngle));
+    const atHelm = this.state.cameraMode === 'boat' && (this.shipControls?.isEnabled ?? false);
+    const ship = atHelm ? this.shipControls?.getState(this.shipStateOut) ?? null : null;
+    this.hud.setNav({
+      headingDeg: compassBearing(_hudView.x, _hudView.z),
+      windFromDeg: windTo + 180,
+      windKnots: this.state.windSpeed * MS_TO_KNOTS,
+      shipHeadingDeg: ship ? compassBearing(Math.cos(ship.heading), Math.sin(ship.heading)) : null,
+      shipKnots: ship ? ship.speed * MS_TO_KNOTS : null,
+    });
+  }
+
   private buildUi(): void {
     const callbacks = {
       onChange: <K extends keyof UiState>(key: K, value: UiState[K]) => {
@@ -2553,6 +2590,7 @@ class App {
     this.water.setFoamCenter(this.wake.centerX, this.wake.centerZ);
 
     this.hud.setFps(this.loop.stats.fps);
+    this.updateHudNav();
 
     // The line, when the viewer takes the helm in weather. Driven from `elapsed`
     // rather than a wall clock so a deterministic rewind puts it back where it
@@ -2720,6 +2758,16 @@ class App {
          * models arrived, so a harness can distinguish "still loading" from
          * "loaded, and the ship legitimately is not there".
          */
+        /**
+         * The gameplay-facing HUD surfaces: toasts, the objective scroll and
+         * the score plaque. See `Hud` for the signatures.
+         */
+        ui: {
+          toast: (...args: Parameters<Hud['toast']>) => this.hud.toast(...args),
+          setObjective: (...args: Parameters<Hud['setObjective']>) => this.hud.setObjective(...args),
+          setScore: (...args: Parameters<Hud['setScore']>) => this.hud.setScore(...args),
+          clearScore: (...args: Parameters<Hud['clearScore']>) => this.hud.clearScore(...args),
+        },
         isReady: () =>
           this.sceneContentLoaded && this.sampler.ready && this.loop.stats.frameMs > 0,
         sceneContentLoaded: () => this.sceneContentLoaded,

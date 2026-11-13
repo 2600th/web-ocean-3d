@@ -74,9 +74,9 @@ reinventing it.
 - [ ] Upgrade three r185 → r187
 
 ### D. UI and design language (UI agent)
-- [ ] Original nautical-adventure UI inspired by Sea of Thieves: parchment, brass, ink, hand-drawn map frames
-- [ ] Boot/start gate as a ship's-log page; HUD compass + wind + speed in knots
-- [ ] Mobile layout, reduced-motion honoured, `src/ui` stays three-free
+- [x] Original nautical-adventure UI inspired by Sea of Thieves: parchment, brass, ink, hand-drawn map frames
+- [x] Boot/start gate as a ship's-log page; HUD compass + wind + speed in knots
+- [x] Mobile layout, reduced-motion honoured, `src/ui` stays three-free
 
 ### E. Gameplay and feel (gameplay agent)
 - [ ] A light loop: floating loot to collect under sail, objective marker and compass bearing
