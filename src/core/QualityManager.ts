@@ -2,8 +2,17 @@
 
 export interface QualitySettings {
   /** Resolution of each FFT cascade (square). */
-  fftSize: 128 | 256 | 512;
-  /** Number of spectral cascades composited into the surface. */
+  fftSize: 64 | 128 | 256 | 512;
+  /**
+   * Number of spectral cascades composited into the surface, largest first
+   * (1024 m swell, 128 m sea, 16 m ripple).
+   *
+   * Every tier keeps all three and scales `fftSize` instead. Dropping cascades
+   * drops the *small* ones, which is the detail a viewer near the water sees:
+   * one 1024 m cascade at 128^2 is an 8 m texel, and Low rendered a glassy
+   * sheet whose sun glint came out in 8 m blocks. Three at 64^2 is fewer
+   * texels than that one was, and keeps ripples down to half a metre.
+   */
   cascades: 1 | 2 | 3;
   /**
    * Concentric rings in the radial ocean grid. The single strongest lever on
@@ -351,8 +360,8 @@ export interface QualitySettings {
 
 export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
   low: {
-    fftSize: 128,
-    cascades: 1,
+    fftSize: 64,
+    cascades: 3,
     meshRings: 206,
     meshSegments: 119,
     shadowMapSize: 512,
@@ -388,7 +397,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
   },
   medium: {
     fftSize: 128,
-    cascades: 2,
+    cascades: 3,
     meshRings: 308,
     meshSegments: 179,
     shadowMapSize: 1024,
