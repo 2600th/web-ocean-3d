@@ -55,18 +55,18 @@
   --parchment-hi: #f6ead0;
   --parchment: #ecdcb6;
   --parchment-lo: #d8c08f;
-  /* Iron-gall ink. 12.9:1 on --parchment. */
+  /* Iron-gall ink. 12.0:1 on --parchment. */
   --ink: #2b1d10;
-  /* Secondary writing. 7.1:1 on --parchment. */
+  /* Secondary writing. 6.9:1 on --parchment, 5.3:1 on --parchment-lo. */
   --ink-soft: #5b4129;
-  /* Rules and drawn line work only — 3.2:1, never text. */
+  /* Rules and drawn line work only — 3.3:1, never text. */
   --ink-faint: #8f714d;
 
   /* --- wood ------------------------------------------------------------ */
   --wood-hi: #3d2a18;
   --wood: #2a1b0f;
   --wood-deep: #170e07;
-  /* Text on wood. 12.6:1 and 7.4:1 on --wood. */
+  /* Text on wood. 13.0:1 and 7.5:1 on --wood. */
   --on-wood: #f1e2bf;
   --on-wood-dim: #c4ab7f;
 
@@ -86,7 +86,7 @@
   --brass-face: linear-gradient(180deg, #fbe7a6 0%, #e2b85f 45%, #c08a35 100%);
 
   /* --- accents --------------------------------------------------------- */
-  /* 7.9:1 on --parchment. */
+  /* 6.7:1 on --parchment. */
   --wax: #8e1b17;
   --wax-hi: #c23a2c;
   --gold: #ffd36b;
@@ -227,7 +227,6 @@ body {
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  border-radius: 3px;
   background:
     radial-gradient(130% 100% at 50% 40%, transparent 52%, rgba(122, 74, 22, 0.32) 100%),
     url('./assets/paper-stain.svg') 0 0 / 640px 640px,
