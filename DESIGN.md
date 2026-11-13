@@ -162,8 +162,10 @@ Four rules:
 
 1. **No glass.** There is no `backdrop-filter` anywhere. Blur over a
    full-screen 3D canvas costs GPU time on the surface whose frame budget is the
-   product. Every surface is opaque, or a flat translucent tint (the hint
-   ribbon and FPS corner, `rgba(18,11,5,.7)`).
+   product. Translucency is a flat alpha instead: wood plates are
+   `--wood-a`/`--wood-deep-a` (84–88% oak), the hint ribbon and FPS corner
+   `rgba(18,11,5,.7)`, and whole elements step back with `opacity` (see
+   Attention). Parchment stays opaque: it is read, not looked through.
 2. **Paper is torn, metal is turned.** Parchment never has a straight edge or
    a radius; wood and brass always have a radius. That one distinction is what
    tells a reading surface from an instrument at a glance.
@@ -215,6 +217,11 @@ against Bitter; it is now carried by a seventeenth-century italic against a
 calligraphic book face and a display blackletter, which is a bigger gap than
 before, not a smaller one.
 
+**Scale.** Whole pixels on one ramp: 10 · 11 · 12 · 13 · 14 · 15 · 16 · 17 ·
+18 · 20 · 21 · 25 · 31 · 38, and for the menu title only 40 · 50 · 66 and the
+`display` clamp. 10px is the floor and is used only for letter-spaced caps
+labels on a phone; running text never goes below 13px.
+
 `font-synthesis: none` is set on the document. No italic of Alegreya ships,
 so a stray `font-style: italic` renders upright rather than as a sheared roman.
 
@@ -232,13 +239,33 @@ Desktop (≥ 900px), 20px edge gutter:
 | Bottom centre | Hint ribbon over the mode tabs |
 | Bottom right | Instrument corner: FPS figure and backend badge |
 
-Under 1240px the tab names drop and the tabs keep icon and key. Under 900px
-(12px gutter): the ledger becomes a bottom sheet on `transform` behind a
-58px brass "Ledger" button bottom-right; mode tabs fill the bottom row beside
-it, icon over name; the readings stack into two compact rows; the instrument
-corner moves top-right under the compass; toasts sit above the instruments;
-the touch stick moves to the right thumb, above the ledger button. Keycaps
-are hidden on coarse pointers.
+Every edge is `--edge-t/r/b/l`: the gutter or the device's safe-area inset,
+whichever is larger, so nothing sits under a notch, a rounded corner or the
+home indicator.
+
+The ledger starts **folded** to its title bar. The sea is the first thing a
+visitor sees; the settings are one click away, not in the way.
+
+Under 1240px the tab names drop and the tabs keep icon and key.
+
+**Phone portrait (≤ 900px, 12px gutter).** The middle of the screen is the
+ship's. Top: the compass tape, the instrument corner under its right end, and
+the quest column on the left — the objective as a one-line **chip** (seal,
+title, bearing) with a chevron that unfolds the detail; a new objective
+arrives unfolded and settles to a chip after six seconds. The score is a
+single ribbon of label–figure pairs. Toasts are a narrow strip, top centre,
+clear of the quest column, over the mast tops rather than the hull. Bottom:
+wind and log in one compact plate over an icon-only mode bar, and the 58px
+brass Ledger button, which raises the ledger as a bottom sheet on
+`transform`. At the helm the sail and anchor orders (icon over word) sit
+above the steering stick on the right thumb.
+
+**Phone landscape (height ≤ 520px).** Two columns and an empty middle: quest,
+score and toasts (one at a time) down the left over wind, log and the mode
+bar; the instrument corner and an icon Ledger button top right; the stick and
+the orders bottom right. The ledger opens as a side sheet from the right.
+
+Keycaps are hidden on coarse pointers.
 
 `.panel__body` carries `min-height: 0` — a flex child refuses to shrink
 without it, and the last controls get clipped instead of scrolled to. The body
@@ -308,15 +335,61 @@ bottom edge in their darker material, which `:active` removes.
 - **Start gate** — a chart sheet with rhumb lines and a rose watermark, the
   title in Pirata One with "3D" in wax, brass plaques for renderer and quality
   with a wax "advised" tag from the device probe, and the Set Sail button.
-  Loading sails an ink ship from a lighthouse to an island along a dotted
-  course, inking the course in wax behind it; the ship rides
-  `--boot-progress`, the bar is `transform: scaleX()`.
+  The sheet lies on the **menu sea** (below). Loading folds the choices away
+  and sails an ink ship from a lighthouse to an island along a dotted course,
+  inking the course in wax behind it, with a wet-ink glint running along the
+  line; the ship rides `--boot-progress`, the bar is `transform: scaleX()`.
+  States: *WebGPU unavailable* — the WebGPU plaque is disabled and captioned
+  "unavailable", WebGL2 is chosen, and a margin note with the hazard icon says
+  why; *failed* — the course greys where it stopped, the status turns wax red
+  and a brass "Try again" reloads.
+- **Menu sea** (`MenuSea.ts`) — the gate's own living backdrop, painted on a
+  2D canvas (never WebGL, so it costs the GPU nothing the real sea needs):
+  a dusk sky, painted flat-bottomed clouds lit from below, stars, gulls, a sun
+  with a squashed-ellipse road of glints on the water, five parallax swell
+  bands with warm rims and running dashed foam, a headland whose lighthouse
+  beam sweeps, and a square-rigger riding the third band with a lantern and
+  bow spray. Scenery is pre-rendered once per size; per frame it is a few
+  fills and sprites. DPR is capped at 1.5 and the backing store at 2.4 MP,
+  ≤ 4-core devices draw at 30 fps, it pauses while the tab is hidden, and
+  reduced motion gets a single still frame. Composition moves per shape:
+  ship and sun right of the sheet on desktop, above the bottom card on a
+  portrait phone, right of the compact sheet in landscape. When the game is
+  ready the whole boot layer cross-fades (900ms opacity) into the live sea —
+  never through black — and the canvas is released.
+
+## Attention
+
+The HUD steps back when it is not being used, the way console games treat
+their HUD: nothing is hidden for good, but nothing sits at full strength over
+the view unless it has something to say. `Hud.ts` sets three things on
+`#ui-root` and CSS does the rest.
+
+- **`is-idle`** — after 4.5s without input (pointer, key, wheel) the
+  instruments fade over 1.4s: compass to 34%, wind and log 38%, mode bar 26%,
+  instrument corner 45%, score 60%, folded ledger / Ledger button / touch
+  controls 50%. The objective and any toast stay: they are being read. Any
+  input brings everything back in 220ms. So does news — a toast, a new
+  objective, a changed score, a mode change, the wind moving more than 2kn or
+  the ship's speed more than 1.5kn. A keyboard focus ring or a live toast
+  holds the HUD up; a real hover (not a stuck touch hover) restores the
+  element under the pointer.
+- **`is-dragging`** — once a press on the canvas travels 6px the viewer is
+  looking at the sea: instruments drop to 18%, quest and ledger plate to 35%,
+  an open ledger to 60%, until release.
+- **`data-mode`** — the tour (`cinematic`) is a film: compass, instruments,
+  quest and corner go entirely, and the mode bar goes too once idle.
+
+Key hints are contextual: they appear with the first input after load and on
+every mode change, for seven seconds, then hide until the mode bar is hovered
+or focused. A tab changed from the keyboard pulses once (`is-arriving`).
 
 ## Motion
 
 Exponential ease-out (`cubic-bezier(.16,1,.3,1)`) everywhere. The authored
-moments are the toast unroll, the objective unfurl, the score bump and the
-boot ship's bob. `prefers-reduced-motion` collapses every transition and
+moments are the toast unroll, the objective unfurl, the score bump, the
+tab arrival, the chart laid on the table, the boot ship's bob, the ink
+running on the course, and the menu sea. `prefers-reduced-motion` collapses every transition and
 animation globally, stops the ship bobbing, and the Hud skips the unfurl and
 bump classes entirely.
 

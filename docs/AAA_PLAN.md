@@ -115,10 +115,10 @@ reinventing it.
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
 
 ### M. UI finish pass (UI agent, round 2)
-- [ ] Main menu with a living background: animated illustrated seascape (parallax swell, drifting clouds, gulls, sun glints, spray particles) that costs nothing on low-end devices and respects reduced motion
-- [ ] Nothing half-baked: every screen, state and transition finished (loading, errors, empty states, hover/press, focus)
-- [ ] HUD never blocks the view on PC or mobile: ledger collapsed by default, idle-fade of non-critical HUD, translucency over the scene, context-sensitive elements, compact mobile HUD, safe areas — the techniques AAA games use
-- [ ] Sleek: consistent spacing, type scale and motion; reviewed at 1920x1080, 1280x720, 390x844, 844x390
+- [x] Main menu with a living background: animated illustrated seascape (parallax swell, drifting clouds, gulls, sun glints, spray particles) that costs nothing on low-end devices and respects reduced motion — `src/ui/MenuSea.ts`, 2D canvas, cross-fades into the live sea
+- [x] Nothing half-baked: every screen, state and transition finished (loading, errors, empty states, hover/press, focus) — WebGPU-unavailable gate, failed-boot retry, icon touch orders
+- [x] HUD never blocks the view on PC or mobile: ledger collapsed by default, idle-fade of non-critical HUD, translucency over the scene, context-sensitive elements, compact mobile HUD, safe areas — the techniques AAA games use (DESIGN.md › Attention, Layout)
+- [x] Sleek: consistent spacing, type scale and motion; reviewed at 1920x1080, 1280x720, 390x844, 844x390
 
 ### F. Verification
 - [ ] Progress screenshots each milestone
