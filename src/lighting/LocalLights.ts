@@ -58,11 +58,13 @@ const GLOW_STANDOFF = 0.3;
 
 export class LocalLights {
   readonly group = new THREE.Group();
-  private readonly fire: Source | null;
-  private readonly torch: Source | null;
-  private readonly lantern: Source | null;
-  private readonly shipLantern: Source | null;
-  private enabled = true;
+  private readonly fire: Source;
+  private readonly torch: Source;
+  private readonly lantern: Source;
+  private readonly shipLantern: Source;
+  /** In order of how much they matter; the tier lights the first `count`. */
+  private readonly sources: Source[];
+  private count = 0;
   /** Brightness of the ship lantern's glow (and the jetty lantern's glass), 0..1. */
   private readonly uGlow = uniform(0);
   private readonly glow: THREE.Mesh;
@@ -80,16 +82,16 @@ export class LocalLights {
       light.castShadow = false;
       // Parked far below the world until an anchor arrives; zero intensity anyway.
       light.position.set(0, -10000, 0);
-      this.group.add(light);
       return { light, peak, reach, flicker, seed, placed: false };
     };
-    const n = Math.max(0, Math.min(4, Math.round(count)));
     // In order of how much they matter: the fire lights the camp, the ship's
     // lantern is on the hero, and the jetty's pair are dressing.
-    this.fire = n > 0 ? make('camp-fire-light', FIRE_COLOR, 18, 26, 240, 1, 0.37) : null;
-    this.shipLantern = n > 1 ? make('ship-lantern-light', LANTERN_COLOR, 3, 16, 280, 0.25, 0.71) : null;
-    this.torch = n > 2 ? make('jetty-torch-light', TORCH_COLOR, 6, 16, 170, 0.8, 0.13) : null;
-    this.lantern = n > 3 ? make('jetty-lantern-light', LANTERN_COLOR, 2.5, 10, 150, 0.2, 0.53) : null;
+    this.fire = make('camp-fire-light', FIRE_COLOR, 18, 26, 240, 1, 0.37);
+    this.shipLantern = make('ship-lantern-light', LANTERN_COLOR, 3, 16, 280, 0.25, 0.71);
+    this.torch = make('jetty-torch-light', TORCH_COLOR, 6, 16, 170, 0.8, 0.13);
+    this.lantern = make('jetty-lantern-light', LANTERN_COLOR, 2.5, 10, 150, 0.2, 0.53);
+    this.sources = [this.fire, this.shipLantern, this.torch, this.lantern];
+    this.setCount(count);
 
     // The ship lantern's flame. Additive, so at zero it adds nothing — the hull
     // texture's lantern is opaque and a dark sphere inside it would show by day.
@@ -112,11 +114,9 @@ export class LocalLights {
 
   /** Places the island's lights. `anchors` are world positions. */
   setIsland(anchors: { fire: THREE.Vector3; torches: THREE.Vector3[]; lanterns: THREE.Vector3[] }, props?: THREE.Object3D): void {
-    if (this.fire) {
-      this.fire.light.position.copy(anchors.fire);
-      this.fire.placed = true;
-    }
-    if (this.torch && anchors.torches.length > 0) {
+    this.fire.light.position.copy(anchors.fire);
+    this.fire.placed = true;
+    if (anchors.torches.length > 0) {
       // One light at the pair's midpoint stands in for both: they are six metres
       // apart and light the same stretch of jetty and sand.
       const mid = this.scratch.set(0, 0, 0);
@@ -124,7 +124,7 @@ export class LocalLights {
       this.torch.light.position.copy(mid.multiplyScalar(1 / anchors.torches.length));
       this.torch.placed = true;
     }
-    if (this.lantern && anchors.lanterns.length > 0) {
+    if (anchors.lanterns.length > 0) {
       this.lantern.light.position.copy(anchors.lanterns[0]);
       this.lantern.placed = true;
     }
@@ -147,12 +147,29 @@ export class LocalLights {
   /** The ship whose stern lantern this follows. */
   setShip(ship: THREE.Object3D): void {
     this.ship = ship;
-    if (this.shipLantern) this.shipLantern.placed = true;
+    this.shipLantern.placed = true;
   }
 
-  /** Tier gate at runtime: a downgrade to a tier without local lights zeroes them. */
-  setEnabled(on: boolean): void {
-    this.enabled = on;
+  /**
+   * How many of the lights the tier pays for, most important first.
+   *
+   * Lights in the scene are part of every lit material's build, so a change
+   * here recompiles them. It is only called at boot and from a tier change,
+   * which recompiles everything with the loop paused anyway; anchors are kept,
+   * so a session that boots on Low still gets its lights on an upgrade.
+   */
+  setCount(count: number): void {
+    const n = Math.max(0, Math.min(this.sources.length, Math.round(count)));
+    if (n === this.count && this.group.children.length > 0) return;
+    this.count = n;
+    this.sources.forEach((s, i) => {
+      if (i < n) {
+        if (s.light.parent !== this.group) this.group.add(s.light);
+      } else {
+        s.light.intensity = 0;
+        s.light.removeFromParent();
+      }
+    });
   }
 
   /**
@@ -163,20 +180,20 @@ export class LocalLights {
     if (this.ship) {
       this.ship.updateWorldMatrix(true, false);
       const p = this.scratch.copy(SHIP_LANTERN_LOCAL).applyMatrix4(this.ship.matrixWorld);
-      if (this.shipLantern) this.shipLantern.light.position.copy(p);
+      this.shipLantern.light.position.copy(p);
       // The model's lantern is opaque — its panes are painted on — so the flame
       // is drawn just in front of the face the viewer sees rather than inside it.
       const toEye = this.glowOffset.subVectors(eye, p);
       const d = toEye.length();
       this.glow.position.copy(p).addScaledVector(toEye, d > 1e-3 ? GLOW_STANDOFF / d : 0);
     }
-    const night = this.enabled ? Math.max(0, Math.min(1, darkness)) : 0;
+    const night = Math.max(0, Math.min(1, darkness));
     // The glow meshes are emissive, not lights, so they are not tier-gated.
     this.uGlow.value = Math.max(0, Math.min(1, darkness)) * (this.ship ? 1 : 0);
     // The smoke's glow follows the fire whether or not this tier lights it.
     this.fireLevel = Math.max(0, Math.min(1, darkness));
-    for (const s of [this.fire, this.torch, this.lantern, this.shipLantern]) {
-      if (!s) continue;
+    for (let i = 0; i < this.count; i++) {
+      const s = this.sources[i];
       if (!s.placed || night <= 0) {
         s.light.intensity = 0;
         continue;
@@ -197,6 +214,6 @@ export class LocalLights {
     this.group.removeFromParent();
     this.glow.geometry.dispose();
     (this.glow.material as THREE.Material).dispose();
-    for (const s of [this.fire, this.torch, this.lantern, this.shipLantern]) s?.light.dispose();
+    for (const s of this.sources) s.light.dispose();
   }
 }
