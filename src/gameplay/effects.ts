@@ -269,6 +269,7 @@ export class BowSpray {
 
   private readonly geometry: THREE.PlaneGeometry;
   private readonly material: THREE.MeshStandardNodeMaterial;
+  private readonly depthMaterial: THREE.MeshBasicNodeMaterial;
   private readonly fade: THREE.InstancedBufferAttribute;
   private readonly state = new Float32Array(SPRAY_COUNT * STRIDE);
   private cursor = 0;
@@ -303,6 +304,27 @@ export class BowSpray {
     this.mesh.castShadow = false;
     this.mesh.receiveShadow = false;
     this.mesh.renderOrder = 6;
+
+    // The dense cores again, into depth only, so the post-process fog sees the
+    // spray at its own distance instead of fogging it as whatever is behind it
+    // — in a storm, that was all of it. Same fix and same reasoning as
+    // `physics/Spray`; shares this mesh's instance matrices.
+    this.depthMaterial = new THREE.MeshBasicNodeMaterial();
+    this.depthMaterial.transparent = true;
+    this.depthMaterial.depthWrite = true;
+    this.depthMaterial.colorWrite = false;
+    this.depthMaterial.side = THREE.DoubleSide;
+    this.depthMaterial.fog = false;
+    this.depthMaterial.alphaTest = 0.3;
+    this.depthMaterial.opacityNode = this.material.opacityNode;
+    const depth = new THREE.InstancedMesh(this.geometry, this.depthMaterial, SPRAY_COUNT);
+    depth.instanceMatrix = this.mesh.instanceMatrix;
+    depth.name = 'gameplay-bow-spray-depth';
+    depth.frustumCulled = false;
+    depth.castShadow = false;
+    depth.receiveShadow = false;
+    depth.renderOrder = 5;
+    this.mesh.add(depth);
     this.clear();
   }
 
@@ -373,6 +395,7 @@ export class BowSpray {
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();
+    this.depthMaterial.dispose();
   }
 
   private emit(

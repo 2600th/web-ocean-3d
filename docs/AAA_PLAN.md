@@ -37,7 +37,7 @@ reinventing it.
 |---|---|---|
 | FFT waves, physical units | 3-cascade JONSWAP + Hasselmann spreading | — |
 | Depth absorption, refraction, SSR | Beer–Lambert per channel, depth refraction, SSR over planar | — |
-| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks |
+| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks; **done:** breakers in sets with lip, bore and cellular lace, swash sheet up the sand, wet sand that dries |
 | Foam around objects | **missing** | **done** — depth-intersection contact foam on anything piercing the surface |
 | Caustics on floor | animated caustics + world-space god rays | — (chromatic dispersion deferred: scalar field shared by four consumers) |
 | Interacting wakes | Kelvin wake that displaces the surface | — |
@@ -52,11 +52,11 @@ reinventing it.
 ## Task list
 
 ### A. Load time and payload (asset agent)
-- [ ] Delete unreferenced assets (HDRIs, unused dressing GLBs / LODs) and their fetch-script entries
-- [ ] Ship textures → KTX2 at 1k (hull/sails/rigging), meshopt geometry
-- [ ] Buoy/barrel textures → KTX2 or procedural
-- [ ] Imposter atlas → KTX2/WebP
-- [ ] Measure: `dist/` size and time-to-first-frame before/after
+- [x] Delete unreferenced assets (HDRIs, unused dressing GLBs / LODs) and their fetch-script entries — HDRIs (19 MB) gone; every dressing GLB and LOD on disk is loaded, so none removed. Draco decoder and the duplicate `public/basis` transcoder dropped from the build.
+- [x] Ship textures → KTX2 at 1k (hull/sails/rigging), meshopt geometry — one `/models/hero/dutch_ship_medium.glb`, 26.4 → 13.5 MB; hull colour and normal stay 2k (1k was visibly soft at the close-up).
+- [x] Buoy/barrel textures → KTX2 or procedural — KTX2 + Meshopt; buoy 2.9 → 0.77 MB, barrel 0.56 MB either way at a quarter of the VRAM.
+- [x] Imposter atlas → KTX2/WebP — WebP, 1.8 → 0.37 MB.
+- [x] Measure: `dist/` size and time-to-first-frame before/after — `public/` 88 → 53 MiB, `dist/` 100 → 64 MiB; High on the FXC path: first frame ~7 s → ~6 s, `isReady` ~39 s → ~20 s.
 
 ### B. Procedural island and vegetation (island agent)
 - [x] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs
@@ -110,8 +110,9 @@ reinventing it.
 - [x] Hooks for other systems: `hullImpact`, `waveSlap`, `uiTick`, `setMusicState`, `playSting` (documented at the top of `AudioSystem.ts`)
 
 ### K. Shore and ship–wave interaction (shore agent)
-- [ ] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace
-- [ ] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks
+- [x] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace — `ocean/Surf` (closed-form breakers in sets, shared by the ocean's vertex and fragment stages, the wake buffer and the ground hook)
+- [x] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks — `physics/Spray` (now visible; see its header for why it was not), routed through `onSprayImpact` in `main.ts`
+- [ ] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
 
 ### L. Game feel and polish (lead)
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
@@ -133,6 +134,13 @@ Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens 
 - [ ] Screen-space contact shadows (`SSSNode`) for small-scale grounding of props and deck detail
 - [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
 - [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
+
+### Follow-ups found while merging
+- [ ] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent)
+- [ ] Night/dusk clouds lit near-white against a black clear sky; dusk sea mirrors it pink (sky agent)
+- [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
+- [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
+- [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
 
 ### F. Verification
 - [ ] Progress screenshots each milestone

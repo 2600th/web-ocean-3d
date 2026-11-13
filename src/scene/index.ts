@@ -8,6 +8,8 @@ export {
 export { Birds } from './Birds';
 export { FishSchool, loadReefFish, type FishSchoolOptions, type FishSpecies } from './Fish';
 export { KelpForest, type KelpForestOptions } from './Kelp';
+export { ReefLife, type ReefLifeOptions } from './ReefLife';
+export { SeaCreatures, type SeaCreaturesOptions } from './SeaCreatures';
 export { IslandCanopy, type IslandCanopyOptions } from './Canopy';
 export { IslandMeadow, type IslandMeadowOptions } from './Meadow';
 export { Remains, type RemainsOptions } from './Remains';

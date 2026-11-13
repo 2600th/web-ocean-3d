@@ -49,23 +49,27 @@ const VERIFY_ONLY = args.has('--verify');
  * https://api.polyhaven.com/assets?t=models and ?t=hdris before being added here.
  *
  * Texture resolution notes:
- *  - The ship is the hero object, so it gets 2k textures.
+ *  - The ship is the hero object, so its source is 2k; the build keeps 2k for
+ *    the hull and drops the rest to 1k (see HERO_ASSETS in optimize-assets).
  *  - Props and rocks are background dressing at 1k to keep the payload small.
- *  - HDRIs are 2k .hdr (explicitly not 4k) so the environment loads fast.
+ *  - No HDRIs: the sky is procedural. See the note at the end of MANIFEST.
  */
 const MANIFEST = [
   // ---- Hero: sailing ship -------------------------------------------------
+  //
+  // Source, like the dressing: `scripts/optimize-assets.mjs` (HERO_ASSETS)
+  // builds the KTX2 + Meshopt `public/models/hero/*.glb` that actually ships.
   {
     kind: 'model',
     slug: 'dutch_ship_medium',
     res: '2k',
-    dir: 'public/models/dutch_ship_medium',
+    dir: 'assets/source/models/dutch_ship_medium',
     note: 'Hero sailing ship',
   },
 
   // ---- Floating props -----------------------------------------------------
-  { kind: 'model', slug: 'ocean_buoy', res: '1k', dir: 'public/models/ocean_buoy', note: 'Floating marine buoy' },
-  { kind: 'model', slug: 'barrel_03', res: '1k', dir: 'public/models/barrel_03', note: 'Floating barrel' },
+  { kind: 'model', slug: 'ocean_buoy', res: '1k', dir: 'assets/source/models/ocean_buoy', note: 'Floating marine buoy' },
+  { kind: 'model', slug: 'barrel_03', res: '1k', dir: 'assets/source/models/barrel_03', note: 'Floating barrel' },
 
   // ---- Island silhouette --------------------------------------------------
   { kind: 'model', slug: 'rock_07', res: '1k', dir: 'assets/source/models/rock_07', note: 'Standalone rock' },
@@ -110,11 +114,6 @@ const MANIFEST = [
   // the one silhouette everyone associates with it. `pachira_aquatica` above is
   // the closest tree they publish; these two are genuine tropical understorey
   // from the same cove collection.
-  // Three more canopy forms. Nine copies of one tree is not a wood, however
-  // many of them there are — the eye finds the repeat long before it runs out
-  // of trees, and a grove needs different silhouettes more than it needs more
-  // instances. `jacaranda` is the broadest crown Poly Haven publishes, which is
-  // what a tropical canopy is mostly made of.
 
   // ---- Pirate cove ---------------------------------------------------------
   //
@@ -153,11 +152,11 @@ const MANIFEST = [
   // stops being grass and becomes a bush made of knives. `IslandMeadow` owns
   // close-in turf now, so there was nothing left for it to do.
 
-  // ---- Environment maps (day / sunset / foggy / moonlit) ------------------
-  { kind: 'hdri', slug: 'kloofendal_43d_clear_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: day' },
-  { kind: 'hdri', slug: 'industrial_sunset_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: sunset' },
-  { kind: 'hdri', slug: 'kloofendal_misty_morning_puresky', res: '2k', dir: 'public/hdris', note: 'Preset: foggy / overcast' },
-  { kind: 'hdri', slug: 'satara_night_no_lamps', res: '2k', dir: 'public/hdris', note: 'Preset: moonlit night' },
+  // No environment maps. Four 2k HDRIs (19 MB) used to be fetched into
+  // `public/hdris/` and shipped in every build, and nothing in `src/` ever
+  // loaded them: the sky, its PMREM and every preset are procedural
+  // (`src/sky/`). The `hdri` kind is still understood by `plan()` should one be
+  // wanted again — add it under `assets/source/` unless a URL will point at it.
 ];
 
 /**
@@ -193,30 +192,6 @@ const SKETCHFAB = [
     licence: 'CC-BY-4.0',
     author: 'Kanna-Nakajima',
     page: 'https://sketchfab.com/3d-models/soft-coral-set-256355f15fcb4095af17b75ae572bff0',
-  },
-  {
-    slug: 'stylaster_coral',
-    uid: '4f1ddd8352944d16bf3b821b3e71b473',
-    note: 'Lace coral, photogrammetry (Stylaster sanguineus)',
-    licence: 'CC0-1.0',
-    author: 'The Smithsonian Institution',
-    page: 'https://sketchfab.com/3d-models/stylaster-sanguineus-4f1ddd8352944d16bf3b821b3e71b473',
-  },
-  {
-    slug: 'seriatopora_coral',
-    uid: 'b6be88ce19e14e5bb038918d111430d5',
-    note: 'Birdsnest coral, photogrammetry (Seriatopora hystrix)',
-    licence: 'CC0-1.0',
-    author: 'The Smithsonian Institution',
-    page: 'https://sketchfab.com/3d-models/seriatopora-hystrix-b6be88ce19e14e5bb038918d111430d5',
-  },
-  {
-    slug: 'goniastrea_coral',
-    uid: '526ede8a83f943ee868d6991a6d5a533',
-    note: 'Massive brain coral, photogrammetry (Goniastrea favulus)',
-    licence: 'CC0-1.0',
-    author: 'The Smithsonian Institution',
-    page: 'https://sketchfab.com/3d-models/goniastrea-favulus-526ede8a83f943ee868d6991a6d5a533',
   },
   {
     // ---- Rock that works from every side ---------------------------------

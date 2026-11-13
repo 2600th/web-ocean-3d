@@ -193,6 +193,18 @@ export class SurfaceWetness {
     this.write();
   }
 
+  /**
+   * Water arriving all at once rather than as rain: spray over the bow, green
+   * water across the deck. Wets immediately by `amount` and then dries on the
+   * same slow constant rain does, so a ship that has been taking it green stays
+   * dark for the better part of a minute after the sea goes down.
+   */
+  douse(amount: number): void {
+    if (!(amount > 0)) return;
+    this.wetness = Math.min(1, this.wetness + amount * (1 - this.wetness));
+    this.write();
+  }
+
   /** Immediate set, for deterministic capture. Skips the time constants. */
   setWetness(value: number): void {
     this.wetness = Math.max(0, Math.min(1, value));

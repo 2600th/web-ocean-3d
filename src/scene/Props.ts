@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
+import { HERO_ANISOTROPY, dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
 import { IslandDetail, applyTideline } from './islandDetail';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
@@ -50,8 +50,10 @@ import { SEEDS, mulberry32 } from '../core/random';
  * rather than the horizon, which is why the detail scale thins it hardest.
  */
 
-const BUOY_URL = '/models/ocean_buoy/ocean_buoy_1k.gltf';
-const BARREL_URL = '/models/barrel_03/barrel_03_1k.gltf';
+// KTX2 + Meshopt builds of the Poly Haven 1k glTFs; see `HERO_ASSETS` in
+// `scripts/optimize-assets.mjs`.
+const BUOY_URL = '/models/hero/ocean_buoy.glb';
+const BARREL_URL = '/models/hero/barrel_03.glb';
 
 /** Scene-dressing library. Every entry is optional: a 404 thins the scene. */
 const DRESSING_URLS = {
@@ -84,15 +86,13 @@ const DRESSING_URLS = {
   chest: '/models/dressing/treasure_chest.glb',
   reefCrate: '/models/dressing/wooden_crate_01.glb',
   shell: '/models/dressing/lambis_shell.glb',
-  // The reef garden. See `placeReefGarden` for why these are the shapes and
-  // ASSET_LICENSES.md for where they come from — these are the only assets in
+  // The reef garden's carpet. See `placeReefGarden` for why these are the
+  // shapes and ASSET_LICENSES.md for where they come from — the only asset in
   // the project not from Poly Haven, because Poly Haven publishes no coral.
   coralSoft: '/models/dressing/soft_coral_set.glb',
-  coralFan: '/models/dressing/stylaster_coral.glb',
-  coralBirdsnest: '/models/dressing/seriatopora_coral.glb',
-  coralBrain: '/models/dressing/goniastrea_coral.glb',
   // The planting is not in this table: every plant on the island is generated
-  // by `./flora` at load time. See `buildFlora`.
+  // by `./flora` at load time. See `buildFlora`. The fan, bird's-nest and brain
+  // corals went the same way — `ReefLife` grows them.
 } as const;
 
 type UrlKey = keyof typeof DRESSING_URLS;
@@ -181,12 +181,12 @@ const REEF_PATCH_SHARE = 0.62;
 /**
  * The reef garden.
  *
- * Two jobs, and they want different assets. `coralSoft` is the carpet — small
- * varied heads at high density, which is what makes a patch read as *reef*
- * rather than as rocks with decoration on them. The three photogrammetry
- * colonies are the statement pieces: an order of magnitude more expensive per
- * instance, so they are placed an order of magnitude less often, one or two per
- * patch where the eye lands.
+ * `coralSoft` is the carpet — small varied heads at high density, which is what
+ * makes a patch read as *reef* rather than as rocks with decoration on them.
+ * The statement pieces that used to sit on it (three photogrammetry colonies:
+ * a stylaster fan, a seriatopora birdsnest and a goniastrea brain) are now
+ * `ReefLife`'s procedural fans, branching and brain corals and bommies, which
+ * vary per instance, sway, and cost a fraction of the triangles.
  *
  * Counts are per detail scale 1, thinned by `propsDetail` like everything else.
  */
@@ -195,25 +195,18 @@ const CORAL_BED_ALT_COUNT = 200;
 const CORAL_HEAD_COUNT = 150;
 const CORAL_HEAD_ALT_COUNT = 110;
 const CORAL_PLATE_COUNT = 60;
-const CORAL_FAN_COUNT = 24;
-const CORAL_BIRDSNEST_COUNT = 9;
-const CORAL_BRAIN_COUNT = 13;
 
 /**
  * Metres a coral stands, before per-instance variation.
  *
- * The source scales differ by an order of magnitude — `stylaster_coral` is a
- * 17 cm museum specimen, the kit pieces are authored against a unit box — so
- * every kind is scaled to a target *height* rather than by a factor. That keeps
- * one comparable table instead of a column of magic numbers whose meaning
- * depends on which file the row came from.
+ * Source scales vary between files, so every kind is scaled to a target
+ * *height* rather than by a factor. That keeps one comparable table instead of
+ * a column of magic numbers whose meaning depends on which file the row came
+ * from.
  */
 const CORAL_BED_HEIGHT = 0.9;
 const CORAL_HEAD_HEIGHT = 1.8;
 const CORAL_PLATE_HEIGHT = 1.0;
-const CORAL_FAN_HEIGHT = 2.1;
-const CORAL_BIRDSNEST_HEIGHT = 1.7;
-const CORAL_BRAIN_HEIGHT = 1.3;
 
 /**
  * Radius of a coral colony's own clump, metres, and how many heads it gets.
@@ -778,7 +771,10 @@ export class Props {
     const urlKeys = Object.keys(DRESSING_URLS) as UrlKey[];
 
     const [hero, manifest] = await Promise.all([
-      Promise.all([loader.load(BUOY_URL), loader.load(BARREL_URL)]),
+      Promise.all([
+        loader.load(BUOY_URL, { anisotropy: HERO_ANISOTROPY }),
+        loader.load(BARREL_URL, { anisotropy: HERO_ANISOTROPY }),
+      ]),
       loadDressingManifest().catch((error: unknown) => {
         console.warn('[ocean] dressing manifest unavailable; loading base models only', error);
         return null;
@@ -1183,8 +1179,8 @@ export class Props {
    * Density comes from `coralSoft`, which is a set of twenty-four distinct forms
    * in one file: `bake.include` takes a different three of them per kind and
    * stacks them into a clump, so two draws' worth of geometry produce a bed that
-   * does not read as one shape repeated. The three photogrammetry colonies are
-   * placed sparsely on top of that as the pieces the eye actually lands on.
+   * does not read as one shape repeated. The pieces the eye lands on are
+   * `ReefLife`'s procedural colonies and bommies, placed on the same patches.
    */
   private placeReefGarden(dressing: Dressing, random: () => number): void {
     const garden = new THREE.Group();
@@ -1254,30 +1250,6 @@ export class Props {
         include: (n) => /^coral(13|14)_/.test(n),
         lean: 0.22,
         sink: 0.1,
-      },
-      {
-        source: dressing.coralFan,
-        count: CORAL_FAN_COUNT,
-        height: CORAL_FAN_HEIGHT,
-        name: 'reef-coral-fan',
-        lean: 0.3,
-        sink: 0.08,
-      },
-      {
-        source: dressing.coralBirdsnest,
-        count: CORAL_BIRDSNEST_COUNT,
-        height: CORAL_BIRDSNEST_HEIGHT,
-        name: 'reef-coral-birdsnest',
-        lean: 0.2,
-        sink: 0.1,
-      },
-      {
-        source: dressing.coralBrain,
-        count: CORAL_BRAIN_COUNT,
-        height: CORAL_BRAIN_HEIGHT,
-        name: 'reef-coral-brain',
-        lean: 0.16,
-        sink: 0.22,
       },
     ];
 

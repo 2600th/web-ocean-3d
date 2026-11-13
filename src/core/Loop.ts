@@ -30,6 +30,7 @@ export class Loop {
    * reports as "Destroyed texture used in a submit". `settle()` is the join.
    */
   private inFlightPromise: Promise<void> | null = null;
+  private frameWaiters: Array<() => void> = [];
 
   readonly stats: FrameStats = { fps: 0, frameMs: 0 };
 
@@ -60,6 +61,7 @@ export class Loop {
   stop(): void {
     this.running = false;
     cancelAnimationFrame(this.handle);
+    for (const resolve of this.frameWaiters.splice(0)) resolve();
   }
 
   /**
@@ -82,6 +84,16 @@ export class Loop {
     while (this.inFlightPromise !== null) {
       await this.inFlightPromise;
     }
+  }
+
+  /**
+   * Resolves once the loop has finished drawing a frame it started after this
+   * call. Resolves immediately if the loop is not running, since no frame is
+   * coming; while paused it waits for the resume.
+   */
+  nextFrame(): Promise<void> {
+    if (!this.running) return Promise.resolve();
+    return new Promise((resolve) => this.frameWaiters.push(resolve));
   }
 
   get isPaused(): boolean {
@@ -160,6 +172,7 @@ export class Loop {
     for (const update of this.updates) update(dt, this.elapsed);
 
     this.inFlight = true;
+    const waiters = this.frameWaiters.splice(0);
     const started = performance.now();
     const render = this.renderFn(dt, this.elapsed);
     this.inFlightPromise = Promise.resolve(render).then(
@@ -177,6 +190,7 @@ export class Loop {
         this.stats.fps === 0
           ? instantaneous
           : this.stats.fps + (instantaneous - this.stats.fps) * Loop.FPS_SMOOTHING;
+      for (const resolve of waiters) resolve();
     }
   };
 }

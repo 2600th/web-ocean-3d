@@ -309,6 +309,23 @@ export interface QualitySettings {
    */
   kelp: number;
   /**
+   * Fraction of the procedural reef drawn — corals, sponges, fans, anemones,
+   * seagrass, rocks and shells (see `src/scene/ReefLife.ts`).
+   *
+   * Moves `InstancedMesh.count` per species and nothing else, so a tier change
+   * compiles nothing. Placement is shuffled, so any fraction thins every site
+   * evenly rather than deleting the far ones. Low keeps a sparse reef rather
+   * than none: it is static, cheap per triangle, and the thing that makes a
+   * dive anywhere worth taking.
+   */
+  reefLife: number;
+  /**
+   * Fraction of the procedural sea creatures — turtles, rays, jellyfish, reef
+   * fish clouds, crabs (see `src/scene/SeaCreatures.ts`). Zero at Low, for the
+   * same reason the fish are.
+   */
+  seaCreatures: number;
+  /**
    * Blades in the island's grass field.
    *
    * Instanced and placed on the GPU from the heightfield, so this is
@@ -364,6 +381,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 0,
     propsDetail: 0.3,
     kelp: 0,
+    reefLife: 0.3,
+    seaCreatures: 0,
     meadow: 0,
     canopy: 4000,
   },
@@ -398,6 +417,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 0.75,
     propsDetail: 0.5,
     kelp: 800,
+    reefLife: 0.5,
+    seaCreatures: 0.5,
     meadow: 18000,
     canopy: 9000,
   },
@@ -430,6 +451,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     propsDetail: 0.75,
     kelp: 1800,
+    reefLife: 0.8,
+    seaCreatures: 0.8,
     meadow: 38000,
     canopy: 15000,
   },
@@ -462,6 +485,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     propsDetail: 1,
     kelp: 2900,
+    reefLife: 1,
+    seaCreatures: 1,
     meadow: 62000,
     canopy: 20000,
   },
@@ -494,6 +519,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     propsDetail: 1,
     kelp: 4000,
+    reefLife: 1,
+    seaCreatures: 1,
     meadow: 90000,
     canopy: 24000,
   },
