@@ -553,23 +553,14 @@ class App {
   private qualityApply: Promise<void> | null = null;
   /**
    * True from the moment `resetDeterministic` takes the clock until the page
-   * goes away, so nothing else may hand it back.
+   * goes away. Weather that would make a baseline depend on chance (lightning)
+   * reads it.
    *
-   * `drainQualityRequests` pauses the loop, does its work and restores whatever
-   * pause state it found on entry. That is correct in isolation and wrong when
-   * two owners overlap: the adaptive tier system can request a drain from a live
-   * frame, and if `resetDeterministic` pauses while that drain is in flight, the
-   * drain's `finally` sees the `wasPaused = false` it captured *before* the
-   * capture started and un-pauses on the way out. The world then runs on wall
-   * clock underneath a harness that believes it owns the clock, and every
-   * subsequent `step()` is contaminated by however long the browser spent
-   * between two `page.evaluate` calls.
-   *
-   * That is how it presented: the cinematic tour's loop position, which should
-   * advance by exactly `steps * dt`, moved 109 seconds during 7 seconds of
-   * driven stepping — and by a different amount every run, because it was
-   * measuring real time. It only became reachable when the scene got heavy
-   * enough for the adaptive system to want a downgrade in the first place.
+   * It used to guard the pause as well: tier changes and the scene load each
+   * restored the pause state they found on entry, so one that ended after a
+   * capture began handed the clock back to wall time under it (the tour moved
+   * 109 s during 7 s of driven stepping). Those now take `Loop.hold()`, which
+   * cannot undo the capture's `setPaused(true)`.
    */
   private captureOwnsClock = false;
 
@@ -1666,8 +1657,7 @@ class App {
    * would have cost every session, including the sessions that never go there.
    */
   private async compileLodLevels(levels: readonly THREE.InstancedMesh[]): Promise<void> {
-    const wasPaused = this.loop.isPaused;
-    this.loop.setPaused(true);
+    const resume = this.loop.hold();
     try {
       await this.loop.settle();
       if (this.disposed) return;
@@ -1683,8 +1673,7 @@ class App {
       }
       this.props?.markCompiled(levels);
     } finally {
-      this.lodCompile = null;
-      if (!wasPaused && !this.disposed && !this.captureOwnsClock) this.loop.setPaused(false);
+      resume();
     }
   }
 
@@ -2229,8 +2218,20 @@ class App {
       return;
     }
 
-    const wasPaused = this.loop.isPaused;
-    this.loop.setPaused(true);
+    const resume = this.loop.hold();
+    try {
+      await this.revealAndCompileContent(loaded);
+    } finally {
+      // A hold, not a flag: a tier change that starts during this load pauses
+      // the loop on its own account, and must not find frames running because
+      // this load ended first. Likewise a harness's `resetDeterministic`.
+      resume();
+    }
+    this.sceneContentLoaded = true;
+  }
+
+  /** The part of `loadSceneContent` that runs with the loop held. */
+  private async revealAndCompileContent(loaded: readonly THREE.Object3D[]): Promise<void> {
     await this.loop.settle();
     for (const object of loaded) object.visible = true;
     // Deal the LODs for where the camera is *before* compiling, so the compile
@@ -2251,15 +2252,6 @@ class App {
     for (const mesh of wanted) mesh.visible = true;
     await this.prewarm();
     this.props?.markCompiled(wanted);
-    // `captureOwnsClock` for the same reason `drainQualityRequests` checks it,
-    // and this is the site that actually bit: `prewarm` compiles every material
-    // the scene just loaded, which grew from twenty models to nearly sixty files
-    // once the dressing gained LOD chains. It is now slow enough to still be
-    // running when a harness calls `resetDeterministic`, and restoring the
-    // pre-load pause state on the way out handed the clock back underneath it.
-    if (!wasPaused && !this.disposed && !this.captureOwnsClock) this.loop.setPaused(false);
-
-    this.sceneContentLoaded = true;
   }
 
   /**
@@ -3070,8 +3062,7 @@ class App {
     // ends; taking the loop before that would read its pause as ours and let
     // its `finally` restart frames in the middle of the teardown.
     await this.lodCompile?.catch(() => undefined);
-    const wasPaused = this.loop.isPaused;
-    this.loop.setPaused(true);
+    const resume = this.loop.hold();
     // Pause *then* settle, in that order. Pausing stops new frames; settling
     // joins the one already inside `renderAsync`. Requesting the queue fence
     // without settling first registers it before that frame has even submitted,
@@ -3128,9 +3119,9 @@ class App {
       }
     } finally {
       this.qualityApply = null;
-      // `captureOwnsClock`, not just `wasPaused`: see its declaration. A capture
-      // that took the clock while this drain was in flight keeps it.
-      if (!wasPaused && !this.disposed && !this.captureOwnsClock) this.loop.setPaused(false);
+      // A hold, not a flag, so neither a capture that took the clock meanwhile
+      // nor a scene load still running finds frames resumed under it.
+      resume();
     }
   }
 
@@ -3226,7 +3217,14 @@ class App {
       this.pendingCompile === null
     ) {
       const pending = this.props.takeUncompiledLevels();
-      if (pending.length > 0) this.lodCompile = this.compileLodLevels(pending);
+      if (pending.length > 0) {
+        // Cleared by its own promise only: the harness calls `compileLodLevels`
+        // directly, and that call must not mark this one finished.
+        const compile = this.compileLodLevels(pending).finally(() => {
+          if (this.lodCompile === compile) this.lodCompile = null;
+        });
+        this.lodCompile = compile;
+      }
     }
 
     this.fish.setSunDirection(this.atmosphere.sunDirection);
