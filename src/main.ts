@@ -53,6 +53,7 @@ import { DEFAULT_SSR_STEPS, ScreenSpaceReflection } from './ocean/ScreenSpaceRef
 import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
+import { Lightning } from './sky/Lightning';
 import { VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
@@ -136,6 +137,10 @@ const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
 /** Render layer the cloud dome lives on, so the planar mirror can skip it. */
 const CLOUD_LAYER = 3;
 
+/** Haze sky colours, pulled toward the deck's grey under an overcast. */
+const _hazeHorizon = new THREE.Color();
+const _hazeZenith = new THREE.Color();
+
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
 
@@ -215,6 +220,7 @@ class App {
   private readonly uKeyColor: any = uniform(new THREE.Color(1, 1, 1));
   private clouds!: Clouds;
   private weather!: Weather;
+  private lightning!: Lightning;
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
@@ -597,6 +603,8 @@ class App {
 
     this.weather = new Weather();
     this.scene.add(this.weather.object);
+    this.lightning = new Lightning();
+    this.scene.add(this.lightning.object);
 
     // Birds go in with the sky rather than with the props: they are lit by the
     // atmosphere and nothing else, and they never touch the water.
@@ -2248,6 +2256,24 @@ class App {
     this.clouds.update(dt);
     this.weather.update(dt, this.camera.position);
 
+    // Lightning, in heavy weather only, and never while a capture owns the
+    // clock — a baseline must not depend on whether a strike happened to land.
+    {
+      const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
+      const wind = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
+      this.lightning.setCloudBase(getPreset(this.state.preset).clouds.altitude ?? 900);
+      const strike = this.lightning.update(
+        dt,
+        this.camera,
+        coverage * wind,
+        !this.captureOwnsClock && this.director.submersion() < 0.5,
+      );
+      if (strike) {
+        this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+      }
+      this.colorGrade.setFlash(this.lightning.flashIntensity);
+    }
+
     // The key light, whichever body is providing it, at its actual strength.
     //
     // This used to be the sun direction, the sun colour and a hardcoded
@@ -2289,19 +2315,27 @@ class App {
     );
     // Everything the haze has to agree with, from the same atmosphere the dome
     // and the water read. Uniform writes; no rebuild.
+    //
+    // Under an overcast the light the haze scatters toward the eye is the
+    // deck's grey, not the clear-sky blue the CPU-side horizon and zenith still
+    // describe. Fed raw, a kilometre of storm haze repainted the dark cloud base
+    // in clear-sky blue and the storm read as a fine evening.
+    const overcastPull = THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.85;
+    _hazeHorizon.copy(this.atmosphere.horizonColor).lerp(fogPreset.color, overcastPull);
+    _hazeZenith.copy(this.atmosphere.zenithColor).lerp(fogPreset.color, overcastPull);
     this.aerial.setSky(
       this.atmosphere.betaRayleigh,
       this.atmosphere.betaMie,
       fogPreset.color,
       hazeDensity,
-      this.atmosphere.horizonColor,
-      this.atmosphere.zenithColor,
+      _hazeHorizon,
+      _hazeZenith,
       this.atmosphere.sunDirection,
       this.atmosphere.sunColor,
     );
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
-    this.clouds.setSkyColors(this.atmosphere.zenithColor);
+    this.clouds.setSkyColors(_hazeZenith);
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
@@ -2442,7 +2476,9 @@ class App {
     // anchor the flare where the sun is not, and paint it warm on a blue moon.
     // `_keyDirection` is already derived from `sunLight.position` further up, so
     // it follows the retarget; the colour has to come from the same object.
-    this.lensFlare.setSource(_keyDirection, key.color, key.intensity / 3.4);
+    // A deck thick enough to call an overcast leaves no disc to flare on.
+    const flareThrough = 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.97;
+    this.lensFlare.setSource(_keyDirection, key.color, (key.intensity / 3.4) * flareThrough);
     this.lensFlare.setSubmersion(submersion);
 
     this.lensRain.setSubmersion(submersion);
@@ -2645,6 +2681,8 @@ class App {
          */
         reflections: this.reflections,
         ssr: this.ssr,
+        /** Storm lightning, so a test can wait for a strike. */
+        lightning: this.lightning,
         sampler: this.sampler,
         atmosphere: this.atmosphere,
         /**

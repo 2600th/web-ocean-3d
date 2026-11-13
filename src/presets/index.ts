@@ -681,8 +681,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       density: 1.6,
       altitude: 800,
       thickness: 1400,
-      color: color(0x9aa3ad),
-      shadowColor: color(0x2b3138),
+      color: color(0x7d8791),
+      shadowColor: color(0x1e2329),
     },
     weather: { kind: 'rain', intensity: 0.9 },
     sea: {
@@ -696,14 +696,16 @@ export const PRESETS: Record<PresetId, Preset> = {
       windwardFoam: 0.07,
     },
     water: {
-      deepColor: color(0x0a1620),
-      shallowColor: color(0x21525f),
-      scatterColor: color(0x2c6a6f),
+      deepColor: color(0x071820),
+      shallowColor: color(0x1d5a5a),
+      scatterColor: color(0x2f7f72),
       extinction: vec(0.4, 0.18, 0.12),
       roughness: 0.12,
-      foamThreshold: 0.55,
+      // Raised with the foam relighting: lit as bubbles rather than at 40 % of
+      // albedo, a 21 m/s sea at 0.55 read as a snowfield.
+      foamThreshold: 0.66,
     },
-    fog: { color: color(0x6f7a86), density: 0.0007, volumetric: 0.00075 },
+    fog: { color: color(0x4a555f), density: 0.00042, volumetric: 0.00055 },
     underwater: {
       color: color(0x16323f),
       distortion: 0.02,
@@ -717,10 +719,13 @@ export const PRESETS: Record<PresetId, Preset> = {
       // look at, it is *flat*: the deck kills the key light, everything is lit
       // by an overcast hemisphere, and the air between the viewer and anything
       // worth seeing is full of water. The heaviest vignette of the nine.
-      slope: new THREE.Color(0.97, 0.98, 1.02),
-      offset: new THREE.Color(0.014, 0.015, 0.018),
-      power: new THREE.Color(0.96, 0.96, 0.96),
-      saturation: 0.76,
+      // Re-cut darker and harder for the relit foam and the lightning: a storm
+      // read as a pale wash, and a flash has nothing to land on in a frame that
+      // is already white. Slate water, white crests, a heavy deck.
+      slope: new THREE.Color(0.92, 0.97, 1.0),
+      offset: new THREE.Color(0.0, 0.002, 0.004),
+      power: new THREE.Color(1.1, 1.08, 1.06),
+      saturation: 0.86,
       vignette: 0.32,
     },
   },
