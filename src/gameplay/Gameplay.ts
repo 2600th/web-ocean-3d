@@ -108,8 +108,13 @@ const SPAWN_RING_RADIUS = 32;
 /** Margin, metres, beyond the hull's half-beam within which cargo is taken. */
 const PICKUP_MARGIN = 4;
 
-/** Downward bow speed through the surface, m/s, that counts as a slam. */
-const SLAM_SPEED = 1.8;
+/**
+ * Trauma a full-strength impact adds, by kind. A slam is felt through the whole
+ * hull; a beam slap mostly heard; green water over the bow is the worst of the
+ * three. Strength itself comes from `physics/Spray`, which owns impact
+ * detection — this layer only decides how much of it reaches the camera.
+ */
+const IMPACT_TRAUMA = { slam: 0.42, slap: 0.16, wash: 0.55, float: 0 } as const;
 /** Depth under the hull, metres, at which she is touching. Above `SHOAL_HARD_DEPTH` in the controller. */
 const GROUND_DEPTH = 6;
 /** Trauma lost per second. */
@@ -224,8 +229,6 @@ export class Gameplay {
 
   // --- feel ---------------------------------------------------------------
   private trauma = 0;
-  private bowPrevious = 0;
-  private bowPrimed = false;
   private grounded = false;
   private reducedMotion = false;
   private readonly motionQuery: MediaQueryList | null;
@@ -315,7 +318,6 @@ export class Gameplay {
     this.cargo = 0;
     this.gold = 0;
     this.trauma = 0;
-    this.bowPrimed = false;
     this.grounded = false;
     this.clock = 0;
     this.uiTimer = 0;
@@ -411,6 +413,17 @@ export class Gameplay {
     if (setting === this.sail) return;
     this.sail = setting;
     this.pushTelemetry();
+  }
+
+  /**
+   * A hull impact detected by `physics/Spray`: a bow slam, a beam slap, or green
+   * water over the bow. Feeds the camera shake while the helm is taken and is
+   * ignored otherwise — shaking an orbit or cinematic camera would be wrong.
+   */
+  reportImpact(kind: 'slam' | 'slap' | 'wash' | 'float', strength: number): void {
+    if (!this.active) return;
+    const s = Math.min(1, Math.max(0, strength));
+    this.addTrauma(IMPACT_TRAUMA[kind] * (0.35 + 0.65 * s));
   }
 
   toggleAnchor(): void {
@@ -534,7 +547,6 @@ export class Gameplay {
       this.ui.setShipTelemetry(null);
       return;
     }
-    this.bowPrimed = false;
     this.pushAllUi();
     if (!this.greeted) {
       this.greeted = true;
@@ -744,21 +756,10 @@ export class Gameplay {
    */
   private updateFeel(dt: number): void {
     const body = this.o.body;
-    const sampler = this.o.sampler;
 
-    // Bow slam: the forefoot punching down into the surface.
-    if (sampler.ready) {
-      this.bowPoint(this.bow, true);
-      const height = this.bow.y - sampler.height(this.bow.x, this.bow.z);
-      if (this.bowPrimed) {
-        const speed = (this.bowPrevious - height) / dt;
-        if (this.bowPrevious > 0 && height <= 0 && speed > SLAM_SPEED) {
-          this.addTrauma(Math.min(0.45, (speed - SLAM_SPEED) * 0.1 + 0.08));
-        }
-      }
-      this.bowPrevious = height;
-      this.bowPrimed = true;
-    }
+    // Bow slams and beam slaps arrive through `reportImpact`, from the spray
+    // system's probes — one detector for the whole hull rather than a second
+    // copy of its bow probe here.
 
     // Touching the bottom.
     const p = body.object.position;

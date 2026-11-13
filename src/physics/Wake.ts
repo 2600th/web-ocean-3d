@@ -85,6 +85,14 @@ import { seafloorDepth } from '../scene/Seafloor';
 const MAX_EMITTERS = 4;
 
 /**
+ * Foam patches queued by impacts — a bow slam, a beam sea breaking on the
+ * topsides, a buoy dropping off a swell — per frame. Six is several times what
+ * one hull and a handful of props produce in a frame; past it a splash is
+ * dropped rather than overwriting one already queued.
+ */
+const MAX_SPLASHES = 6;
+
+/**
  * Exponential decay time constant for the *sea's* own foam, seconds.
  *
  * This is the single biggest lever on apparent whitecap coverage, and it is not
@@ -691,6 +699,13 @@ export class Wake {
   private readonly queue = new Float32Array(MAX_EMITTERS * 5);
   private queued = 0;
 
+  /** vec4 per slot: x, z, radius, amount. Amount 0 switches a slot off. */
+  private readonly splashes: any[] = [];
+  private readonly splashQueue = new Float32Array(MAX_SPLASHES * 4);
+  private splashQueued = 0;
+  /** Any splash this frame; gates the whole term behind one compare. */
+  private readonly uSplashActive = uniform(0);
+
   private driftX = 0;
   private driftZ = 0;
 
@@ -743,6 +758,7 @@ export class Wake {
         params: uniform(new THREE.Vector4()),
       });
     }
+    for (let i = 0; i < MAX_SPLASHES; i++) this.splashes.push(uniform(new THREE.Vector4()));
 
     this.accumulate = [
       this.createAccumulateMaterial(this.buffers[0].texture),
@@ -928,6 +944,25 @@ export class Wake {
     this.queued++;
   }
 
+  /**
+   * Queues a patch of white water where something hit the sea: a slam, a slap
+   * against the topsides, a float coming down off a crest. Deposited into the
+   * hull channel, so it lingers and drifts like the wake does instead of
+   * blinking out with the whitecaps.
+   *
+   * @param amount 0..1, roughly how white the patch starts.
+   */
+  splash(x: number, z: number, radius: number, amount: number): void {
+    if (this.splashQueued >= MAX_SPLASHES) return;
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !(amount > 0)) return;
+    const base = this.splashQueued * 4;
+    this.splashQueue[base] = x;
+    this.splashQueue[base + 1] = z;
+    this.splashQueue[base + 2] = Math.max(0.5, radius);
+    this.splashQueue[base + 3] = Math.min(1, amount);
+    this.splashQueued++;
+  }
+
   setDebugVisible(v: boolean): void {
     this.debugObject.visible = v;
   }
@@ -1005,6 +1040,23 @@ export class Wake {
     }
     this.queued = 0;
 
+    for (let i = 0; i < MAX_SPLASHES; i++) {
+      const value = this.splashes[i].value as THREE.Vector4;
+      if (i >= this.splashQueued) {
+        value.set(0, 0, 1, 0);
+        continue;
+      }
+      const base = i * 4;
+      value.set(
+        this.splashQueue[base],
+        this.splashQueue[base + 1],
+        this.splashQueue[base + 2],
+        this.splashQueue[base + 3],
+      );
+    }
+    this.uSplashActive.value = this.splashQueued > 0 ? 1 : 0;
+    this.splashQueued = 0;
+
     const previous = renderer.getRenderTarget();
 
     this.quad.material = this.accumulate[this.index];
@@ -1035,6 +1087,7 @@ export class Wake {
    */
   reset(renderer: THREE.WebGPURenderer): void {
     if (this.disposed) return;
+    this.splashQueued = 0;
 
     const previousTarget = renderer.getRenderTarget();
     const previousClear = renderer.getClearColor(new THREE.Color());
@@ -1529,6 +1582,19 @@ export class Wake {
           wedge.mul(tail).max(bowWave.min(1)).mul(amplitude.mul(6).clamp(0, 1)),
         );
       }
+
+      // Impact splashes. A single frame's deposit, so it has to be enough on
+      // its own to read: a disc of churned water, broken up by the same boil
+      // as the wake so it is made of the same foam. Behind one uniform compare,
+      // because on all but a handful of frames there is none.
+      If(this.uSplashActive.greaterThan(0.5), () => {
+        for (let i = 0; i < MAX_SPLASHES; i++) {
+          const splash = this.splashes[i];
+          const r = world.sub(vec2(splash.x, splash.y)).length().div(splash.z).toVar();
+          const disc = smoothstepDown(r, 0.25, 1).toVar();
+          wakeDeposit.addAssign(disc.mul(boil).mul(splash.w).mul(1.6));
+        }
+      });
 
       // Blend, do not sum: see the class comment.
       const elevation = mix(previousElevation, stamped, stampWeight.clamp(0, 1)).toVar();
