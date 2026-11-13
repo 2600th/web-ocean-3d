@@ -1399,7 +1399,14 @@ export class Seafloor {
       // clips to white. The *ratios* are the targets': warm pale coral sand, a
       // wet band a little under half its value, and greens that stay green
       // rather than going olive under the sky fill.
-      const sandDry: Node = vec3(0.5, 0.41, 0.25);
+      // Lifted from (0.5, 0.41, 0.25) in the lighting audit. That rendered a
+      // mid khaki — sRGB ~(132, 123, 107) under `skyPro`'s 24-degree sun — where
+      // the shore references read near-white cream and the beach is the
+      // brightest ground in frame. Measured coral sand is 0.5-0.65 albedo and
+      // much less yellow than this was; the new value keeps the warm ratio but
+      // takes a quarter off the blue deficit, and still sits under clipping at
+      // a noon sun (checked in the noon helm and island captures).
+      const sandDry: Node = vec3(0.6, 0.52, 0.37);
       const sandWet: Node = vec3(0.21, 0.155, 0.085);
       const shallowSand: Node = vec3(0.46, 0.42, 0.3);
       const deepSilt: Node = vec3(0.1, 0.15, 0.17);
