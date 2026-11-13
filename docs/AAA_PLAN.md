@@ -105,8 +105,9 @@ reinventing it.
 - [ ] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks
 
 ### J. Audio and music (audio agent)
-- [ ] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater states)
-- [ ] SFX polish: hull creaks, sail luffing, rigging, wave slaps, seabirds, underwater muffling, UI clicks
+- [x] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater/tour states, cargo sting, Music slider)
+- [x] SFX polish: hull creaks, sail luffing, rigging, wave slaps, seabirds, underwater muffling, UI clicks
+- [x] Hooks for other systems: `hullImpact`, `waveSlap`, `uiTick`, `setMusicState`, `playSting` (documented at the top of `AudioSystem.ts`)
 
 ### K. Shore and ship–wave interaction (shore agent)
 - [ ] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace

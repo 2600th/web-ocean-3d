@@ -1907,6 +1907,7 @@ test.describe('responsiveness', () => {
       [
         'cloudCoverage',
         'fogDensity',
+        'musicVolume',
         'peakWavelength',
         'pixelRatio',
         'timeOfDay',
