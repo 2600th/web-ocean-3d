@@ -65,7 +65,8 @@ reinventing it.
 - [x] Island ground: warm coral sand, wet-sand band, grass/jungle, rock — no bald grey dome
 
 - [x] World detail: skull rock, sea arch, summit spires, strata outcrops, wet barnacled waterlines, beach wrack and driftwood, camp with fire/smoke/torches. 12.8 MB of vegetation GLBs and the imposter atlas removed.
-- [ ] Follow-ups: lower jungle slopes read as lawn; shell litter too small; sand swirl/grid pattern at close range; some short palms read as sticks
+- [x] Lower slopes no longer read as lawn: open ground is scrub (tufts, straw-dry patches, bare soil) in the terrain shader
+- [ ] Follow-ups: sand swirl/grid pattern at close range (shore agent owns the sand); shell litter is at true scale and reads only up close — accepted
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky
@@ -124,3 +125,4 @@ reinventing it.
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
 - [ ] Codex review of the final diff
+- [x] Capture determinism: hero shot differs 0.22% run-to-run on this branch vs 0.18% on `main`, same patch beside the ship — pre-existing, not introduced here

@@ -1415,7 +1415,16 @@ export class Seafloor {
       const clearing: Node = patch.smoothstep(0.66, 0.82).mul(0.45);
       const openness: Node = lowland.max(clearing).mul(stand.smoothstep(0.25, 0.7)).toVar();
       const forest: Node = mix(jungle, jungleLush, stand.smoothstep(0.3, 0.75)).toVar();
-      const green: Node = mix(forest, grass, openness).mul(grain.mul(0.3).add(0.85)).toVar();
+      // Open ground is scrub, not lawn: a flat grass albedo behind the beach
+      // read as a mown verge from the sea. Tufts of darker scrub, straw-dry
+      // patches and bare sandy soil break it at three scales, and the scrub
+      // thickens toward the forest so the treeline grows out of it.
+      const tuft: Node = valueNoise(xz.mul(1 / 1.9).add(vec2(41.3, 7.7))).toVar();
+      const scrubTone: Node = mix(grass, jungleLush.mul(0.8), tuft.smoothstep(0.45, 0.8).mul(0.75)).toVar();
+      const straw: Node = vec3(0.2, 0.17, 0.07);
+      const dried: Node = mix(scrubTone, straw, patch.mul(0.6).add(grain.mul(0.4)).smoothstep(0.62, 0.86).mul(0.7));
+      const scrub: Node = mix(dried, soil.mul(1.6), grain.mul(tuft).smoothstep(0.42, 0.7).mul(0.4)).toVar();
+      const green: Node = mix(forest, scrub, openness).mul(grain.mul(0.3).add(0.85)).toVar();
       // The forest floor shows through as warm soil at the treeline's ragged edge.
       const growthEdge: Node = wp.y.smoothstep(GROWTH_START_METRES, GROWTH_FULL_METRES).toVar();
       const ragged: Node = growthEdge.mul(patch.mul(0.6).add(0.7)).clamp(0, 1).toVar();
