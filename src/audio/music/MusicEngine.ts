@@ -812,7 +812,7 @@ export class MusicEngine implements NoteHost {
     this.activeVoices++;
     this.live.add(source);
     source.onended = () => {
-      // Guarded: Chrome fires \`ended\` twice for a buffer source whose stop()
+      // Guarded: Chrome fires `ended` twice for a buffer source whose stop()
       // lands exactly on the buffer's natural end (measured), which counted
       // voices below zero and quietly lifted the cap.
       if (!this.live.delete(source)) return;

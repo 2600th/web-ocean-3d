@@ -37,6 +37,45 @@ import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
  *    not continuous: a synthesised cry, scheduled in sparse flurries against the
  *    flock the renderer is actually drawing, silent under water and thinned out
  *    by rain and by a gale.
+ *  - **The ship.** Its own bus, gained by distance and panned by bearing: the
+ *    hull rush and a bow wave that surges as the stem plunges, creaks and timber
+ *    groans from how fast she rolls and pitches under load, blocks knocking,
+ *    canvas flogging when it luffs and a *whump* when it fills (`ShipSfx`).
+ *  - **The score.** An original, synthesised sea-song band whose arrangement
+ *    follows the game (`music/MusicEngine`): calm, sailing (tempo and drive from
+ *    speed), storm, underwater, tour and silent, crossfading by stem and
+ *    switching material at the barline. It ducks under thunder and stings.
+ *
+ * **Hooks** — what other systems call. All are safe before the unlocking
+ * gesture, with no Web Audio, and when muted (they do nothing):
+ *
+ *  - `update(dt, params)` — every frame. `AudioSceneParams` carries the sea, the
+ *    weather, submersion and the ship (`shipDistance`, `shipPan`, `shipHeel`,
+ *    `shipPitch`, `sailFill`, `sailLuff`); every ship field is optional.
+ *  - `setMusicState(state, energy?)`, `setMusicEnergy(0..1)`,
+ *    `setMusicVolume(0..1)`, `playSting('cargo')` — the score. Call
+ *    `setMusicState` every frame with what the game implies; it holds a state
+ *    for ~2 s (0.35 s for the waterline) before following.
+ *  - `hullImpact(strength 0..1, grind = false)` — a slam, a rock, the shore.
+ *  - `waveSlap(strength 0..1, pan -1..1 = 0)` — water hitting the planking.
+ *    `SlapDetector` turns hull probes into these; a shore or impact system can
+ *    call it directly.
+ *  - `playSplash(0..1)`, `playThunder(km, delay)`, `playChime()` (the reward:
+ *    chime plus the cargo sting), `playAnchorChain(seconds)`,
+ *    `playGullCry(m, pan)`.
+ *  - `uiTick(cue, value?)` — interface cues (`UiCue`); `src/ui/sounds.ts` maps
+ *    DOM events to them so the UI never imports this.
+ *  - `setGullLocator(fn)` — places cries on real birds (`Birds.positionOf`).
+ *
+ * **Mix.** Beds, ship and one-shots sum on the air bus (muffled under water);
+ * the score joins them before a gentle 4:1 compressor; UI bypasses both. After
+ * the master volume a 20:1 limiter at -1 dBFS and a soft clipper guarantee the
+ * output never reaches full scale. Measured offline (master 0.8, music 0.5):
+ * calm -32 dB RMS, under sail -27, storm -22, ambient scenes peaking below
+ * -6.5 dBFS and a full-strength grounding at -4.5; the deliberate worst case
+ * (volume 1, close strike + grounding + sting on one sample) peaks at
+ * -0.6 dBFS with no clipped samples. The score sits about level with a calm
+ * sea, ~3 dB under the sea at sail and ~5 dB under a storm.
  *
  * Three constraints shaped the implementation more than the sound design did.
  *
