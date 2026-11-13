@@ -149,7 +149,7 @@ Audit each against what shipped AAA titles do, fix on evidence, measure cost per
 - [ ] **Shader hygiene:** no NaNs/fireflies, energy-conserving specular, consistent fog/aerial perspective on every material, shader-compile cost kept off the critical path
 
 ### Follow-ups found while merging
-- [ ] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent)
+- [x] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent) — fixed: the prewarm now compiles the frame's real contexts (scene pass target + TRAA MRT + velocity, pinned call depths, reflection), pipelines build in parallel, live frames never build a pipeline synchronously. Same session, High: `isReady` ~48 s → ~17 s, worst frame after ready ~1.8 s → <50 ms, loop start ~17 s → ~7 s.
 - [ ] Night/dusk clouds lit near-white against a black clear sky; dusk sea mirrors it pink (sky agent)
 - [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
 - [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
