@@ -119,6 +119,19 @@ export class ShipController {
   private rudderInput = 0;
   private throttle = 0;
   private rudder = 0;
+  /**
+   * Drive from canvas, as a fraction of `MAX_THRUST`, set by the gameplay layer.
+   *
+   * Summed with the engine rather than replacing it, so `setInput` — the touch
+   * stick, the cinematic flight and every test that drives the hull — keeps
+   * working whatever the sails are doing. Zero unless something sets it, which is
+   * what keeps the physics identical for any caller that has never heard of sails.
+   */
+  private sailDrive = 0;
+  /** Engine plus sails as applied this frame, a fraction of `MAX_THRUST`. */
+  private drive = 0;
+  /** Whether W/S reach the engine. See `setThrottleKeysEnabled`. */
+  private throttleKeys = true;
   private enabled = false;
   /** Whether W/A/S/D reach the hull. See `setKeyboardEnabled`. */
   private keyboard = true;
@@ -199,6 +212,27 @@ export class ShipController {
     if (!enabled) this.releaseKeys();
   }
 
+  /**
+   * Whether W/S open the engine.
+   *
+   * Off while the gameplay layer owns those keys for the sails: a tap of W must
+   * set canvas, not also spool the engine for as long as the key is held.
+   * A/D still reach the rudder either way.
+   */
+  setThrottleKeysEnabled(enabled: boolean): void {
+    this.throttleKeys = enabled;
+  }
+
+  /**
+   * Forward drive from the sails, as a fraction of full engine thrust.
+   *
+   * Clamped to [-0.2, 1]: a sail taken aback pushes a hull astern, weakly, and
+   * nothing a sail does should out-drive the engine the drag was tuned against.
+   */
+  setSailDrive(drive: number): void {
+    this.sailDrive = Number.isFinite(drive) ? clamp(drive, -0.2, 1) : 0;
+  }
+
   setInput(throttle: number, rudder: number): void {
     this.throttleInput = clamp(throttle, -1, 1);
     this.rudderInput = clamp(rudder, -1, 1);
@@ -230,6 +264,8 @@ export class ShipController {
     this.rudderInput = 0;
     this.throttle = 0;
     this.rudder = 0;
+    this.sailDrive = 0;
+    this.drive = 0;
     this.body.externalForce.set(0, 0, 0);
     this.body.externalTorque.set(0, 0, 0);
   }
@@ -244,7 +280,7 @@ export class ShipController {
     // and with the keys still live, holding S during a full-ahead beat commanded
     // full astern — the tour visibly fighting for its own wheel while the HUD
     // said the flight was holding it.
-    const keyThrottle = this.keyboard
+    const keyThrottle = this.keyboard && this.throttleKeys
       ? (this.keys.has('keyw') ? 1 : 0) - (this.keys.has('keys') ? 1 : 0)
       : 0;
     const keyRudder = this.keyboard
@@ -278,7 +314,10 @@ export class ShipController {
 
     // --- forces --------------------------------------------------------------
     const ahead = this.throttle >= 0 ? 1 : REVERSE_FRACTION;
-    const thrust = this.throttle * MAX_THRUST * ahead;
+    // Engine and canvas together never exceed the engine alone: the drag above
+    // was tuned for one full-ahead's worth of thrust, and the top speed with it.
+    this.drive = clamp(this.throttle * ahead + this.sailDrive, -REVERSE_FRACTION, 1);
+    const thrust = this.drive * MAX_THRUST;
 
     // Quadratic, and signed by direction of travel rather than by speed, so it
     // always opposes motion instead of adding to it when making sternway.
@@ -354,7 +393,7 @@ export class ShipController {
     // player can feel; with it, running aground simply does not work.
     this.body.externalForce.addScaledVector(
       this.forward,
-      -Math.max(0, this.throttle) * MAX_THRUST * strength,
+      -Math.max(0, this.drive) * MAX_THRUST * strength,
     );
   }
 
