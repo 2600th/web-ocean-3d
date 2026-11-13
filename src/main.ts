@@ -34,7 +34,7 @@ import {
   applyGroundShadingTo,
 } from './scene';
 import { AudioSystem, DEFAULT_AUDIO_SCENE_PARAMS } from './audio';
-import { Gameplay, type GameUiSink } from './gameplay';
+import { Gameplay, type GameUiSink, type SailSetting } from './gameplay';
 import {
   BuoyancySystem,
   BuoyantBody,
@@ -96,6 +96,9 @@ const localHost = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/.test(window.lo
 if (!localHost && !navigator.webdriver) {
   inject();
 }
+
+/** How the HUD plaque names each sail setting. See the gameplay block in `loadSceneContent`. */
+const SAIL_LABEL: Record<SailSetting, string> = { furled: 'Furled', half: 'Half sail', full: 'Full sail' };
 
 /** Scratch for the test-hook camera pin; the hook must not allocate either. */
 const _pinPosition = new THREE.Vector3();
@@ -1390,16 +1393,25 @@ class App {
     // clones for cargo is optional. Added hidden with the rest of `loaded`, so
     // the reveal-and-compile below builds its pipelines before it is drawn.
     if (this.ship && this.shipBody && this.shipControls) {
-      // TEMPORARY adapter until the HUD implements `GameUiSink`: forwards to the
-      // HUD wherever it already has the method, and logs otherwise.
-      const hud = () => this.hud as unknown as Partial<GameUiSink> | undefined;
+      // The HUD is the sink. Speed, heading and wind are already on its dial via
+      // `updateHudNav`, so the instruments add only what the dial cannot show —
+      // the sail set and the anchor — as plaque lines, and leaving the helm
+      // clears the plaque the gameplay filled.
       const ui: GameUiSink = {
-        toast: (text, kind) =>
-          hud()?.toast ? hud()!.toast!(text, kind) : console.debug('[gameplay]', kind ?? 'info', text),
-        setObjective: (objective) => hud()?.setObjective?.(objective),
-        setScore: (label, value) =>
-          hud()?.setScore ? hud()!.setScore!(label, value) : console.debug('[gameplay]', label, value),
-        setShipTelemetry: (telemetry) => hud()?.setShipTelemetry?.(telemetry),
+        toast: (text, kind) => {
+          this.hud.toast(text, kind);
+        },
+        setObjective: (objective) => this.hud.setObjective(objective),
+        setScore: (label, value) => this.hud.setScore(label, value),
+        setShipTelemetry: (telemetry) => {
+          if (telemetry === null) {
+            this.hud.clearScore();
+            return;
+          }
+          this.hud.setScore('Sails', SAIL_LABEL[telemetry.sail]);
+          if (telemetry.anchored) this.hud.setScore('Anchor', 'Down');
+          else this.hud.clearScore('Anchor');
+        },
       };
       this.gameplay = new Gameplay({
         body: this.shipBody,
