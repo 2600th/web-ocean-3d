@@ -3,6 +3,8 @@ import { mulberry32 } from '../core/random';
 import { NoiseBed, type NoiseBedOptions } from './NoiseBed';
 import { NOISE_SECONDS, createNoiseBuffer } from './noise';
 import { ParamTarget } from './ParamTarget';
+import { MusicEngine, type MusicState, type MusicSting } from './music/MusicEngine';
+import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
 
 /**
  * The scene's ambience, synthesised rather than sampled.
@@ -35,6 +37,45 @@ import { ParamTarget } from './ParamTarget';
  *    not continuous: a synthesised cry, scheduled in sparse flurries against the
  *    flock the renderer is actually drawing, silent under water and thinned out
  *    by rain and by a gale.
+ *  - **The ship.** Its own bus, gained by distance and panned by bearing: the
+ *    hull rush and a bow wave that surges as the stem plunges, creaks and timber
+ *    groans from how fast she rolls and pitches under load, blocks knocking,
+ *    canvas flogging when it luffs and a *whump* when it fills (`ShipSfx`).
+ *  - **The score.** An original, synthesised sea-song band whose arrangement
+ *    follows the game (`music/MusicEngine`): calm, sailing (tempo and drive from
+ *    speed), storm, underwater, tour and silent, crossfading by stem and
+ *    switching material at the barline. It ducks under thunder and stings.
+ *
+ * **Hooks** — what other systems call. All are safe before the unlocking
+ * gesture, with no Web Audio, and when muted (they do nothing):
+ *
+ *  - `update(dt, params)` — every frame. `AudioSceneParams` carries the sea, the
+ *    weather, submersion and the ship (`shipDistance`, `shipPan`, `shipHeel`,
+ *    `shipPitch`, `sailFill`, `sailLuff`); every ship field is optional.
+ *  - `setMusicState(state, energy?)`, `setMusicEnergy(0..1)`,
+ *    `setMusicVolume(0..1)`, `playSting('cargo')` — the score. Call
+ *    `setMusicState` every frame with what the game implies; it holds a state
+ *    for ~2 s (0.35 s for the waterline) before following.
+ *  - `hullImpact(strength 0..1, grind = false)` — a slam, a rock, the shore.
+ *  - `waveSlap(strength 0..1, pan -1..1 = 0)` — water hitting the planking.
+ *    `SlapDetector` turns hull probes into these; a shore or impact system can
+ *    call it directly.
+ *  - `playSplash(0..1)`, `playThunder(km, delay)`, `playChime()` (the reward:
+ *    chime plus the cargo sting), `playAnchorChain(seconds)`,
+ *    `playGullCry(m, pan)`.
+ *  - `uiTick(cue, value?)` — interface cues (`UiCue`); `src/ui/sounds.ts` maps
+ *    DOM events to them so the UI never imports this.
+ *  - `setGullLocator(fn)` — places cries on real birds (`Birds.positionOf`).
+ *
+ * **Mix.** Beds, ship and one-shots sum on the air bus (muffled under water);
+ * the score joins them before a gentle 4:1 compressor; UI bypasses both. After
+ * the master volume a 20:1 limiter at -1 dBFS and a soft clipper guarantee the
+ * output never reaches full scale. Measured offline (master 0.8, music 0.5):
+ * calm -32 dB RMS, under sail -27, storm -22, ambient scenes peaking below
+ * -6.5 dBFS and a full-strength grounding at -4.5; the deliberate worst case
+ * (volume 1, close strike + grounding + sting on one sample) peaks at
+ * -0.6 dBFS with no clipped samples. The score sits about level with a calm
+ * sea, ~3 dB under the sea at sail and ~5 dB under a storm.
  *
  * Three constraints shaped the implementation more than the sound design did.
  *
@@ -87,6 +128,22 @@ export interface AudioSceneParams {
    * does not invent them.
    */
   birdCount?: number;
+  /**
+   * Metres from the listener to the ship, or `Infinity` with no ship. Everything
+   * the hull, rigging and canvas make — bow wash included — is gained by this,
+   * so a ship across the bay is a murmur rather than a creak in the ear.
+   */
+  shipDistance?: number;
+  /** Where the ship is, -1 (left) .. 1 (right), from the listener's view. */
+  shipPan?: number;
+  /** Hull roll, radians, positive starboard rail down. Drives creaks and groans. */
+  shipHeel?: number;
+  /** Hull pitch, radians, positive bow up. Drives creaks and the bow wash's surge. */
+  shipPitch?: number;
+  /** Canvas set, 0..1. */
+  sailFill?: number;
+  /** How hard the canvas is luffing (head to wind, or being set or taken in), 0..1. */
+  sailLuff?: number;
 }
 
 export const DEFAULT_AUDIO_SCENE_PARAMS: AudioSceneParams = {
@@ -97,7 +154,39 @@ export const DEFAULT_AUDIO_SCENE_PARAMS: AudioSceneParams = {
   submersion: 0,
   hullSpeed: 0,
   birdCount: 0,
+  shipDistance: Number.POSITIVE_INFINITY,
+  shipPan: 0,
+  shipHeel: 0,
+  shipPitch: 0,
+  sailFill: 0,
+  sailLuff: 0,
 };
+
+/** A gull's place relative to the listener, as `setGullLocator` reports it. */
+export interface GullFix {
+  /** Metres. */
+  distance: number;
+  /** -1 (left) .. 1 (right). */
+  pan: number;
+}
+
+/**
+ * Interface sounds, as `uiTick` takes them. `src/ui/sounds.ts` maps DOM events
+ * onto these; the strings are the whole contract, so the UI never imports audio.
+ */
+export type UiCue =
+  | 'hover'
+  | 'press'
+  | 'select'
+  | 'slide'
+  | 'toggleOn'
+  | 'toggleOff'
+  | 'open'
+  | 'close'
+  | 'info'
+  | 'warn';
+
+export type { MusicState, MusicSting };
 
 export interface AudioQualitySettings {
   /** A second, opposite-panned surf bed. Without it the sea is mono. */
@@ -125,6 +214,10 @@ export interface AudioQualitySettings {
    * a queued splash arrives after the thing that splashed has gone.
    */
   voices: number;
+  /** Concurrent music notes. The score drops ghost notes first when it is over. */
+  musicVoices: number;
+  /** The music's room: a convolution reverb, or on Low a cheap feedback delay. */
+  musicReverb: 'convolver' | 'delay';
 }
 
 /**
@@ -137,20 +230,28 @@ export interface AudioQualitySettings {
  * as somebody moving the mix.
  */
 export const AUDIO_QUALITY_TIERS: Record<QualityTier, AudioQualitySettings> = {
+  // The one-shot caps were raised when the ship got a voice of its own: creaks,
+  // blocks and canvas are ambience and are held two short of the cap (see
+  // `SHIP_VOICE_RESERVE`), so the old caps would have left Low unable to creak.
   low: {
-    stereoSurf: false, rigging: false, rainHiss: false, bubbleRate: 0, gullRate: 0, voices: 3,
+    stereoSurf: false, rigging: false, rainHiss: false, bubbleRate: 0, gullRate: 0, voices: 6,
+    musicVoices: 14, musicReverb: 'delay',
   },
   medium: {
-    stereoSurf: false, rigging: true, rainHiss: true, bubbleRate: 1.2, gullRate: 0.055, voices: 5,
+    stereoSurf: false, rigging: true, rainHiss: true, bubbleRate: 1.2, gullRate: 0.055, voices: 9,
+    musicVoices: 22, musicReverb: 'convolver',
   },
   high: {
-    stereoSurf: true, rigging: true, rainHiss: true, bubbleRate: 2.0, gullRate: 0.08, voices: 8,
+    stereoSurf: true, rigging: true, rainHiss: true, bubbleRate: 2.0, gullRate: 0.08, voices: 12,
+    musicVoices: 30, musicReverb: 'convolver',
   },
   ultra: {
-    stereoSurf: true, rigging: true, rainHiss: true, bubbleRate: 2.6, gullRate: 0.095, voices: 10,
+    stereoSurf: true, rigging: true, rainHiss: true, bubbleRate: 2.6, gullRate: 0.095, voices: 14,
+    musicVoices: 34, musicReverb: 'convolver',
   },
   max: {
-    stereoSurf: true, rigging: true, rainHiss: true, bubbleRate: 3.4, gullRate: 0.11, voices: 12,
+    stereoSurf: true, rigging: true, rainHiss: true, bubbleRate: 3.4, gullRate: 0.11, voices: 16,
+    musicVoices: 40, musicReverb: 'convolver',
   },
 };
 
@@ -160,6 +261,15 @@ export interface AudioSystemOptions {
   /** Starts muted. Defaults to false; the capture harness sets it. */
   muted?: boolean;
   quality?: QualityTier;
+  /** Music volume, 0..1, under the master volume. Defaults to 0.5. */
+  musicVolume?: number;
+  /**
+   * Render into this context instead of creating a realtime one — an
+   * `OfflineAudioContext`, for verification. The system then behaves as though
+   * the gesture has happened and the context is running; the caller drives
+   * `update` (e.g. from `suspend()` points) and renders.
+   */
+  context?: BaseAudioContext;
 }
 
 /**
@@ -515,6 +625,123 @@ const UI_CLICK_FALL = 0.62;
 const UI_CLICK_SECONDS = 0.045;
 const UI_CLICK_LEVEL = 0.13;
 
+/** Reward chime: root pitch, the arpeggio as ratios of it, and note spacing. */
+const CHIME_ROOT_HZ = 784;
+const CHIME_NOTES = [1, 1.25, 1.5] as const;
+const CHIME_SPACING = 0.085;
+const CHIME_LEVEL = 0.16;
+/** [frequency ratio, level, decay seconds] per partial of each note. */
+const CHIME_PARTIALS: readonly (readonly [number, number, number])[] = [
+  [1, 1, 0.9],
+  [2.76, 0.28, 0.35],
+];
+
+/** Anchor chain: the band the rattle sits in, its level and its link rate. */
+const CHAIN_BAND_HZ = 2600;
+const CHAIN_LEVEL = 0.35;
+const CHAIN_LINKS_PER_SECOND = 14;
+
+// --- output limiter ----------------------------------------------------------
+
+/**
+ * A brick wall after the master volume.
+ *
+ * The compressor above is a gentle 4:1 that lets thunder's leading edge through
+ * on purpose, and the UI bus and the master volume sit after it — so with the
+ * score, a close strike and a hull impact landing together the sum could still
+ * cross full scale. This catches only that: 20:1, no knee, from -1 dBFS.
+ *
+ * The threshold is not lower because a `DynamicsCompressorNode` always applies
+ * makeup gain — 0.6 of the gain it would take off a full-scale signal — so a
+ * -4 dB threshold measured as +2.3 dB on *everything*, the whole mix louder in
+ * exchange for a limiter. At -1 dB that is +0.6 dB. And since the node has a
+ * finite attack, a soft clipper after it (`SOFT_CLIP_KNEE`) catches the few
+ * samples of overshoot, so the output can never reach full scale.
+ */
+/**
+ * Where the safety clipper starts bending, as a fraction of full scale. Linear
+ * below it, a tanh shoulder above it that tops out at 0.93 (-0.6 dBFS) for any
+ * input at all. In the measured worst case (volume 1, a 150 m strike, an
+ * aground impact, a splash and the cargo sting on one sample) it bends about a
+ * hundred samples; in every ordinary scenario measured, none.
+ */
+const LIMITER_THRESHOLD_DB = -1;
+const LIMITER_RATIO = 20;
+const LIMITER_ATTACK = 0.001;
+const LIMITER_RELEASE = 0.12;
+const SOFT_CLIP_KNEE = 0.7;
+
+// --- the ship ------------------------------------------------------------------
+
+/**
+ * Distance at which the ship is heard at full level, metres; beyond it the
+ * ship bus falls as 1/d. Twenty metres is about where the chase camera sits, so
+ * at the helm everything is at its designed level and an orbit shot from across
+ * the bay hears the hull as a murmur.
+ */
+const SHIP_REFERENCE_METRES = 20;
+/** Below this the ship is inaudible and its event scheduler stops altogether. */
+const SHIP_SILENT_PRESENCE = 0.04;
+/** One-shot slots ship ambience leaves free; the same idea as `GULL_VOICE_RESERVE`. */
+const SHIP_VOICE_RESERVE = 2;
+
+/**
+ * The bow wave, on top of the existing hull bed: a brighter, chuckling band
+ * that surges as the bow drives down into the sea. The hull bed is the rush
+ * along the side; this is the wave the stem is making.
+ */
+const BOW_LEVEL = 0.2;
+const BOW_BAND_BASE = 620;
+const BOW_BAND_PER_SPEED = 70;
+const BOW_BAND_MAX = 1800;
+const BOW_Q = 0.9;
+/** Pitch rate, rad/s, at which a plunging bow doubles the wash. */
+const BOW_PLUNGE_RATE = 0.12;
+
+/** Continuous rustle under the canvas slaps while a sail is luffing. */
+const LUFF_BED_LEVEL = 0.12;
+const LUFF_BED_HZ = 520;
+
+// --- ducking --------------------------------------------------------------------
+
+/** How far a close strike pulls the score down, and the ambience beds. */
+const THUNDER_MUSIC_DUCK = 0.55;
+const THUNDER_BED_DUCK = 0.3;
+/** Seconds held before recovering. */
+const THUNDER_DUCK_HOLD = 1.6;
+
+// --- crossing the surface ---------------------------------------------------------
+
+/** Submersion at which going under or coming up is an event, with hysteresis. */
+const PLUNGE_UNDER = 0.55;
+const PLUNGE_SURFACE = 0.3;
+const PLUNGE_COOLDOWN = 1.2;
+const PLUNGE_BUBBLES = 7;
+
+// --- interface ------------------------------------------------------------------
+
+/** Minimum seconds between two UI cues of the same kind — a dragged slider is not a drumroll. */
+const UI_CUE_GAP: Readonly<Record<UiCue, number>> = {
+  hover: 0.06,
+  press: 0.03,
+  select: 0.04,
+  slide: 0.035,
+  toggleOn: 0.04,
+  toggleOff: 0.04,
+  open: 0.08,
+  close: 0.08,
+  info: 0.3,
+  warn: 0.5,
+};
+const UI_TICK_LEVEL = 0.05;
+
+/**
+ * Period of the score's scheduling timer, ms. The look-ahead is 350 ms, so the
+ * band keeps playing through a stalled render loop with room to spare.
+ */
+const MUSIC_PUMP_MS = 100;
+const UI_HOVER_LEVEL = 0.022;
+
 // --- gulls -----------------------------------------------------------------
 //
 // The hardest thing in this file to keep on the right side of the line between a
@@ -765,6 +992,8 @@ const BED_RATES = {
   rain: 1.13,
   rainHiss: 0.97,
   hull: 1.03,
+  bowWash: 1.11,
+  luff: 0.94,
   rumble: 0.89,
 } as const;
 
@@ -774,11 +1003,17 @@ export class AudioSystem {
   /** False when the platform has no Web Audio. Every method is then a no-op. */
   readonly available: boolean;
 
-  private ctx: AudioContext | null = null;
+  private ctx: BaseAudioContext | null = null;
+  /** The same context when it is a realtime one; null when rendering offline. */
+  private realtime: AudioContext | null = null;
+  /** True when constructed on a caller's (offline) context. */
+  private readonly offline: boolean = false;
   private disposed = false;
 
   // --- master chain ---------------------------------------------------------
   private master!: GainNode;
+  private limiter!: DynamicsCompressorNode;
+  private softClip!: WaveShaperNode;
   private compressor!: DynamicsCompressorNode;
   private mix!: GainNode;
   /** Everything above the waterline, before the muffle. */
@@ -793,6 +1028,30 @@ export class AudioSystem {
    * button while submerged sound like the panel was broken.
    */
   private uiBus!: GainNode;
+  /** The ambience beds, so thunder can duck them without ducking itself. */
+  private bedBus!: GainNode;
+  /** Everything the ship makes: gained by distance, panned by bearing. */
+  private shipBus!: GainNode;
+  private shipPanner: StereoPannerNode | null = null;
+  private shipGain!: ParamTarget;
+  private shipPan: ParamTarget | null = null;
+
+  private music!: MusicEngine;
+  private shipSfx!: ShipSfx;
+  private musicVolume = 0.5;
+  private gullLocator: ((out: GullFix) => boolean) | null = null;
+  private readonly gullFix: GullFix = { distance: GULL_REFERENCE_METRES, pan: 0 };
+  private readonly shipMotion: ShipMotion = {
+    heel: 0, pitch: 0, sailFill: 0, sailLuff: 0, windSpeed: 0, presence: 0,
+  };
+  private readonly uiLast: Record<UiCue, number> = {
+    hover: -1, press: -1, select: -1, slide: -1, toggleOn: -1, toggleOff: -1,
+    open: -1, close: -1, info: -1, warn: -1,
+  };
+  private wasUnder = false;
+  private plungeCooldown = 0;
+  /** The score's scheduling timer; see `MusicEngine.pump`. */
+  private pumpTimer: ReturnType<typeof setInterval> | null = null;
 
   private airGain!: ParamTarget;
   private muffle!: ParamTarget;
@@ -806,6 +1065,8 @@ export class AudioSystem {
   private rainBed!: NoiseBed;
   private rainHiss!: NoiseBed;
   private hull!: NoiseBed;
+  private bowWash!: NoiseBed;
+  private luffBed!: NoiseBed;
   private rumble!: NoiseBed;
   private readonly beds: NoiseBed[] = [];
   private readonly targets: ParamTarget[] = [];
@@ -850,9 +1111,19 @@ export class AudioSystem {
 
   constructor(options: AudioSystemOptions = {}) {
     this.volume = clamp01(finite(options.volume, this.volume));
+    this.musicVolume = clamp01(finite(options.musicVolume, this.musicVolume));
     this.muted = options.muted ?? false;
     this.tier = options.quality ?? 'high';
     this.settings = AUDIO_QUALITY_TIERS[this.tier] ?? AUDIO_QUALITY_TIERS.high;
+
+    if (options.context !== undefined) {
+      this.offline = true;
+      this.ctx = options.context;
+      this.gestured = true;
+      this.build(this.ctx);
+      this.available = true;
+      return;
+    }
 
     const Ctor = resolveAudioContext();
     if (Ctor === null) {
@@ -865,13 +1136,16 @@ export class AudioSystem {
       // more robust against a heavy frame, but the UI click has to land with the
       // press — 'playback' can put a couple of hundred milliseconds between them,
       // which does not read as latency, it reads as the button not having worked.
-      this.ctx = new Ctor({ latencyHint: 'interactive' });
-      this.build(this.ctx);
+      const realtime = new Ctor({ latencyHint: 'interactive' });
+      this.ctx = realtime;
+      this.realtime = realtime;
+      this.build(realtime);
       this.available = true;
     } catch {
       // Construction can fail outright on a locked-down or headless platform.
       // Audio going missing is acceptable; taking the scene with it is not.
       this.ctx = null;
+      this.realtime = null;
       this.available = false;
       return;
     }
@@ -879,7 +1153,7 @@ export class AudioSystem {
     // Some platforms hand back a context that is already running — a page that has
     // been interacted with, or one with an autoplay exemption. Left alone, that
     // starts the sea before the application has said it may.
-    if (this.ctx.state === 'running') void this.ctx.suspend().catch(() => {});
+    if (this.realtime.state === 'running') void this.realtime.suspend().catch(() => {});
   }
 
   /** `'unavailable'` when there is no Web Audio at all. */
@@ -907,7 +1181,7 @@ export class AudioSystem {
     if (!this.enabled) return false;
 
     try {
-      await ctx.resume();
+      if (this.realtime !== null) await this.realtime.resume();
     } catch {
       return false;
     }
@@ -918,8 +1192,16 @@ export class AudioSystem {
     const now = ctx.currentTime;
     this.startBeds(now);
     this.flushAll(now);
-    this.applyMasterGain(RESUME_RAMP);
-    return ctx.state === 'running';
+    this.applyMasterGain(this.offline ? 0 : RESUME_RAMP);
+    if (!this.offline && this.pumpTimer === null && typeof setInterval === 'function') {
+      this.pumpTimer = setInterval(() => {
+        const c = this.ctx;
+        // dt 0: the model does not advance off the timer, but the band can go
+        // live and keep scheduling while the render loop is stalled.
+        if (c !== null && this.enabled && !this.muted && this.running()) this.music.update(0, c.currentTime, true);
+      }, MUSIC_PUMP_MS);
+    }
+    return this.running();
   }
 
   /**
@@ -965,11 +1247,11 @@ export class AudioSystem {
     // disabled system keeps its sources rendering forever.
     if (this.suspendAt !== null && now >= this.suspendAt) {
       this.suspendAt = null;
-      void ctx.suspend().catch(() => {});
+      void this.realtime?.suspend().catch(() => {});
     }
     for (let i = 0; i < this.beds.length; i++) this.beds[i].tick(now);
 
-    const live = this.enabled && !this.muted && ctx.state === 'running';
+    const live = this.enabled && !this.muted && this.running();
 
     const wind = clampNumber(finite(params.windSpeed, 0), 0, 40);
     const waveHeight = clampNumber(finite(params.waveHeight, 0), 0, 20);
@@ -1073,7 +1355,56 @@ export class AudioSystem {
       live,
     );
 
+    // --- the ship -----------------------------------------------------------
+    const shipDistance =
+      params.shipDistance === undefined || Number.isNaN(params.shipDistance)
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, params.shipDistance);
+    let presence =
+      shipDistance === Number.POSITIVE_INFINITY
+        ? 0
+        : Math.min(1, SHIP_REFERENCE_METRES / Math.max(shipDistance, SHIP_REFERENCE_METRES));
+    if (presence < SHIP_SILENT_PRESENCE) presence = 0;
+    this.shipGain.set(presence, now, live);
+    this.shipPan?.set(clampNumber(finite(params.shipPan, 0), -1, 1) * 0.7, now, live);
+
+    const luff = clamp01(finite(params.sailLuff, 0));
+    const motion = this.shipMotion;
+    motion.heel = clampNumber(finite(params.shipHeel, 0), -1.5, 1.5);
+    motion.pitch = clampNumber(finite(params.shipPitch, 0), -1.5, 1.5);
+    motion.sailFill = clamp01(finite(params.sailFill, 0));
+    motion.sailLuff = luff;
+    motion.windSpeed = wind;
+    motion.presence = presence;
+    this.shipSfx.update(step, now, live, motion);
+
+    // The bow wave surges as the stem drives down into the sea.
+    const plunge = clampNumber(-this.shipSfx.pitchingRate / BOW_PLUNGE_RATE, 0, 1.5);
+    this.bowWash.setLevel(
+      BOW_LEVEL *
+        Math.pow(speedDrive, 1.3) *
+        smoothstepNumber(hullSpeed, 0.6, 2.5) *
+        (0.6 + 0.6 * plunge),
+      now,
+      live,
+    );
+    this.bowWash.setBand(
+      clampNumber(BOW_BAND_BASE + BOW_BAND_PER_SPEED * hullSpeed, BOW_BAND_BASE, BOW_BAND_MAX),
+      BOW_Q,
+      now,
+      live,
+    );
+    this.luffBed.setLevel(LUFF_BED_LEVEL * luff * (0.5 + 0.5 * Math.min(1, wind / 14)), now, live);
+
     // --- submersion ---------------------------------------------------------
+    this.plungeCooldown = Math.max(0, this.plungeCooldown - step);
+    if (!this.wasUnder && submersion >= PLUNGE_UNDER) {
+      this.wasUnder = true;
+      if (live && this.plungeCooldown === 0) this.plunge(true);
+    } else if (this.wasUnder && submersion <= PLUNGE_SURFACE) {
+      this.wasUnder = false;
+      if (live && this.plungeCooldown === 0) this.plunge(false);
+    }
     this.airGain.set(1 - AIR_DUCK * submersion, now, live);
     // Geometric, not linear. Cutoff is heard in octaves: a linear sweep from
     // 18 kHz spends nine tenths of its travel in a range the ear still calls
@@ -1138,6 +1469,9 @@ export class AudioSystem {
       // very frame the gate opened, every time — which is a trigger, not a bird.
       this.gullTimer = GULL_FLURRY_FLOOR;
     }
+
+    // --- score --------------------------------------------------------------
+    this.music.update(step, now, live);
   }
 
   setVolume(value: number): void {
@@ -1160,11 +1494,12 @@ export class AudioSystem {
   setMuted(muted: boolean): void {
     if (this.muted === muted) return;
     this.muted = muted;
+    if (muted && this.ctx !== null) this.music.pause();
     this.applyMasterGain(MUTE_RAMP);
     const ctx = this.ctx;
     // Unmuting resumes writing, and the graph has been frozen wherever it was
     // when the mute landed.
-    if (!muted && ctx !== null && ctx.state === 'running') this.flushAll(ctx.currentTime);
+    if (!muted && ctx !== null && this.running()) this.flushAll(ctx.currentTime);
   }
 
   isMuted(): boolean {
@@ -1179,6 +1514,7 @@ export class AudioSystem {
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
+    if (!enabled && this.ctx !== null) this.music.pause();
     this.applyMasterGain(ENABLE_RAMP);
 
     const ctx = this.ctx;
@@ -1187,14 +1523,13 @@ export class AudioSystem {
     if (!enabled) {
       // Only meaningful while time is moving; an already-suspended context would
       // never reach the deadline.
-      this.suspendAt = ctx.state === 'running' ? ctx.currentTime + SUSPEND_DELAY : null;
+      this.suspendAt = this.running() && !this.offline ? ctx.currentTime + SUSPEND_DELAY : null;
       return;
     }
 
     this.suspendAt = null;
     if (!this.gestured) return;
-    void ctx
-      .resume()
+    void (this.realtime?.resume() ?? Promise.resolve())
       .then(() => {
         if (this.disposed || this.ctx === null) return;
         const now = this.ctx.currentTime;
@@ -1369,6 +1704,15 @@ export class AudioSystem {
     rollEnv.connect(rollLevel);
     rollLevel.connect(this.airBus);
 
+    // Sidechain, by hand: the score and the sea beds make room for the strike,
+    // in proportion to how loud it arrives, at the moment it arrives.
+    const loudness = clampNumber(spread * 1.6, 0.25, 1);
+    this.music.duck(THUNDER_MUSIC_DUCK * loudness, THUNDER_DUCK_HOLD + rollSeconds * 0.3, now);
+    const bed = this.bedBus.gain;
+    bed.cancelScheduledValues(now);
+    bed.setTargetAtTime(1 - THUNDER_BED_DUCK * loudness, now, 0.04);
+    bed.setTargetAtTime(1, now + THUNDER_DUCK_HOLD, 0.6);
+
     source.start(now, this.oneShotRandom() * this.white.duration);
     source.stop(now + Math.max(THUNDER_CRACK_SECONDS, rollSeconds) + 0.1);
     this.trackVoice(
@@ -1438,6 +1782,264 @@ export class AudioSystem {
   }
 
   /**
+   * A reward chime: a rising major arpeggio of struck-bell partials.
+   *
+   * Interface feedback rather than a sound in the world, so it rides the UI bus
+   * past the underwater muffle like the click does. Three notes, each a
+   * fundamental plus an inharmonic partial at 2.76x — the ratio that makes a
+   * struck bar read as metal rather than as a sine beep.
+   */
+  playChime(): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    // The reward is also a moment in the score.
+    this.music.playSting('cargo', ctx.currentTime);
+    if (!this.acquireVoice()) return;
+
+    const now = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = CHIME_LEVEL;
+    out.connect(this.uiBus);
+
+    const nodes: AudioNode[] = [out];
+    let first: OscillatorNode | null = null;
+    let end = now;
+    for (let i = 0; i < CHIME_NOTES.length; i++) {
+      const start = now + i * CHIME_SPACING;
+      for (const [ratio, level, decay] of CHIME_PARTIALS) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = CHIME_ROOT_HZ * CHIME_NOTES[i] * ratio;
+        const gain = ctx.createGain();
+        envelope(gain.gain, start, 0.004, level, decay);
+        osc.connect(gain);
+        gain.connect(out);
+        osc.start(start);
+        osc.stop(start + decay + 0.05);
+        end = Math.max(end, start + decay + 0.05);
+        if (first === null) first = osc;
+        else nodes.push(osc);
+        nodes.push(gain);
+      }
+    }
+    // One voice for the whole chord: the first oscillator carries the cleanup,
+    // and it is held open until the last partial has rung out.
+    if (first !== null) {
+      first.stop(end);
+      this.trackVoice(first, ...nodes);
+    }
+  }
+
+  // ------------------------------------------------------------------ score
+
+  /**
+   * Which arrangement the score plays. The band follows after a couple of
+   * seconds (at once for going under or surfacing) and changes material at the
+   * next barline, so this can be called every frame with whatever the game
+   * state implies.
+   *
+   * @param energy Optional 0..1, as `setMusicEnergy`.
+   */
+  setMusicState(state: MusicState, energy?: number): void {
+    if (this.ctx === null) return;
+    this.music.setState(state);
+    if (energy !== undefined) this.music.setEnergy(energy);
+  }
+
+  getMusicState(): MusicState | 'unavailable' {
+    return this.ctx === null ? 'unavailable' : this.music.currentState;
+  }
+
+  /** 0..1: how hard she is being driven. Tempo, drums and density follow it. */
+  setMusicEnergy(energy: number): void {
+    if (this.ctx !== null) this.music.setEnergy(energy);
+  }
+
+  /** Music volume, 0..1, under the master volume. 0 stops the score scheduling anything. */
+  setMusicVolume(value: number): void {
+    this.musicVolume = clamp01(finite(value, this.musicVolume));
+    if (this.ctx !== null) this.music.setVolume(this.musicVolume);
+  }
+
+  getMusicVolume(): number {
+    return this.musicVolume;
+  }
+
+  /** A musical flourish over the score, which ducks under it. `playChime` plays the cargo one. */
+  playSting(kind: MusicSting = 'cargo'): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    this.music.playSting(kind, ctx.currentTime);
+  }
+
+  /** Sequencer position and voice use, for tests. */
+  get musicDebug(): {
+    state: MusicState;
+    voices: number;
+    phrase: number;
+    bar: number;
+    energy: number;
+  } | null {
+    if (this.ctx === null) return null;
+    const p = this.music.position;
+    return {
+      state: this.music.currentState,
+      voices: this.music.voicesInUse,
+      phrase: p.phrase,
+      bar: p.bar,
+      energy: p.energy,
+    };
+  }
+
+  // ------------------------------------------------------------------ ship hooks
+
+  /**
+   * The hull striking something: a slam into a wave face, a rock, the shore.
+   * A deep thud through the frame and the timbers answering it.
+   *
+   * @param strength 0..1. ~0.3 is a hard slam; 1 is running aground at speed.
+   * @param grind    Add the drawn-out scrape of a keel dragging over the bottom.
+   */
+  hullImpact(strength: number, grind = false): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    this.shipSfx.hullImpact(clamp01(finite(strength, 0)), grind, ctx.currentTime);
+  }
+
+  /**
+   * Water slapping the hull.
+   *
+   * @param strength 0..1, from the relative speed of water and planking. A
+   *                 slow lap is ~0.15, a crest smacking the side ~0.6.
+   * @param pan      -1..1 within the ship's own image (port/starboard as the
+   *                 listener sees them). The ship bus adds the ship's bearing.
+   */
+  waveSlap(strength: number, pan = 0): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    this.shipSfx.waveSlap(
+      clamp01(finite(strength, 0)),
+      clampNumber(finite(pan, 0), -1, 1),
+      ctx.currentTime,
+    );
+  }
+
+  /**
+   * Where the gulls are. Called when a cry is due; fills `out` with one real
+   * bird's distance and bearing and returns true, or false when no bird is
+   * within earshot (the cry is then skipped). Must not allocate. Null restores
+   * the invented placement.
+   */
+  setGullLocator(locator: ((out: GullFix) => boolean) | null): void {
+    this.gullLocator = locator;
+  }
+
+  // ------------------------------------------------------------------ interface
+
+  /**
+   * Interface feedback, past the underwater muffle and the compressor.
+   *
+   * @param cue   What happened. See `UiCue`.
+   * @param value 0..1 for `slide`: the slider's position, which sets the pitch,
+   *              so dragging a slider is heard as a scale rather than a buzz.
+   */
+  uiTick(cue: UiCue = 'press', value = 0.5): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    const gap = UI_CUE_GAP[cue];
+    if (gap === undefined) return;
+    const now = ctx.currentTime;
+    if (now - this.uiLast[cue] < gap) return;
+    this.uiLast[cue] = now;
+    switch (cue) {
+      case 'press':
+        this.playUiClick();
+        return;
+      case 'hover':
+        this.uiTone(now, 2400, 2150, 0.014, UI_HOVER_LEVEL, 'sine');
+        return;
+      case 'slide': {
+        const f = 620 + 1000 * clamp01(finite(value, 0.5));
+        this.uiTone(now, f, f * 0.92, 0.022, UI_TICK_LEVEL, 'triangle');
+        return;
+      }
+      case 'toggleOn':
+        this.uiTone(now, 587, 587, 0.05, UI_TICK_LEVEL * 1.3, 'triangle');
+        this.uiTone(now + 0.06, 880, 880, 0.08, UI_TICK_LEVEL * 1.3, 'triangle');
+        return;
+      case 'toggleOff':
+        this.uiTone(now, 880, 880, 0.05, UI_TICK_LEVEL * 1.2, 'triangle');
+        this.uiTone(now + 0.06, 587, 560, 0.08, UI_TICK_LEVEL * 1.1, 'triangle');
+        return;
+      case 'select':
+        // A wooden knock: two inharmonic modes, the upper one dying fast.
+        this.uiTone(now, 760, 720, 0.06, UI_TICK_LEVEL * 1.4, 'sine');
+        this.uiTone(now, 2080, 2000, 0.022, UI_TICK_LEVEL * 0.8, 'sine');
+        return;
+      case 'open':
+        this.uiRustle(now, 1700, 3600, 0.15, UI_TICK_LEVEL * 1.3);
+        return;
+      case 'close':
+        this.uiRustle(now, 3600, 1500, 0.12, UI_TICK_LEVEL * 1.2);
+        return;
+      case 'info':
+        this.uiRustle(now, 2200, 3200, 0.22, UI_TICK_LEVEL);
+        return;
+      case 'warn':
+        this.uiTone(now, 330, 322, 0.1, UI_TICK_LEVEL * 1.6, 'triangle');
+        this.uiTone(now + 0.13, 262, 255, 0.16, UI_TICK_LEVEL * 1.6, 'triangle');
+        return;
+    }
+  }
+
+  /**
+   * Anchor chain running out or being hove in: a rattle of metal on wood.
+   *
+   * Band-passed noise chopped by a fast gate, so it reads as links rather than
+   * as hiss. In the world, so it goes through the air bus and is muffled under
+   * water with everything else.
+   *
+   * @param seconds How long the chain runs.
+   */
+  playAnchorChain(seconds = 1.5): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.canPlay()) return;
+    if (!this.acquireVoice()) return;
+
+    const duration = clampNumber(finite(seconds, 1.5), 0.2, 6);
+    const now = ctx.currentTime;
+    const random = this.oneShotRandom;
+
+    const source = ctx.createBufferSource();
+    source.buffer = this.white;
+    source.loop = true;
+
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = CHAIN_BAND_HZ;
+    band.Q.value = 2.2;
+
+    // The gate: one click per link, with a little irregularity so it is a chain
+    // and not a motor.
+    const gate = ctx.createGain();
+    gate.gain.setValueAtTime(0, now);
+    let t = now;
+    while (t < now + duration) {
+      gate.gain.setValueAtTime(CHAIN_LEVEL * (0.6 + 0.4 * random()), t);
+      gate.gain.exponentialRampToValueAtTime(CHAIN_LEVEL * 0.02, t + 0.035);
+      t += 1 / (CHAIN_LINKS_PER_SECOND * (0.8 + 0.4 * random()));
+    }
+    gate.gain.setValueAtTime(0, now + duration);
+
+    source.connect(band);
+    band.connect(gate);
+    gate.connect(this.airBus);
+    source.start(now, random() * this.white.duration);
+    source.stop(now + duration + 0.05);
+    this.trackVoice(source, band, gate);
+  }
+
+  /**
    * Rewinds every clock this system owns and silences anything still ringing.
    *
    * The audible output is not what a capture compares, but the *state* is: the
@@ -1460,7 +2062,11 @@ export class AudioSystem {
     // Back to the initial delay, not to zero: a shot that opens on a gull cry is
     // a shot whose first second is about the gull.
     this.gullTimer = GULL_FIRST_DELAY;
+    this.wasUnder = false;
+    this.plungeCooldown = 0;
     this.stopVoices();
+    this.shipSfx?.reset();
+    this.music?.reset();
   }
 
   dispose(): void {
@@ -1471,6 +2077,8 @@ export class AudioSystem {
     this.ctx = null;
     if (ctx === null) return;
 
+    if (this.pumpTimer !== null) clearInterval(this.pumpTimer);
+    this.pumpTimer = null;
     this.stopVoices();
     for (const bed of this.beds) bed.dispose();
     this.beds.length = 0;
@@ -1484,12 +2092,19 @@ export class AudioSystem {
     this.master.disconnect();
     this.compressor.disconnect();
 
-    void ctx.close().catch(() => {});
+    this.music.dispose();
+    this.limiter.disconnect();
+    this.softClip.disconnect();
+    this.bedBus.disconnect();
+    this.shipBus.disconnect();
+    this.shipPanner?.disconnect();
+    if (this.realtime !== null) void this.realtime.close().catch(() => {});
+    this.realtime = null;
   }
 
   // ------------------------------------------------------------------ internals
 
-  private build(ctx: AudioContext): void {
+  private build(ctx: BaseAudioContext): void {
     this.white = createNoiseBuffer(ctx, 'white', AUDIO_SEEDS.white);
     const brown = createNoiseBuffer(ctx, 'brown', AUDIO_SEEDS.brown);
     this.gullWave = buildGullWave(ctx);
@@ -1504,8 +2119,18 @@ export class AudioSystem {
     this.master = ctx.createGain();
     // Pinned at zero until a gesture. Belt and braces against the suspend in the
     // constructor: a platform that ignores both still makes no sound.
-    this.master.gain.value = 0;
-    this.master.connect(ctx.destination);
+    this.master.gain.value = this.offline ? this.volume : 0;
+    this.limiter = ctx.createDynamicsCompressor();
+    this.limiter.threshold.value = LIMITER_THRESHOLD_DB;
+    this.limiter.knee.value = 0;
+    this.limiter.ratio.value = LIMITER_RATIO;
+    this.limiter.attack.value = LIMITER_ATTACK;
+    this.limiter.release.value = LIMITER_RELEASE;
+    this.softClip = ctx.createWaveShaper();
+    this.softClip.curve = buildSoftClipCurve(SOFT_CLIP_KNEE);
+    this.master.connect(this.limiter);
+    this.limiter.connect(this.softClip);
+    this.softClip.connect(ctx.destination);
 
     // The compressor sits *before* the master, so the volume control is a clean
     // output trim. Behind it, turning the volume down would also reduce what the
@@ -1542,6 +2167,22 @@ export class AudioSystem {
     this.underBus.gain.value = 0;
     this.underBus.connect(this.mix);
 
+    this.bedBus = ctx.createGain();
+    this.bedBus.connect(this.airBus);
+
+    // Ship: distance gain, then bearing pan, then into the world with the rest.
+    this.shipBus = ctx.createGain();
+    this.shipBus.gain.value = 0;
+    this.shipGain = new ParamTarget(this.shipBus.gain, 0, 0.25, 0.003, 0, 1);
+    this.shipPanner = createStereoPanner(ctx);
+    if (this.shipPanner !== null) {
+      this.shipBus.connect(this.shipPanner);
+      this.shipPanner.connect(this.airBus);
+      this.shipPan = new ParamTarget(this.shipPanner.pan, 0, 0.2, 0.01, -1, 1);
+    } else {
+      this.shipBus.connect(this.airBus);
+    }
+
     const nyquist = ctx.sampleRate * 0.45;
     this.airGain = new ParamTarget(this.airBus.gain, 1, 0.2, 0.004, 0, 1);
     this.muffle = new ParamTarget(
@@ -1555,14 +2196,15 @@ export class AudioSystem {
       nyquist,
     );
     this.underGain = new ParamTarget(this.underBus.gain, 0, 0.12, 0.004, 0, 1);
-    this.targets.push(this.airGain, this.muffle, this.underGain);
+    this.targets.push(this.airGain, this.muffle, this.underGain, this.shipGain);
+    if (this.shipPan !== null) this.targets.push(this.shipPan);
 
     // Offsets spread across the buffer so no two beds read the same sample of it.
     const spacing = NOISE_SECONDS / 8;
 
     this.surfNear = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.bedBus,
       filter: 'lowpass',
       frequency: SURF_CUTOFF_BASE,
       q: SURF_Q,
@@ -1576,7 +2218,7 @@ export class AudioSystem {
     });
     this.surfFar = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.bedBus,
       filter: 'lowpass',
       frequency: SURF_CUTOFF_BASE * SURF_FAR_TILT,
       q: SURF_Q,
@@ -1588,7 +2230,7 @@ export class AudioSystem {
     });
     this.windBed = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.bedBus,
       filter: 'bandpass',
       frequency: WIND_BAND_BASE,
       q: WIND_Q,
@@ -1600,7 +2242,7 @@ export class AudioSystem {
     });
     this.rigging = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.bedBus,
       filter: 'bandpass',
       frequency: 500,
       q: RIGGING_Q,
@@ -1612,7 +2254,7 @@ export class AudioSystem {
     });
     this.rainBed = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.bedBus,
       filter: 'lowpass',
       frequency: RAIN_CUTOFF_BASE,
       q: RAIN_Q,
@@ -1624,7 +2266,7 @@ export class AudioSystem {
     });
     this.rainHiss = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.bedBus,
       filter: 'highpass',
       frequency: RAIN_HISS_HZ,
       q: 0.6,
@@ -1636,7 +2278,7 @@ export class AudioSystem {
     });
     this.hull = this.addBed(ctx, {
       buffer: this.white,
-      destination: this.airBus,
+      destination: this.shipBus,
       filter: 'bandpass',
       frequency: HULL_BAND_BASE,
       q: HULL_Q,
@@ -1645,6 +2287,30 @@ export class AudioSystem {
       offset: spacing * 6,
       pan: 0,
       gainTau: 0.18,
+    });
+    this.bowWash = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.shipBus,
+      filter: 'bandpass',
+      frequency: BOW_BAND_BASE,
+      q: BOW_Q,
+      highpass: 200,
+      playbackRate: BED_RATES.bowWash,
+      offset: spacing * 6.5,
+      pan: 0.1,
+      gainTau: 0.12,
+    });
+    this.luffBed = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.shipBus,
+      filter: 'bandpass',
+      frequency: LUFF_BED_HZ,
+      q: 0.7,
+      highpass: 150,
+      playbackRate: BED_RATES.luff,
+      offset: spacing * 7.5,
+      pan: 0,
+      gainTau: 0.2,
     });
     this.rumble = this.addBed(ctx, {
       // Brown, not white: what is left after a hundred metres of water is the
@@ -1662,10 +2328,25 @@ export class AudioSystem {
       gainTau: 0.4,
     });
 
+    const settings = this.settings;
+    this.music = new MusicEngine(ctx, this.mix, this.white, {
+      voices: settings.musicVoices,
+      reverb: settings.musicReverb,
+      volume: this.musicVolume,
+    });
+
+    const host: SfxHost = {
+      ctx,
+      acquire: () => this.acquireVoice(),
+      acquireAmbient: () => this.voices.length + SHIP_VOICE_RESERVE < this.settings.voices,
+      track: (source, ...nodes) => this.trackVoice(source, ...nodes),
+    };
+    this.shipSfx = new ShipSfx(host, this.white, this.shipBus);
+
     this.applyQuality();
   }
 
-  private addBed(ctx: AudioContext, options: NoiseBedOptions): NoiseBed {
+  private addBed(ctx: BaseAudioContext, options: NoiseBedOptions): NoiseBed {
     const bed = new NoiseBed(ctx, options);
     this.beds.push(bed);
     for (const target of bed.targets) this.targets.push(target);
@@ -1676,7 +2357,7 @@ export class AudioSystem {
     const ctx = this.ctx;
     if (ctx === null) return;
     const now = ctx.currentTime;
-    const live = this.enabled && !this.muted && ctx.state === 'running';
+    const live = this.enabled && !this.muted && this.running();
     const settings = this.settings;
 
     this.surfFar.setActive(settings.stereoSurf, now, live);
@@ -1685,6 +2366,8 @@ export class AudioSystem {
     this.surfNear.setPan(settings.stereoSurf ? -SURF_PAN : 0, now, live);
     this.rigging.setActive(settings.rigging, now, live);
     this.rainHiss.setActive(settings.rainHiss, now, live);
+    this.music.setVoices(settings.musicVoices);
+    this.music.setReverb(settings.musicReverb);
   }
 
   private swellAt(depth: number, period: number, groupPeriod: number, phase: number): number {
@@ -1727,8 +2410,13 @@ export class AudioSystem {
   private canPlay(): boolean {
     const ctx = this.ctx;
     return (
-      !this.disposed && ctx !== null && this.enabled && !this.muted && ctx.state === 'running'
+      !this.disposed && ctx !== null && this.enabled && !this.muted && this.running()
     );
+  }
+
+  /** The context is producing sound: running, or an offline render in progress. */
+  private running(): boolean {
+    return this.ctx !== null && (this.offline || this.ctx.state === 'running');
   }
 
   private acquireVoice(): boolean {
@@ -1769,6 +2457,72 @@ export class AudioSystem {
         // Already stopped.
       }
     }
+  }
+
+  /** The lens going under (`down`) or breaking the surface. */
+  private plunge(down: boolean): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    this.plungeCooldown = PLUNGE_COOLDOWN;
+    const now = ctx.currentTime;
+    if (down) {
+      this.playSplash(0.55);
+      // The air the lens drags down with it, heard from below.
+      for (let i = 0; i < PLUNGE_BUBBLES; i++) {
+        const at = now + 0.04 + i * 0.035 + this.bubbleRandom() * 0.03;
+        this.spawnBubble(at, this.underBus, BUBBLE_LEVEL * 1.5);
+      }
+    } else {
+      this.playSplash(0.3);
+    }
+  }
+
+  private uiTone(
+    when: number,
+    from: number,
+    to: number,
+    seconds: number,
+    level: number,
+    type: OscillatorType,
+  ): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.acquireVoice()) return;
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(from, when);
+    if (to !== from) osc.frequency.exponentialRampToValueAtTime(to, when + seconds);
+    const gain = ctx.createGain();
+    envelope(gain.gain, when, 0.0015, level, seconds);
+    osc.connect(gain);
+    gain.connect(this.uiBus);
+    osc.start(when);
+    osc.stop(when + seconds + 0.01);
+    this.trackVoice(osc, gain);
+  }
+
+  /** A parchment rustle: band noise sweeping, for the ledger opening and closing. */
+  private uiRustle(when: number, from: number, to: number, seconds: number, level: number): void {
+    const ctx = this.ctx;
+    if (ctx === null || !this.acquireVoice()) return;
+    const src = ctx.createBufferSource();
+    src.buffer = this.white;
+    src.loop = true;
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.Q.value = 1.2;
+    band.frequency.setValueAtTime(from, when);
+    band.frequency.exponentialRampToValueAtTime(to, when + seconds);
+    const gain = ctx.createGain();
+    const g = gain.gain;
+    g.setValueAtTime(0, when);
+    g.linearRampToValueAtTime(level, when + seconds * 0.3);
+    g.exponentialRampToValueAtTime(level * 1e-3, when + seconds);
+    src.connect(band);
+    band.connect(gain);
+    gain.connect(this.uiBus);
+    src.start(when, this.oneShotRandom() * (this.white.duration - 1));
+    src.stop(when + seconds + 0.02);
+    this.trackVoice(src, band, gain);
   }
 
   private spawnBubble(when: number, destination: AudioNode, level: number): void {
@@ -1819,8 +2573,21 @@ export class AudioSystem {
 
     let when = now;
     for (let i = 0; i < calls; i++) {
-      const distance = Math.sqrt(near + random() * (far - near));
-      this.spawnGullCall(when, distance, GULL_PAN_SPREAD * (random() * 2 - 1));
+      let distance = Math.sqrt(near + random() * (far - near));
+      let pan = GULL_PAN_SPREAD * (random() * 2 - 1);
+      // With a locator the cry comes from a bird that is actually up there. No
+      // bird within earshot, no cry: an empty patch of sky stays empty.
+      const locator = this.gullLocator;
+      if (locator !== null) {
+        const fix = this.gullFix;
+        if (!locator(fix) || !(fix.distance <= GULL_FAR_METRES * 1.25)) {
+          when += GULL_ANSWER_MIN + GULL_ANSWER_SPAN * random();
+          continue;
+        }
+        distance = clampNumber(finite(fix.distance, GULL_REFERENCE_METRES), GULL_NEAR_METRES, GULL_FAR_METRES);
+        pan = GULL_PAN_SPREAD * clampNumber(finite(fix.pan, 0), -1, 1);
+      }
+      this.spawnGullCall(when, distance, pan);
       when += GULL_ANSWER_MIN + GULL_ANSWER_SPAN * random();
     }
   }
@@ -2096,6 +2863,23 @@ function buildThunderCurve(
   for (let i = 0; i < points; i++) curve[i] *= scale;
   // The curve holds its last value after it finishes, so it has to end at silence.
   curve[points - 1] = 0;
+  return curve;
+}
+
+/**
+ * Linear to `knee`, then a tanh shoulder. A `WaveShaperNode` holds its end
+ * values for input beyond [-1, 1], so the curve's last point is the ceiling.
+ */
+function buildSoftClipCurve(knee: number): Float32Array<ArrayBuffer> {
+  const n = 2049;
+  const curve = new Float32Array(new ArrayBuffer(n * 4));
+  const span = 1 - knee;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    const a = Math.abs(x);
+    const y = a <= knee ? a : knee + span * Math.tanh((a - knee) / span);
+    curve[i] = Math.sign(x) * y;
+  }
   return curve;
 }
 
