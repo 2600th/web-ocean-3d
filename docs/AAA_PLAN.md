@@ -178,6 +178,16 @@ User direction 2026-11-13: make the language more interesting, engaging and user
 - [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
 - [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
 
+### Follow-ups found while verifying
+- [ ] **Capture history.** The first capture after a camera jump still carries a little of the previous pose: ~6k px of foam round the hull, amplified by TRAA, AO and eye adaptation. `resetDeterministic` does not clear it, and re-centring the wake before the reset did not either. Tests that compare two captures discard one, or reset before each.
+- [ ] **WebGL fallback compile cost.** Under the harness the WebGL path is ready at ~114 s and each full compile takes ~80 s (synchronous GLSL programs, the whole scene). A tier change there still takes over 90 s, inside the drain's own compile, so the WebGL Low budget test times out. Needs a lighter content set for WebGL, not a faster wait.
+- [ ] **Boot compile cost of the lighting pass.** One run at High: ready 17.3 s → 21.8 s (the light set is part of every lit material's shader). Re-measure on a quiet GPU before deciding.
+- [ ] **three's async pipeline error scope.** `WebGPUPipelineUtils` pops its validation scope only after awaiting the pipeline, so any unrelated validation error in between is reported against that pipeline and marks it failed. That is how a render pass ended twice surfaced as "Async render pipeline creation failed". Worth an upstream issue.
+- [ ] **Wave cascade count is fixed at boot.** A tier change rescales the FFT but keeps the boot tier's cascades.
+- [ ] **Whitecap coverage** (`foam.spec`, visual project) measures 0.11 % at one wind speed against a 0.23 % floor (a third of Monahan's prediction); same figure before and after the verification fixes. Recheck after the foam lighting changes, with the visual rebaseline.
+- [ ] Failing on `main` as well, so not regressions of this branch: the spectrum's directional-spread bound (0.642 against 0.62), bloom on Low, the output transform's dither determinism, and the bird test's first half (birds change 56 px on `main` and 29 px here against an 80 px floor).
+- [ ] Storm palette reads grey-green; a daytime storm shows a horizon line; the moon's path on the water is broad; clouds are not lit by lightning.
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
