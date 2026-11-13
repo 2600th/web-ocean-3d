@@ -1124,7 +1124,23 @@ export class OceanMaterial {
       // colour, which is why `absorption` weights one and its complement the
       // other rather than both being tuned independently.
       const refracted: any = viewportSharedTexture(sampleUv).rgb.toVar();
-      const inscatter: any = mix(this.uDeepColor, this.uShallowColor, absorption).toVar();
+      // `shallowColor` is the look of thin water *over bright sand* — the bed's
+      // own reflectance, tinted. Where the depth buffer finds an object well
+      // above the seabed (a hull, a buoy, a rock face), that sand is not there,
+      // and the same tint painted the submerged hull a flat turquoise sheet
+      // brighter than the open sea around it. Over an object, the column
+      // scatters like open water: the deep body colour, weighted by how much
+      // the column absorbed.
+      const objectBehind: any = (
+        floorDepth === null
+          ? float(0)
+          : floorDepth(worldPos).max(0).sub(bufferThickness).smoothstep(0.35, 1.2)
+      ).toVar();
+      const inscatter: any = mix(
+        mix(this.uDeepColor, this.uShallowColor, absorption),
+        this.uDeepColor,
+        objectBehind,
+      ).toVar();
       // Faded out with distance — see REFRACTION_FADE_NEAR. The backdrop is a
       // screen-space read at whatever resolution the frame happens to be, so
       // past a couple of hundred metres it is delivering the seabed's texture
@@ -1911,7 +1927,7 @@ export class OceanMaterial {
       // "object" would foam it edge to edge. Faded with distance because depth
       // precision and the mask's footprint both run out past a couple of
       // hundred metres.
-      const contactBand = smoothstepDownClamped(straightThickness, 0.04, 0.85).toVar();
+      const contactBand = smoothstepDownClamped(straightThickness, 0.02, 1.3).toVar();
       const notSeabed: any = (
         floorDepth === null
           ? float(1)
@@ -1921,8 +1937,13 @@ export class OceanMaterial {
       const contactFoam = contactBand
         .mul(notSeabed)
         .mul(contactReach)
-        .mul(breakup.mul(1.3).add(perturb.mul(0.8)).add(0.25).clamp(0, 1))
-        .smoothstep(0.18, 0.62)
+        // Lace, not an outline: the noise is biased low enough that the ring
+        // breaks into patches and gaps, and it is capped short of the crest
+        // foam's white. With the bias at +0.25 the ring was solid all the way
+        // round and drew the hull's waterline like a cartoon stroke.
+        .mul(breakup.mul(1.4).add(perturb.mul(0.9)).sub(0.12).clamp(0, 1))
+        .smoothstep(0.24, 0.72)
+        .mul(0.85)
         .toVar();
 
       const foamMask = accumulated

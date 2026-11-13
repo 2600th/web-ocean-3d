@@ -2773,6 +2773,8 @@ body {
 
   .score__value {
     font-size: 14px;
+    /* In the ribbon the label sits to the left, so the bump grows rightward. */
+    transform-origin: left center;
   }
 
   /* -- toasts: top centre, narrow, clear of the quest column below it (an
