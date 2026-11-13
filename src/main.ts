@@ -118,7 +118,7 @@ const TOUR_ENV_ELEVATION_STEP = 0.035;
  * Trunks and fronds only. A rock that swayed would be memorable for the wrong
  * reason, and the fort, the jetty and the wreck are all structures.
  */
-const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
+const FOLIAGE_MESHES = /^flora-/;
 
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
@@ -178,13 +178,11 @@ class App {
   private atmosphere!: Atmosphere;
   private aerial!: AerialPerspective;
   /**
-   * The gust the island's planting sways on. Four systems share it — the near
-   * meshes, the imposter cards that replace them, the meadow and the distant
-   * canopy — so none of the handovers between them is a change of phase.
-   *
-   * There are two handovers now, and neither is the 320-520 m one this comment
-   * used to name: a plant becomes a card at 60 m (understorey) or 120 m
-   * (trees), and the canopy field fades in over 90-180 m behind both.
+   * The gust the island's planting sways on. Three systems share it — the
+   * procedural plants, the meadow and the distant canopy cards — so the
+   * handover between them is not a change of character. The plants carry their
+   * own LOD chain to any range; the canopy field fades in over 90-180 m behind
+   * them.
    */
   private readonly foliageWind = new FoliageWind();
   /**
@@ -633,8 +631,8 @@ class App {
     // The wreck's owner. Poly Haven publishes no skeleton and every CC0 source
     // that does is low-poly stylised and would sit badly against photoscanned
     // rock — so it is built, which is also how this project solves gulls and
-    // the pelagic fish. The island's palms used to be built here too and are
-    // now `palm_coconut` and `palm_tall`, scattered by `Props.dressIsland`.
+    // the pelagic fish. The island's palms are built too, in `scene/flora`, and
+    // scattered by `Props.dressIsland`.
 
     this.remains = new Remains();
     // Above the tideline on the cove's own bearing, but off to one side of the
@@ -2167,7 +2165,7 @@ class App {
     // cycle. That is what the handover distances are chosen around.
     this.foliageWind.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.foliageWind.update(dt);
-    // And the imposter cards sway on it too, for the same reason.
+    // The island's animated set dressing reads the same wind.
     this.props?.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
     this.props?.update(dt);
 

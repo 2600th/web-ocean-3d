@@ -236,68 +236,10 @@ const PLATE_MIN_FOOTPRINT = 0.05;
  *    channel back to `OPAQUE`.
  */
 const ASSETS = [
-  // Trees are the worst case for a simplifier, and the reason is measurable
-  // rather than aesthetic. `error` is a fraction of the *mesh radius*, so on a
-  // 2.4 m canopy an error of 0.06 licenses 14 cm of deviation — and a leaf on
-  // these models is about 4 cm across. Every leaf therefore fits inside the
-  // error bound, the simplifier collapses whole leaves rather than simplifying
-  // them, and the first tree through this script came out with 2% of its canopy
-  // and the silhouette of a tree in February. The fix is not a higher ratio: it
-  // is an error bound smaller than a leaf. At 0.004 (about 1 cm) the collapses
-  // that delete leaves are refused and the ones that flatten a leaf's interior
-  // are allowed, so the canopy survives whatever ratio it is given.
-  //
-  // The ratio then buys canopy against frame time, and 0.04 is where that trade
-  // was settled: 116 trees stand on the island, so every thousand triangles of
-  // leaf is 116,000 triangles of scene. At 0.022/0.06 the canopy was 23k and
-  // the tree was bare; at 0.06/0.004 it was 64k and the island alone was seven
-  // million triangles; 0.04 is a full canopy for a little over four.
-  //
-  // The trunk has the opposite problem — one closed surface, no small features
-  // worth protecting — so it keeps the aggressive budget it always had. Hence
-  // `parts`: one file, two materials, two completely different jobs.
-  //
-  // `plate` is the other thing Poly Haven ships that a scene does not want.
-  // These are photogrammetry scans, and the scan includes the patch of ground
-  // the tree was standing on: a flat sheet welded under the trunk, which reads
-  // as a white dinner plate at the foot of every tree on the island.
-  { slug: 'pachira_aquatica_01', ratio: 0.15, error: 0.012, texture: 512 },
-  {
-    slug: 'island_tree_02',
-    ratio: 0.03,
-    error: 0.06,
-    texture: 512,
-    parts: [{ match: /_leaves$/, ratio: 0.04, error: 0.004 }],
-    plate: /^island_tree_02$/,
-    opaque: /_leaves$/,
-  },
-  // The jacaranda is the same problem at four times the size, and the size is
-  // what changes the arithmetic. `error` is a fraction of the mesh radius, so on
-  // an 11.8 m canopy the 1 cm tolerance the small trees need is 0.0008 — and at
-  // that tolerance the simplifier refuses almost everything and the model comes
-  // out at half a million triangles and 8.5 MB, for one background tree. What
-  // this canopy actually needs is a *ratio* bound rather than an error bound:
-  // it is the largest crown on the island and the only tree whose leaf clusters
-  // are big enough to survive being merged into each other. It is also the one
-  // tree here with no scanned ground plate under it.
-  {
-    slug: 'jacaranda_tree',
-    ratio: 0.008,
-    error: 0.08,
-    texture: 512,
-    parts: [{ match: /_leaves$/, ratio: 0.012, error: 0.006 }],
-    opaque: /_leaves$/,
-  },
-  { slug: 'fern_02', ratio: 0.35, error: 0.01, texture: 512 },
-  { slug: 'shrub_sorrel_01', ratio: 0.35, error: 0.01, texture: 512 },
-  // Ground cover is the highest instance count in the project — six hundred
-  // tufts on the island — so these are budgeted like the coral carpet is, by
-  // what the count multiplies out to rather than by how the tuft looks alone.
-  // Both also ship `alphaMode: BLEND` over a JPEG diffuse, which is the same
-  // spurious declaration the tree leaves carry: nothing to blend, and the whole
-  // kind pushed out of the opaque pass for it.
-  { slug: 'grass_medium_01', ratio: 0.12, error: 0.004, texture: 512, opaque: /^grass_medium/ },
-  { slug: 'grass_medium_02', ratio: 0.2, error: 0.004, texture: 512, opaque: /^grass_medium/ },
+  // The island's vegetation is no longer in this table: every plant is
+  // generated at load time by `src/scene/flora`, so there is nothing to fetch,
+  // decimate or LOD. The tree, palm, fern and grass entries — and the two-budget
+  // leaf/trunk treatment they needed — went with the models.
 
   // Coastline edges carry the shoreline's silhouette, so they keep a little more
   // than the rock masses do — a decimated edge reads as a bitten one.
@@ -313,8 +255,6 @@ const ASSETS = [
   { slug: 'coast_rocks_01', ratio: 0.06, error: 0.012, texture: 1024 },
   { slug: 'coast_rocks_03', ratio: 0.06, error: 0.012, texture: 1024 },
 
-  { slug: 'anthurium_botany_01', ratio: 0.3, error: 0.01, texture: 512 },
-  { slug: 'calathea_orbifolia_01', ratio: 0.3, error: 0.01, texture: 512 },
 
   // Pirate cove. `ship_pinnace` and `cannon_01` are rigged in the source; the
   // rig is stripped by `prune` because nothing here animates them, and a boat
@@ -372,40 +312,6 @@ const ASSETS = [
   // `static` for why the rig goes.
   { slug: 'emperor_angelfish', ratio: 1, error: 0.001, texture: 512, static: true },
 
-  // ---- The island's palms (Sketchfab) --------------------------------------
-  //
-  // Both replace `Remains.ts`'s procedural palm. `palm_coconut` is already
-  // game-ready at 6.6k and needs no decimation at LOD0; `palm_tall` is 27k for a
-  // 4.5 m tree, which is four times what it needs at the density it is planted.
-  // Botanical trees, replacing the two Poly Haven scans that read as dead
-  // scrub. Same two-budget treatment the scans get — the leaves need an error
-  // bound smaller than a leaf or the simplifier deletes them wholesale — and
-  // the flowers are held to the leaves' budget for the same reason.
-  //
-  // `cutOut` rather than `opaque`, which is the whole difference between these
-  // and the scans above: a scanned leaf is geometry over a JPEG and an authored
-  // one is a card over a PNG cut-out. See `cutOutFoliage`.
-  {
-    slug: 'tree_poinciana',
-    ratio: 0.05,
-    error: 0.02,
-    texture: 1024,
-    parts: [{ match: /leaf|flower/i, ratio: 0.12, error: 0.003 }],
-    cutOut: /leaf|flower/i,
-    atlas: /leaf|flower|bud/i,
-    lods: [0.3, 0.09],
-  },
-  {
-    slug: 'tree_orchid',
-    ratio: 0.06,
-    error: 0.02,
-    texture: 1024,
-    parts: [{ match: /leaf/i, ratio: 0.14, error: 0.003 }],
-    cutOut: /leaf/i,
-    atlas: /leaf|flower|bud/i,
-    lods: [0.3, 0.09],
-  },
-
   // Closed rock, replacing the coastal facades on the island — see the note in
   // the SKETCHFAB manifest. Decimated like the Poly Haven rocks are: one closed
   // surface with no small features to protect takes it freely.
@@ -415,8 +321,6 @@ const ASSETS = [
   // the rock, so without the correction every instance is placed underground.
   { slug: 'rock_boulder', ratio: 0.12, error: 0.012, texture: 1024, ground: true, lods: [0.3, 0.09] },
 
-  { slug: 'palm_coconut', ratio: 1, error: 0.001, texture: 1024, lods: [0.4, 0.14] },
-  { slug: 'palm_tall', ratio: 0.35, error: 0.004, texture: 1024, lods: [0.4, 0.14] },
 ];
 
 /**
@@ -434,15 +338,6 @@ const ASSETS = [
  * tenth far better than the same cut survives at arm's length.
  */
 const LOD_RATIOS = {
-  island_tree_02: [0.3, 0.09],
-  jacaranda_tree: [0.3, 0.09],
-  pachira_aquatica_01: [0.35, 0.12],
-  anthurium_botany_01: [0.35, 0.12],
-  calathea_orbifolia_01: [0.35, 0.12],
-  fern_02: [0.4],
-  shrub_sorrel_01: [0.4],
-  grass_medium_01: [0.4, 0.15],
-  grass_medium_02: [0.4, 0.15],
 
   coast_line_01: [0.25, 0.07],
   coast_line_02: [0.25, 0.07],
@@ -469,29 +364,8 @@ const LOD_RATIOS = {
   soft_coral_set: [0.45],
 };
 
-// These species are replaced by billboard imposters before LOD_SWITCH_METRES
-// reaches their first mesh LOD. Keeping the unused chains costs downloads and
-// render-object compilation without ever being drawn.
-const IMPOSTER_ONLY_ASSETS = new Set([
-  'fern_02',
-  'shrub_sorrel_01',
-  'calathea_orbifolia_01',
-  'anthurium_botany_01',
-  'grass_medium_01',
-  'grass_medium_02',
-  'tree_orchid',
-  'tree_poinciana',
-  'jacaranda_tree',
-  'island_tree_02',
-  'palm_coconut',
-  'palm_tall',
-  'pachira_aquatica_01',
-]);
-
 for (const asset of ASSETS) {
-  if (IMPOSTER_ONLY_ASSETS.has(asset.slug)) {
-    asset.lods = [];
-  } else if (asset.lods === undefined && LOD_RATIOS[asset.slug]) {
+  if (asset.lods === undefined && LOD_RATIOS[asset.slug]) {
     asset.lods = LOD_RATIOS[asset.slug];
   }
 }
