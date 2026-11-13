@@ -90,16 +90,16 @@ reinventing it.
 - [x] A light loop: floating loot to collect under sail, objective marker and compass bearing (`src/gameplay`)
 - [x] Sail trim against wind (point of sail matters), anchor, camera shake + spray on impacts
   (bow spray is a CPU billboard system in `gameplay/effects`; `physics/Spray` slam spray is still parked)
-- [ ] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
+- [x] Toasts/score in the new UI — `GameUiSink` is defined; the HUD has to implement it
 
 ### G. Cinematic camera (camera agent)
 - [x] Re-cut the tour: motivated shot list (establishing, ship hero, low wave-skim, island flyover, underwater dip, storm), eased splines, look-ahead framing, no clipping into water/terrain
 - [x] Smooth handoff between tour and free cameras (lens and Dutch angle ease back with the pose)
 
 ### H. Underwater and sea-floor life (underwater agent)
-- [ ] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
-- [ ] Animals: more fish species and schools, a turtle, rays, jellyfish — procedural meshes, boids/paths
-- [ ] Underwater look: god rays, particulates, colour depth grading, caustics on life
+- [x] Procedural sea-floor vegetation: seagrass beds, kelp variety, sea fans, anemones, coral clusters — instanced, wind/current sway
+- [x] Animals: more fish species and schools, a turtle, rays, jellyfish — procedural meshes, boids/paths
+- [x] Underwater look: god rays, particulates, colour depth grading, caustics on life
 
 ### I. Sky, clouds and birds (sky agent)
 - [x] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer — clouds resolved by TRAA (own velocity), lit by the measured dome (no white deck at night/dusk), sunset underglow, storm base relief, 2D cirrus; twilight dome, milky way, 22° moon halo. Cost unchanged: cloud layer 2.7 ms at High / 1600x900, same as before the pass
@@ -114,7 +114,7 @@ reinventing it.
 ### K. Shore and ship–wave interaction (shore agent)
 - [x] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace — `ocean/Surf` (closed-form breakers in sets, shared by the ocean's vertex and fragment stages, the wake buffer and the ground hook)
 - [x] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks — `physics/Spray` (now visible; see its header for why it was not), routed through `onSprayImpact` in `main.ts`
-- [ ] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
+- [x] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
 
 ### L. Game feel and polish (lead)
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
