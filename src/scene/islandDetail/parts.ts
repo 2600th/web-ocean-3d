@@ -242,6 +242,10 @@ export class DetailClock {
   readonly uTime = uniform(0);
   readonly uWind = uniform(new THREE.Vector2(1, 0));
   readonly uWindStrength = uniform(0.5);
+  /** Light on the smoke from sky and key; ~1 at a clear noon. See `IslandDetail.setLighting`. */
+  readonly uSmokeLight: any = uniform(new THREE.Color(1, 1, 1));
+  /** 0..1, the fire's glow on the plume's underside after dark. */
+  readonly uFireGlow = uniform(0);
   private time = 0;
 
   update(dt: number): void {
@@ -347,7 +351,12 @@ export function buildSmoke(clock: DetailClock, origin: THREE.Vector3, count: num
     const puff = float(1).sub(r.smoothstep(0.35, 1));
     const fade = age.smoothstep(0, 0.1).mul(float(1).sub(age.smoothstep(0.3, 0.9)));
     const grey: Node = mix(vec3n(0.36, 0.33, 0.3), vec3n(0.78, 0.78, 0.8), age.smoothstep(0, 0.5));
-    return vec4(grey, puff.mul(fade).mul(0.13));
+    // Lit, not self-coloured: the sky and key on a grey card, plus the fire on
+    // the low part of the plume once it is dark. Unlit, the column stayed noon
+    // grey all night and was the brightest thing on the beach.
+    const firelight: Node = vec3n(1.0, 0.45, 0.16).mul(clock.uFireGlow).mul(float(1).sub(age.smoothstep(0.05, 0.35)).mul(1.0));
+    const lit: Node = grey.mul(vec3n(clock.uSmokeLight)).add(grey.mul(firelight));
+    return vec4(lit, puff.mul(fade).mul(0.13));
   })();
   const mesh = new THREE.Mesh(g, m);
   mesh.name = 'camp-smoke';
