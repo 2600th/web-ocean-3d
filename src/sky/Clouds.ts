@@ -5,6 +5,8 @@ import {
   If,
   Loop,
   cameraPosition,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
   clamp,
   dot,
   exp,
@@ -12,8 +14,10 @@ import {
   interleavedGradientNoise,
   max,
   min,
+  mrt,
   mix,
   mx_fractal_noise_float,
+  mx_noise_float,
   normalize,
   positionGeometry,
   pow,
@@ -75,6 +79,22 @@ export interface CloudParams {
   steps: number; // raymarch steps; 0 disables the layer entirely
   color: THREE.Color;
   shadowColor: THREE.Color;
+  /**
+   * How ragged the underside of the deck is, 0..1.
+   *
+   * Fair-weather cumulus have flat bases - the condensation level is one
+   * altitude - so this is near zero for every clear preset. A storm deck is the
+   * opposite: its base hangs in lobes and pouches (mammatus) and trails scud,
+   * and a perfectly flat underside is exactly why the storm read as a grey lid.
+   * See `densityAt`.
+   */
+  baseRoughness: number;
+  /**
+   * Amount of the high cirrus layer, 0..1. A 2D layer, not a march - see
+   * `cirrusAt`. It is what gives a clear day depth above the cumulus, and what
+   * stays lit pink after the sun has left the lower deck.
+   */
+  cirrus: number;
 }
 
 export const DEFAULT_CLOUD_PARAMS: CloudParams = {
@@ -88,6 +108,8 @@ export const DEFAULT_CLOUD_PARAMS: CloudParams = {
   steps: 24,
   color: new THREE.Color(1.0, 0.99, 0.96),
   shadowColor: new THREE.Color(0.34, 0.38, 0.47),
+  baseRoughness: 0.1,
+  cirrus: 0.4,
 };
 
 /** Dome radius in metres — see Atmosphere for why this can be small. */
@@ -290,6 +312,47 @@ const PHASE_MAX = 6.5;
 /** Value of the normalised phase function for isotropic scattering. */
 const PHASE_ISOTROPIC = 1;
 
+/**
+ * How far the wind offset runs before it is wrapped, metres.
+ *
+ * The offset used to wrap at `1 / NOISE_SCALE` - one noise unit - on the
+ * assumption that the field repeats there. It does not: MaterialX Perlin hashes
+ * its integer lattice and has no period at all, so every wrap moved the whole
+ * deck, its shadow and the weather field to a different part of the noise in
+ * one frame. At a storm's wind that was a visible jump every minute or two.
+ * There is no wrap distance that is seamless for a non-periodic field, so the
+ * only honest choice is one that is never reached in a session: 200 km is two
+ * hours at a gale, and still under 500 detail-noise units, which float32 holds
+ * to better than 1e-4 of a feature.
+ */
+const WIND_WRAP = 200_000;
+
+/** Moonlight on the deck, relative to sunlight. Enough to silver a cloud edge. */
+const MOON_GAIN = 0.12;
+const MOON_CLOUD_COLOR = new THREE.Color(0.62, 0.72, 0.95);
+
+/**
+ * Low-sun underside glow.
+ *
+ * The undersides of a sunset deck are lit *from below*: in the last minutes
+ * before and after the sun touches the horizon its rays reach the cloud base
+ * under the layer's own shadow. A sun march toward a sun a few degrees up
+ * cannot find that light - it only ever walks up and sideways through the
+ * layer - so without a term for it every sunset base is the same blue-grey it
+ * is at noon, which is the opposite of what anyone photographs a sunset for.
+ */
+const UNDER_GLOW = 1.1;
+
+/** Altitude of the cirrus sheet, metres above the wrapped surface. */
+const CIRRUS_ALTITUDE = 7800;
+/** Streak length and width scales for the cirrus noise, per metre. */
+const CIRRUS_ALONG = 1 / 7000;
+const CIRRUS_ACROSS = 1 / 700;
+/** Peak opacity of the cirrus sheet. Ice cloud is thin; it veils, never hides. */
+const CIRRUS_OPACITY = 0.5;
+/** Cirrus rides the jet, well above the cumulus steering wind. */
+const CIRRUS_WIND = 2.2;
+
 function coverageToThreshold(coverage: number): number {
   const c = Math.min(1, Math.max(0, coverage));
   for (let i = 1; i < COVERAGE_QUANTILES.length; i++) {
@@ -330,6 +393,29 @@ export class Clouds {
   private readonly uColor: any = uniform(new THREE.Color(1, 1, 1));
   private readonly uShadowColor: any = uniform(new THREE.Color(0.34, 0.38, 0.47));
   private readonly uSunDir = uniform(new THREE.Vector3(0, 1, 0));
+  /**
+   * Colour of the key light the deck is lit by - the sun's extinction colour by
+   * day, moonlight by night. The preset's `color` is the cloud's own tint and
+   * multiplies this rather than standing in for it, which is why a sunset deck
+   * used to be lit by whatever the preset author guessed a sunset was.
+   */
+  private readonly uLightColor: any = uniform(new THREE.Color(1, 1, 1));
+  /** See `UNDER_GLOW`. Colour and strength in one. */
+  private readonly uUnderGlow: any = uniform(new THREE.Color(0, 0, 0));
+  /** Horizontal unit vector toward the key light, for the underside glow. */
+  private readonly uSunFlat = uniform(new THREE.Vector3(1, 0, 0));
+  /** See `CloudParams.baseRoughness`. */
+  private readonly uBaseRough = uniform(0.1);
+  /** See `CloudParams.cirrus`. */
+  private readonly uCirrusAmount = uniform(0.4);
+  /**
+   * Direct light on the cirrus. Separate from `uSunGain` because the sheet is
+   * six kilometres higher and keeps the sun for a while after the cumulus
+   * below it has lost it - that late pink veil is the point of having it.
+   */
+  private readonly uCirrusSun = uniform(1);
+  /** Wind axis in the horizontal plane, for the cirrus streak direction. */
+  private readonly uWindAxis = uniform(new THREE.Vector3(1, 0, 0));
   private readonly uWindOffset = uniform(new THREE.Vector3());
   /**
    * Extinction per metre of cloud for the ground shadow.
@@ -354,6 +440,17 @@ export class Clouds {
   private readonly uAmbientTop: any = uniform(new THREE.Color(0.62, 0.72, 0.86));
   /** How far the weather field is allowed to move the coverage threshold. */
   private readonly uWeatherAmount = uniform(0);
+
+  /**
+   * Frame index for the temporal jitter, 0 when there is no temporal resolve.
+   * A CPU counter rather than three's `frameId`, so `resetWind` rewinds it and
+   * a deterministic capture sees the same sequence every time.
+   */
+  private readonly uJitterFrame = uniform(0);
+  /** Edge band-limit per metre of march step. See its use in `buildCloudNode`. */
+  private readonly uSoftnessPerMetre = uniform(0.0032);
+  private jitterFrame = 0;
+  private temporalJitter = false;
 
   /** Shared haze, so the deck fades into the same air the island does. */
   private aerial: AerialPerspective | null = null;
@@ -409,6 +506,8 @@ export class Clouds {
     if (params.windDirection !== undefined) this.params.windDirection = params.windDirection;
     if (params.evolutionRate !== undefined) this.params.evolutionRate = params.evolutionRate;
     if (params.steps !== undefined) this.params.steps = params.steps;
+    if (params.baseRoughness !== undefined) this.params.baseRoughness = params.baseRoughness;
+    if (params.cirrus !== undefined) this.params.cirrus = params.cirrus;
     this.applyParams();
   }
 
@@ -422,6 +521,40 @@ export class Clouds {
    * constructor-time dependency expressed as a setter only because `Clouds` is
    * built before `Atmosphere` is.
    */
+  /**
+   * Correct motion vectors for the temporal resolve.
+   *
+   * Three's stock velocity reprojects `positionPrevious`, which is the *raw
+   * geometry attribute* — the unit sphere — while the current position is the
+   * `positionNode`, a 100 m dome moved to the camera. The two describe
+   * different points, so every cloud pixel reported a velocity of a sizeable
+   * fraction of the screen, TRAA read that as motion, and gave the current
+   * frame full weight. The layer was never temporally resolved at all, which is
+   * why its jittered march showed as diagonal hatching along every edge with
+   * the resolve on or off.
+   *
+   * The layer is at infinity for reprojection purposes, so the right vector is
+   * the direction's own: drop translation (w = 0) and reproject through this
+   * frame's and last frame's view-projection. Camera translation then moves
+   * nothing and rotation moves it exactly as far as the sky moves.
+   *
+   * Safe as a material MRT override only because the layer is on its own
+   * render layer and excluded from the planar mirror: a material `mrtNode`
+   * *replaces* the output of a render into a target without MRT, which is what
+   * the reflector's target is.
+   */
+  setPreviousViewProjection(previous: any): void {
+    this.material.mrtNode = mrt({
+      velocity: Fn(() => {
+        const dir = vec4(normalize(positionGeometry), 0);
+        const current = (cameraProjectionMatrix as any).mul(cameraViewMatrix).mul(dir);
+        const before = previous.mul(dir);
+        return current.xy.div(current.w).sub(before.xy.div(before.w));
+      })(),
+    });
+    this.material.needsUpdate = true;
+  }
+
   setAerialPerspective(aerial: AerialPerspective): void {
     if (this.aerial === aerial) return;
     this.aerial = aerial;
@@ -438,16 +571,83 @@ export class Clouds {
     // deck around them bounces. The zenith radiance alone is the sky *behind*
     // them and reads as a grey top, so it is lifted toward the sunlit cloud
     // colour by a fixed fraction rather than used raw.
-    this.uAmbientTop.value.copy(zenith).lerp(this.params.color, 0.45).multiplyScalar(1.35);
+    //
+    // Toward a *neutral* of the zenith's own brightness, not toward the cloud's
+    // sunlit tint. The tint is the colour of direct sun on the cloud, and at
+    // sunset that is peach: lifting the ambient toward it painted the shaded
+    // flanks the same peach as the lit ones and the whole deck went one flat
+    // pink. The shadow side of a sunset cumulus is the sky's colour — lavender
+    // and blue — and the contrast between that and the gold on the lit side
+    // is most of what makes a sunset sky read as glorious rather than tinted.
+    const luma = zenith.r * 0.2126 + zenith.g * 0.7152 + zenith.b * 0.0722;
+    _neutral.setRGB(1, 1, 1).multiplyScalar(Math.max(luma * 2.2, 0.35));
+    this.uAmbientTop.value.copy(zenith).lerp(_neutral, 0.45).multiplyScalar(1.35);
   }
 
   setSunDirection(dir: THREE.Vector3): void {
-    this.uSunDir.value.copy(dir).normalize();
+    this.setLighting(dir, WHITE, dir, 0);
+  }
+
+  /**
+   * The key light the deck is lit by, and the low-sun glow on its underside.
+   *
+   * By day that is the sun, in the sun's own colour; once the sun has gone the
+   * same single-scattering path is handed to the moon at a fraction of the
+   * gain, so a moonlit deck gets silver edges and a lit top instead of going to
+   * a flat ambient grey. The hand-over happens where the sun's gain is already
+   * zero, so there is no frame where the light visibly jumps.
+   *
+   * Uniform writes only, no allocation - called every frame.
+   */
+  setLighting(
+    sunDir: THREE.Vector3,
+    sunColor: THREE.Color,
+    moonDir: THREE.Vector3,
+    night: number,
+  ): void {
+    const sunY = sunDir.y / Math.max(1e-6, sunDir.length());
     // Once the sun is under the horizon the single-scattering term has to go
     // with it, otherwise the deck stays lit like midday against a night sky.
-    // Derived here rather than exposed, so callers only have to push the vector.
-    const above = Math.min(1, Math.max(0, (this.uSunDir.value.y + 0.09) / 0.18));
-    this.uSunGain.value = SUN_GAIN * above * above * (3 - 2 * above);
+    const above = smooth01((sunY + 0.09) / 0.18);
+    const color = this.uLightColor.value as THREE.Color;
+    const dir = this.uSunDir.value as THREE.Vector3;
+    if (above > 0.001 || night <= 0.001) {
+      dir.copy(sunDir).normalize();
+      this.uSunGain.value = SUN_GAIN * above;
+      // A little white back in: the extinction colour is normalised to its
+      // peak channel, and at the horizon that is a pure orange-red which would
+      // paint the whole deck one hue. Real sunset cloud keeps a range from gold
+      // on the tops to rose on the flanks, and that range is this lerp.
+      color.copy(sunColor).lerp(WHITE, 0.18);
+    } else {
+      dir.copy(moonDir).normalize();
+      const moonUp = smooth01((dir.y + 0.02) / 0.17);
+      this.uSunGain.value = SUN_GAIN * MOON_GAIN * moonUp * Math.min(1, night);
+      color.copy(MOON_CLOUD_COLOR);
+    }
+
+    const flat = this.uSunFlat.value as THREE.Vector3;
+    flat.set(dir.x, 0, dir.z);
+    if (flat.lengthSq() < 1e-8) flat.set(1, 0, 0);
+    flat.normalize();
+
+    // Low-sun underside glow: on from just below the horizon, gone by about
+    // fifteen degrees up. And it fades with coverage - under a solid deck
+    // nothing gets underneath, which is why a storm sunset is a glow in a slot
+    // of clear sky rather than a lit ceiling.
+    const low = smooth01((sunY + 0.1) / 0.08) * (1 - smooth01((sunY - 0.06) / 0.22));
+    const open = Math.min(1, Math.max(0, (1 - this.params.coverage) * 2.4));
+    (this.uUnderGlow.value as THREE.Color)
+      .copy(sunColor)
+      .multiplyScalar(UNDER_GLOW * low * open);
+
+    // The cirrus sits six kilometres higher and sees the sun a few degrees
+    // longer; past that it takes the moon's light like the deck does.
+    const cirrusAbove = smooth01((sunY + 0.16) / 0.2);
+    this.uCirrusSun.value =
+      cirrusAbove > 0.001 || night <= 0.001
+        ? cirrusAbove
+        : MOON_GAIN * smooth01((moonDir.y + 0.02) / 0.17) * Math.min(1, night);
   }
 
   /**
@@ -458,20 +658,37 @@ export class Clouds {
    * rewound explicitly for a capture to be repeatable.
    */
   resetWind(): void {
+    this.jitterFrame = 0;
+    this.uJitterFrame.value = 0;
     this.windOffset.set(0, 0, 0);
     this.uWindOffset.value.copy(this.windOffset);
     this.evolution = 0;
     this.uEvolution.value.set(0, 0, 0);
   }
 
+  /**
+   * Whether a temporal resolve follows, so the march offset may vary per frame.
+   * See the jitter note in `buildCloudNode`.
+   */
+  setTemporalJitter(enabled: boolean): void {
+    this.temporalJitter = enabled;
+    if (!enabled) this.uJitterFrame.value = 0;
+    this.uSoftnessPerMetre.value = enabled ? 0.0024 : 0.0032;
+  }
+
   update(dt: number): void {
     if (!this.mesh.visible) return;
+    if (this.temporalJitter) {
+      // Sixteen distinct offsets is enough for the resolve to average, and a
+      // short cycle keeps the uniform small and exactly reproducible.
+      this.jitterFrame = (this.jitterFrame + 1) % 16;
+      this.uJitterFrame.value = this.jitterFrame;
+    }
     this.windOffset.addScaledVector(this.windVector, dt * this.params.windSpeed);
     // Wrap on the noise period so the offset never grows large enough to eat
     // float precision in a long-running session.
-    const period = 1 / NOISE_SCALE;
-    this.windOffset.x %= period;
-    this.windOffset.z %= period;
+    this.windOffset.x %= WIND_WRAP;
+    this.windOffset.z %= WIND_WRAP;
     this.uWindOffset.value.copy(this.windOffset);
 
     // Evolution runs across the wind, so growth is not just more translation
@@ -515,6 +732,9 @@ export class Clouds {
     this.uWeatherAmount.value = WEATHER_AMOUNT * 4 * c * (1 - c);
 
     this.windVector.set(Math.cos(p.windDirection), 0, Math.sin(p.windDirection));
+    (this.uWindAxis.value as THREE.Vector3).copy(this.windVector);
+    this.uBaseRough.value = Math.min(1, Math.max(0, p.baseRoughness));
+    this.uCirrusAmount.value = Math.min(1, Math.max(0, p.cirrus));
   }
 
   /**
@@ -707,12 +927,6 @@ export class Clouds {
   private densityAt(p: any, softness: any, weather: any, baseOctaves: number | null = null): any {
     const h = this.heightFraction(p);
 
-    // Flat base, rounded top — the cumulus profile in ref-default.png. Raising
-    // the threshold toward the top and bottom of the slab (rather than only
-    // scaling density) is what makes the puffs read as rounded volumes instead
-    // of as a sheet with soft edges.
-    const profile = smoothstep(0.0, 0.12, h).mul(smoothstepDown(h, 0.42, 1.0));
-
     const q = p.sub(this.uWindOffset).mul(NOISE_SCALE);
     const base = mx_fractal_noise_float(q, baseOctaves ?? 4, 2.0, 0.5, 1.0)
       .mul(0.5)
@@ -738,6 +952,43 @@ export class Clouds {
           0.5,
           1.0,
         ).mul(0.5);
+
+    // How far the underside is lifted here, as a fraction of the layer.
+    //
+    // Driven by the noise already in hand, so it costs nothing: where the field is
+    // strong the column hangs all the way to the condensation level, and where
+    // it is weaker the base is drawn up into the layer. Under a fair-weather
+    // sky `baseRoughness` is near zero and the bases stay flat, as cumulus
+    // bases are. Under a storm deck — coverage near one, every column dense —
+    // it is the only thing that gives the underside any relief at all: the
+    // strong cells hang down as lobes and pouches between recesses, and the
+    // height-graded ambient below then shades each lobe darker than the
+    // recess above it. That shading is the mammatus texture; without the lift
+    // the base was a single flat plane at one altitude and one grey.
+    //
+    // Two scales. The base field sets which columns hang at all, over a couple
+    // of kilometres; the detail octave, where it is resolved, carves each
+    // hanging column into pouches a few hundred metres across — its zero
+    // crossings are creases drawn up into the deck and its cell interiors hang
+    // as rounded lobes, which is the mammatus shape rather than a lumpy floor.
+    // The light march takes the coarse field with no detail, so it sees only
+    // the first scale; the self-shadowing of each pouch is a detail it cannot
+    // resolve anyway.
+    const pouches =
+      detail === null
+        ? float(0)
+        : float(0.16).sub(detail.abs()).clamp(0.0, 0.16).mul(float(1).sub(softness).clamp(0, 1));
+    const lift = float(0.62)
+      .sub(base)
+      .clamp(0.0, 0.3)
+      .add(pouches)
+      .mul(this.uBaseRough);
+
+    // Flat base, rounded top — the cumulus profile in ref-default.png. Raising
+    // the threshold toward the top and bottom of the slab (rather than only
+    // scaling density) is what makes the puffs read as rounded volumes instead
+    // of as a sheet with soft edges.
+    const profile = smoothstep(lift, lift.add(0.12), h).mul(smoothstepDown(h, 0.42, 1.0));
 
     // The weather field moves the threshold, so coverage varies across the sky
     // instead of being one number for the whole hemisphere.
@@ -801,7 +1052,16 @@ export class Clouds {
         // contour lines. Interleaved gradient noise rather than a plain hash:
         // a 2D hash of the pixel coordinate leaves visible diagonal hatching at
         // these step counts, IGN does not.
-        const jitter = interleavedGradientNoise(screenCoordinate);
+        //
+        // A *static* IGN still hatches, though — diagonally, along the soft rim
+        // of every cloud, where the step offset decides whether a sample lands
+        // in the edge or past it. With the temporal resolve on, the pattern is
+        // shifted every frame (Jimenez's 5.588 pixel offset per frame) and TRAA
+        // integrates it into a smooth edge instead of a ruled one. Off without
+        // a resolve, where a moving pattern would only be visible grain.
+        const jitter = interleavedGradientNoise(
+          screenCoordinate.xy.add(this.uJitterFrame.mul(5.588238)),
+        );
         const t = tEnter.add(stepSize.mul(jitter)).toVar('cloudT');
 
         const transmittance = float(1).toVar('cloudTr');
@@ -816,7 +1076,37 @@ export class Clouds {
           PHASE_MAX,
         ).toVar('cloudPhase');
 
-        const softness = clamp(stepSize.mul(0.0032), 0.0, 1.0).toVar('cloudLod');
+        // 0.0024 per metre of step, down from 0.0032, when the march offset
+        // became temporal. The band-limit exists because a static offset
+        // aliased the detail octave into moire; once TRAA is averaging sixteen
+        // offsets, the march resolves finer detail than one frame of it can, and
+        // the old setting was blurring every mid-distance cumulus into a soft
+        // ball. Without the resolve the layer keeps the old softness — see
+        // `setTemporalJitter`.
+        const softness = clamp(stepSize.mul(this.uSoftnessPerMetre), 0.0, 1.0).toVar('cloudLod');
+
+        // Powder only away from the sun.
+        //
+        // The powder term darkens the optically thin parts of a cloud, and that
+        // is right when the light is behind the viewer: the rim of a cumulus
+        // seen with the sun at your back is darker than its core. Looking
+        // *toward* the sun it is exactly backwards — the thin rim is where the
+        // forward-scattered light gets out, and darkening it erased the silver
+        // lining the phase function had just put there.
+        const powderView = cosTheta.mul(-0.5).add(0.5).toVar('cloudPowderView');
+
+        // How squarely this ray looks toward the low sun's bearing, for the
+        // underside glow. Horizontal only: the glow is the sunset sky's colour
+        // on the bases, and it is strongest on the side of the deck the sun is
+        // setting behind.
+        const flatLength = rd.x.mul(rd.x).add(rd.z.mul(rd.z)).sqrt().max(1e-3);
+        const glowBearing = rd.x
+          .mul(this.uSunFlat.x)
+          .add(rd.z.mul(this.uSunFlat.z))
+          .div(flatLength)
+          .mul(0.5)
+          .add(0.5);
+        const glowView = glowBearing.mul(glowBearing).mul(glowBearing).mul(0.7).add(0.3).toVar('cloudGlowView');
 
         Loop(this.uSteps, () => {
           const p = ro.add(rd.mul(t)).toVar('cloudP');
@@ -867,7 +1157,7 @@ export class Clouds {
               const order = exp(opticalDepth.mul(-extinction))
                 .mul(mix(float(PHASE_ISOTROPIC), phase, phaseWeight))
                 .mul(attenuation);
-              sunTerm.addAssign(n === 0 ? order.mul(powder) : order);
+              sunTerm.addAssign(n === 0 ? order.mul(mix(float(1), powder, powderView)) : order);
             }
             sunTerm.mulAssign(this.uSunGain.mul(1 / MS_NORM));
 
@@ -885,7 +1175,21 @@ export class Clouds {
               height,
             ).toVar('cloudAmbient');
 
-            const lum = ambient.add(this.uColor.mul(sunTerm)).toVar('cloudLum');
+            // The low sun under the deck. Strongest at the very base and gone
+            // by half way up; and attenuated by how much cloud lies between the
+            // sample and the sun, which at a grazing sun is a horizontal path
+            // — so the glow catches the exposed undersides and flanks rather
+            // than the interior of a lobe.
+            const below = float(1).sub(height);
+            const underGlow = this.uUnderGlow
+              .mul(below.mul(below))
+              .mul(glowView)
+              .mul(exp(opticalDepth.mul(-0.3)).mul(0.65).add(0.35));
+
+            const lum = ambient
+              .add(this.uColor.mul(this.uLightColor).mul(sunTerm))
+              .add(underGlow)
+              .toVar('cloudLum');
 
             const sampleT = exp(d.mul(stepSize).mul(this.uExtinction).negate());
             // Energy-conserving analytic integration over the step.
@@ -904,11 +1208,33 @@ export class Clouds {
         // into, rather than into an exponential of its own. The layer has fog
         // disabled and is drawn on a camera-locked dome, so `scene.fogNode`
         // never reaches it and the shared function is called by hand.
+        //
+        // `scattered` is premultiplied — it is radiance already weighted by
+        // the coverage it came through — and the blend state multiplies by
+        // alpha again. Writing it out raw therefore drew every partly
+        // transparent sample at coverage squared: the thin rim of a cloud came
+        // out darker than both its core and the sky behind it, which is a
+        // dark fringe where a sunlit cumulus should have its brightest edge.
+        // Un-premultiplying here (and re-premultiplying for the composite with
+        // the cirrus below) restores it; opaque cores are unchanged.
+        const coverage = float(1).sub(transmittance).toVar('cloudCoverage');
+        const straight = scattered.div(coverage.max(1e-4));
         const lit =
           this.aerial === null
-            ? scattered
-            : this.aerial.apply(scattered, tEnter, rd);
-        result.assign(vec4(lit, float(1).sub(transmittance)));
+            ? straight
+            : this.aerial.apply(straight, tEnter, rd);
+        result.assign(vec4(lit.mul(coverage), coverage));
+      });
+
+      // The cirrus sheet, behind the cumulus. Premultiplied "over": it shows
+      // only through what the deck in front of it lets through, and costs
+      // nothing where that is nothing.
+      If(this.uCirrusAmount.greaterThan(0.001).and(result.w.lessThan(0.995)), () => {
+        const cirrus = this.cirrusAt(ro, rd, view).toVar('cirrus');
+        const behind = float(1).sub(result.w);
+        result.assign(
+          vec4(result.xyz.add(cirrus.xyz.mul(behind)), result.w.add(cirrus.w.mul(behind))),
+        );
       });
 
       // Full alpha right down to the horizon line, and gone a third of a degree
@@ -922,9 +1248,90 @@ export class Clouds {
       // water is.
       const alpha = clamp(result.w.mul(smoothstep(-0.006, -0.0005, view.y)), 0.0, 1.0);
 
-      return vec4(result.xyz, alpha);
+      return vec4(result.xyz.div(result.w.max(1e-4)), alpha);
     })();
   }
+
+  /**
+   * The high cirrus veil, premultiplied: `(radiance * a, a)`.
+   *
+   * One shell intersection and one fractal noise — no march. Ice cloud at eight
+   * kilometres is optically thin and has no self-shadowing worth integrating;
+   * what it needs is its *shape*, which is long fibrous streaks laid along the
+   * upper wind, and its *light*, which is the sun's colour for a few minutes
+   * longer than the deck below gets it. Both are a lookup.
+   *
+   * The streaks come from sampling the noise stretched about five to one along
+   * the wind axis, with the across-wind coordinate bent by a slower noise so the
+   * filaments curve and hook instead of ruling the sky in straight lines. A
+   * large-scale mask breaks the sheet into patches, so it reads as weather on
+   * the way rather than as a texture over everything.
+   */
+  private cirrusAt(ro: any, rd: any, view: any): any {
+    const t = this.shellDistance(ro, rd, float(CIRRUS_ALTITUDE)).toVar('cirrusT');
+    const p = ro.add(rd.mul(t));
+    const drift = vec3(p.x, 0, p.z).sub(this.uWindOffset.mul(CIRRUS_WIND)).toVar('cirrusDrift');
+    const axis = this.uWindAxis;
+    const along = drift.x.mul(axis.x).add(drift.z.mul(axis.z)).toVar('cirrusAlong');
+    const across = drift.z.mul(axis.x).sub(drift.x.mul(axis.z)).toVar('cirrusAcross');
+
+    const patch = mx_noise_float(vec3(along.mul(1 / 30000), across.mul(1 / 30000), 3.7))
+      .mul(0.5)
+      .add(0.5);
+    const mask = smoothstep(float(0.62).sub(this.uCirrusAmount.mul(0.3)), 0.78, patch);
+
+    const bend = mx_noise_float(vec3(along.mul(1 / 9000), across.mul(1 / 9000), 1.3)).mul(3.0);
+    const streak = mx_fractal_noise_float(
+      vec3(
+        along.mul(CIRRUS_ALONG),
+        across.mul(CIRRUS_ACROSS).add(bend),
+        this.uEvolution.y.mul(0.35),
+      ),
+      4,
+      2.3,
+      0.55,
+      1.0,
+    )
+      .mul(0.5)
+      .add(0.5);
+
+    // Breaks each filament into tufts — the hooks and wisps of mares' tails —
+    // so a streak fades in and out along its length instead of running the
+    // width of the sky at one strength.
+    const tufts = smoothstep(
+      -0.25,
+      0.55,
+      mx_noise_float(vec3(along.mul(1 / 2600), across.mul(1 / 2600), this.uEvolution.x.mul(0.5))),
+    );
+
+    // Thinned toward the horizon, where the sheet is foreshortened below the
+    // sampling rate of a screen pixel and the streaks would only shimmer.
+    const density = smoothstep(0.5, 0.84, streak)
+      .mul(tufts)
+      .mul(mask)
+      .mul(this.uCirrusAmount)
+      .mul(smoothstep(0.012, 0.09, view.y));
+    const alpha = density.mul(CIRRUS_OPACITY).toVar('cirrusAlpha');
+
+    // Thin ice is strongly forward-scattering: a bright halo of veil around the
+    // sun, plain white away from it.
+    const cosSun = dot(rd, this.uSunDir).max(0);
+    const forward = pow(cosSun, 10).mul(2.2).add(cosSun.mul(cosSun).mul(0.35));
+    const radiance = this.uColor
+      .mul(this.uLightColor)
+      .mul(this.uCirrusSun.mul(forward.add(0.85)))
+      .add(this.uAmbientTop.mul(0.5));
+    const lit = this.aerial === null ? radiance : this.aerial.apply(radiance, t, rd);
+    return vec4(lit.mul(alpha), alpha);
+  }
+}
+
+const WHITE = /*@__PURE__*/ new THREE.Color(1, 1, 1);
+const _neutral = /*@__PURE__*/ new THREE.Color();
+
+function smooth01(x: number): number {
+  const t = x < 0 ? 0 : x > 1 ? 1 : x;
+  return t * t * (3 - 2 * t);
 }
 
 /** Henyey–Greenstein phase, 1/(4*pi) normalised. */

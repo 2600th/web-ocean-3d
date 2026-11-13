@@ -747,11 +747,13 @@ class App {
     // a bandwidth saving that pays for most of the resolve.
     this.taaEnabled =
       this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    this.clouds.setTemporalJitter(this.taaEnabled);
     const scenePass = this.taaEnabled
       ? pass(this.scene, this.camera, { samples: 0 })
       : pass(this.scene, this.camera);
     if (this.taaEnabled) {
       scenePass.setMRT(mrt({ output, velocity }));
+      this.clouds.setPreviousViewProjection(this.prevViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -1540,9 +1542,21 @@ class App {
     switch (key) {
       case 'quality':
         return this.requestQuality(this.state.quality);
-      case 'preset':
+      case 'preset': {
+        // A preset brings its own sky. Coverage lives in UI state because the
+        // slider owns it afterwards, and nothing ever copied the preset's value
+        // into it — so choosing Storm drew the storm's deck at whatever the
+        // slider last said, 0.36 by default: blue sky between fair-weather
+        // puffs under a sky lit for a 0.88 overcast. The slider still wins
+        // after this, which is what a slider is for.
+        const coverage = getPreset(this.state.preset).clouds.coverage;
+        if (this.state.cloudCoverage !== coverage) {
+          this.state.cloudCoverage = coverage;
+          this.panel?.setState({ cloudCoverage: coverage });
+        }
         this.applyPreset();
         break;
+      }
       case 'windSpeed':
       case 'peakWavelength':
         // Through `applyPreset`, not straight to the spectrum.
@@ -2274,7 +2288,14 @@ class App {
     // so the island 1.4 km out gets the same shadows the ship does.
     this.atmosphere.setShadowFocus(this.camera.position.x, this.camera.position.z);
     this.atmosphere.update(dt);
-    this.clouds.setSunDirection(this.atmosphere.sunDirection);
+    // The deck is lit in the sun's own colour, and by the moon once the sun has
+    // gone — see `Clouds.setLighting`.
+    this.clouds.setLighting(
+      this.atmosphere.sunDirection,
+      this.atmosphere.sunColor,
+      this.atmosphere.moonDirection,
+      this.atmosphere.getParams().nightIntensity,
+    );
     // The island shadows itself from whatever is currently the key light, which
     // after sunset is the moon — `Atmosphere` retargets the same light.
     this.seafloor.setKeyDirection(this.atmosphere.keyDirection);
@@ -2855,7 +2876,15 @@ class App {
             (this.state as unknown as Record<string, unknown>).quality = partial.quality;
             await this.onStateChange('quality');
           }
-          for (const [key, value] of Object.entries(partial)) {
+          // The preset next, before the keys it seeds. Choosing a preset now
+          // resets the cloud coverage to the preset's own, so a caller sending
+          // `{ cloudCoverage, preset }` — which is the order the visual harness
+          // sends them in — has to see its explicit coverage applied after
+          // the preset, not overwritten by it.
+          const entries = Object.entries(partial).sort(
+            ([a], [b]) => Number(b === 'preset') - Number(a === 'preset'),
+          );
+          for (const [key, value] of entries) {
             if (key === 'quality') continue;
             (this.state as unknown as Record<string, unknown>)[key] = value;
             this.onStateChange(key as keyof UiState);

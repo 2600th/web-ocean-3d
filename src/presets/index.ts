@@ -42,6 +42,15 @@ export interface Preset {
     thickness: number;
     color: THREE.Color;
     shadowColor: THREE.Color;
+    /**
+     * Relief on the deck's underside, 0..1 — flat fair-weather bases at the
+     * low end, a storm's hanging lobes at the top. Required for the reason
+     * `atmosphere.overcast` is: `Clouds.setParams` merges, so a key only the
+     * storm set would leak into every preset chosen after it.
+     */
+    baseRoughness: number;
+    /** High cirrus veil, 0..1. Required for the same reason. */
+    cirrus: number;
   };
   weather: { kind: WeatherKind; intensity: number };
   /**
@@ -155,6 +164,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 700,
       color: color(0xffffff),
       shadowColor: color(0x8fa8c4),
+      baseRoughness: 0.1,
+      cirrus: 0.45,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -283,6 +294,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 500,
       color: color(0xeaf3ff),
       shadowColor: color(0x9db4cc),
+      baseRoughness: 0.15,
+      cirrus: 0.6,
     },
     weather: { kind: 'snow', intensity: 0.45 },
     sea: {
@@ -347,6 +360,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 900,
       color: color(0xfff6e8),
       shadowColor: color(0x7f93ad),
+      baseRoughness: 0.1,
+      cirrus: 0.35,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -411,6 +426,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 800,
       color: color(0xffd9b3),
       shadowColor: color(0x5a5470),
+      baseRoughness: 0.1,
+      cirrus: 0.7,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -478,6 +495,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 600,
       color: color(0xdfe6ea),
       shadowColor: color(0xa8b4bd),
+      baseRoughness: 0.3,
+      cirrus: 0.0,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -543,6 +562,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 700,
       color: color(0x9fb0c8),
       shadowColor: color(0x18202e),
+      baseRoughness: 0.1,
+      cirrus: 0.5,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -609,6 +630,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 1000,
       color: color(0xffffff),
       shadowColor: color(0x86a6c8),
+      baseRoughness: 0.08,
+      cirrus: 0.5,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -683,6 +706,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 1400,
       color: color(0x7d8791),
       shadowColor: color(0x1e2329),
+      baseRoughness: 1.0,
+      cirrus: 0.0,
     },
     weather: { kind: 'rain', intensity: 0.9 },
     sea: {
@@ -753,6 +778,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 900,
       color: color(0xffcfa8),
       shadowColor: color(0x6b5f78),
+      baseRoughness: 0.1,
+      cirrus: 0.75,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
