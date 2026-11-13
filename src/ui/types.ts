@@ -107,13 +107,18 @@ export interface Objective {
   distanceM: number | null;
 }
 
-/** Default state, matching the reference capture. */
+/**
+ * Default state: the stylised-real Tropical look a visitor lands on.
+ *
+ * The canonical shots name every value they depend on, so moving the first
+ * impression off the reference frame does not move any baseline.
+ */
 export const DEFAULT_UI_STATE: UiState = {
   quality: 'high',
-  preset: 'skyPro',
-  windSpeed: 15,
-  peakWavelength: 47,
-  cloudCoverage: 0.32,
+  preset: 'seaOfThieves',
+  windSpeed: 11,
+  peakWavelength: 40,
+  cloudCoverage: 0.36,
   timeOfDay: null,
   fogDensity: 0.35,
   volume: 0.4,
