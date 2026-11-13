@@ -15,6 +15,8 @@ import {
 } from './parts';
 import { buildArch, buildRock, buildSkullRock, createRockMaterial } from './rock';
 
+export { applyTideline } from './rock';
+
 /**
  * The island's set dressing: what turns terrain with plants on it into a place.
  *
@@ -29,7 +31,7 @@ import { buildArch, buildRock, buildSkullRock, createRockMaterial } from './rock
  *    crates, log seats and a ladder — someone was here last week.
  *
  * Every piece is generated, and everything that shares a material is merged
- * into one geometry or one instanced mesh: the whole of this is nine draws.
+ * into one geometry or one instanced mesh: the whole of this is seven draws.
  * The rock, wood and canvas carry their own colour graphs; `Wetness` wraps
  * them, and `applyGroundShadingTo` gives them contact shade, cloud shadow and
  * caustics like every other prop. The fire and smoke opt out of the latter.
@@ -353,7 +355,7 @@ export class IslandDetail {
 
   /** Bleached logs above the tide line, one instanced draw. */
   private driftwood(material: THREE.Material, rng: () => number): void {
-    const g = buildLog(0xd71f, 1, 0.075, 3);
+    const g = buildLog(0xd71f, 1, 0.1, 3);
     this.geometries.push(g);
     const count = 70;
     const mesh = new THREE.InstancedMesh(g, material, count);

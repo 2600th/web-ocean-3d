@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
-import { IslandDetail } from './islandDetail';
+import { IslandDetail, applyTideline } from './islandDetail';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
 
@@ -293,9 +293,9 @@ const TREE_MID_COUNT = 150;
 const TREE_FLAME_COUNT = 12;
 const PACHIRA_COUNT = 90;
 const ANTHURIUM_COUNT = 50;
-const CALATHEA_COUNT = 700;
-const FERN_COUNT = 700;
-const SORREL_COUNT = 420;
+const CALATHEA_COUNT = 1300;
+const FERN_COUNT = 1500;
+const SORREL_COUNT = 650;
 const MEADOW_COUNT = 500;
 const TUSSOCK_COUNT = 400;
 
@@ -359,6 +359,10 @@ const CONTOUR_JITTER = 0.3;
  * building at all.
  */
 const COVE_BEARING = 0.7;
+
+/** Scatter meshes that stand in the surf and get a waterline. */
+const SHORE_ROCK_MESHES = /^island-(shore|coast|headland|rocks)/;
+const BLUE_SCANS = /^island-(rocks|shore-boulders)/;
 
 /**
  * Bearing of the headland from the island centre.
@@ -754,6 +758,18 @@ export class Props {
 
     this.islandDetail = new IslandDetail({ bearing: COVE_BEARING, shore: shorelineRadius(COVE_BEARING) });
     this.object.add(this.islandDetail.object);
+
+    // The scanned coastal rocks get the same waterline the generated ones
+    // have: dark and glossy through the swash, barnacles, weed below.
+    this.object.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.isMesh || !SHORE_ROCK_MESHES.test(mesh.name)) return;
+      // The beach boulder scan is a cold blue-grey that reads as plastic on
+      // coral sand; warm it toward the island's own stone.
+      const tint: [number, number, number] = BLUE_SCANS.test(mesh.name) ? [1.18, 1.0, 0.78] : [1, 1, 1];
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) applyTideline(material, tint);
+    });
 
     this.setDetailScale(detailScale);
   }
@@ -1769,7 +1785,7 @@ export class Props {
       slope: 0.3,
       slopeSpan: 6,
       lean: 0.1,
-      clusters: 14,
+      clusters: 28,
       clusterRadius: ISLAND.radius * 0.1,
       casts: false,
       cullDistance: 460,
@@ -1786,7 +1802,7 @@ export class Props {
       slope: 0.35,
       slopeSpan: 5,
       lean: 0.12,
-      clusters: 14,
+      clusters: 30,
       clusterRadius: ISLAND.radius * 0.08,
       casts: false,
       cullDistance: 360,

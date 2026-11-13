@@ -2,6 +2,8 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   float,
+  materialColor,
+  materialRoughness,
   mix,
   mx_noise_float,
   normalViewGeometry,
@@ -9,6 +11,7 @@ import {
   positionView,
   positionWorld,
   vec3,
+  vec4,
   vertexColor,
 } from 'three/tsl';
 import { mulberry32 } from '../../core/random';
@@ -407,4 +410,46 @@ export function createRockMaterial(options: RockMaterialOptions = {}): THREE.Mes
   // colour in itself, and leaving the flag on would apply it twice.
   m.vertexColors = false;
   return m;
+}
+
+/**
+ * Gives an existing rock material the waterline the generated rock has: wet
+ * and dark through the swash, a pale crust of barnacles just above the still
+ * water, green weed below it. Wraps the material's own colour (map and all),
+ * so call it before `SurfaceWetness.adopt`, which wraps whatever it finds.
+ * `tint` multiplies the albedo, for scans whose colour fights the island's.
+ */
+export function applyTideline(material: THREE.Material, tint: [number, number, number] = [1, 1, 1]): void {
+  const node = material as THREE.MeshStandardNodeMaterial;
+  if ((node as unknown as { isNodeMaterial?: boolean }).isNodeMaterial !== true) return;
+  if (material.userData.tideline === true) return;
+  material.userData.tideline = true;
+  const vec3n = vec3 as unknown as (x: unknown, y?: unknown, z?: unknown) => Node;
+  const own: Node = (node as unknown as { colorNode: Node }).colorNode ?? materialColor;
+  const ownRoughness: Node = (node as unknown as { roughnessNode: Node }).roughnessNode ?? materialRoughness;
+  node.colorNode = Fn(() => {
+    const base: Node = vec4(own.xyz.mul(vec3n(...tint)), own.w);
+    const wp = positionWorld.toVar();
+    const crust = mx_noise_float(wp.mul(0.9)).add(mx_noise_float(wp.mul(3.3)).mul(0.5)).toVar();
+    const y = wp.y;
+    const wet = float(1).sub(y.smoothstep(0.5, 2.4)).toVar();
+    const barnacle = y
+      .smoothstep(-0.8, -0.2)
+      .mul(float(1).sub(y.smoothstep(0.4, 1.1)))
+      .mul(crust.smoothstep(0.05, 0.4))
+      .toVar();
+    const weed = float(1).sub(y.smoothstep(-0.7, 0.1)).mul(crust.smoothstep(-0.3, 0.2)).toVar();
+    const tide: Node = mix(base, base.mul(vec3n(0.48, 0.5, 0.5)), wet);
+    const crusted: Node = mix(tide, vec3n(0.4, 0.38, 0.33) as Node, barnacle.mul(0.7) as Node);
+    const weeded: Node = mix(crusted, vec3n(0.06, 0.09, 0.03) as Node, weed.mul(0.65) as Node);
+    return vec4(weeded.xyz, base.w);
+  })();
+  node.roughnessNode = Fn(() => {
+    const y = positionWorld.y;
+    const wet = float(1).sub(y.smoothstep(0.5, 2.4));
+    const r: Node = ownRoughness;
+    // Wet rock glistens; barnacle crust does not, so it stops short of a mirror.
+    return mix(r, r.mul(0.45).max(0.3), wet);
+  })();
+  node.needsUpdate = true;
 }
