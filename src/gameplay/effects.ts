@@ -54,12 +54,12 @@ export class ObjectiveBeacon {
     column.blending = THREE.AdditiveBlending;
     column.side = THREE.DoubleSide;
     column.fog = false;
-    column.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(2.4) as any;
+    column.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(4) as any;
     // Fades up the column and toward the silhouette edges, so it reads as a
     // shaft of light rather than as a solid tube. `uv().y` is 0 at the base.
     const along = float(1).sub(uv().y).pow(1.8);
-    const facing = normalView.z.abs().pow(1.5);
-    column.opacityNode = along.mul(facing).mul(this.uOpacity).mul(0.55) as any;
+    const facing = normalView.z.abs().pow(1.2);
+    column.opacityNode = along.mul(facing).mul(this.uOpacity).mul(0.85) as any;
     this.column = new THREE.Mesh(columnGeometry, column);
     this.column.frustumCulled = false;
     this.column.renderOrder = 7;
@@ -97,7 +97,7 @@ export class ObjectiveBeacon {
     this.time += dt;
     this.object.position.set(target.x, target.y + 0.2, target.z);
     const distance = Math.hypot(viewer.x - target.x, viewer.z - target.z);
-    const widen = Math.min(5, Math.max(1, distance / 110));
+    const widen = Math.min(6, Math.max(1, distance / 70));
     this.column.scale.set(widen, 1, widen);
     const pulse = 0.82 + 0.18 * Math.sin(this.time * 2.6);
     const near = Math.min(1, Math.max(0, (distance - 14) / 40));
@@ -145,17 +145,21 @@ export class Burst {
   private readonly matrix = new THREE.Matrix4();
   private readonly position = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
-  private readonly identity = new THREE.Quaternion();
 
   constructor() {
-    this.geometry = new THREE.IcosahedronGeometry(0.32, 0);
+    // Camera-facing soft discs. Solid sparks were tried first and read as
+    // white blocks hanging in the air — the same lesson `Spray` records.
+    this.geometry = new THREE.PlaneGeometry(1, 1);
     this.material = new THREE.MeshBasicNodeMaterial();
     this.material.transparent = true;
     this.material.depthWrite = false;
     this.material.blending = THREE.AdditiveBlending;
+    this.material.side = THREE.DoubleSide;
     this.material.fog = false;
-    this.material.colorNode = (this.uTint as any).mul(2.2);
-    this.material.opacityNode = this.uFade as any;
+    this.material.colorNode = (this.uTint as any).mul(3);
+    const radius = uv().sub(vec2(0.5, 0.5)).length().mul(2);
+    const glow = float(1).sub(radius).clamp(0, 1).pow(2.2);
+    this.material.opacityNode = glow.mul(this.uFade) as any;
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, BURST_COUNT);
     this.mesh.name = 'gameplay-burst';
     this.mesh.frustumCulled = false;
@@ -192,17 +196,17 @@ export class Burst {
     for (let i = 0; i < BURST_COUNT; i++) {
       const angle = next() * Math.PI * 2;
       const out = (1.5 + next() * 5) * strength;
-      // High enough to clear the bulwarks from the chase camera: 3 to 10 m.
-      const up = (8 + next() * 6) * (0.55 + 0.45 * strength);
+      // High enough to clear the hull and sails from the chase camera: 4 to 13 m.
+      const up = (9 + next() * 7) * (0.55 + 0.45 * strength);
       this.velocity[i * 3] = Math.cos(angle) * out;
       this.velocity[i * 3 + 1] = up;
       this.velocity[i * 3 + 2] = Math.sin(angle) * out;
-      this.size[i] = (0.5 + next()) * (0.6 + 0.4 * strength);
+      this.size[i] = (0.8 + 0.8 * next()) * (0.6 + 0.4 * strength);
     }
     this.mesh.visible = true;
   }
 
-  update(dt: number): void {
+  update(dt: number, camera: THREE.Camera): void {
     if (!this.alive) return;
     this.age += dt;
     const t = Math.min(this.age, BURST_LIFE);
@@ -217,7 +221,7 @@ export class Burst {
       );
       const s = this.size[i] * shrink;
       this.scale.set(s, s, s);
-      this.matrix.compose(this.position, this.identity, this.scale);
+      this.matrix.compose(this.position, camera.quaternion, this.scale);
       this.mesh.setMatrixAt(i, this.matrix);
     }
     this.mesh.instanceMatrix.needsUpdate = true;

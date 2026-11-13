@@ -385,7 +385,7 @@ export class Gameplay {
     this.updateFeel(dt);
     this.updateMessages(dt);
 
-    this.burst.update(dt);
+    this.burst.update(dt, this.o.camera);
     this.bowSpray.update(
       dt,
       body.object,
