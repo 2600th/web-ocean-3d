@@ -133,6 +133,9 @@ const TOUR_ENV_ELEVATION_STEP = 0.035;
  */
 const FOLIAGE_MESHES = /^island-(palms|palms-tall|flame-trees|ferns)/;
 
+/** Render layer the cloud dome lives on, so the planar mirror can skip it. */
+const CLOUD_LAYER = 3;
+
 /** Scratch for the nominal-hull test hook. */
 const _shipProbe = new THREE.Vector2();
 
@@ -547,6 +550,7 @@ class App {
     if (this.backend === 'webgpu') {
       this.reflections = new Reflections(QUALITY_TIERS[this.state.quality].reflectionScale);
       this.scene.add(this.reflections.plane);
+      this.reflections.excludeLayer(this.camera, CLOUD_LAYER);
       this.ssr = new ScreenSpaceReflection();
       this.ssr.setCamera(this.camera);
     }
@@ -584,6 +588,12 @@ class App {
     this.clouds.setAerialPerspective(this.aerial);
 
     this.scene.add(this.clouds.mesh);
+    // Clouds stay out of the planar mirror. Through a roughness-blurred, half-
+    // resolution, haze-tinted reflection a cumulus came back as a khaki smear
+    // lying on the sea — the pale blotches in the near field. SSR still
+    // reflects the clouds that are on screen, sharply and in the right place.
+    this.clouds.mesh.layers.set(CLOUD_LAYER);
+    this.camera.layers.enable(CLOUD_LAYER);
 
     this.weather = new Weather();
     this.scene.add(this.weather.object);

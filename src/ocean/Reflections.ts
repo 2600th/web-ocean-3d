@@ -86,6 +86,16 @@ export class Reflections {
     this.base.renderTargets.clear();
   }
 
+  /**
+   * Keeps a layer out of the mirror for `camera`.
+   *
+   * The reflector builds its virtual camera once per real camera and never
+   * copies layers onto it, so disabling a layer there sticks.
+   */
+  excludeLayer(camera: THREE.Camera, layer: number): void {
+    this.base.getVirtualCamera(camera).layers.disable(layer);
+  }
+
   /** Current resolution scale, so a test can prove the tier reached it. */
   get resolutionScale(): number {
     return this.base.resolutionScale;

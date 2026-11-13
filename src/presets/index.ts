@@ -622,12 +622,17 @@ export const PRESETS: Record<PresetId, Preset> = {
       windwardFoam: 0.06,
     },
     water: {
-      deepColor: color(0x03414f),
-      shallowColor: color(0x2fd4c0),
-      scatterColor: color(0x4ee0c2),
-      extinction: vec(0.22, 0.06, 0.035),
+      // Deep water goes properly blue within a few tens of metres, so the open
+      // sea reads as ocean and only the island's shallows turn turquoise. At
+      // the old (0.22, 0.06, 0.035) thirty metres of water still showed the
+      // sand through it, and the whole sea read as a lagoon.
+      deepColor: color(0x022c48),
+      shallowColor: color(0x27d0bf),
+      scatterColor: color(0x3fe6b4),
+      extinction: vec(0.46, 0.12, 0.07),
       roughness: 0.055,
       foamThreshold: 0.42,
+      crestGlow: 0.85,
     },
     fog: { color: color(0xcfeaf4), density: 0.00012, volumetric: 9e-05 },
     underwater: {

@@ -39,6 +39,8 @@ export interface WaterAppearance {
   extinction: THREE.Vector3;
   /** Strength of the subsurface glow on backlit crests. */
   scatterStrength: number;
+  /** View-independent translucency of thin crest water, 0 disables. */
+  crestGlow: number;
   /** Base roughness of the microfacet surface. */
   roughness: number;
   /** Jacobian value at which foam starts to appear. Lower = less foam. */
@@ -54,6 +56,7 @@ export const DEFAULT_APPEARANCE: WaterAppearance = {
   foamColor: new THREE.Color(0xeff8ff),
   extinction: new THREE.Vector3(0.34, 0.11, 0.07),
   scatterStrength: 1.0,
+  crestGlow: 0.55,
   roughness: 0.075,
   // Deeper folding required than the naive "J < 1" test: the swell cascade marks
   // broad areas as mildly folded, and treating all of that as whitecap covers a
@@ -396,6 +399,8 @@ export class OceanMaterial {
   private readonly uFoamColor = uniform(new THREE.Color(DEFAULT_APPEARANCE.foamColor));
   private readonly uExtinction = uniform(new THREE.Vector3().copy(DEFAULT_APPEARANCE.extinction));
   private readonly uScatterStrength = uniform(DEFAULT_APPEARANCE.scatterStrength);
+  /** Strength of the view-independent crest translucency. */
+  private readonly uCrestGlow = uniform(DEFAULT_APPEARANCE.crestGlow);
   private readonly uRoughness = uniform(DEFAULT_APPEARANCE.roughness);
   /**
    * Unit wind vector in world XZ, and the slope-variance ratio across it.
@@ -569,6 +574,7 @@ export class OceanMaterial {
     if (a.foamColor) (this.uFoamColor.value as THREE.Color).copy(a.foamColor);
     if (a.extinction) (this.uExtinction.value as THREE.Vector3).copy(a.extinction);
     if (a.scatterStrength !== undefined) this.uScatterStrength.value = a.scatterStrength;
+    if (a.crestGlow !== undefined) this.uCrestGlow.value = a.crestGlow;
     if (a.roughness !== undefined) this.uRoughness.value = a.roughness;
     if (a.foamThreshold !== undefined) this.uFoamThreshold.value = a.foamThreshold;
     if (a.foamSoftness !== undefined) this.uFoamSoftness.value = a.foamSoftness;
@@ -1220,6 +1226,27 @@ export class OceanMaterial {
         )
         .toVar();
 
+      // Crest glow: the light a wave's upper third carries *sideways* to the eye
+      // whatever the sun is doing. The phase lobe above only fires looking into
+      // the sun, so a front-lit or cross-lit sea had no translucency at all and
+      // every crest was the same opaque blue as the trough below it — which is
+      // what made the open sea read as a flat lagoon. Thin water near the crest
+      // scatters skylight and refracted sunlight toward a viewer looking across
+      // it, strongest at grazing view (longer path through the thin part) and
+      // more so when backlit. This is the term stylised-real game oceans lean on
+      // for their emerald crests; here it is driven by the same crest height and
+      // thinness the physical term uses, so it scales with the sea state.
+      const crest = heightAboveMean.mul(heightAboveMean).toVar();
+      const across = float(1).sub(viewDir.y.abs()).clamp(0, 1).toVar();
+      scatter.addAssign(
+        (this.uScatterColor as any)
+          .mul(crest)
+          .mul(across.mul(0.6).add(0.4))
+          .mul(awayFromSun.mul(0.6).add(0.4))
+          .mul(this.uCrestGlow)
+          .mul(this.uLightLevel.min(1.2)),
+      );
+
       // --- reflection ----------------------------------------------------------
       // The analytic sky gradient is kept as the base layer, not replaced. It is
       // what fills the horizon, where a planar reflection has nothing to offer
@@ -1260,7 +1287,7 @@ export class OceanMaterial {
         const reflectionLod = this.uRoughness
           .mul(12)
           .add(viewDistance.mul(0.004))
-          .clamp(0, 2)
+          .clamp(0, 1.25)
           .toVar();
         const mirrored = planar.sample(viewportSafeUV(rawUv)).level(reflectionLod).toVar();
 
