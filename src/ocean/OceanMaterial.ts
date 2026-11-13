@@ -1845,11 +1845,27 @@ export class OceanMaterial {
       // the night unchanged. Whitecaps are a few centimetres of bubbles — a dense
       // scattering medium, so almost Lambertian, bright but still lit by the same
       // sun as everything else, and shadowed on the side away from it.
-      const bubbles = breakup.mul(0.5).add(0.5).toVar();
+      //
+      // Lit by the same sun *and sky* as the water around it. The previous form
+      // was `foamColor * bubbles * (0.6..1)` with no light term at all, which put
+      // a whitecap at roughly 40 % of its albedo — darker than the sky the water
+      // beside it was reflecting. At grazing angles, where the surface reflects a
+      // bright horizon, every whitecap therefore read as a grey or (at sunset)
+      // brown hole in the sea: the hard-edged blotches in every gallery frame.
+      // Foam is a near-Lambertian scatterer, so its radiance is albedo times the
+      // irradiance arriving on it: a wrapped sun term (bubbles scatter light in
+      // from the side) under the cloud shadow, plus the sky dome's ambient.
+      const bubbles = breakup.mul(0.22).add(0.84).toVar();
+      const foamSun = nDotL.mul(0.55).add(0.3).mul(sunShade.mul(0.7).add(0.3)).toVar();
+      const foamSky = (mix(this.uHorizonColor, this.uSkyColor, 0.45) as any).mul(0.42).toVar();
       const foamColor = this.uFoamColor
         .mul(bubbles)
-        .mul(nDotL.mul(0.4).add(0.6))
-        .mul(ambientFloor)
+        .mul(
+          (this.uSunColor as any)
+            .mul(foamSun)
+            .mul(this.uLightLevel.min(1.25))
+            .add(foamSky),
+        )
         .toVar();
 
       // Foam kills the specular under it. Bubbles are a diffuse rough medium, so a
