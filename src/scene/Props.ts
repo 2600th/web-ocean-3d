@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
+import { IslandDetail } from './islandDetail';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
 
@@ -720,6 +721,8 @@ export class Props {
   private reefPatches: readonly { x: number; z: number }[] = [];
   private detail = 1;
   private disposed = false;
+  /** Landmarks, beach dressing and the camp; all generated, nine draws. */
+  private readonly islandDetail: IslandDetail;
 
   private constructor(
     sources: LoadedSources,
@@ -748,6 +751,9 @@ export class Props {
     this.placeCove(dressing);
     this.placeFort(dressing);
     this.placeFind(dressing, dressingRandom);
+
+    this.islandDetail = new IslandDetail({ bearing: COVE_BEARING, shore: shorelineRadius(COVE_BEARING) });
+    this.object.add(this.islandDetail.object);
 
     this.setDetailScale(detailScale);
   }
@@ -864,18 +870,17 @@ export class Props {
 
   /** Advances the island's animated set dressing; call beside FoliageWind.update. */
   update(dt: number): void {
-    void dt;
+    this.islandDetail.update(dt);
   }
 
   /** Wind for the animated set dressing. */
   setWind(direction: THREE.Vector2, strength: number): void {
-    void direction;
-    void strength;
+    this.islandDetail.setWind(direction, strength);
   }
 
   /** Aligns the animated dressing with a scene clock after a reset or seek. */
   resetClock(time = 0): void {
-    void time;
+    this.islandDetail.resetClock(time);
   }
 
   /**
@@ -1024,6 +1029,7 @@ export class Props {
     this.disposed = true;
     this.object.removeFromParent();
     this.object.clear();
+    this.islandDetail.dispose();
     this.floaters.length = 0;
     this.thinnable.length = 0;
     // Only the geometries this class *created* (baked instancing copies) are

@@ -333,6 +333,9 @@ export function applyGroundShadingTo(
     // loader produces is one; anything else is left alone rather than silently
     // skipped in a way that looks like it worked.
     if ((material as THREE.NodeMaterial).isNodeMaterial !== true) continue;
+    // Light sources and translucent effects (fire, smoke) opt out: contact
+    // shade and cloud shadow on something that glows reads as a dirty lamp.
+    if (material.userData.noGroundShading === true) continue;
     const node = material as THREE.NodeMaterial;
     applyGroundShading(node, inputs);
     if (use.all && inputs.foliage) {
