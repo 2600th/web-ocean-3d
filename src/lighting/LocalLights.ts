@@ -153,23 +153,22 @@ export class LocalLights {
   /**
    * How many of the lights the tier pays for, most important first.
    *
-   * Lights in the scene are part of every lit material's build, so a change
-   * here recompiles them. It is only called at boot and from a tier change,
-   * which recompiles everything with the loop paused anyway; anchors are kept,
-   * so a session that boots on Low still gets its lights on an upgrade.
+   * Lights in the scene are part of every lit material's build, so adding one
+   * recompiles them all. An upgrade adds what the new tier lights — once, on a
+   * device that asked for more. A downgrade only darkens the extras and leaves
+   * them in place: the device stepping down is the one that can least afford
+   * a full recompile (measured on the WebGL path: ~80 s), and a light at zero
+   * intensity is cheap. Anchors are kept either way, so a session that boots
+   * on Low still gets its lights on an upgrade.
    */
   setCount(count: number): void {
     const n = Math.max(0, Math.min(this.sources.length, Math.round(count)));
-    if (n === this.count && this.group.children.length > 0) return;
     this.count = n;
-    this.sources.forEach((s, i) => {
-      if (i < n) {
-        if (s.light.parent !== this.group) this.group.add(s.light);
-      } else {
-        s.light.intensity = 0;
-        s.light.removeFromParent();
-      }
-    });
+    for (let i = 0; i < this.sources.length; i++) {
+      const s = this.sources[i];
+      if (i < n && s.light.parent !== this.group) this.group.add(s.light);
+      if (i >= n) s.light.intensity = 0;
+    }
   }
 
   /**
