@@ -23,6 +23,8 @@ import {
 // unqualified name; see `smoothstepDown` below.
 import { smoothstepDown as smoothstepDownNode } from '../core/tslMath';
 import { occludeLight } from '../core/lightOcclusion';
+// Shore hook: the swash wetting the sand. Self-contained; see `ocean/Surf`.
+import { applySwashToGround, swashRoughness } from '../ocean/Surf';
 import { SEEDS, mulberry32 } from '../core/random';
 
 /**
@@ -1076,6 +1078,8 @@ export class Seafloor {
     this.material.name = 'seafloor-sand';
     this.material.roughness = 0.93;
     this.material.metalness = 0;
+    // Shore hook: sand the swash just left is glossy. See `ocean/Surf`.
+    this.material.roughnessNode = Fn(() => swashRoughness(float(0.93), positionWorld))();
     /**
      * The sky is a source of light on this surface, not a mirror in it.
      *
@@ -1141,7 +1145,7 @@ export class Seafloor {
       // seabed, where the ripple bars belong. Dry sand above the swash is
       // wind-smoothed, and at full strength the ripple map read on the beach as
       // dark swirls rather than as sand.
-      const scale = mix(float(SAND_NORMAL_SCALE), float(0.22), positionWorld.y.smoothstep(0.4, 3)).toVar();
+      const scale = mix(float(SAND_NORMAL_SCALE), float(0.08), positionWorld.y.smoothstep(0.2, 1.4)).toVar();
       return vec3(blended.x.mul(scale), blended.y.mul(scale), blended.z);
     };
 
@@ -1168,7 +1172,13 @@ export class Seafloor {
       const geo = normalize(normalWorldGeometry).toVar();
 
       const d = this.detailNode.toVar();
-      const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus()).toVar();
+      // Dry beach, between the swash and the back of the beach, is wind-smoothed:
+      // the relief octaves that give the seabed and the hillside their texture
+      // drew it as dark, melted swirls metres across. Damped there only.
+      const dryBeach = wp.y.smoothstep(-0.3, 0.9).mul(smoothstepDownNode(wp.y, 3.5, 9)).toVar();
+      const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus())
+        .mul(dryBeach.mul(-0.7).add(1))
+        .toVar();
       // A heightfield's normal is `(-dh/dx, 1, -dh/dz)`, so added relief
       // subtracts its gradient from the horizontal components.
       const n = normalize(
@@ -1453,13 +1463,17 @@ export class Seafloor {
       const seabedMottle: Node = mix(float(1), patch.mul(0.45).add(0.72), float(1).sub(aboveWater));
       const mottled: Node = damp.mul(seabedMottle).toVar();
 
-      if (caustics === null) return vec4(mottled, 1);
+      // Shore hook: the swash darkens the sand it reaches and it dries over
+      // seconds. Scales whatever the palette above produced; see `ocean/Surf`.
+      const surfed = applySwashToGround(mottled, wp).toVar();
+
+      if (caustics === null) return vec4(surfed, 1);
 
       // Caustics only exist under water, and fade out as the floor gets deep
       // enough that the surface pattern has diverged into ambient light.
-      const reach: Node = smoothstepDownNode(depth, 2, 48).mul(float(1).sub(aboveWater)).toVar();
-      const lit: Node = mix(float(1), caustics, reach.mul(strength)).toVar();
-      return vec4(mottled.mul(lit), 1);
+      const reach = smoothstepDownNode(depth, 2, 48).mul(float(1).sub(aboveWater)).toVar();
+      const lit = mix(float(1), caustics, reach.mul(strength)).toVar();
+      return vec4(surfed.mul(lit), 1);
     })();
 
     // Wet sand is a mirror for a moment after each wave; dry sand is chalk.

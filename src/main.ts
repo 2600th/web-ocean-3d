@@ -21,6 +21,8 @@ import {
   IslandCanopy,
   IslandMeadow,
   KelpForest,
+  ReefLife,
+  SeaCreatures,
   Props,
   Remains,
   SEAFLOOR_EXTENT,
@@ -49,6 +51,7 @@ import {
   Wake,
   createRadialProbes,
   type ShipControlState,
+  type SprayImpact,
 } from './physics';
 import { Loop } from './core/Loop';
 import { AdaptiveQuality, QUALITY_TIERS, type QualityTier } from './core/QualityManager';
@@ -113,6 +116,15 @@ const _pinTarget = new THREE.Vector3();
 const _keyDirection = new THREE.Vector3();
 /** Scratch for the camera forward axis, read every frame. */
 const _keyDirection2 = new THREE.Vector3();
+const _impactForward = new THREE.Vector3();
+const _impactRight = new THREE.Vector3();
+const _impactOffset = new THREE.Vector3();
+
+/** The impact sounds `AudioSystem` is gaining in parallel; optional until it has them. */
+interface ImpactAudio {
+  hullImpact?(strength: number): void;
+  waveSlap?(strength: number, pan: number): void;
+}
 /** Scratch for the hull occluder pushed to the underwater pass each frame. */
 const _hullCenter = new THREE.Vector3();
 const _hullRadius = new THREE.Vector3(1, 1, 1);
@@ -146,6 +158,20 @@ const FOLIAGE_MESHES = /^flora-/;
 
 /** Render layer the cloud dome lives on, so the planar mirror can skip it. */
 const CLOUD_LAYER = 3;
+
+/**
+ * Render layer for the life under the surface — reef, kelp, fish, creatures.
+ *
+ * The planar mirror renders the whole scene again from below the surface plane
+ * and clips it, so without this every coral, blade and fish was drawn a second
+ * time per frame to produce pixels the clip plane then threw away. The surface
+ * seen from *below* takes its mirror image from the screen-space backdrop, not
+ * from this reflector, so nothing visible depends on it.
+ */
+const UNDERWATER_LAYER = 4;
+
+/** Scratch for the sea creatures' key light. */
+const _creatureSun = new THREE.Color();
 
 /** Haze sky colours, pulled toward the deck's grey under an overcast. */
 const _hazeHorizon = new THREE.Color();
@@ -289,6 +315,8 @@ class App {
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
   private fish!: FishSchool;
   private kelp!: KelpForest;
+  private reefLife!: ReefLife;
+  private creatures!: SeaCreatures;
   private meadow!: IslandMeadow;
   private canopy!: IslandCanopy;
   private remains!: Remains;
@@ -706,6 +734,10 @@ class App {
     this.spray = new Spray();
     this.spray.setStrength(quality.spray);
     this.scene.add(this.spray.mesh);
+    // One detector, several consumers: the impact a probe registers drives the
+    // spray it draws, the camera shake, the audio, the foam it leaves on the
+    // water and the water it puts on the deck. See `onSprayImpact`.
+    this.spray.onImpact((impact) => this.onSprayImpact(impact));
 
     this.fish = new FishSchool(quality.fish);
     this.scene.add(this.fish.object);
@@ -810,6 +842,40 @@ class App {
     // The volumetric march picks its caustics mip level from this, so it has to
     // be told after the field exists — see `uCausticsTexel`.
     this.underwater.setCausticsTexelSize(this.caustics.extent / this.caustics.resolution);
+
+    // The procedural reef. Built after the caustics because it takes the same
+    // ground treatment the props do — caustics on every coral, the cloud deck's
+    // shade, contact darkening at the base — and that binding is compiled in.
+    this.reefLife = new ReefLife(quality.reefLife, {
+      shading: {
+        light: this.atmosphere.sunLight,
+        keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+        caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+        groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
+      },
+    });
+    this.scene.add(this.reefLife.object);
+
+    // The animals that live on it, homed on the same sites.
+    this.creatures = new SeaCreatures(quality.seaCreatures, {
+      sites: this.reefLife.sites,
+      caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+    });
+    this.scene.add(this.creatures.object);
+
+    // Everything that lives under the surface goes on its own layer, kept out of
+    // the planar mirror — see `UNDERWATER_LAYER`.
+    this.camera.layers.enable(UNDERWATER_LAYER);
+    this.reflections?.excludeLayer(this.camera, UNDERWATER_LAYER);
+    for (const root of [
+      this.reefLife.object,
+      this.creatures.object,
+      this.kelp.object,
+      this.fish.object,
+      this.particles.object,
+    ]) {
+      root.traverse((node) => node.layers.set(UNDERWATER_LAYER));
+    }
 
     // `RenderPipeline`, not the `PostProcessing` alias: the latter is deprecated
     // as of r183 and warns on every boot.
@@ -1315,6 +1381,45 @@ class App {
     );
   }
 
+  /**
+   * Fans one hull or float impact out to everything that reacts to it.
+   *
+   * The audio calls go through an optional-method view of `AudioSystem` because
+   * `hullImpact` and `waveSlap` are being added to it in parallel; this compiles
+   * and runs silently until they exist, and plays them as soon as they do.
+   */
+  private onSprayImpact(impact: SprayImpact): void {
+    const s = impact.strength;
+    const p = impact.position;
+    if (!impact.hull) {
+      // A buoy or a barrel: a small patch of foam where it came down.
+      this.wake.splash(p.x, p.z, 1.2, 0.35 + 0.4 * s);
+      return;
+    }
+
+    this.gameplay?.reportImpact(impact.kind, s);
+
+    // Stereo position of the impact relative to the listener's view, -1..1.
+    this.camera.getWorldDirection(_impactForward);
+    _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
+    _impactOffset.copy(p).sub(this.camera.position);
+    const distance = Math.max(1, _impactOffset.length());
+    const pan = Math.max(-1, Math.min(1, _impactOffset.dot(_impactRight) / distance));
+    // Heard less the further away it is, not at all past a few hundred metres.
+    const audible = s * Math.min(1, 30 / distance);
+    const audio = this.audio as unknown as ImpactAudio | undefined;
+    if (audible > 0.02) {
+      if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
+      else audio?.hullImpact?.(audible);
+    }
+
+    // White water where it hit, and water on the deck when it came aboard.
+    const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
+    this.wake.splash(p.x, p.z, radius, 0.4 + 0.6 * s);
+    if (impact.kind === 'wash') this.wetness.douse(0.55 * s);
+    else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s);
+  }
+
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
     this.deterministic = true;
     try {
@@ -1716,6 +1821,9 @@ class App {
 
     if (reefFishResult.status === 'fulfilled' && reefFishResult.value) {
       this.fish.setSpecies('reef', reefFishResult.value);
+      // The species arrives as a new mesh; it joins the rest of the life on the
+      // underwater layer.
+      this.fish.object.traverse((node) => node.layers.set(UNDERWATER_LAYER));
     }
 
     if (shipResult.status === 'fulfilled') {
@@ -1726,23 +1834,6 @@ class App {
       loaded.push(ship.object);
       this.scene.add(ship.object);
       this.wetness.adopt(ship.object);
-      // Four probes along the centreline, weighted forward. A hull throws water
-      // where it is finest and moving fastest through the vertical — the
-      // forefoot does nearly all of it, the midships some, and the quarters
-      // effectively none, which is why the weights fall off so sharply rather
-      // than being spread evenly along the length.
-      // The hull's forward direction is +X and its beam runs along Z — see
-      // `forwardLocal` in `Ship`, and note that getting this the wrong way round
-      // puts the spray over the quarters of a vessel that is throwing it off the
-      // stem.
-      const halfLength = ship.hullLength * 0.5;
-      const halfBeam = ship.hullBeam * 0.5;
-      this.spray.setProbes([
-        { offset: new THREE.Vector3(halfLength * 0.92, 0, 0), weight: 1 },
-        { offset: new THREE.Vector3(halfLength * 0.6, 0, halfBeam * 0.85), weight: 0.7 },
-        { offset: new THREE.Vector3(halfLength * 0.6, 0, -halfBeam * 0.85), weight: 0.7 },
-        { offset: new THREE.Vector3(-halfLength * 0.35, 0, 0), weight: 0.25 },
-      ]);
       // The hull gets the same treatment the dressing does, and the part of it
       // that matters here is the caustics: `underwater.png` shows the submerged
       // hull as a flat black cutout, because the one thing lighting a shape down
@@ -1773,6 +1864,34 @@ class App {
         horizontalDrag: 0,
       });
       this.buoyancy.add(this.shipBody);
+
+      // Where this hull meets the water hard enough to throw it: the stem, the
+      // shoulders either side of it, the topsides amidships for a beam sea, and
+      // the quarters. Weighted forward — a hull slams where it is finest and
+      // moving fastest through the vertical, so the forefoot does most of it and
+      // the quarters very little. The hull's forward direction is +X and its
+      // beam runs along Z (see `forwardLocal` in `Ship`). Heights are above the
+      // waterline: the side probes sit up the topsides so a crest has to climb
+      // the hull to reach them, which is what a slap is.
+      {
+        const halfLength = ship.hullLength * 0.5;
+        const halfBeam = ship.hullBeam * 0.5;
+        this.spray.setHull({
+          object: ship.object,
+          velocity: this.shipBody.velocity,
+          hullLength: ship.hullLength,
+          hullBeam: ship.hullBeam,
+          probes: [
+            { offset: new THREE.Vector3(halfLength * 0.9, 0.35, 0), weight: 1, role: 'bow' },
+            { offset: new THREE.Vector3(halfLength * 0.6, 0.45, halfBeam * 0.85), weight: 0.75, role: 'shoulder' },
+            { offset: new THREE.Vector3(halfLength * 0.6, 0.45, -halfBeam * 0.85), weight: 0.75, role: 'shoulder' },
+            { offset: new THREE.Vector3(0, 0.7, halfBeam * 0.98), weight: 0.6, role: 'side' },
+            { offset: new THREE.Vector3(0, 0.7, -halfBeam * 0.98), weight: 0.6, role: 'side' },
+            { offset: new THREE.Vector3(-halfLength * 0.7, 0.4, halfBeam * 0.8), weight: 0.3, role: 'quarter' },
+            { offset: new THREE.Vector3(-halfLength * 0.7, 0.4, -halfBeam * 0.8), weight: 0.3, role: 'quarter' },
+          ],
+        });
+      }
 
       // The controller exists from load but stays inert until Boat mode selects
       // it, so W/S and A/D cannot steer a ship the viewer is not driving.
@@ -1836,14 +1955,16 @@ class App {
       });
 
       for (const floater of props.floaters) {
-        this.buoyancy.add(
-          new BuoyantBody({
-            object: floater.object,
-            probePoints: createRadialProbes(floater.radius),
-            // Rough displacement for a hollow float of this size.
-            mass: 40 * floater.radius * floater.radius * floater.radius,
-          }),
-        );
+        const body = new BuoyantBody({
+          object: floater.object,
+          probePoints: createRadialProbes(floater.radius),
+          // Rough displacement for a hollow float of this size.
+          mass: 40 * floater.radius * floater.radius * floater.radius,
+        });
+        this.buoyancy.add(body);
+        // A buoy coming down off a swell smacks the water too. One probe, a
+        // small crown, and only tested within range of the eye.
+        this.spray.addFloat(floater.object, floater.radius, body.velocity);
       }
     } else {
       console.error('[ocean] scene props failed to load', propsResult.reason);
@@ -2331,6 +2452,8 @@ class App {
     this.spray.setStrength(quality.spray);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
+    this.reefLife.setDetail(quality.reefLife);
+    this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
     this.audio.setQuality(tier);
@@ -2907,6 +3030,28 @@ class App {
     );
     this.kelp.update(dt);
 
+    // The reef sways with the same swell; it is hidden outright when the eye is
+    // high enough above the sea that none of it could resolve.
+    this.reefLife.setSwell(
+      getPreset(this.state.preset).sea.windDirection,
+      this.state.windSpeed,
+      this.state.peakWavelength,
+    );
+    this.reefLife.setCameraPosition(this.camera.position);
+    this.reefLife.update(dt);
+
+    // The animals take the same sun the fish do — its colour, scaled as `Fish`
+    // scales its own, and gone when the sun is.
+    {
+      const sunUp = THREE.MathUtils.smoothstep(this.atmosphere.sunDirection.y, -0.06, 0.1);
+      this.creatures.setSun(
+        this.atmosphere.sunDirection,
+        _creatureSun.copy(this.atmosphere.sunColor).multiplyScalar(0.7 * sunUp),
+      );
+      this.creatures.setCameraHeight(this.camera.position.y);
+      this.creatures.update(dt);
+    }
+
     // The grass field follows the camera, so unlike everything else on the
     // island it has to be told where that is every frame. Two uniform writes.
     this.meadow.setSunDirection(this.atmosphere.sunDirection);
@@ -3053,7 +3198,12 @@ class App {
     this.water.setRain(raining, elapsed);
     // The shore break runs off the same clock the rest of the sea does, so a
     // deterministic rewind puts the surf sets back where they were.
-    this.water.setSurf(elapsed, this.foamOverride ?? 1);
+    this.water.setSurf(
+      elapsed,
+      this.foamOverride ?? 1,
+      this.state.peakWavelength,
+      this.wake.shoreNear,
+    );
     // Agitation: heavy rain whitens a sea surface on its own, independently of
     // whether the waves are steep enough to break.
     this.wake.setRainAgitation(raining);
@@ -3078,12 +3228,19 @@ class App {
     // it this frame — the buoyancy solve above — and it samples the same wave
     // field the buoyancy did, so the surface it tests against is the one the
     // hull is actually floating on rather than a second opinion about it.
-    this.spray.update(
-      dt,
-      elapsed,
-      this.ship?.object ?? null,
-      (x, z) => this.sampler.height(x, z),
+    // Spray drifts with the near-surface wind and is lit by the same key light
+    // and sky as the foam it comes off.
+    this.spray.setWind(
+      Math.cos(driftBearing) * this.state.windSpeed * 0.6,
+      Math.sin(driftBearing) * this.state.windSpeed * 0.6,
     );
+    this.spray.setLighting(
+      _keyDirection,
+      this.atmosphere.sunLight.color,
+      this.atmosphere.sunLight.intensity / 3.4,
+      this.atmosphere.zenithColor,
+    );
+    this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.
     this.wetness.update(dt, raining);
@@ -3424,6 +3581,9 @@ class App {
         backend: this.backend,
         wake: this.wake,
         water: this.water,
+        /** The procedural reef, so a harness can find its sites and count it. */
+        reefLife: this.reefLife,
+        creatures: this.creatures,
         /**
          * Readiness signals. `sceneContentLoaded` settles whether or not the
          * models arrived, so a harness can distinguish "still loading" from
@@ -3614,6 +3774,8 @@ class App {
           this.spray.resetClock(start);
           this.fish.resetClock(start);
           this.kelp.resetClock(start);
+          this.reefLife.resetClock(start);
+          this.creatures.resetClock(start);
           this.meadow.resetClock(start);
           this.stormQuote.reset();
           this.canopy.resetClock(start);
@@ -3778,6 +3940,8 @@ class App {
         setSprayStrength: (strength: number) => this.spray.setStrength(strength),
         /** Live impact events, for the spray test. */
         sprayLiveEvents: () => this.spray.liveEvents(),
+        /** The spray system itself, for probing its event table. */
+        spray: this.spray,
         /** The tour's environment curves, for the seam and coverage tests. */
         cinematicEnvironment: (time?: number) => ({
           ...this.director.cinematicEnvironment(time),

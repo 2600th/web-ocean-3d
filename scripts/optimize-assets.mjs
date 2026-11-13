@@ -315,24 +315,6 @@ const ASSETS = [
 
   // ---- The reef (Sketchfab; see the SKETCHFAB manifest in fetch-assets.mjs) --
   //
-  // The Smithsonian's three corals are 100k-face photogrammetry of a single
-  // colony each, which is the same kind of asset as Poly Haven's rocks and takes
-  // the same kind of decimation. They are also *small* — `stylaster_coral` is
-  // 17 cm tall — because they are museum specimens; `Props` scales them to reef
-  // heads. A tighter error than the rocks get, because a coral's whole
-  // silhouette is its branching and that is exactly what a loose error eats.
-  //
-  // The budgets are set by instance count, not by how the model looks in
-  // isolation. A coral head is placed sixty to ninety times and the reef already
-  // carries ninety 15k rocks, so a 30k coral would double the scene's triangle
-  // count to add detail nobody can resolve: these are seen from five metres and
-  // up through water that has thrown away most of the contrast by ten. Three to
-  // four thousand each is what survives that, and the error bounds are small in
-  // absolute terms — a millimetre or two on a 17 cm specimen — so what is lost
-  // is surface detail rather than the branching, which is the whole silhouette.
-  { slug: 'stylaster_coral', ratio: 0.035, error: 0.01, texture: 512 },
-  { slug: 'seriatopora_coral', ratio: 0.035, error: 0.01, texture: 512 },
-  { slug: 'goniastrea_coral', ratio: 0.035, error: 0.012, texture: 512 },
   // The carpet, and therefore the one asset here whose budget is set by how many
   // of it there are. `Props` plants four hundred clumps of three forms each, so
   // a thousand triangles per form is fifteen hundred thousand triangles of
@@ -393,9 +375,6 @@ const LOD_RATIOS = {
   // so its LOD1 is gentler and there is no LOD2: a coral head is either in the
   // patch you are swimming through or invisible in the haze, with very little in
   // between.
-  stylaster_coral: [0.4],
-  seriatopora_coral: [0.3],
-  goniastrea_coral: [0.3],
   soft_coral_set: [0.45],
 };
 

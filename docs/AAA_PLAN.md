@@ -37,7 +37,7 @@ reinventing it.
 |---|---|---|
 | FFT waves, physical units | 3-cascade JONSWAP + Hasselmann spreading | — |
 | Depth absorption, refraction, SSR | Beer–Lambert per channel, depth refraction, SSR over planar | — |
-| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks |
+| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks; **done:** breakers in sets with lip, bore and cellular lace, swash sheet up the sand, wet sand that dries |
 | Foam around objects | **missing** | **done** — depth-intersection contact foam on anything piercing the surface |
 | Caustics on floor | animated caustics + world-space god rays | — (chromatic dispersion deferred: scalar field shared by four consumers) |
 | Interacting wakes | Kelvin wake that displaces the surface | — |
@@ -66,7 +66,8 @@ reinventing it.
 
 - [x] World detail: skull rock, sea arch, summit spires, strata outcrops, wet barnacled waterlines, beach wrack and driftwood, camp with fire/smoke/torches. 12.8 MB of vegetation GLBs and the imposter atlas removed.
 - [x] Lower slopes no longer read as lawn: open ground is scrub (tufts, straw-dry patches, bare soil) in the terrain shader
-- [ ] Follow-ups: sand swirl/grid pattern at close range (shore agent owns the sand); shell litter is at true scale and reads only up close — accepted
+- [x] Dry-sand swirls removed (ripple map faded out above the swash, relief bump damped on the dry beach); beach wrack blended instead of cut out (no MSAA under TRAA); meadow clumped with bare ground and dry patches
+- Shell litter is at true scale and reads only up close — accepted
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky
@@ -110,8 +111,9 @@ reinventing it.
 - [x] Hooks for other systems: `hullImpact`, `waveSlap`, `uiTick`, `setMusicState`, `playSting` (documented at the top of `AudioSystem.ts`)
 
 ### K. Shore and ship–wave interaction (shore agent)
-- [ ] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace
-- [ ] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks
+- [x] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace — `ocean/Surf` (closed-form breakers in sets, shared by the ocean's vertex and fragment stages, the wake buffer and the ground hook)
+- [x] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks — `physics/Spray` (now visible; see its header for why it was not), routed through `onSprayImpact` in `main.ts`
+- [ ] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
 
 ### L. Game feel and polish (lead)
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
@@ -133,6 +135,25 @@ Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens 
 - [ ] Screen-space contact shadows (`SSSNode`) for small-scale grounding of props and deck detail
 - [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
 - [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
+
+### O. Lighting, materials and shaders to current AAA practice (lighting agent)
+Audit each against what shipped AAA titles do, fix on evidence, measure cost per tier:
+- [ ] **Shadows:** cascade fit/stability (no swimming on camera move), soft filtering, contact hardening where cheap, shadow distance per tier, foliage/rigging shadow quality, no acne/peter-panning
+- [ ] **Image-based lighting:** environment captured from the live sky (incl. clouds/overcast/night), specular occlusion, horizon occlusion, correct diffuse irradiance — no grey ambient wash
+- [ ] **Local lights:** campfire/torches/ship lanterns as real lights at dusk and night (cheap, culled, tier-gated), emissive that blooms correctly
+- [ ] **Lightning:** the strike lights the scene (sea, clouds, ship) with a shaped flash and shadows/direction, not only a full-screen grade lift
+- [ ] **Night:** moonlight as a key light with a cool colour and correct intensity; stars/moon reflected; nothing reads pitch-black or day-bright
+- [ ] **Materials (PBR):** albedo in physically plausible ranges, roughness/metalness sanity, normal map strength, specular AA (no sparkle) on every hero material — ship wood, ropes, sails, metal fittings, rock, sand, foliage, props
+- [ ] **Translucency:** sails and leaves transmit backlight (thin-surface SSS), two-sided foliage lighting
+- [ ] **Wetness:** rain and spray darken albedo and lower roughness consistently across ship, rock, sand, props (per-object, not one global value)
+- [ ] **Shader hygiene:** no NaNs/fireflies, energy-conserving specular, consistent fog/aerial perspective on every material, shader-compile cost kept off the critical path
+
+### Follow-ups found while merging
+- [ ] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent)
+- [ ] Night/dusk clouds lit near-white against a black clear sky; dusk sea mirrors it pink (sky agent)
+- [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
+- [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
+- [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
 
 ### F. Verification
 - [ ] Progress screenshots each milestone

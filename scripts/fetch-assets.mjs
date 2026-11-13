@@ -194,30 +194,6 @@ const SKETCHFAB = [
     page: 'https://sketchfab.com/3d-models/soft-coral-set-256355f15fcb4095af17b75ae572bff0',
   },
   {
-    slug: 'stylaster_coral',
-    uid: '4f1ddd8352944d16bf3b821b3e71b473',
-    note: 'Lace coral, photogrammetry (Stylaster sanguineus)',
-    licence: 'CC0-1.0',
-    author: 'The Smithsonian Institution',
-    page: 'https://sketchfab.com/3d-models/stylaster-sanguineus-4f1ddd8352944d16bf3b821b3e71b473',
-  },
-  {
-    slug: 'seriatopora_coral',
-    uid: 'b6be88ce19e14e5bb038918d111430d5',
-    note: 'Birdsnest coral, photogrammetry (Seriatopora hystrix)',
-    licence: 'CC0-1.0',
-    author: 'The Smithsonian Institution',
-    page: 'https://sketchfab.com/3d-models/seriatopora-hystrix-b6be88ce19e14e5bb038918d111430d5',
-  },
-  {
-    slug: 'goniastrea_coral',
-    uid: '526ede8a83f943ee868d6991a6d5a533',
-    note: 'Massive brain coral, photogrammetry (Goniastrea favulus)',
-    licence: 'CC0-1.0',
-    author: 'The Smithsonian Institution',
-    page: 'https://sketchfab.com/3d-models/goniastrea-favulus-526ede8a83f943ee868d6991a6d5a533',
-  },
-  {
     // ---- Rock that works from every side ---------------------------------
     //
     // Poly Haven's coastal set is authored for a *shore*, and it shows in the

@@ -407,13 +407,15 @@ const TRANSLUCENCY = 0.35;
 /**
  * Attenuation of downwelling light with the plant's own depth, per metre.
  *
- * Not the same thing as the fog. `UnderwaterPass` integrates extinction along
- * the *view* ray and knows nothing about how much light ever reached the
- * subject; without this term a bed at nineteen metres is lit exactly as brightly
- * as one at two and only looks further away. Baked per instance, because a
- * plant's depth never changes.
+ * Zero now, and kept as a named constant so the history is legible. This used
+ * to be the only place in the scene that knew light weakens on its way down —
+ * `UnderwaterPass` integrated extinction along the *view* ray alone, so without
+ * it a bed at nineteen metres was lit as brightly as one at two. The pass now
+ * applies the column above every pixel's own world position (`uDownwell`), per
+ * channel, to the whole submerged scene, and keeping this as well would darken
+ * the weed twice and nothing else once.
  */
-const DOWNWELLING_SIGMA = 0.035;
+const DOWNWELLING_SIGMA = 0;
 
 /**
  * Ambient occlusion at the holdfast.

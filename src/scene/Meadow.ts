@@ -418,7 +418,19 @@ export class IslandMeadow {
     // sparseness with shortness, which is what thin ground actually looks like.
     const thin = seed.z.smoothstep(0.06, 0.3);
 
-    const presence = edgeFade.mul(band).mul(onIsland).mul(thin);
+    // World-space patchiness at 10-20 m. Per-blade thinning alone is an even
+    // stipple at any distance past a few metres, and an even sward read from the
+    // sea as a mown lawn. Two warped sine products are enough — no texture
+    // fetch in a vertex stage that runs per blade — to open bare ground between
+    // clumps and to drive a dry/lush split the colour stage reads below.
+    const patchy = sin(world.x.mul(0.083).add(sin(world.y.mul(0.061)).mul(2.3)))
+      .mul(sin(world.y.mul(0.097).add(sin(world.x.mul(0.047)).mul(1.9))))
+      .mul(0.5)
+      .add(0.5)
+      .toVar();
+    const clumped = patchy.smoothstep(0.16, 0.4);
+
+    const presence = edgeFade.mul(band).mul(onIsland).mul(thin).mul(clumped);
 
     const height = float(BLADE_HEIGHT)
       .mul(float(1).sub(BLADE_HEIGHT_VARIATION).add(seed.z.mul(BLADE_HEIGHT_VARIATION * 2)))
@@ -478,6 +490,7 @@ export class IslandMeadow {
     const vNormal: Node = varying(worldNormal, 'meadowNormal');
     const vBlade: Node = varying(s, 'meadowBlade');
     const vTint: Node = varying(seed.z, 'meadowTint');
+    const vPatch: Node = varying(patchy, 'meadowPatch');
     const vKey: Node = varying(
       this.sunOcclusion === null
         ? (float(1) as Node)
@@ -501,6 +514,10 @@ export class IslandMeadow {
       // A fraction of the field is dry. Correlated with height again, because
       // the short thin grass is the grass that is struggling.
       base.assign(mixn(base, this.uDry, float(1).sub(vTint).mul(0.55).mul(vBlade)));
+      // Whole clumps go straw-coloured toward the thin edges of the patches,
+      // and the hearts of the clumps stay dark and lush.
+      base.assign(mixn(base, this.uDry, vPatch.oneMinus().smoothstep(0.35, 0.8).mul(0.6).mul(vBlade)));
+      base.assign(base.mul(vPatch.smoothstep(0.55, 0.95).mul(-0.3).add(1)));
 
       const light = this.uAmbient
         .mul(sky.mul(0.6).add(0.4))
