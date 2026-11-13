@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import type { AssetLoader } from './AssetLoader';
+import { HERO_ANISOTROPY, type AssetLoader } from './AssetLoader';
 
 /**
  * The hero sailing ship.
@@ -20,7 +20,11 @@ import type { AssetLoader } from './AssetLoader';
  * no gain.
  */
 
-const SHIP_URL = '/models/dutch_ship_medium/dutch_ship_medium_2k.gltf';
+/**
+ * Built by `scripts/optimize-assets.mjs` from Poly Haven's 2k glTF: KTX2 at 1k
+ * and Meshopt geometry, 7 MB against the 27 MB of JPEGs it replaces.
+ */
+const SHIP_URL = '/models/hero/dutch_ship_medium.glb';
 
 /** Stem-to-transom length of the hull mesh, in metres, after normalisation. */
 const TARGET_HULL_LENGTH = 27;
@@ -53,6 +57,14 @@ export class Ship {
   private readonly probeGeometry: THREE.SphereGeometry;
   private readonly probeMaterial: THREE.MeshBasicNodeMaterial;
   private readonly sails: THREE.Object3D[] = [];
+  /**
+   * Each sail's scale as loaded, which the billow multiplies rather than
+   * replaces. Meshopt quantisation stores every mesh's dequantisation scale on
+   * its node, so a sail node's scale is not 1 — it is the factor that turns its
+   * int16 positions back into metres, and writing `(1, 1, billow)` over it
+   * shrinks the sail to a unit cube.
+   */
+  private readonly sailScales: THREE.Vector3[] = [];
   private time = 0;
   private disposed = false;
 
@@ -118,7 +130,7 @@ export class Ship {
   }
 
   static async load(loader: AssetLoader): Promise<Ship> {
-    const model = await loader.load(SHIP_URL);
+    const model = await loader.load(SHIP_URL, { anisotropy: HERO_ANISOTROPY });
     model.updateMatrixWorld(true);
 
     // Measure the *hull* specifically. Including the rigging would put the
@@ -157,17 +169,13 @@ export class Ship {
   resetClock(time = 0): void {
     this.time = time;
     if (this.sails.length === 0) return;
-    const billow = billowAt(time);
-    for (const sail of this.sails) sail.scale.set(1, 1, billow);
+    this.applyBillow(billowAt(time));
   }
 
   update(dt: number): void {
     if (this.disposed || this.sails.length === 0) return;
     this.time += dt;
-    const billow = billowAt(this.time);
-    for (const sail of this.sails) {
-      sail.scale.set(1, 1, billow);
-    }
+    this.applyBillow(billowAt(this.time));
   }
 
   dispose(): void {
@@ -182,6 +190,13 @@ export class Ship {
   }
 
   // ------------------------------------------------------------------ internals
+
+  private applyBillow(billow: number): void {
+    for (let i = 0; i < this.sails.length; i++) {
+      const base = this.sailScales[i];
+      this.sails[i].scale.set(base.x, base.y, base.z * billow);
+    }
+  }
 
   private applyRenderFlags(): void {
     this.model.traverse((node) => {
@@ -201,7 +216,10 @@ export class Ship {
       const isSail = name.includes('sail');
       const isRigging = name.includes('rigging') || name.includes('rope');
 
-      if (isSail) this.sails.push(mesh);
+      if (isSail) {
+        this.sails.push(mesh);
+        this.sailScales.push(mesh.scale.clone());
+      }
 
       for (const material of materials) {
         // Canvas and rope are surfaces with no back face to speak of; without
