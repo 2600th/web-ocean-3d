@@ -134,6 +134,13 @@ Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens 
 - [ ] Lens character, subtle and tier-gated: film grain (animated only outside deterministic capture), edge chromatic aberration
 - [ ] Every effect: per-tier budget measured, toggleable, deterministic under the capture harness, honoured by reduced motion
 
+### Follow-ups found while merging
+- [ ] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent)
+- [ ] Night/dusk clouds lit near-white against a black clear sky; dusk sea mirrors it pink (sky agent)
+- [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
+- [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
+- [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
