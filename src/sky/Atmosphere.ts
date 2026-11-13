@@ -269,6 +269,15 @@ export const DEFAULT_ATMOSPHERE_PARAMS: AtmosphereParams = {
 
 /** Colour of moonlight — a cool, desaturated blue. See ref-moonlit.png. */
 const MOON_LIGHT_COLOR = new THREE.Color(0.44, 0.58, 0.9);
+/** Moon key at full night, in the sun's units (3.4 at noon). See `updateLights`. */
+const MOON_KEY = 0.6;
+/**
+ * Hemisphere fill at full night. The environment capture of a night sky is a
+ * few thousandths — the dome's night term is starlight, not moonlit air — so at
+ * night this fill *is* the sky light, and it scales with the key to keep the
+ * day's key-to-fill ratio (about 2.5:1 here) rather than going flat.
+ */
+const MOON_FILL = 0.24;
 
 // Module-scope scratch — `update`/`setParams` must not allocate.
 const _fex = new THREE.Vector3();
@@ -907,7 +916,14 @@ export class Atmosphere {
         .multiplyScalar(SUN_LIGHT_DISTANCE)
         .add(this.shadowFocus);
       this.sunLight.color.copy(MOON_LIGHT_COLOR);
-      this.sunLight.intensity = 0.42 * moonUp * this.nightAmount;
+      // 0.6, up from 0.42. At 0.42 a dark-wood hull under a high moon rendered
+      // at a few percent linear — a silhouette with no planking, no rail and no
+      // form — while the sea beside it, which reflects the moonlit sky, stayed
+      // readable. A game's night is not a photometric night (a full moon is
+      // about a millionth of the sun); it is the day's lighting *ratios* at a
+      // dark exposure. 0.6 is 18% of the noon sun, which with the fill below
+      // keeps the key-to-fill contrast of a clear day and lets the hull read.
+      this.sunLight.intensity = MOON_KEY * moonUp * this.nightAmount;
     }
 
     // The target is what the shadow box is centred on, and it has to be told
@@ -978,7 +994,7 @@ export class Atmosphere {
     // look like that: the sky is still a hemisphere of sources, moonlight
     // scatters through the whole atmosphere, and the sea throws light back up.
     //
-    // 0.16 reads shape without washing the darkness out, and the ground term
+    // `MOON_FILL` reads shape without washing the darkness out, and the ground term
     // lifts with it so the underside of the hull picks up the water instead of
     // falling into a void.
     // Overcast moves light out of the key and into the fill rather than removing
@@ -986,7 +1002,7 @@ export class Atmosphere {
     // has soft shadows rather than dark ones. Without this the storm simply went
     // dim once the key was attenuated above.
     this.ambientLight.intensity =
-      (0.15 + 0.85 * day) * (1 + 0.55 * overcastAmount) * (1 - 0.86 * night) + 0.16 * night;
+      (0.15 + 0.85 * day) * (1 + 0.55 * overcastAmount) * (1 - 0.86 * night) + MOON_FILL * night;
     if (night > 0.001) {
       // Cool and dim — the colour moonlight actually fills shadows with. Blended
       // rather than assigned, so dusk hands over gradually.
