@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn,
+  If,
   acos,
   cameraPosition,
   clamp,
@@ -12,6 +13,7 @@ import {
   fract,
   max,
   mix,
+  mx_fractal_noise_float,
   mx_noise_float,
   normalize,
   positionGeometry,
@@ -224,6 +226,25 @@ function twilightGain(sunY: number): number {
   return 1;
 }
 
+/**
+ * The twilight glow, as a strength 0..1 for a sun elevation (sine).
+ *
+ * Preetham's sun energy is cut off a couple of degrees below the horizon —
+ * `CUTOFF_ANGLE` fakes the earth's shadow — and past it the dome has nothing
+ * but the night term. So the first half-hour after sunset, the most colourful
+ * sky of the day, rendered *black*: the tour's dusk squall at a sun 4.7 degrees
+ * down had a dome a seventieth of noon's under a deck lit for daylight. A real
+ * civil twilight is an orange band on the sun's bearing, a purple belt above
+ * it and a deepening blue overhead, fading out by about twelve degrees down.
+ * This supplies that, peaking just after sunset and gone well before night.
+ */
+function twilightGlow(sunY: number): number {
+  return smoothstepScalar(-0.22, -0.03, sunY) * (1 - smoothstepScalar(0.0, 0.1, sunY)) * 0.9;
+}
+const TWILIGHT_HORIZON = /*@__PURE__*/ new THREE.Color(1.0, 0.42, 0.15);
+const TWILIGHT_BELT = /*@__PURE__*/ new THREE.Color(0.42, 0.3, 0.6);
+const TWILIGHT_ZENITH = /*@__PURE__*/ new THREE.Color(0.08, 0.13, 0.32);
+
 /** Rec. 709 luminance weights. */
 const LUMA = /*@__PURE__*/ new THREE.Vector3(0.2126, 0.7152, 0.0722);
 
@@ -370,6 +391,10 @@ export class Atmosphere {
    */
   private readonly uDayRadiance = uniform(SKY_RADIANCE_SCALE);
   private readonly uNightRadiance = uniform(0);
+  /** Twilight glow strength, radiance units. See `twilightGlow`. */
+  private readonly uTwilight = uniform(0);
+  /** Horizontal unit vector toward the sun, for the twilight glow's bearing. */
+  private readonly uSunFlat = uniform(new THREE.Vector3(1, 0, 0));
   // Colour uniforms are held loosely typed: TSL's declaration file narrows a
   // colour uniform to a float-ish node, which blocks legitimate vec3 chaining.
   private readonly uGround: any = uniform(new THREE.Color(0.05, 0.09, 0.13));
@@ -557,6 +582,11 @@ export class Atmosphere {
    * Approximate on purpose: an exact answer means sampling the dome, and the
    * horizon is precisely where a single sample is least representative.
    */
+  /** How far toward flat overcast light the sky is pulled, 0..1. */
+  get overcast(): number {
+    return this.uOvercast.value as number;
+  }
+
   get zenithColor(): THREE.Color {
     return this._zenithColor;
   }
@@ -589,6 +619,89 @@ export class Atmosphere {
    */
   get betaRayleigh(): THREE.Vector3 {
     return this.uBetaR.value as THREE.Vector3;
+  }
+
+  /**
+   * The dome's own radiance in direction `dir`, pre-tonemap — what the sky
+   * shader would draw there, less the sun disc, the stars and the moon.
+   *
+   * A CPU port of `buildSkyNode` for the few directions a caller needs per
+   * frame. It exists because the cloud layer's ambient light was a fixed
+   * fraction of white plus the hemisphere-fill *tint*, and that tint is a hue,
+   * not a brightness: at night it is a mid blue at full scale while the dome
+   * itself renders at a few thousandths. The deck was therefore lit hundreds of
+   * times brighter than the sky around it and came out near-white against
+   * black. Anything that has to sit *in* the sky has to be lit by the sky's
+   * actual radiance, and this is that number.
+   */
+  skyRadiance(dir: THREE.Vector3, out: THREE.Color): THREE.Color {
+    const y = Math.max(0, dir.y);
+    const zenithAngle = Math.acos(Math.min(1, y));
+    const denom =
+      Math.cos(zenithAngle) + 0.15 * Math.pow(93.885 - (zenithAngle * 180) / Math.PI, -1.253);
+    const sR = RAYLEIGH_ZENITH_LENGTH / denom;
+    const sM = MIE_ZENITH_LENGTH / denom;
+    const bR = this.uBetaR.value as THREE.Vector3;
+    const bM = this.uBetaM.value as THREE.Vector3;
+    const sun = this._sunDirection;
+    const cosTheta = dir.x * sun.x + dir.y * sun.y + dir.z * sun.z;
+    const rArg = cosTheta * 0.5 + 0.5;
+    const rPhase = (rArg * rArg + 1) * THREE_OVER_SIXTEEN_PI;
+    const g = this.uMieG.value as number;
+    const mPhase =
+      ((1 - g * g) / Math.pow(1 + g * g - 2 * g * cosTheta, 1.5)) * ONE_OVER_FOUR_PI;
+    const sunE = this.uSunE.value as number;
+    const horizonMix = Math.min(1, Math.max(0, Math.pow(1 - sun.y, 5)));
+
+    const channel = (r: number, m: number): number => {
+      const fex = Math.exp(-(r * sR + m * sM));
+      const scatter = (r * rPhase + m * mPhase) / (r + m);
+      let lin = Math.pow(scatter * sunE * (1 - fex), 1.5);
+      lin *= 1 + (Math.sqrt(Math.max(0, scatter * sunE * fex)) - 1) * horizonMix;
+      return (lin + fex * 0.1) * 0.04;
+    };
+    let dr = channel(bR.x, bM.x);
+    let dg = channel(bR.y, bM.y) + 0.0003;
+    let db = channel(bR.z, bM.z) + 0.00075;
+
+    const overcast = this.uOvercast.value as number;
+    if (overcast > 0) {
+      const luma = dr * LUMA.x + dg * LUMA.y + db * LUMA.z;
+      const tint = this.uOvercastTint.value as THREE.Color;
+      const darken = (this.uOvercastDarken.value as number) * overcast;
+      const k = OVERCAST_DESATURATION;
+      dr += ((dr + (luma - dr) * k) * tint.r * darken - dr * overcast);
+      dg += ((dg + (luma - dg) * k) * tint.g * darken - dg * overcast);
+      db += ((db + (luma - db) * k) * tint.b * darken - db * overcast);
+    }
+
+    const up = Math.min(1, Math.max(0, dir.y * 1.7));
+    const day = this.uDayRadiance.value as number;
+    const night = this.uNightRadiance.value as number;
+
+    const flat = this.uSunFlat.value as THREE.Vector3;
+    const flatLength = Math.max(1e-3, Math.sqrt(dir.x * dir.x + dir.z * dir.z));
+    const bearing = ((dir.x * flat.x + dir.z * flat.z) / flatLength) * 0.5 + 0.5;
+    const h = Math.max(0, dir.y);
+    const tw = this.uTwilight.value as number;
+    const wHorizon = Math.pow(bearing, 3) * Math.exp(-9 * h) * tw;
+    const wBelt = Math.pow(bearing, 1.5) * Math.exp(-3 * h) * 0.5 * tw;
+    const wZenith = (h * 0.5 + 0.5) * 0.35 * tw;
+
+    out.setRGB(
+      dr * day + (0.016 + (0.0016 - 0.016) * up) * night +
+        TWILIGHT_HORIZON.r * wHorizon + TWILIGHT_BELT.r * wBelt + TWILIGHT_ZENITH.r * wZenith,
+      dg * day + (0.022 + (0.0032 - 0.022) * up) * night +
+        TWILIGHT_HORIZON.g * wHorizon + TWILIGHT_BELT.g * wBelt + TWILIGHT_ZENITH.g * wZenith,
+      db * day + (0.044 + (0.0105 - 0.044) * up) * night +
+        TWILIGHT_HORIZON.b * wHorizon + TWILIGHT_BELT.b * wBelt + TWILIGHT_ZENITH.b * wZenith,
+    );
+    const luma = out.r * LUMA.x + out.g * LUMA.y + out.b * LUMA.z;
+    return out.setRGB(
+      Math.max(0, luma + (out.r - luma) * SKY_CHROMA),
+      Math.max(0, luma + (out.g - luma) * SKY_CHROMA),
+      Math.max(0, luma + (out.b - luma) * SKY_CHROMA),
+    );
   }
 
   get betaMie(): THREE.Vector3 {
@@ -810,13 +923,23 @@ export class Atmosphere {
     // cloud layer, and that one feature was most of why the frame read as a hazy
     // morning rather than as weather. What survives a real overcast is a diffuse
     // brightening around the sun's bearing, which the Mie term already supplies.
-    this.uSunDiscVisible.value = 1 - overcast;
+    //
+    // And it has to go to *zero*, not to 12 %: at 19000x, an eighth of the disc
+    // is still two thousand times the sky, and it read as a full moon hanging in
+    // a storm. Gone by three-quarters overcast, eased on the way.
+    const clear = Math.max(0, 1 - overcast / 0.75);
+    this.uSunDiscVisible.value = clear * clear;
 
     this.nightAmount = Math.min(1, Math.max(0, p.nightIntensity));
     const night = this.nightAmount;
     const base = p.exposure * SKY_RADIANCE_SCALE;
     this.uDayRadiance.value = base * twilightGain(this._sunDirection.y) * (1 - 0.95 * night);
     this.uNightRadiance.value = base * night;
+    this.uTwilight.value =
+      base * twilightGlow(this._sunDirection.y) * (1 - 0.75 * overcast) * (1 - 0.6 * night);
+    (this.uSunFlat.value as THREE.Vector3)
+      .set(this._sunDirection.x, 0, this._sunDirection.z)
+      .normalize();
     this.uGround.value.copy(p.groundColor);
 
     // Preetham's per-frame vertex-stage constants. They depend only on uniforms,
@@ -1110,11 +1233,36 @@ export class Atmosphere {
       const daySky = mix(dayColor, groundColor, belowness).toVar('daySky');
 
       // --- night -------------------------------------------------------------
-      const nightSky = this.buildNightNode(dir).toVar('nightSky');
+      // Branched rather than multiplied away: the night term is three noise
+      // lookups and a star hash per pixel of the dome, and by day it is scaled
+      // by exactly zero. A uniform branch is coherent across the whole draw.
+      const nightSky = vec3(0, 0, 0).toVar('nightSky');
+      If(this.uNightRadiance.greaterThan(0), () => {
+        nightSky.assign(this.buildNightNode(dir));
+      });
+
+      // --- twilight ----------------------------------------------------------
+      // See `twilightGlow`. Zero outside a band of sun elevations around the
+      // horizon, and kept off the ground half.
+      const flatLength = dir.x.mul(dir.x).add(dir.z.mul(dir.z)).sqrt().max(1e-3);
+      const bearing = dir.x
+        .mul(this.uSunFlat.x)
+        .add(dir.z.mul(this.uSunFlat.z))
+        .div(flatLength)
+        .mul(0.5)
+        .add(0.5);
+      const up = max(dir.y, 0.0);
+      const twilight = vec3(TWILIGHT_HORIZON.r, TWILIGHT_HORIZON.g, TWILIGHT_HORIZON.b)
+        .mul(pow(bearing, 3.0).mul(exp(up.mul(-9.0))))
+        .add(vec3(TWILIGHT_BELT.r, TWILIGHT_BELT.g, TWILIGHT_BELT.b).mul(pow(bearing, 1.5).mul(exp(up.mul(-3.0))).mul(0.5)))
+        .add(vec3(TWILIGHT_ZENITH.r, TWILIGHT_ZENITH.g, TWILIGHT_ZENITH.b).mul(up.mul(0.5).add(0.5).mul(0.35)))
+        .mul(belowness.oneMinus())
+        .mul(this.uTwilight);
 
       const color = daySky
         .mul(this.uDayRadiance)
         .add(nightSky.mul(this.uNightRadiance))
+        .add(twilight)
         .toVar('skyColor');
 
       const luma = dot(color, vec3(LUMA.x, LUMA.y, LUMA.z));
@@ -1150,7 +1298,37 @@ export class Atmosphere {
     const starCentre = vec3(r1, r2, r3);
     const dist = local.sub(starCentre).length();
 
-    const present = smoothstep(0.938, 0.985, r0);
+    // --- the galaxy ---------------------------------------------------------
+    //
+    // A band of diffuse light around a great circle, tilted against the
+    // horizon the way the real one is, with a brighter bulge toward one end
+    // and a dark dust rift along its spine. Three things sell it: the band is
+    // *clumped* (star clouds, not a gradient), the rift is off-centre and
+    // ragged, and the star field itself is denser inside it — the band is
+    // made of the same stars as the rest of the sky, just more of them.
+    const plane = d.dot(vec3(GALACTIC_POLE.x, GALACTIC_POLE.y, GALACTIC_POLE.z));
+    const bandCore = exp(plane.mul(plane).mul(-1 / (0.13 * 0.13)));
+    const bulge = pow(saturate(d.dot(vec3(GALACTIC_CENTRE.x, GALACTIC_CENTRE.y, GALACTIC_CENTRE.z)).mul(0.5).add(0.5)), 3.0);
+    const clouds = mx_fractal_noise_float(d.mul(9.0), 4, 2.3, 0.6, 1.0).mul(0.5).add(0.5);
+    const clumps = smoothstep(0.3, 0.9, clouds);
+    const riftOffset = plane.sub(0.025).add(mx_noise_float(d.mul(11.0)).mul(0.035));
+    const rift = float(1).sub(
+      exp(riftOffset.mul(riftOffset).mul(-1 / (0.035 * 0.035)))
+        .mul(smoothstep(0.3, 0.65, mx_noise_float(d.mul(4.0).add(vec3(3.1, 0, 1.7))).mul(0.5).add(0.5)).mul(0.6).add(0.3)),
+    );
+
+    // Unresolved stars: the band's grain. A second, much finer star grid with
+    // no per-cell centre — each cell is simply lit or not — at a density that
+    // follows the band. This is what keeps the band reading as *stars* rather
+    // than as a cloud; a smooth glow alone is indistinguishable from the
+    // moonlit cumulus drawn over it.
+    const fineCell = floor(d.mul(460.0));
+    const fine = hash13(fineCell);
+    const fineLit = smoothstep(float(1).sub(bandCore.mul(clumps).mul(0.22)), 1.0, fine);
+    const band = bandCore.mul(clumps.mul(0.8).add(0.2)).mul(rift).mul(bulge.mul(1.6).add(0.4));
+    const galaxyColor = mix(vec3(0.55, 0.64, 0.9), vec3(0.95, 0.86, 0.72), bulge);
+
+    const present = smoothstep(float(0.925).sub(bandCore.mul(0.04)), 0.985, r0);
     const core = pow(saturate(float(1).sub(dist.mul(5.0))), 6.0);
     const twinkle = sin(this.uTime.mul(2.6).add(r0.mul(61.0))).mul(0.3).add(0.7);
     const tint = mix(vec3(0.72, 0.81, 1.0), vec3(1.0, 0.88, 0.74), r1);
@@ -1158,6 +1336,9 @@ export class Atmosphere {
 
     const horizonFade = smoothstep(-0.03, 0.2, d.y);
     const stars = tint.mul(core.mul(present).mul(twinkle).mul(magnitude).mul(11.0).mul(horizonFade));
+    const galaxy = galaxyColor.mul(
+      band.mul(0.18).add(fineLit.mul(rift).mul(0.9)).mul(horizonFade),
+    );
 
     // --- moon ----------------------------------------------------------------
     const cosMoon = dot(d, this.uMoonDir).toVar('cosMoon');
@@ -1171,14 +1352,41 @@ export class Atmosphere {
     const glow = vec3(0.55, 0.68, 1.0).mul(
       pow(halo, 1400.0).mul(0.5).add(pow(halo, 60.0).mul(0.06)).add(pow(halo, 5.0).mul(0.014)),
     );
+    // The 22-degree halo: moonlight refracted through hexagonal ice in high
+    // cloud. A faint ring with a reddish inner edge and a bluer outer one —
+    // the dispersion is what makes it read as an optical effect rather than
+    // a drawn circle. Kept faint: it is a thing you notice, not a thing that
+    // frames the moon.
+    const ringInner = cosMoon.sub(0.9285).mul(1 / 0.0045);
+    const ringOuter = cosMoon.sub(0.9225).mul(1 / 0.006);
+    const ring = vec3(1.0, 0.82, 0.7)
+      .mul(exp(ringInner.mul(ringInner).negate()))
+      .add(vec3(0.6, 0.72, 1.0).mul(exp(ringOuter.mul(ringOuter).negate())))
+      .mul(0.012);
     // The halo should not wrap under the horizon.
     const aboveHorizon = smoothstep(-0.08, 0.05, d.y);
 
-    return base.add(stars).add(moonBody.add(glow).mul(aboveHorizon));
+    // The galaxy and the faintest stars wash out near a bright moon.
+    const moonWash = float(1).sub(pow(halo, 12.0).mul(0.85));
+    return base
+      .add(stars)
+      .add(galaxy.mul(moonWash))
+      .add(moonBody.add(glow).add(ring).mul(aboveHorizon));
   }
 }
 
 const WHITE = /*@__PURE__*/ new THREE.Color(1, 1, 1);
+/**
+ * Orientation of the galactic plane: its pole, and the direction of the bulge
+ * within it. The band rises out of the sea with its bright bulge on the
+ * horizon *opposite* the moonlit preset's moon — where the moon's glare does
+ * not wash it out — and climbs steeply across the sky toward the zenith, so
+ * a viewer who turns their back on the moon is looking straight at it.
+ */
+const GALACTIC_POLE = /*@__PURE__*/ new THREE.Vector3(-0.432, 0.362, -0.826).normalize();
+const GALACTIC_CENTRE = /*@__PURE__*/ new THREE.Vector3(-0.857, 0.12, 0.501)
+  .projectOnPlane(GALACTIC_POLE)
+  .normalize();
 const NIGHT_SKY_TINT = /*@__PURE__*/ new THREE.Color(0.12, 0.2, 0.42);
 /** Colour moonlight fills shadows with — cool, and never quite neutral. */
 const MOON_FILL_COLOR = /*@__PURE__*/ new THREE.Color(0.42, 0.55, 0.86);
