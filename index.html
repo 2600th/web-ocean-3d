@@ -3,78 +3,57 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#14100D" />
+    <meta name="theme-color" content="#0B1A20" />
     <title>Web Ocean 3D — Realtime WebGPU Ocean</title>
     <meta
       name="description"
       content="A realtime spectral ocean rendered with Three.js, WebGPU and TSL: FFT waves, physically based water lighting, caustics, foam, buoyancy and underwater transitions."
     />
     <!--
-      Preloaded, not merely linked. Both faces are used in the first painted
-      frame — the boot sheet is set in them — so discovering them from the
-      stylesheet costs a round trip that lands after the overlay is already up.
+      Preloaded, not merely linked. The display and instrument faces are both
+      in the first painted frame — the boot chart is set in them — so finding
+      them from the stylesheet would cost a round trip after the overlay is up.
+      The voice face (IM Fell English italic) is not: it speaks once, at the
+      helm in a storm, long after boot, so the stylesheet discovers it.
     -->
-    <link
-      rel="preload"
-      href="/fonts/bodoni-moda.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
-    <link rel="preload" href="/fonts/bitter.woff2" as="font" type="font/woff2" crossorigin />
-    <!-- The boot title sets `Ocean` in it, so it is first-frame too. The Bitter
-         italic is not: nothing italic in the instrument appears before the sea
-         does, so it is left to the stylesheet to discover. -->
-    <link
-      rel="preload"
-      href="/fonts/bodoni-moda-italic.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
-    <!--
-      Inline so there is no favicon round-trip (and no 404 when none is served).
-      Ruled table lines with the almanac's overprint tick on the spring-tide row.
-    -->
+    <link rel="preload" href="/fonts/pirata-one.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/alegreya.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- Inline so there is no favicon round-trip: a brass compass star on night water. -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2314100D'/%3E%3Cg stroke='%23E9DFCB' stroke-width='2' stroke-linecap='square'%3E%3Cpath d='M5 9h22M5 16h22M5 23h13'/%3E%3C/g%3E%3Cpath d='M21 23h6' stroke='%23E8503A' stroke-width='2' stroke-linecap='square'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230B1A20'/%3E%3Cpath d='M16 3l3 10 10 3-10 3-3 10-3-10-10-3 10-3z' fill='%23E2B458'/%3E%3Cpath d='M16 3l3 10-3 3zM29 16l-10 3-3-3zM16 29l-3-10 3-3zM3 16l10-3 3 3z' fill='%237A5519'/%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="/src/ui/styles.css" />
   </head>
   <body>
     <!--
-      THESIS: An instrument's printed page, not a glass overlay. Refuses the
-      translucent blurred HUD every realtime demo ships.
-      OWN-WORLD: Admiralty tide tables read at a chart table under a shaded red
-      lamp. Warm ink ground, bone rule-work, one overprint red. Bodoni Moda
-      display against Bitter slab tables. Square corners, hairline rules, double
-      rules as section breaks, printed bars for sliders. No blur, no glow, no
-      radius, no card.
-      STORY: The visitor sees the sea first and the instrument second, reads the
-      state of the world as a table, and reaches in to change it.
-      FIRST VIEWPORT: Sea full-bleed. Top-left a rate block — the figure in
-      Bitter with its unit in the column beside it, so it reads as a table's top
-      line and not as a statistic in a box — then a numbered camera index.
-      Top-right a ruled column of table rows. Both opaque, both square, neither
-      blurred. Bodoni is spent only on the name and the quote.
-      FORM: Nautical almanac; candidate 5 of 7; seed 09ae95cc.
-      FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+      THESIS: A nautical adventure's instruments, not a software overlay. Aged
+      chart paper with torn edges, brass and verdigris fittings, ink line work,
+      wax seals; the sea stays the hero and the chrome sits at its corners.
+      FONTS: Pirata One (display: names and headings), Alegreya (instrument:
+      every label and figure), IM Fell English italic (voice: the storm quote
+      only). See DESIGN.md.
     -->
     <div id="app">
       <canvas id="viewport" aria-label="Realtime ocean viewport"></canvas>
       <div id="ui-root"></div>
       <div id="boot" class="boot">
-        <div class="boot__inner">
-          <div class="boot__rule boot__rule--double"></div>
-          <h1 class="boot__title">Web <em>Ocean</em> 3D</h1>
-          <p class="boot__standfirst">A spectral sea, solved every frame</p>
-          <div class="boot__rule"></div>
-          <div id="boot-gate" class="boot__gate"></div>
-          <div id="boot-progress" class="boot__progress" hidden>
-            <div class="boot__readout">
-              <span class="boot__status" id="boot-status">Initialising renderer</span>
-              <span class="boot__bar"><i id="boot-bar"></i></span>
+        <div class="boot__sheet parchment">
+          <div class="boot__inner">
+            <h1 class="boot__title">Web Ocean <span class="boot__title-num">3D</span></h1>
+            <p class="boot__standfirst">A spectral sea, solved every frame</p>
+            <div class="boot__flourish" aria-hidden="true"><span></span></div>
+            <div id="boot-gate" class="boot__gate"></div>
+            <div id="boot-progress" class="boot__progress" hidden>
+              <div class="boot__route" aria-hidden="true">
+                <span class="boot__port boot__port--from"></span>
+                <span class="boot__line"><i id="boot-bar"></i></span>
+                <span class="boot__port boot__port--to"></span>
+                <span class="boot__ship-track"><span class="boot__ship"></span></span>
+              </div>
+              <p class="boot__status" id="boot-status" role="status">Initialising renderer</p>
+              <!-- Shown by CSS only when the status carries the error class. -->
+              <button id="boot-retry" class="btn btn--brass boot__retry" type="button">Try again</button>
             </div>
           </div>
         </div>

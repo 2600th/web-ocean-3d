@@ -16,6 +16,8 @@
  * touchscreen and a mouse — which also makes it drivable from a test.
  */
 
+import { icon, type IconName } from './icons.ts';
+
 /** Travel of the knob from the centre, as a fraction of the pad's radius. */
 const KNOB_TRAVEL = 0.62;
 
@@ -31,12 +33,18 @@ const DEAD_ZONE = 0.12;
 export interface TouchControlsCallbacks {
   /** Throttle and rudder, each -1..1. Called only when a value changes. */
   onInput(throttle: number, rudder: number): void;
+  /** Sail trim one step up (1) or down (-1). Omitted: no sail buttons. */
+  onSail?(direction: 1 | -1): void;
+  /** Drop or weigh the anchor. Omitted: no anchor button. */
+  onAnchor?(): void;
 }
 
 export class TouchControls {
   private readonly root: HTMLElement;
   private readonly pad: HTMLElement;
   private readonly knob: HTMLElement;
+  /** Sail and anchor buttons; the keyboard's W/S and R for a thumb. */
+  private readonly actions: HTMLElement | null;
   private readonly callbacks: TouchControlsCallbacks;
   private readonly controller = new AbortController();
 
@@ -84,6 +92,48 @@ export class TouchControls {
     this.pad = pad;
     this.knob = knob;
     this.root.append(pad);
+
+    // The stick is rudder and engine; the sails and the anchor are discrete
+    // orders, so they are buttons — the same three a keyboard player reaches
+    // with W, S and R.
+    let actions: HTMLElement | null = null;
+    if (callbacks.onSail || callbacks.onAnchor) {
+      actions = document.createElement('div');
+      actions.className = 'touchhelm';
+      actions.setAttribute('role', 'group');
+      actions.setAttribute('aria-label', 'Sails and anchor');
+      actions.hidden = true;
+      const button = (glyph: IconName, label: string, title: string, run: () => void): void => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'touchhelm__btn';
+        const caption = document.createElement('span');
+        caption.className = 'touchhelm__label';
+        caption.textContent = label;
+        b.append(icon(glyph, 'touchhelm__icon'), caption);
+        b.title = title;
+        b.setAttribute('aria-label', title);
+        b.addEventListener(
+          'pointerdown',
+          (e) => {
+            e.preventDefault();
+            run();
+          },
+          { signal },
+        );
+        b.addEventListener('contextmenu', (e) => e.preventDefault(), { signal });
+        actions!.append(b);
+      };
+      if (callbacks.onSail) {
+        button('sailUp', 'More', 'Set more sail', () => callbacks.onSail!(1));
+        button('sailDown', 'Less', 'Take in sail', () => callbacks.onSail!(-1));
+      }
+      if (callbacks.onAnchor) {
+        button('anchor', 'Anchor', 'Drop or weigh anchor', () => callbacks.onAnchor!());
+      }
+      this.root.append(actions);
+    }
+    this.actions = actions;
   }
 
   /**
@@ -105,6 +155,7 @@ export class TouchControls {
     if (this.disposed || this.visible === visible) return;
     this.visible = visible;
     this.pad.hidden = !visible;
+    if (this.actions) this.actions.hidden = !visible;
     if (!visible) this.release();
   }
 
@@ -117,6 +168,7 @@ export class TouchControls {
     this.disposed = true;
     this.controller.abort();
     this.pad.remove();
+    this.actions?.remove();
   }
 
   // ---------------------------------------------------------------- internals

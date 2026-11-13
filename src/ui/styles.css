@@ -1,136 +1,130 @@
 /* ==========================================================================
    Web Ocean 3D — UI layer
-   "Tide Table": the instrument as a printed reference page, not a glass pane.
+   "Captain's Table": a nautical adventure's instruments laid over the sea.
 
-   The world is an Admiralty tide table read at a chart table under a shaded red
-   lamp — which is where the dark ground comes from. It is not a theme choice:
-   this interface is only ever seen lying over a moving sea, at whatever hour the
-   viewer has set, and a page held under a night lamp is the one real scene in
-   which a printed table is read against a dark window.
+   Three materials carry the whole system, each with one job:
 
-   Four rules carry the whole thing, and every one of them is a refusal of what
-   this category ships:
+     PARCHMENT  things you read — the ledger, the objective scroll, toasts,
+                the boot chart. Warm vellum with torn (deckled) edges, fibre
+                grain and foxing, iron-gall ink on top.
+     WOOD       things you watch — the compass tape, the readings, the mode
+                bar. Dark stained oak so a figure reads over a white whitecap
+                and a black trough alike.
+     BRASS      things you touch or that frame — every button rim, plaque,
+                slider knob and the dial bezel. Polished = selected.
 
-     1. **Opaque, never glass.** There is no `backdrop-filter` in this file. A
-        blurred panel over a 3D canvas is both the category default and a real
-        per-frame cost on the exact surface whose frame budget is the product.
-        Printed paper is opaque, and opaque is also legible over a sea that is
-        white in one corner and black in the other.
-     2. **Square.** No `border-radius` anywhere. A rounded rectangle is a
-        software affordance; a page has corners.
-     3. **Ruled.** Structure is carried by hairlines and double rules, the way a
-        table carries it, rather than by boxes, cards or elevation. Nothing here
-        is a card, and nothing is nested inside another one.
-     4. **One overprint.** A single red, used the way an almanac uses it — for
-        the value that matters and the row you are on — and never as a glow.
+   Wax red is the one accent that means "this one": the north point, the
+   section heads, the Set Sail call, the selected seal. Gold is for reward.
 
-   Two faces, and the split is load-bearing rather than decorative. Bodoni Moda
-   is the project's *voice*: its name, and the one line of prose it ever speaks.
-   Bitter is its *instrument*: every label, figure, row and control. That keeps
-   the storm quote typographically apart from all of the readouts, which is a
-   commitment recorded in PRODUCT.md, while spending only two font files.
+   Three faces, and the split is binding (PRODUCT.md): Pirata One is the
+   display hand (names and headings), Alegreya the instrument (every label and
+   figure), IM Fell English italic the *voice* — the storm quote and nothing
+   else.
+
+   No backdrop-filter anywhere: a blur over a full-screen 3D canvas costs GPU
+   time on the exact surface whose frame budget is the product. Every surface
+   is opaque or a flat translucent tint.
    ========================================================================== */
 
-/* --------------------------------------------------------------------------
-   Faces
-   -------------------------------------------------------------------------- */
-
-/*
- * `swap`, not `block`. The boot overlay is the first paint and it is text; a
- * blocking face would hold that frame back behind a font download on the one
- * screen whose entire job is to say that something is happening.
- */
-/*
- * Four files, not two: each family carries a **true italic** alongside its
- * roman.
- *
- * Declaring only the roman does not disable italics — it makes the browser
- * synthesise them, by shearing the upright letterforms. A Didone is the worst
- * possible face to do that to: a real Bodoni italic is a different alphabet,
- * with a single-storey `a`, entry and exit strokes, and a narrower fit, and none
- * of that survives a skew transform. The two places this project sets italic are
- * its own name and the storm quote — the only line in the whole product that is
- * voice rather than instrument — so a faked oblique lands squarely on the one
- * thing that must not look machine-made.
- */
 @font-face {
-  font-family: 'Bodoni Moda';
-  src: url('/fonts/bodoni-moda.woff2') format('woff2');
+  font-family: 'Pirata One';
+  src: url('/fonts/pirata-one.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Alegreya';
+  src: url('/fonts/alegreya.woff2') format('woff2');
   font-weight: 400 900;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Bodoni Moda';
-  src: url('/fonts/bodoni-moda-italic.woff2') format('woff2');
-  font-weight: 400 900;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Bitter';
-  src: url('/fonts/bitter.woff2') format('woff2');
-  font-weight: 300 800;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Bitter';
-  src: url('/fonts/bitter-italic.woff2') format('woff2');
-  font-weight: 300 800;
+  font-family: 'IM Fell English';
+  src: url('/fonts/im-fell-english-italic.woff2') format('woff2');
+  font-weight: 400;
   font-style: italic;
   font-display: swap;
 }
 
 :root {
-  /* --- the page ---------------------------------------------------------- */
-  --ink: #14100d;
-  --ink-raised: #1e1813;
-  --ink-deep: #0b0806;
+  /* --- parchment ------------------------------------------------------- */
+  --parchment-hi: #f6ead0;
+  --parchment: #ecdcb6;
+  --parchment-lo: #d8c08f;
+  /* Iron-gall ink. 12.0:1 on --parchment. */
+  --ink: #2b1d10;
+  /* Secondary writing. 6.9:1 on --parchment, 5.3:1 on --parchment-lo. */
+  --ink-soft: #5b4129;
+  /* Rules and drawn line work only — 3.3:1, never text. */
+  --ink-faint: #8f714d;
 
-  /* --- the impression ---------------------------------------------------- */
-  /* 13.4:1 on --ink. */
-  --bone: #e9dfcb;
-  /* 6.3:1 on --ink — the floor for anything anyone has to read. */
-  --bone-dim: #a2937c;
+  /* --- wood ------------------------------------------------------------ */
+  --wood-hi: #3d2a18;
+  --wood: #2a1b0f;
+  --wood-deep: #170e07;
+  /* Text on wood. 13.0:1 and 7.5:1 on --wood. */
+  --on-wood: #f1e2bf;
+  --on-wood-dim: #c4ab7f;
 
-  /*
-   * Rules only. 2.4:1 on --ink, which is under the text floor by design and
-   * deliberately not a text colour anywhere in this file: hairlines are drawn
-   * objects, not writing, and holding them to a reading contrast would turn a
-   * ruled table into a striped one.
-   */
-  --rule: #443c33;
-  /* Lifted from #2a231d, which was so nearly the ground that the row rules did
-     not read at all and the panel came back looking like a stack of unruled
-     lines. A table's hairlines have to be *seen* to be doing their job. */
-  --rule-soft: #372f28;
+  /* --- brass ----------------------------------------------------------- */
+  --brass-hi: #f7dc92;
+  --brass: #c8973f;
+  --brass-lo: #7a5519;
+  --brass-edge: #2a1806;
+  --brass-grad: linear-gradient(
+    160deg,
+    #fbe7a6 0%,
+    #d6a94e 22%,
+    #8f6522 46%,
+    #e2b85f 68%,
+    #7f5a1c 100%
+  );
+  --brass-face: linear-gradient(180deg, #fbe7a6 0%, #e2b85f 45%, #c08a35 100%);
 
-  /* --- the overprint ----------------------------------------------------- */
-  /* 5.1:1 on --ink. Lifted from a truer vermilion, which measured 4.2 and so
-     could not carry a value anyone has to read. */
-  --red: #e8503a;
-  --red-deep: #b0341f;
+  /* --- accents --------------------------------------------------------- */
+  /* 6.7:1 on --parchment. */
+  --wax: #8e1b17;
+  --wax-hi: #c23a2c;
+  --gold: #ffd36b;
+  --verdigris: #2f7d6d;
+  --verdigris-hi: #6cc4aa;
+  --wind: #0f5f6b;
 
-  --ok: #8fbf6a;
-  --warn: #e0a33c;
+  --ok: #9ccf72;
+  --warn: #f0b042;
+  --bad: #ff7a5c;
 
-  --font-voice: 'Bodoni Moda', 'Bodoni 72', Didot, 'Times New Roman', serif;
-  --font-instrument: 'Bitter', 'Roboto Slab', Rockwell, Georgia, serif;
+  --sea-night: #0b1a20;
 
-  --panel-width: 296px;
+  --font-display: 'Pirata One', 'Palatino Linotype', Georgia, serif;
+  --font-body: 'Alegreya', 'Palatino Linotype', Georgia, serif;
+  --font-voice: 'IM Fell English', 'Palatino Linotype', Georgia, serif;
+
+  --panel-width: 328px;
   --gutter: 20px;
-  /* One table row. Everything vertical is a multiple or a half of this. */
-  --row: 34px;
+  /* Edges respect the notch and the home indicator (viewport-fit=cover). */
+  --edge-t: max(var(--gutter), env(safe-area-inset-top, 0px));
+  --edge-r: max(var(--gutter), env(safe-area-inset-right, 0px));
+  --edge-b: max(var(--gutter), env(safe-area-inset-bottom, 0px));
+  --edge-l: max(var(--gutter), env(safe-area-inset-left, 0px));
 
-  /* Offset and blur, never a zero-offset halo: this is a sheet lying on a
-     surface, and a sheet casts its shadow downward. */
-  --lift: 0 14px 34px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+  /* Wood over the scene is stained glass-free translucency: alpha, never blur. */
+  --wood-a: rgba(42, 27, 15, 0.84);
+  --wood-deep-a: rgba(23, 14, 7, 0.88);
+
+  /* Attention: fade slowly out, come back at once. */
+  --fade-out: 1.4s;
+  --fade-in: 220ms;
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.55, 0, 0.9, 0.4);
+
+  /* Offset and soft blur: everything here lies *on* the sea, lit from above. */
+  --drop: drop-shadow(0 10px 14px rgba(5, 3, 1, 0.42)) drop-shadow(0 2px 2px rgba(5, 3, 1, 0.3));
 
   color-scheme: dark;
 }
@@ -147,10 +141,12 @@ body {
   padding: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--ink-deep);
-  color: var(--bone);
-  font-family: var(--font-instrument);
+  background: var(--sea-night);
+  color: var(--on-wood);
+  font-family: var(--font-body);
   font-size: 16px;
+  /* No faux bold or oblique of a face that does not ship one. */
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overscroll-behavior: none;
@@ -160,10 +156,6 @@ body {
   position: fixed;
   inset: 0;
 }
-
-/* --------------------------------------------------------------------------
-   Viewport canvas
-   -------------------------------------------------------------------------- */
 
 #viewport {
   position: fixed;
@@ -190,821 +182,1829 @@ body {
   pointer-events: auto;
 }
 
-/*
- * The shared sheet treatment. Opaque ground, hairline edge, square corners.
- *
- * A hair of grain rather than a flat fill: two nearly-invisible linear gradients
- * at right angles, which is enough to keep a 300px field of one colour from
- * banding on an 8-bit display sitting next to a dithered ocean.
- */
-.panel,
+/* Figures: lining, tabular. Alegreya's default figures are old-style, which
+   is right for prose and wrong for an instrument that has to hold its column. */
 .hud,
-.panel-toggle {
-  background-color: var(--ink);
-  background-image: linear-gradient(
-      92deg,
-      rgba(233, 223, 203, 0.022) 0%,
-      rgba(233, 223, 203, 0) 55%
-    ),
-    linear-gradient(3deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0) 40%);
-  border: 1px solid var(--rule);
-  border-radius: 0;
-  box-shadow: var(--lift);
+.panel,
+.boot {
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
-/* Focus ring for every interactive control. Square, like everything else. */
-#ui-root :focus-visible {
-  outline: 2px solid var(--red);
-  outline-offset: 2px;
-  border-radius: 0;
+/* Gold on wood; wax on parchment, where gold would vanish into the paper. */
+#ui-root :focus-visible,
+.boot :focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 3px;
 }
 
-/* --------------------------------------------------------------------------
-   Shared table furniture
-
-   `.rule` is a hairline between rows; `.rule--double` is the almanac's section
-   break, two lines with a hair of paper between them. They are drawn with
-   borders rather than as elements so a row can carry its own without markup.
-   -------------------------------------------------------------------------- */
-
-.sheet-title {
-  margin: 0;
-  font-family: var(--font-voice);
-  font-optical-sizing: auto;
-  font-size: 22px;
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: 0.005em;
-  color: var(--bone);
+.parchment :focus-visible,
+.parchment:focus-visible {
+  outline-color: var(--wax-hi);
 }
 
-.sheet-title em {
-  font-style: italic;
-  font-weight: 600;
+.sr-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  opacity: 0;
 }
 
-/* Table column heads: the almanac's letterspaced small capitals. */
-.col-head {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+/* ==========================================================================
+   Materials
+   ========================================================================== */
+
+/*
+ * PARCHMENT. The sheet itself is a pseudo-element behind the content, so the
+ * deckle mask chews only the paper — never a scrollbar, a focus ring or a
+ * knob — and the element's own drop-shadow follows the torn outline.
+ *
+ * The torn edge is four tiling SVG strips plus a solid core, composited as a
+ * mask. Strip lengths are co-prime (173/211/167/193) so no two edges line up.
+ */
+.parchment {
+  position: relative;
+  isolation: isolate;
+  color: var(--ink);
+  filter: var(--drop);
+}
+
+.parchment::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(130% 100% at 50% 40%, transparent 52%, rgba(122, 74, 22, 0.32) 100%),
+    url('./assets/paper-stain.svg') 0 0 / 640px 640px,
+    url('./assets/paper-grain.svg') 0 0 / 220px 220px,
+    linear-gradient(172deg, var(--parchment-hi), var(--parchment) 45%, var(--parchment-lo));
+  /* The burnt rim: darker where the sheet has been handled. */
+  box-shadow:
+    inset 0 0 24px rgba(128, 78, 24, 0.42),
+    inset 0 0 4px rgba(96, 58, 18, 0.55);
+  /* Four tiling torn-edge strips and a solid core, unioned; then each corner
+     is trimmed by intersecting a diagonal cut, or the two strips that meet
+     there would leave a square tooth standing proud of the tear. */
+  -webkit-mask-image: var(--deckle-images);
+  -webkit-mask-position: var(--deckle-positions);
+  -webkit-mask-size: var(--deckle-sizes);
+  -webkit-mask-repeat: var(--deckle-repeats);
+  -webkit-mask-composite: source-in, source-in, source-in, source-in, source-over, source-over, source-over, source-over, source-over;
+  mask-image: var(--deckle-images);
+  mask-position: var(--deckle-positions);
+  mask-size: var(--deckle-sizes);
+  mask-repeat: var(--deckle-repeats);
+  mask-composite: intersect, intersect, intersect, intersect, add, add, add, add, add;
+}
+
+:root {
+  --deckle-images:
+    linear-gradient(135deg, transparent 6px, #000 6.5px),
+    linear-gradient(225deg, transparent 6px, #000 6.5px),
+    linear-gradient(45deg, transparent 6px, #000 6.5px),
+    linear-gradient(315deg, transparent 6px, #000 6.5px),
+    url('./assets/deckle-top.svg'),
+    url('./assets/deckle-bottom.svg'),
+    url('./assets/deckle-left.svg'),
+    url('./assets/deckle-right.svg'),
+    linear-gradient(#000 0 0);
+  --deckle-positions: 0 0, 0 0, 0 0, 0 0, top left, bottom left, top left, top right, center;
+  --deckle-sizes: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 173px 10px, 211px 10px, 10px 167px,
+    10px 193px, calc(100% - 18px) calc(100% - 18px);
+  --deckle-repeats: no-repeat, no-repeat, no-repeat, no-repeat, repeat-x, repeat-x, repeat-y, repeat-y,
+    no-repeat;
+}
+
+/* WOOD in a BRASS frame. The gradient border is a padding-box / border-box
+   background pair, so the rim is metal with a sheen rather than a flat line. */
+.plate {
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 220, 160, 0.07), rgba(0, 0, 0, 0.22)) padding-box,
+    url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
+    linear-gradient(180deg, rgba(61, 42, 24, 0.86), var(--wood-a) 60%, var(--wood-deep-a)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow:
+    0 0 0 1px var(--brass-edge),
+    0 8px 18px rgba(5, 3, 1, 0.38),
+    inset 0 1px 0 rgba(255, 230, 170, 0.14);
+  color: var(--on-wood);
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+.btn {
+  display: block;
+  width: 100%;
+  padding: 11px 14px 10px;
+  border: 0;
+  border-radius: 8px;
+  font: 700 13px/1 var(--font-body);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--bone-dim);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 120ms var(--ease), box-shadow 120ms var(--ease), filter 160ms;
 }
 
-/* --------------------------------------------------------------------------
-   Control panel — a ruled column of table rows
-   -------------------------------------------------------------------------- */
+/* Polished brass with the label engraved. */
+.btn--brass {
+  color: var(--ink);
+  background: var(--brass-face);
+  text-shadow: 0 1px 0 rgba(255, 245, 210, 0.6);
+  box-shadow:
+    0 0 0 1px var(--brass-edge),
+    inset 0 1px 0 rgba(255, 252, 230, 0.75),
+    inset 0 -2px 0 rgba(96, 62, 14, 0.35),
+    0 3px 0 #5a3d12,
+    0 5px 9px rgba(40, 22, 4, 0.3);
+}
+
+.btn--brass:hover {
+  filter: brightness(1.07);
+}
+
+.btn--brass:active {
+  transform: translateY(2px);
+  box-shadow:
+    0 0 0 1px var(--brass-edge),
+    inset 0 1px 0 rgba(255, 252, 230, 0.6),
+    0 1px 0 #5a3d12,
+    0 2px 4px rgba(40, 22, 4, 0.25);
+}
+
+/* ==========================================================================
+   Panel — the captain's ledger
+   ========================================================================== */
 
 .panel {
   position: absolute;
-  top: var(--gutter);
-  right: var(--gutter);
+  top: var(--edge-t);
+  right: var(--edge-r);
+  z-index: 6;
   width: var(--panel-width);
-  max-width: calc(100vw - var(--gutter) * 2);
-  max-height: calc(100vh - var(--gutter) * 2);
+  /* Clear of the instrument corner below it. */
+  max-height: calc(100% - var(--edge-t) - var(--edge-b) - 46px);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  padding: 16px 20px 14px 22px;
 }
 
 .panel__head {
   flex: none;
-  padding: 14px 16px 12px;
-  /* The double rule under a table's title block. */
-  border-bottom: 3px double var(--rule);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 10px;
+  border-bottom: 3px double var(--ink-faint);
 }
 
 .panel__title {
   margin: 0;
-  font-family: var(--font-voice);
-  font-optical-sizing: auto;
-  font-size: 21px;
-  font-weight: 500;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 31px;
   line-height: 1;
-  letter-spacing: 0.005em;
-  color: var(--bone);
+  letter-spacing: 0.01em;
+  color: var(--ink);
+  text-shadow: 0 1px 0 rgba(255, 250, 235, 0.55);
 }
 
-.panel__title-accent {
-  font-style: italic;
-  font-weight: 600;
-  color: var(--bone);
+.panel__collapse {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--brass-face) padding-box, linear-gradient(#7a5519, #3b2609) border-box;
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 0 2px 0 #4a3210, 0 3px 6px rgba(40, 22, 4, 0.3);
+  transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
 }
 
+.panel__collapse svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.4;
+  transform: rotate(180deg);
+  transition: transform 260ms var(--ease);
+}
+
+.panel__collapse:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 #4a3210, 0 1px 2px rgba(40, 22, 4, 0.3);
+}
+
+.panel--collapsed .panel__collapse svg {
+  transform: none;
+}
+
+.panel--collapsed .panel__head {
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+
+/*
+ * `min-height: 0` is load-bearing: a flex child defaults to `min-height: auto`
+ * and refuses to shrink, so the body grows past the panel's max-height and the
+ * last controls are cut off rather than scrolled to.
+ */
 .panel__body {
-  padding: 4px 16px 16px;
-  /*
-   * `min-height: 0` is load-bearing, not defensive.
-   *
-   * A flex item defaults to `min-height: auto`, which refuses to shrink below its
-   * content. So on a short viewport this body kept its full natural height, grew
-   * past the panel's `max-height`, and `.panel { overflow: hidden }` quietly cut
-   * the bottom off — taking the Time of Day and Pixel Ratio sliders with it. The
-   * `overflow-y: auto` below could never engage, because the element was never
-   * smaller than its content.
-   *
-   * It also passed the responsive tests, which assert nothing *overflows* the
-   * viewport. Clipped content does not overflow.
-   */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  margin-right: -12px;
+  padding: 0 12px 2px 0;
   scrollbar-width: thin;
-  scrollbar-color: var(--rule) transparent;
+  scrollbar-color: rgba(91, 65, 41, 0.55) transparent;
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 22px), transparent);
+}
+
+.panel__body[hidden] {
+  display: none;
 }
 
 .panel__body::-webkit-scrollbar {
-  width: 5px;
+  width: 6px;
 }
 
 .panel__body::-webkit-scrollbar-thumb {
-  background: var(--rule);
-  border-radius: 0;
+  background: rgba(91, 65, 41, 0.5);
+  border-radius: 3px;
 }
 
-/* Section break, full-bleed to the panel edges the way a printed rule runs to
-   the margin rather than stopping at the text block. */
-.panel__divider {
-  height: 0;
-  margin: 14px -16px;
-  border-top: 3px double var(--rule);
+.ledger-section {
+  padding: 14px 0 4px;
 }
 
-/* --------------------------------------------------------------------------
-   Fields — every control is a table row
-   -------------------------------------------------------------------------- */
+.ledger-section + .ledger-section {
+  border-top: 1px solid rgba(143, 113, 77, 0.55);
+}
+
+.ledger-section__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 21px;
+  line-height: 1;
+  color: var(--wax);
+}
+
+/* A drawn line trailing off the heading, ending in a diamond. */
+.ledger-section__title::after {
+  content: '';
+  flex: 1;
+  height: 7px;
+  background:
+    linear-gradient(45deg, transparent 40%, var(--ink-faint) 41% 59%, transparent 60%) right center / 7px 7px no-repeat,
+    linear-gradient(var(--ink-faint), var(--ink-faint)) left center / calc(100% - 9px) 1px no-repeat;
+  opacity: 0.8;
+}
+
+/* ---- Presets: painted vignettes ------------------------------------------ */
+
+.presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.preset {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 3px;
+  border-radius: 7px;
+  cursor: pointer;
+  background: rgba(91, 65, 41, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(91, 65, 41, 0.35);
+  transition: transform 120ms var(--ease), box-shadow 160ms var(--ease), background 160ms;
+}
+
+.preset:hover {
+  background: rgba(91, 65, 41, 0.2);
+}
+
+.preset:active {
+  transform: translateY(1px);
+}
+
+.preset:has(:checked) {
+  background: var(--brass-grad);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 3px 6px rgba(40, 22, 4, 0.35);
+}
+
+.preset:has(:focus-visible) {
+  outline: 3px solid var(--wax-hi);
+  outline-offset: 2px;
+}
+
+/* The wax seal on the chosen card. */
+.preset:has(:checked)::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 48% 52% 50% 50% / 52% 48% 52% 48%;
+  background: radial-gradient(circle at 38% 32%, #e0645a, var(--wax) 55%, #5e110d);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.preset__art {
+  display: block;
+  height: 44px;
+  border-radius: 5px;
+  --sun-x: 72%;
+  --sun-y: 34%;
+  --sun-r: 5px;
+  background:
+    radial-gradient(circle at var(--sun-x) var(--sun-y), var(--sun) 0 var(--sun-r), transparent calc(var(--sun-r) + 1px)),
+    radial-gradient(circle at var(--sun-x) var(--sun-y), var(--glow, rgba(255, 246, 216, 0.5)) 0, transparent 26px),
+    linear-gradient(180deg, transparent 63%, var(--sea-hi) 63%, var(--sea) 100%),
+    linear-gradient(180deg, var(--sky1), var(--sky2) 63%);
+  box-shadow: inset 0 0 0 1px rgba(43, 29, 16, 0.45);
+}
+
+.preset__name {
+  padding: 4px 0 2px;
+  font: 600 12.5px/1.15 var(--font-body);
+  text-align: center;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset:has(:checked) .preset__name {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+[data-preset='skyPro'] { --sky1: #4d8fd0; --sky2: #cfe5f1; --sea-hi: #2c7396; --sea: #123f5c; --sun: #fffbe8; }
+[data-preset='arctic'] { --sky1: #9ab9cf; --sky2: #eef3f2; --sea-hi: #5e8a9c; --sea: #2a4c5c; --sun: #fffaf0; --sun-y: 52%; --glow: rgba(255, 240, 220, 0.6); }
+[data-preset='blackFlag'] { --sky1: #4f6e83; --sky2: #a8bfc6; --sea-hi: #1f5d68; --sea: #0b2a33; --sun: #fff4d8; --sun-x: 30%; --sun-y: 28%; }
+[data-preset='dusk'] { --sky1: #3a3466; --sky2: #e49a6e; --sea-hi: #4a4a6a; --sea: #171a33; --sun: #ffcf8a; --sun-y: 60%; --glow: rgba(255, 160, 90, 0.7); }
+[data-preset='foggy'] { --sky1: #9aa3a3; --sky2: #cfd2cc; --sea-hi: #7d8b8b; --sea: #4b5859; --sun: rgba(255, 255, 255, 0.55); --sun-r: 7px; --glow: rgba(255, 255, 255, 0.4); }
+[data-preset='moonlit'] { --sky1: #0b1530; --sky2: #2b3d63; --sea-hi: #2c3f5c; --sea: #070d1c; --sun: #e9efff; --sun-r: 4px; --sun-x: 28%; --sun-y: 30%; --glow: rgba(200, 215, 255, 0.45); }
+[data-preset='seaOfThieves'] { --sky1: #2f9fd6; --sky2: #bfeaf0; --sea-hi: #2fc2b4; --sea: #0d6f7a; --sun: #fffbe0; --sun-x: 22%; --sun-y: 26%; }
+[data-preset='storm'] { --sky1: #2c3238; --sky2: #5b6466; --sea-hi: #3a4c4e; --sea: #141d1f; --sun: rgba(220, 230, 235, 0.25); --sun-r: 9px; --glow: rgba(255, 255, 255, 0.12); }
+[data-preset='sunset'] { --sky1: #c8584a; --sky2: #ffc76a; --sea-hi: #b0674a; --sea: #3d2430; --sun: #fff1b8; --sun-y: 62%; --sun-r: 7px; --glow: rgba(255, 190, 90, 0.8); }
+
+/* ---- Quality plaques ----------------------------------------------------- */
+
+.plaques {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.plaque {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 34px;
+  padding: 6px 2px 5px;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  background:
+    linear-gradient(180deg, var(--wood-hi), var(--wood)) padding-box,
+    var(--brass-grad) border-box;
+  color: var(--brass-hi);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 3px 0 var(--brass-edge), 0 4px 6px rgba(40, 22, 4, 0.3);
+  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease);
+}
+
+.plaque:hover {
+  color: #fff0c2;
+}
+
+.plaque:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 1px 0 var(--brass-edge), 0 1px 3px rgba(40, 22, 4, 0.3);
+}
+
+.plaque:has(:checked) {
+  background: var(--brass-face) padding-box, linear-gradient(#5a3d12, #2a1806) border-box;
+  color: var(--ink);
+}
+
+.plaque:has(:focus-visible) {
+  outline: 3px solid var(--wax-hi);
+  outline-offset: 2px;
+}
+
+.plaque__name {
+  font: 700 13px/1 var(--font-body);
+  letter-spacing: 0.04em;
+}
+
+/* ---- Fields -------------------------------------------------------------- */
 
 .field {
-  display: block;
-  /* Asymmetric on purpose: more air above a row than below it, so a label binds
-     to the bar it describes rather than floating between two of them. */
-  padding: 13px 0 9px;
-  border-bottom: 1px solid var(--rule-soft);
-}
-
-.field:last-child {
-  border-bottom: 0;
+  padding: 10px 0 4px;
 }
 
 .field__row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 6px;
+  gap: 12px;
 }
 
 .field__label {
   display: block;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+  font: 700 12px/1.2 var(--font-body);
+  letter-spacing: 0.13em;
   text-transform: uppercase;
-  color: var(--bone-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--ink-soft);
 }
 
 .field > .field__label {
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 
-/*
- * The reading. Tabular figures so a changing value never reflows its row, and a
- * `min-width` behind that as well: `font-variant-numeric` is a font *feature*,
- * so it silently does nothing if the face lacks `tnum`, and a jittering column
- * is exactly the failure this world cannot afford.
- */
 .field__value {
-  flex: none;
-  min-width: 5.5ch;
-  text-align: right;
-  font-size: 13px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: 'tnum' 1;
-  letter-spacing: 0.01em;
-  color: var(--bone);
-}
-
-/* --------------------------------------------------------------------------
-   Select — a row with an overprint marker, not a dropdown chip
-   -------------------------------------------------------------------------- */
-
-.select {
-  position: relative;
-  display: block;
-}
-
-.select__input {
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  width: 100%;
-  padding: 7px 26px 7px 9px;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--bone);
-  background-color: var(--ink-deep);
-  /* A solid right-pointing triangle in the overprint red — a printed marker,
-     not a UI chevron. */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 10'%3E%3Cpath d='M0 0l8 5-8 5z' fill='%23a2937c'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 9px center;
-  background-size: 6px 8px;
-  border: 1px solid var(--rule);
-  border-radius: 0;
-  cursor: pointer;
-  transition: border-color 0.16s var(--ease), background-color 0.16s var(--ease);
-  text-overflow: ellipsis;
-}
-
-.select__input:hover {
-  border-color: var(--bone-dim);
-  background-color: var(--ink-raised);
-}
-
-/* Native dropdown list is rendered by the OS — keep it legible on dark UI */
-.select__input option {
-  background: var(--ink);
-  color: var(--bone);
-}
-
-/* --------------------------------------------------------------------------
-   Range — a printed bar with a pencil tick, not a track with a bead
-
-   The fill is a hard-edged block of bone on a faint ground: no gradient, no
-   glow, square ends. The thumb is a two-pixel vermilion rule, the mark a
-   navigator draws against a scale — but it is carried on a twelve-pixel
-   transparent block so the grab target is a finger's worth of screen rather
-   than two pixels.
-   -------------------------------------------------------------------------- */
-
-.range {
-  --fill: 50%;
-  appearance: none;
-  -webkit-appearance: none;
-  display: block;
-  width: 100%;
-  height: 16px;
-  margin: 0;
-  padding: 0;
-  background: transparent;
-  cursor: ew-resize;
-  touch-action: none;
+  font: 700 15px/1.2 var(--font-body);
+  color: var(--ink);
+  white-space: nowrap;
 }
 
 /*
- * The filled part is a *tint*, not solid ink.
- *
- * At full bone this was a 300px block of the brightest colour in the system,
- * repeated seven times down the panel — which made the controls the loudest
- * thing in a viewport whose whole product is the sea behind them. A printed bar
- * chart is set in a tint precisely so the figure and the mark stay dominant, and
- * that is the job here: the reading is the red tick, the bar only says where in
- * its range it sits.
+ * Range: a brass rail. An engraved groove cut into the paper, filled with
+ * brass to the reading, and a round brass knob. The thumb sits in a 22px box
+ * so the grab target is bigger than the knob looks.
  */
-.range::-webkit-slider-runnable-track {
-  height: 5px;
-  border-radius: 0;
-  background: linear-gradient(
-    to right,
-    var(--bone-dim) 0,
-    var(--bone-dim) var(--fill),
-    var(--rule-soft) var(--fill),
-    var(--rule-soft) 100%
-  );
-  border-bottom: 1px solid var(--rule);
-}
-
-.range::-webkit-slider-thumb {
-  appearance: none;
+.range {
   -webkit-appearance: none;
-  width: 12px;
-  height: 15px;
-  margin-top: -5px;
-  border: 0;
-  border-radius: 0;
-  background: linear-gradient(
-    to right,
-    transparent 0,
-    transparent 5px,
-    var(--red) 5px,
-    var(--red) 7px,
-    transparent 7px,
-    transparent 100%
-  );
-  transition: filter 0.16s var(--ease);
-}
-
-.range:hover::-webkit-slider-thumb,
-.range:focus-visible::-webkit-slider-thumb {
-  filter: brightness(1.25);
-}
-
-/* Gecko */
-.range::-moz-range-track {
-  height: 5px;
-  border: 0;
-  border-bottom: 1px solid var(--rule);
-  border-radius: 0;
-  background: var(--rule-soft);
-}
-
-.range::-moz-range-progress {
-  height: 5px;
-  border-radius: 0;
-  background: var(--bone-dim);
-}
-
-.range::-moz-range-thumb {
-  width: 2px;
-  height: 15px;
-  border: 0;
-  border-radius: 0;
-  background: var(--red);
-  transition: filter 0.16s var(--ease);
-}
-
-.range:hover::-moz-range-thumb,
-.range:focus-visible::-moz-range-thumb {
-  filter: brightness(1.25);
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 2px 0 0;
+  background: transparent;
+  cursor: pointer;
+  --fill: 50%;
 }
 
 .range:focus {
   outline: none;
 }
 
-.range:focus-visible {
-  outline: 2px solid var(--red);
-  outline-offset: 3px;
+.range::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, #f7dc92, #c8973f 55%, #8a611f) 0 0 / var(--fill) 100% no-repeat,
+    linear-gradient(180deg, #3b2614, #5c3f21);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.65),
+    0 1px 0 rgba(255, 250, 230, 0.7);
 }
 
-/* --------------------------------------------------------------------------
-   Toggles — a ballot box, ticked
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, #fff5cc 0, #ecc66c 24%, #a87a2c 62%, #5e4012 100%);
+  box-shadow: 0 0 0 1.5px var(--brass-edge), 0 2px 3px rgba(20, 10, 0, 0.5);
+  transition: transform 120ms var(--ease);
+}
 
-   Not a sliding switch. A switch is a piece of hardware borrowed from a phone;
-   a printed form has a box you mark. The knob element survives from the old
-   markup and becomes the mark inside the box.
-   -------------------------------------------------------------------------- */
+.range:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
 
-.switchrow {
+.range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 1.5px var(--brass-edge), 0 0 0 5px rgba(194, 58, 44, 0.6), 0 2px 3px rgba(20, 10, 0, 0.5);
+}
+
+.range::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #3b2614, #5c3f21);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(255, 250, 230, 0.7);
+}
+
+.range::-moz-range-progress {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #f7dc92, #c8973f 55%, #8a611f);
+}
+
+.range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, #fff5cc 0, #ecc66c 24%, #a87a2c 62%, #5e4012 100%);
+  box-shadow: 0 0 0 1.5px var(--brass-edge), 0 2px 3px rgba(20, 10, 0, 0.5);
+}
+
+.range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 1.5px var(--brass-edge), 0 0 0 5px rgba(194, 58, 44, 0.6);
+}
+
+/* ---- Shipwright's tools (debug toggles, folded away) ---------------------- */
+
+.ledger-tools {
+  margin-top: 8px;
+  border-top: 1px solid rgba(143, 113, 77, 0.55);
+}
+
+.ledger-tools__summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  margin: 0;
-  padding: 9px 0 8px;
-  font-family: inherit;
-  background: none;
-  border: 0;
-  border-bottom: 1px solid var(--rule-soft);
-  border-radius: 0;
+  padding: 11px 0 9px;
+  list-style: none;
   cursor: pointer;
-  text-align: left;
-  color: inherit;
-}
-
-.switchrow__label {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+  font: 700 12px/1.2 var(--font-body);
+  letter-spacing: 0.13em;
   text-transform: uppercase;
-  color: var(--bone-dim);
-  transition: color 0.16s var(--ease);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--ink-soft);
 }
 
-.switchrow:hover .switchrow__label,
-.switchrow.is-on .switchrow__label {
-  color: var(--bone);
+.ledger-tools__summary::-webkit-details-marker {
+  display: none;
+}
+
+.ledger-tools__chev {
+  width: 18px;
+  height: 18px;
+  transform: rotate(-90deg);
+  transition: transform 220ms var(--ease);
+}
+
+.ledger-tools[open] .ledger-tools__chev {
+  transform: none;
+}
+
+/* A ledger tick-box: an inked square, ticked in wax. */
+.switchrow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  font: 500 15px/1.2 var(--font-body);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
 }
 
 .switch {
   position: relative;
   flex: none;
-  display: block;
-  width: 15px;
-  height: 15px;
-  border: 1px solid var(--rule);
-  border-radius: 0;
-  background: var(--ink-deep);
-  transition: border-color 0.16s var(--ease);
-}
-
-.switchrow:hover .switch {
-  border-color: var(--bone-dim);
+  width: 19px;
+  height: 19px;
+  border: 1.75px solid var(--ink-soft);
+  border-radius: 3px 4px 3px 5px;
+  background: rgba(255, 250, 235, 0.35);
 }
 
 .switch__knob {
   position: absolute;
-  inset: 2px;
-  border-radius: 0;
-  background: var(--red);
-  transform: scale(0);
-  transform-origin: center;
-  transition: transform 0.18s var(--ease);
-}
-
-.switchrow.is-on .switch {
-  border-color: var(--red);
+  inset: -5px -6px -2px -2px;
+  background: var(--wax);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 13.5c2.4 1.2 4 3 5.2 5.5C12 12 15.6 7 21 3.5' fill='none' stroke='%23000' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 13.5c2.4 1.2 4 3 5.2 5.5C12 12 15.6 7 21 3.5' fill='none' stroke='%23000' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 140ms var(--ease), transform 220ms var(--ease);
 }
 
 .switchrow.is-on .switch__knob {
-  transform: scale(1);
+  opacity: 1;
+  transform: none;
 }
-
-/* --------------------------------------------------------------------------
-   Buttons — an overprint block with knocked-out type
-   -------------------------------------------------------------------------- */
 
 .panel__actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 4px;
+  padding: 12px 0 4px;
 }
 
-.btn {
-  display: block;
-  width: 100%;
-  padding: 10px 14px;
-  font-family: inherit;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  text-align: center;
-  text-decoration: none;
-  border-radius: 0;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: background-color 0.16s var(--ease), color 0.16s var(--ease),
-    border-color 0.16s var(--ease);
-}
-
-/*
- * Quiet, not a billboard.
- *
- * This was a full-width solid vermilion block, and on a 1600px viewport it was
- * the single loudest thing on screen — louder than the sea. That is the wrong
- * answer twice over: this surface's mode is Experience, where the work leads and
- * the interface recedes, and "view source" is a secondary action that a visitor
- * who came to look at water does not need shouted at them.
- *
- * The red is spent instead on the marks that carry a *reading* — the tick on
- * each scale, the row the camera is in, a ticked box. That is how an almanac
- * spends its overprint: on the value, never on the furniture.
- */
-.btn--primary {
-  color: var(--bone-dim);
-  background: transparent;
-  border-color: var(--rule);
-}
-
-.btn--primary:hover {
-  color: var(--ink);
-  background: var(--red);
-  border-color: var(--red);
-}
-
-.btn--ghost {
-  color: var(--bone-dim);
-  background: transparent;
-  border-color: var(--rule);
-}
-
-.btn--ghost:hover {
-  color: var(--bone);
-  border-color: var(--bone-dim);
-}
-
-/* --------------------------------------------------------------------------
-   Mobile bottom-sheet trigger (hidden on wide viewports)
-   -------------------------------------------------------------------------- */
+/* ---- Mobile bottom-sheet trigger (hidden on wide viewports) -------------- */
 
 .panel-toggle {
   display: none;
   position: absolute;
-  right: 12px;
-  bottom: 12px;
+  right: var(--edge-r);
+  bottom: var(--edge-b);
+  z-index: 7;
+  flex-direction: column;
   align-items: center;
-  gap: 9px;
-  padding: 11px 15px;
-  font-family: inherit;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--bone);
+  justify-content: center;
+  gap: 1px;
+  width: 58px;
+  height: 58px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, var(--wood-hi), var(--wood)) padding-box,
+    var(--brass-grad) border-box;
+  color: var(--brass-hi);
   cursor: pointer;
-  z-index: 12;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 4px 0 var(--brass-edge), 0 6px 12px rgba(5, 3, 1, 0.45);
+  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease), opacity 200ms;
 }
 
-/* Three ruled lines with a mark on one of them — the table, as a mark. */
+.panel-toggle:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 1px 0 var(--brass-edge), 0 2px 5px rgba(5, 3, 1, 0.45);
+}
+
 .panel-toggle__icon {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  background: currentcolor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='%23000'%3E%3Crect y='2' width='16' height='1.6'/%3E%3Crect y='7.2' width='16' height='1.6'/%3E%3Crect y='12.4' width='16' height='1.6'/%3E%3Crect x='10.4' y='5.2' width='1.8' height='5.6'/%3E%3C/g%3E%3C/svg%3E")
-    center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='%23000'%3E%3Crect y='2' width='16' height='1.6'/%3E%3Crect y='7.2' width='16' height='1.6'/%3E%3Crect y='12.4' width='16' height='1.6'/%3E%3Crect x='10.4' y='5.2' width='1.8' height='5.6'/%3E%3C/g%3E%3C/svg%3E")
-    center / contain no-repeat;
+  width: 24px;
+  height: 24px;
 }
 
-.panel-toggle.is-active {
-  color: var(--red);
-  border-color: var(--red);
+.panel-toggle__text {
+  font: 700 10px/1 var(--font-body);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
-/* --------------------------------------------------------------------------
-   HUD — the rate, the backend, and the camera index
-
-   Deliberately not the hero-metric card this would otherwise become. The figure
-   is large because an almanac sets its headline reading large, but it sits in a
-   ruled row with its unit in the next column, so it reads as the top line of a
-   table rather than as a statistic in a box.
-   -------------------------------------------------------------------------- */
+/* ==========================================================================
+   HUD
+   ========================================================================== */
 
 .hud {
   position: absolute;
-  top: var(--gutter);
-  left: var(--gutter);
-  width: 188px;
-  max-width: calc(100vw - var(--gutter) * 2);
-  padding: 0;
+  inset: 0;
+  z-index: 2;
+  color: var(--on-wood);
 }
 
-.hud__meter {
+/* The HUD is a full-viewport layer, so it must not take hit-testing back the
+   way every other direct child of #ui-root does — that would swallow every
+   camera drag. (1,1,0) beats `#ui-root > *` without `!important`. Only the
+   mode tabs opt in. */
+#ui-root > .hud {
+  pointer-events: none;
+}
+
+.hud-modes {
+  pointer-events: auto;
+}
+
+/* ---- Compass tape --------------------------------------------------------- */
+
+.hud-compass {
+  position: absolute;
+  top: var(--edge-t);
+  left: 50%;
+  width: clamp(280px, calc(100% - 640px), 560px);
+  transform: translateX(-50%);
+  transition: opacity 400ms var(--ease);
+}
+
+.hud-compass__window {
   position: relative;
+  height: 42px;
+  overflow: hidden;
+}
+
+.hud-compass__window {
+  border: 2px solid transparent;
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.25), rgba(255, 220, 160, 0.05) 45%, rgba(0, 0, 0, 0.35)) padding-box,
+    url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
+    linear-gradient(180deg, var(--wood-a), var(--wood-deep-a)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 8px 18px rgba(5, 3, 1, 0.38);
+}
+
+/* The tape fades into the frame at both ends, like a card under glass. */
+.hud-compass__window::before,
+.hud-compass__window::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 22%;
+  pointer-events: none;
+}
+
+.hud-compass__window::before {
+  left: 0;
+  background: linear-gradient(90deg, var(--wood-deep-a) 8%, transparent);
+}
+
+.hud-compass__window::after {
+  right: 0;
+  background: linear-gradient(270deg, var(--wood-deep-a) 8%, transparent);
+}
+
+/* 2.6px per degree: majors every 15° (39px), minors every 5° (13px). The
+   tape starts at −180°, a multiple of both, so ticks and labels agree. */
+.hud-compass__tape {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  will-change: transform;
+  background:
+    repeating-linear-gradient(90deg, rgba(241, 226, 191, 0.8) 0 1.5px, transparent 1.5px 39px) left bottom / 100% 10px no-repeat,
+    repeating-linear-gradient(90deg, rgba(241, 226, 191, 0.4) 0 1px, transparent 1px 13px) left bottom / 100% 5px no-repeat;
+}
+
+.hud-compass__label {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  font: 600 11.5px/1 var(--font-body);
+  color: var(--on-wood-dim);
+  white-space: nowrap;
+}
+
+.hud-compass__label.is-inter {
+  top: 4px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--on-wood);
+}
+
+.hud-compass__label.is-cardinal {
+  top: 2px;
+  font-weight: 800;
+  font-size: 20px;
+  color: var(--parchment-hi);
+  text-shadow: 0 1px 0 #000;
+}
+
+.hud-compass__label.is-north {
+  color: #ff7058;
+}
+
+/* The lubber line: where the view points. */
+.hud-compass__lubber {
+  position: absolute;
+  left: 50%;
+  top: -5px;
+  z-index: 3;
+  width: 18px;
+  height: 13px;
+  transform: translateX(-50%);
+  background: var(--brass-face);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+  filter: drop-shadow(0 1px 0 #000);
+}
+
+.hud-compass__lubber::after {
+  content: '';
+}
+
+.hud-compass__window > .hud-compass__mark {
+  position: absolute;
+  left: 50%;
+  z-index: 3;
+  will-change: transform;
+}
+
+.hud-compass__mark[hidden] {
+  display: none;
+}
+
+.hud-compass__mark--objective {
+  top: 15px;
+  width: 20px;
+  height: 20px;
+  margin-left: -10px;
+  color: var(--gold);
+  filter: drop-shadow(0 1px 0 #000) drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+}
+
+.hud-compass__mark--objective svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Off the visible arc the X becomes an arrow at the end of the tape. */
+.hud-compass__mark--objective.is-off-left svg,
+.hud-compass__mark--objective.is-off-right svg {
+  display: none;
+}
+
+.hud-compass__mark--objective.is-off-left,
+.hud-compass__mark--objective.is-off-right {
+  background: var(--gold);
+  clip-path: polygon(0 50%, 100% 10%, 80% 50%, 100% 90%);
+}
+
+.hud-compass__mark--objective.is-off-right {
+  clip-path: polygon(100% 50%, 0 10%, 20% 50%, 0 90%);
+}
+
+.hud-compass__mark--ship {
+  bottom: 0;
+  width: 14px;
+  height: 12px;
+  margin-left: -7px;
+  background: var(--verdigris-hi);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.hud-compass__readout {
+  position: absolute;
+  top: 40px;
+  left: 50%;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 9px 14px 7px;
+  gap: 1px;
+  padding: 3px 12px 4px;
+  transform: translateX(-50%);
+  border: 2px solid transparent;
+  border-top: 0;
+  border-radius: 0 0 9px 9px;
+  background:
+    linear-gradient(180deg, var(--wood-deep), var(--wood)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 5px 10px rgba(5, 3, 1, 0.4);
+  font: 800 16px/1 var(--font-body);
+  color: var(--parchment-hi);
 }
 
-.hud__fps {
-  font-size: 40px;
-  font-weight: 600;
-  line-height: 0.94;
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: 'tnum' 1;
-  letter-spacing: -0.02em;
-  /* Three digits of headroom, so 9 -> 60 -> 144 never shifts the unit beside
-     it. Tabular figures fix the digit width; only the digit *count* is left. */
+.hud-compass__deg {
   min-width: 3ch;
   text-align: right;
-  color: var(--bone);
-  transition: color 0.3s var(--ease);
 }
 
-/*
- * Two states, not three, and neither of them is amber.
- *
- * A rate is a measurement, and colour-coding a measurement is the interface
- * adding a judgement to a number that already tells the truth — which this
- * project's second principle says these instruments must not do. So a merely
- * unremarkable rate is simply the reading, in bone, and only a genuinely
- * degraded one takes the overprint, which is what an almanac's red is for.
- *
- * The amber this replaces also sat within a few degrees of hue of the red tick
- * on the active camera row a centimetre below it. Two warm signals inside one
- * 188px block is not "one overprint", it is two spot colours pretending to be a
- * system.
- */
-.hud__fps.is-good,
-.hud__fps.is-warn {
-  color: var(--bone);
+.hud-compass__degsign {
+  color: var(--brass-hi);
 }
 
-.hud__fps.is-bad {
-  color: var(--red);
-}
-
-/* The unit column. `f·s⁻¹` rather than `FPS`: this is a table of measurements
-   and that is how a table writes a rate. */
-.hud__fps-caption {
-  font-size: 9.5px;
+.hud-compass__point {
+  min-width: 3ch;
+  margin-left: 6px;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--bone-dim);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--on-wood-dim);
 }
 
-.hud__backend {
+/* ---- Toasts --------------------------------------------------------------- */
+
+.hud-toasts {
   position: absolute;
-  top: 9px;
-  right: 14px;
-  padding: 2px 5px;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: var(--bone-dim);
-  border: 1px solid var(--rule);
-  border-radius: 0;
-}
-
-/*
- * The fallback stamp, and the one place in this file where colour is an
- * assertion rather than a decoration. On the WebGL2 path there is no planar
- * reflection, no refraction and no lens misting — the visitor is looking at a
- * materially reduced scene, and PRODUCT.md holds that they have to be able to
- * tell. So it overprints.
- */
-.hud__backend.is-fallback {
-  color: var(--ink);
-  background: var(--warn);
-  border-color: var(--warn);
-}
-
-.hud__divider {
-  height: 0;
-  margin: 0;
-  border-top: 3px double var(--rule);
-}
-
-/* The camera index: numbered rows, not a row of cards. */
-.hud__modes {
-  display: block;
-  padding: 4px 0;
-}
-
-.seg {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  width: 100%;
-  padding: 5px 14px 5px 13px;
-  font-family: inherit;
-  color: var(--bone-dim);
-  background: none;
-  border: 0;
-  /* The margin the active row's mark lives in. Held on every row so selecting
-     one never shifts the column. */
-  border-left: 1px solid transparent;
-  border-radius: 0;
-  cursor: pointer;
-  text-align: left;
-  transition: color 0.16s var(--ease), background-color 0.16s var(--ease);
-}
-
-.seg:hover {
-  color: var(--bone);
-  background: var(--ink-raised);
-}
-
-.seg__digit {
-  flex: none;
-  width: 1ch;
-  font-size: 10px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--rule);
-  transition: color 0.16s var(--ease);
-}
-
-.seg__name {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  line-height: 1.2;
-}
-
-.seg:hover .seg__digit {
-  color: var(--bone-dim);
-}
-
-.seg.is-active {
-  color: var(--bone);
-  border-left-color: var(--red);
-  background: var(--ink-raised);
-}
-
-.seg.is-active .seg__digit {
-  color: var(--red);
-}
-
-/* The key legend — a printed abbreviation table. */
-.hud__hints {
-  list-style: none;
-  margin: 0;
-  padding: 8px 14px 10px;
-  border-top: 1px solid var(--rule-soft);
+  top: calc(var(--edge-t) + 84px);
+  left: 50%;
+  width: min(430px, calc(100% - var(--gutter) * 2));
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  gap: 5px;
-}
-
-.hud__hint {
-  display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
 
-/* Set in the same register as every other label here. These were sentence case,
-   which made the one block of text in the HUD read as prose sitting in a table. */
-.hud__hint-action {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: min(340px, 100%);
+  max-width: 100%;
+  padding: 12px 24px 12px 14px;
+  animation: toast-unfurl 560ms var(--ease) both;
+}
+
+.toast.is-leaving {
+  animation: toast-roll 380ms var(--ease-in) both;
+}
+
+/* Unrolled from the middle, the way a strip of chart is opened out. The clip
+   is inset *negatively* top and bottom so the drop shadow is not cut off. */
+@keyframes toast-unfurl {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+    clip-path: inset(-24px 46% -32px 46%);
+  }
+  40% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(-24px -24px -32px -24px);
+  }
+}
+
+@keyframes toast-roll {
+  from {
+    opacity: 1;
+    clip-path: inset(-24px -24px -32px -24px);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+    clip-path: inset(-24px 46% -32px 46%);
+  }
+}
+
+.toast__medal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--medal, linear-gradient(#2f7d6d, #1c5248)) padding-box, var(--brass-grad) border-box;
+  color: var(--medal-ink, var(--parchment-hi));
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 2px 4px rgba(20, 10, 0, 0.35);
+}
+
+.toast__medal svg {
+  width: 24px;
+  height: 24px;
+}
+
+.toast--reward {
+  --medal: radial-gradient(circle at 38% 30%, #fff0b0, #f2c24e 45%, #a8741c);
+  --medal-ink: #5a3608;
+}
+
+.toast--warning {
+  --medal: linear-gradient(#e7a43a, #a8661a);
+  --medal-ink: #2b1500;
+}
+
+.toast--danger {
+  --medal: radial-gradient(circle at 38% 30%, #d4544a, var(--wax) 60%, #5e110d);
+  --medal-ink: #ffe3d6;
+}
+
+.toast__body {
+  min-width: 0;
+}
+
+.toast__text {
+  margin: 0;
+  font: 700 16.5px/1.25 var(--font-body);
+  color: var(--ink);
+}
+
+.toast--reward .toast__text::before {
+  content: '';
+}
+
+.toast__detail {
+  margin: 2px 0 0;
+  font: 500 14px/1.3 var(--font-body);
+  color: var(--ink-soft);
+}
+
+/* ---- Objective + score ---------------------------------------------------- */
+
+.hud-quest {
+  position: absolute;
+  top: var(--edge-t);
+  left: var(--edge-l);
+  width: 310px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  transition: opacity 400ms var(--ease);
+}
+
+.objective {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  width: 100%;
+  padding: 16px 20px 14px 15px;
+}
+
+.objective[hidden],
+.score[hidden] {
+  display: none;
+}
+
+.objective.is-new {
+  animation: objective-unfurl 760ms var(--ease) both;
+}
+
+@keyframes objective-unfurl {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+    clip-path: inset(-24px 100% -32px -24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(-24px -24px -32px -24px);
+  }
+}
+
+/* A hand-poured wax seal: not quite round. */
+.objective__seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-top: 1px;
+  border-radius: 47% 53% 50% 50% / 52% 46% 54% 48%;
+  background: radial-gradient(circle at 38% 32%, #d65a4e, #9b2620 52%, #5e110d);
+  color: rgba(255, 214, 196, 0.8);
+  box-shadow:
+    0 2px 3px rgba(20, 6, 2, 0.4),
+    inset 0 0 0 4px rgba(0, 0, 0, 0.1),
+    inset 0 -3px 5px rgba(40, 4, 0, 0.45),
+    inset 0 2px 2px rgba(255, 190, 170, 0.3);
+}
+
+.objective__seal svg {
+  width: 20px;
+  height: 20px;
+}
+
+.objective__text {
+  min-width: 0;
+}
+
+.objective__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 25px;
+  line-height: 1.02;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+.objective__detail {
+  margin: 4px 0 0;
+  font: 500 14.5px/1.35 var(--font-body);
+  color: var(--ink-soft);
+}
+
+.objective__detail[hidden],
+.objective__bearing[hidden],
+.objective__arrow[hidden] {
+  display: none;
+}
+
+.objective__bearing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 9px 0 0;
+  font: 800 14px/1 var(--font-body);
+  letter-spacing: 0.03em;
+  color: var(--ink);
+  white-space: pre;
+}
+
+/* A needle in a ring that points at the objective relative to the view. */
+.objective__arrow {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.75px solid var(--ink-soft);
+  transition: transform 160ms linear;
+}
+
+.objective__arrow::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 8px;
+  height: 14px;
+  margin-left: -4px;
+  background: var(--wax);
+  clip-path: polygon(50% 0, 100% 100%, 50% 74%, 0 100%);
+}
+
+.score {
+  display: grid;
+  gap: 3px;
+  min-width: 180px;
+  margin: 0;
+  padding: 9px 16px 10px;
+}
+
+.score__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 22px;
+}
+
+.score__label {
+  font: 700 11.5px/1 var(--font-body);
+  letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: var(--bone-dim);
+  color: var(--on-wood-dim);
+}
+
+.score__value {
+  display: inline-block;
+  margin: 0;
+  font: 800 21px/1.1 var(--font-body);
+  color: var(--gold);
+  transform-origin: right center;
+}
+
+.score__row.is-bump .score__value {
+  animation: score-bump 620ms var(--ease) both;
+}
+
+@keyframes score-bump {
+  from {
+    transform: scale(1.4);
+    color: #fff6d0;
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* ---- Wind dial + log ------------------------------------------------------ */
+
+.hud-instruments {
+  position: absolute;
+  left: var(--edge-l);
+  bottom: var(--edge-b);
+  display: flex;
+  align-items: center;
+  transition: opacity 400ms var(--ease);
+}
+
+.dial {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 116px;
+  height: 116px;
+  padding: 7px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 210deg,
+    #f7dc92,
+    #a7792c 14%,
+    #f3d07a 30%,
+    #7a5519 46%,
+    #e8c26a 62%,
+    #9c7027 80%,
+    #f7dc92
+  );
+  box-shadow:
+    0 0 0 1.5px var(--brass-edge),
+    0 10px 20px rgba(5, 3, 1, 0.5),
+    inset 0 0 0 1px rgba(255, 240, 200, 0.45);
+}
+
+/* The bezel's inner lip, over the card. */
+.dial::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  z-index: 2;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--brass-edge), inset 0 3px 9px rgba(20, 10, 0, 0.5);
+  pointer-events: none;
+}
+
+.dial__card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
   overflow: hidden;
-  text-overflow: ellipsis;
+  background: radial-gradient(circle at 50% 45%, var(--parchment-hi), var(--parchment) 60%, var(--parchment-lo));
+  will-change: transform;
+}
+
+.dial__rose {
+  display: block;
+  width: 100%;
+  height: 100%;
+  --rose-ink: #3a2715;
+  --rose-paper: #f6ead0;
+  --rose-north: var(--wax);
+}
+
+/* The wind's arrow: fletched where the wind comes from, headed where it goes. */
+.dial__wind {
+  position: absolute;
+  top: 9%;
+  bottom: 9%;
+  left: calc(50% - 7px);
+  width: 14px;
+  color: var(--wind);
+  transition: transform 900ms var(--ease);
+  filter: drop-shadow(0 0 1.5px var(--parchment-hi)) drop-shadow(0 0 1px var(--parchment-hi));
+}
+
+.dial__wind::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 90'%3E%3Cpath d='M7 0l6.5 15H8.4v58H5.6V15H.5z'/%3E%3Cpath d='M5.6 70L1 76v8l4.6-6zM8.4 70l4.6 6v8l-4.6-6zM5.6 79L1 85v5l4.6-6zM8.4 79l4.6 6v5l-4.6-6z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 90'%3E%3Cpath d='M7 0l6.5 15H8.4v58H5.6V15H.5z'/%3E%3Cpath d='M5.6 70L1 76v8l4.6-6zM8.4 70l4.6 6v8l-4.6-6zM5.6 79L1 85v5l4.6-6zM8.4 79l4.6 6v5l-4.6-6z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
+}
+
+/* Fixed to the bezel: the direction the view looks. */
+.dial__lubber {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  z-index: 3;
+  width: 14px;
+  height: 11px;
+  transform: translateX(-50%);
+  background: var(--brass-face);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+  filter: drop-shadow(0 1px 0 #000);
+}
+
+.hud-readings {
+  display: flex;
+  gap: 16px;
+  margin-left: -22px;
+  padding: 11px 18px 11px 34px;
+  border-radius: 0 12px 12px 0;
+  border-left: 0;
+}
+
+.reading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 84px;
+}
+
+.reading[hidden] {
+  display: none;
+}
+
+.reading--log {
+  padding-left: 16px;
+  border-left: 1px solid rgba(200, 151, 63, 0.4);
+}
+
+.reading__label {
+  font: 700 11px/1 var(--font-body);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--brass-hi);
+}
+
+.reading__figure {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.reading__value {
+  min-width: 2ch;
+  font: 800 31px/1 var(--font-body);
+  color: var(--parchment-hi);
+}
+
+.reading--log .reading__value {
+  min-width: 2.6ch;
+}
+
+.reading__unit {
+  font: 700 13px/1 var(--font-body);
+  color: var(--brass-hi);
+}
+
+.reading__sub {
+  font: 600 12.5px/1.25 var(--font-body);
+  color: var(--on-wood-dim);
+  white-space: nowrap;
+}
+
+.reading__sub--force {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ---- Mode tabs + hints ---------------------------------------------------- */
+
+.hud-helm {
+  position: absolute;
+  left: 50%;
+  bottom: var(--edge-b);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  transform: translateX(-50%);
+}
+
+.hud-hints {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 500ms var(--ease), transform 500ms var(--ease);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 6px 16px;
+  list-style: none;
+  border-radius: 999px;
+  background: rgba(18, 11, 5, 0.66);
+  box-shadow: 0 0 0 1px rgba(200, 151, 63, 0.4);
+}
+
+.hud-hints__item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 600 13.5px/1 var(--font-body);
+  color: var(--on-wood);
   white-space: nowrap;
 }
 
 .keycap {
-  flex: none;
-  padding: 1px 5px;
-  font-family: inherit;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--bone-dim);
-  background: var(--ink-deep);
-  border: 1px solid var(--rule);
-  border-radius: 0;
+  padding: 3px 6px 2px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--parchment-hi), var(--parchment-lo));
+  font: 800 11px/1 var(--font-body);
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  box-shadow: 0 2px 0 #6e4f26;
 }
 
-/* --------------------------------------------------------------------------
-   Boot — the title page of the sheet
-   -------------------------------------------------------------------------- */
+.hud-modes {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border: 2px solid transparent;
+  border-radius: 15px;
+  background:
+    url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
+    linear-gradient(180deg, var(--wood-a), var(--wood-deep-a)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 10px 22px rgba(5, 3, 1, 0.42);
+}
 
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 8px 12px 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #44301c, #2a1b0f);
+  color: var(--on-wood-dim);
+  font: inherit;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 230, 170, 0.14),
+    0 3px 0 #0d0703,
+    0 4px 6px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 110ms var(--ease),
+    box-shadow 110ms var(--ease),
+    background 160ms,
+    color 160ms;
+}
+
+.tab:hover {
+  color: var(--parchment-hi);
+  background: linear-gradient(180deg, #553b22, #321f11);
+}
+
+.tab:active {
+  transform: translateY(3px);
+  box-shadow: inset 0 1px 0 rgba(255, 230, 170, 0.1), 0 0 0 #0d0703, 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.tab.is-active {
+  background: var(--brass-face);
+  color: var(--ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 252, 230, 0.8),
+    inset 0 -2px 0 rgba(96, 62, 14, 0.4),
+    0 3px 0 #4a3210,
+    0 4px 10px rgba(255, 200, 90, 0.18);
+}
+
+.tab__icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+
+.tab__name {
+  font-family: var(--font-display);
+  font-size: 21px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.tab__key {
+  display: grid;
+  place-items: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.38);
+  font: 800 11.5px/1 var(--font-body);
+  color: var(--on-wood-dim);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.tab.is-active .tab__key {
+  background: rgba(70, 44, 10, 0.2);
+  color: var(--ink);
+  box-shadow: inset 0 1px 1px rgba(70, 44, 10, 0.35);
+}
+
+/* ---- Instrument corner ---------------------------------------------------- */
+
+.hud-corner {
+  position: absolute;
+  right: var(--edge-r);
+  bottom: var(--edge-b);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 8px;
+  background: rgba(18, 11, 5, 0.74);
+  box-shadow: 0 0 0 1px rgba(200, 151, 63, 0.45);
+  font: 700 11px/1 var(--font-body);
+  color: var(--on-wood-dim);
+}
+
+.hud-corner__fps {
+  min-width: 3ch;
+  font: 800 15px/1 var(--font-body);
+  text-align: right;
+}
+
+.hud-corner__fps.is-good {
+  color: var(--ok);
+}
+
+.hud-corner__fps.is-warn {
+  color: var(--warn);
+}
+
+.hud-corner__fps.is-bad {
+  color: var(--bad);
+}
+
+.hud-corner__unit {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hud-corner__backend {
+  margin-left: 6px;
+  padding: 3px 6px 2px;
+  border-radius: 4px;
+  border: 1px solid rgba(200, 151, 63, 0.55);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass-hi);
+}
+
+/* On the WebGL2 fallback the scene is genuinely reduced (no planar
+   reflection, refraction or lens misting): the badge says so in colour. */
+.hud-corner__backend.is-fallback {
+  border-color: var(--warn);
+  background: var(--warn);
+  color: #1d1003;
+}
+
+/* ---- The tour is a film: the instruments step back. ----------------------- */
+
+.hud[data-mode='cinematic'] .hud-compass,
+.hud[data-mode='cinematic'] .hud-instruments {
+  opacity: 0;
+}
+
+/* ==========================================================================
+   Attention — the HUD steps back when it is not being used
+
+   Hud.ts sets `.is-idle` and `.is-dragging` and `data-mode` on #ui-root. The
+   levels are chosen per element by how much the viewer needs it at a glance:
+   the compass and the wind dial stay faintly legible, the mode bar becomes a
+   ghost, toasts and an open ledger are never faded because they are being
+   read. Fading out is slow (it should not be noticed); coming back is
+   immediate (it should feel like it was always there).
+   ========================================================================== */
+
+.hud-compass,
+.hud-instruments,
+.hud-modes,
+.hud-corner,
+.score,
+.objective,
+.panel-toggle,
+.touchpad,
+.touchhelm {
+  transition: opacity var(--fade-in) var(--ease);
+}
+
+.hud--hints .hud-hints,
+.hud-helm:hover .hud-hints,
+.hud-helm:focus-within .hud-hints {
+  opacity: 1;
+  transform: none;
+}
+
+#ui-root.is-idle :is(.hud-compass, .hud-instruments, .hud-modes, .hud-corner, .score, .panel--collapsed, .panel-toggle, .touchpad, .touchhelm) {
+  transition-duration: var(--fade-out);
+}
+
+#ui-root.is-idle .hud-compass {
+  opacity: 0.34;
+}
+
+#ui-root.is-idle .hud-instruments {
+  opacity: 0.38;
+}
+
+#ui-root.is-idle .hud-modes {
+  opacity: 0.26;
+}
+
+#ui-root.is-idle .hud-corner {
+  opacity: 0.45;
+}
+
+#ui-root.is-idle .score {
+  opacity: 0.6;
+}
+
+#ui-root.is-idle .panel--collapsed,
+#ui-root.is-idle .panel-toggle,
+#ui-root.is-idle .touchpad,
+#ui-root.is-idle .touchhelm {
+  opacity: 0.5;
+}
+
+/* Pointing at or keyboard-focusing anything brings it back regardless. Only a
+   real hover counts (a tap leaves `:hover` stuck on touch screens) and only
+   keyboard focus (a tapped button keeps plain focus). */
+@media (hover: hover) {
+  #ui-root .hud-modes:hover,
+  #ui-root .panel:hover {
+    opacity: 1;
+    transition-duration: var(--fade-in);
+  }
+}
+
+#ui-root .hud-modes:has(:focus-visible),
+#ui-root .panel:has(:focus-visible) {
+  opacity: 1;
+  transition-duration: var(--fade-in);
+}
+
+/* Dragging the camera: the viewer is looking at the sea, so let them. */
+#ui-root.is-dragging :is(.hud-compass, .hud-instruments, .hud-modes, .hud-corner) {
+  opacity: 0.18;
+  transition-duration: 300ms;
+}
+
+#ui-root.is-dragging :is(.hud-quest, .panel--collapsed, .panel-toggle) {
+  opacity: 0.35;
+  transition-duration: 300ms;
+}
+
+#ui-root.is-dragging .panel:not(.panel--collapsed) {
+  opacity: 0.6;
+  transition-duration: 300ms;
+}
+
+/* The tour is a film: instruments, quest and corner go; the mode bar stays
+   as a way out, and goes too once the viewer settles in to watch. */
+#ui-root[data-mode='cinematic'] :is(.hud-compass, .hud-instruments, .hud-quest, .hud-corner) {
+  opacity: 0;
+  transition-duration: 700ms;
+}
+
+#ui-root[data-mode='cinematic'].is-idle :is(.hud-modes, .panel--collapsed, .panel-toggle) {
+  opacity: 0;
+}
+
+/* A mode change made from the keyboard is seen on the bar too. */
+.tab.is-arriving {
+  animation: tab-arrive 420ms var(--ease);
+}
+
+@keyframes tab-arrive {
+  from {
+    transform: scale(0.9);
+    filter: brightness(1.35);
+  }
+  to {
+    transform: none;
+    filter: none;
+  }
+}
+
+/* The objective chip's unfold control; only phones show it (see Responsive). */
+.objective__more {
+  display: none;
+}
+
+/* ==========================================================================
+   Boot — the chart on the captain's table
+   ========================================================================== */
+
+/*
+ * The menu is a scene, not a dialog: the painted sea (MenuSea.ts) fills the
+ * screen and the chart lies to one side of it on a wide screen, low on a
+ * phone, so the ship and the lighthouse stay in view. When the live sea is
+ * ready the whole overlay dissolves into it — a 900 ms cross-fade from a
+ * painted dusk to the rendered one, never a cut through black.
+ */
 .boot {
   position: fixed;
   inset: 0;
   z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--ink-deep);
+  /* Placed by auto margins rather than place-items, so a sheet taller than
+     the viewport scrolls from its top instead of being cut off above it. */
+  display: grid;
+  overflow-y: auto;
+  padding:
+    max(28px, env(safe-area-inset-top, 0px)) max(5vw, 24px, env(safe-area-inset-right, 0px))
+    max(28px, env(safe-area-inset-bottom, 0px)) max(6vw, 24px, env(safe-area-inset-left, 0px));
+  /* Paints before the canvas does: the same dusk, flattened. */
+  background: linear-gradient(180deg, #081b25 0%, #183f4c 40%, #b9845c 56%, #24515a 57%, #04111a 100%);
   opacity: 1;
   visibility: visible;
-  /*
-   * The one authored moment in the interface: the sheet is drawn up off the
-   * table rather than dissolved. Exponential ease-out, from an already-visible
-   * default, and transform + opacity only.
-   */
-  transform: translateY(0);
-  transition: opacity 620ms var(--ease), transform 700ms var(--ease),
-    visibility 0s linear 0s;
+  transition: opacity 900ms var(--ease), visibility 0s linear 0s;
 }
 
 .boot--hidden {
   opacity: 0;
-  transform: translateY(-2.5%);
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 620ms var(--ease), transform 700ms var(--ease),
-    visibility 0s linear 700ms;
+  transition: opacity 900ms var(--ease), visibility 0s linear 900ms;
+}
+
+.boot__sea {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.boot__sheet {
+  position: relative;
+  z-index: 1;
+  width: min(660px, 100%);
+  margin: auto auto auto 0;
+  padding: 42px 52px 38px;
+  filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.6)) drop-shadow(0 4px 6px rgba(0, 0, 0, 0.4));
+  animation: sheet-arrive 900ms var(--ease) both;
+}
+
+/* The chart is laid on the table: a short drop and settle, once. */
+@keyframes sheet-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(18px) rotate(-0.6deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Loading: the menu's choices fold away and the course is charted. */
+.boot--loading .boot__progress {
+  animation: chart-in 640ms var(--ease) both;
+}
+
+@keyframes chart-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Under ~1000px there is no room beside the chart: centre it. */
+@media (max-width: 999px) {
+  .boot__sheet {
+    margin: auto;
+  }
+}
+
+/* The portolan's rhumb lines, faint under the writing. */
+.boot__sheet::after {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  z-index: -1;
+  background:
+    url('./assets/rose.svg') right -70px bottom -80px / 300px 300px no-repeat,
+    url('./assets/chart-rhumbs.svg') center / cover no-repeat;
+  opacity: 0.2;
+  pointer-events: none;
 }
 
 .boot__inner {
-  width: min(380px, calc(100vw - 48px));
-}
-
-.boot__rule {
-  border-top: 1px solid var(--rule);
-}
-
-.boot__rule--double {
-  border-top: 3px double var(--rule);
+  position: relative;
+  text-align: center;
+  color: var(--ink);
 }
 
 .boot__title {
-  margin: 14px 0 6px;
-  font-family: var(--font-voice);
-  font-optical-sizing: auto;
-  font-size: clamp(30px, 7vw, 44px);
-  font-weight: 500;
-  line-height: 1;
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(54px, 10vw, 96px);
+  line-height: 0.9;
   letter-spacing: 0.005em;
-  color: var(--bone);
+  color: var(--ink);
+  text-shadow: 0 1px 0 rgba(255, 250, 235, 0.6), 0 0 18px rgba(246, 234, 208, 0.9);
 }
 
-.boot__title em {
-  font-style: italic;
-  font-weight: 600;
+.boot__title-num {
+  color: var(--wax);
 }
 
 .boot__standfirst {
-  margin: 0 0 14px;
-  font-size: 12px;
-  font-style: italic;
-  letter-spacing: 0.01em;
-  color: var(--bone-dim);
+  margin: 12px 0 0;
+  font: 700 14px/1.3 var(--font-body);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* Drawn ornament: two rules running into a diamond between dots. */
+.boot__flourish {
+  position: relative;
+  width: min(360px, 80%);
+  height: 14px;
+  margin: 18px auto 18px;
+  background:
+    linear-gradient(90deg, transparent, var(--ink-faint) 30%, var(--ink-faint)) left center / calc(50% - 22px) 1.5px no-repeat,
+    linear-gradient(270deg, transparent, var(--ink-faint) 30%, var(--ink-faint)) right center / calc(50% - 22px) 1.5px no-repeat,
+    radial-gradient(circle, var(--ink-soft) 0 2px, transparent 2.5px) calc(50% - 15px) center / 8px 8px no-repeat,
+    radial-gradient(circle, var(--ink-soft) 0 2px, transparent 2.5px) calc(50% + 15px) center / 8px 8px no-repeat;
+}
+
+.boot__flourish span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  background: var(--wax);
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .boot__gate[hidden],
@@ -1012,279 +2012,377 @@ body {
   display: none;
 }
 
-.boot__gate-intro,
-.boot__gate-readout {
-  margin: 0;
-  color: var(--bone-dim);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
 .boot__gate-intro {
-  margin: 12px 0 14px;
+  max-width: 46ch;
+  margin: 0 auto 4px;
+  font: 500 16.5px/1.45 var(--font-body);
+  color: var(--ink-soft);
 }
 
 .boot__gate-label {
-  margin: 12px 0 6px;
-  color: var(--bone-dim);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 12px;
+  font: 800 12px/1 var(--font-body);
+  letter-spacing: 0.22em;
   text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.boot__gate-label::before,
+.boot__gate-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--ink-faint);
+  opacity: 0.7;
 }
 
 .boot__choices {
   display: grid;
-  gap: 6px;
+  gap: 12px;
 }
 
 .boot__choices--backend {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 210px));
+  justify-content: center;
 }
 
 .boot__choices--quality {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+/* Plaques: dark wood with the name inlaid in brass; chosen, polished brass
+   with the name engraved in ink. */
 .boot__choice {
-  min-height: 42px;
-  padding: 7px 5px 6px;
-  color: var(--bone-dim);
-  background: transparent;
-  border: 1px solid var(--rule-soft);
-  border-radius: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 6px 10px;
+  border: 3px solid transparent;
+  border-radius: 11px;
+  background:
+    url('./assets/wood-grain.svg') 0 0 / 400px 120px padding-box,
+    linear-gradient(180deg, var(--wood-hi), var(--wood) 70%) padding-box,
+    var(--brass-grad) border-box;
+  color: var(--brass-hi);
+  font: inherit;
   cursor: pointer;
-  font-family: inherit;
-  text-align: left;
+  box-shadow:
+    0 0 0 1px var(--brass-edge),
+    inset 0 1px 0 rgba(255, 230, 170, 0.15),
+    0 4px 0 var(--brass-edge),
+    0 7px 12px rgba(40, 20, 0, 0.35);
+  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease), filter 160ms;
 }
 
-.boot__choice:hover,
-.boot__choice:focus-visible {
-  border-color: var(--bone-dim);
-  outline: none;
+.boot__choice:hover {
+  filter: brightness(1.12);
+}
+
+.boot__choice:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 1px 0 var(--brass-edge), 0 2px 4px rgba(40, 20, 0, 0.35);
 }
 
 .boot__choice.is-selected {
-  color: var(--bone);
-  border-color: var(--red);
-  box-shadow: inset 3px 0 0 var(--red);
-}
-
-.boot__choice-name,
-.boot__choice-detail {
-  display: block;
+  background: var(--brass-face) padding-box, linear-gradient(180deg, #6b4a17, #2a1806) border-box;
+  color: var(--ink);
+  box-shadow:
+    0 0 0 1px var(--brass-edge),
+    inset 0 1px 0 rgba(255, 252, 230, 0.85),
+    inset 0 -3px 0 rgba(96, 62, 14, 0.35),
+    0 4px 0 #4a3210,
+    0 7px 14px rgba(120, 80, 10, 0.35);
 }
 
 .boot__choice-name {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-family: var(--font-display);
+  font-size: 25px;
+  line-height: 1;
+  letter-spacing: 0.01em;
 }
 
 .boot__choice-detail {
-  margin-top: 4px;
-  color: var(--bone-dim);
-  font-size: 8px;
+  font: 600 12.5px/1.1 var(--font-body);
   letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+
+.boot__choice.is-selected .boot__choice-detail {
+  color: var(--ink-soft);
+  opacity: 1;
+}
+
+.boot__advised {
+  position: absolute;
+  top: -11px;
+  right: -8px;
+  padding: 3px 8px 3px;
+  border-radius: 10px 12px 9px 11px;
+  background: radial-gradient(circle at 40% 30%, #d65a4e, var(--wax) 70%);
+  font: 800 10px/1 var(--font-body);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #ffe9dc;
+  box-shadow: 0 2px 3px rgba(20, 6, 2, 0.4);
+  transform: rotate(5deg);
 }
 
 .boot__gate-readout {
-  margin-top: 12px;
-  min-height: 1.45em;
-  font-size: 8.5px;
-  letter-spacing: 0.04em;
+  margin: 16px 0 0;
+  font: 500 13px/1.4 var(--font-body);
+  color: var(--ink-soft);
 }
 
-.boot__start {
-  margin-top: 14px;
-}
+/* ---- Set Sail ------------------------------------------------------------- */
 
-.boot__start:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
-.boot__readout {
-  display: flex;
+.cta {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 10px;
+  gap: 14px;
+  margin-top: 22px;
+  padding: 13px 42px 14px 30px;
+  border: 3px solid transparent;
+  border-radius: 15px;
+  background:
+    linear-gradient(180deg, #c13a2c 0%, #8e1b17 55%, #661009 100%) padding-box,
+    var(--brass-grad) border-box;
+  color: #ffe6a6;
+  font-family: var(--font-display);
+  font-size: 38px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-shadow: 0 2px 0 rgba(60, 8, 4, 0.85);
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1.5px #2a0c06,
+    inset 0 1px 0 rgba(255, 200, 170, 0.4),
+    inset 0 -3px 0 rgba(40, 4, 0, 0.35),
+    0 6px 0 #3b0d08,
+    0 12px 22px rgba(40, 10, 0, 0.45);
+  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease), filter 160ms;
 }
 
-.boot__status {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--bone-dim);
-  min-height: 1.2em;
+.cta:hover {
+  filter: brightness(1.1) saturate(1.05);
 }
 
-.boot__status--error {
-  color: var(--red);
+.cta:active {
+  transform: translateY(5px);
+  box-shadow:
+    0 0 0 1.5px #2a0c06,
+    inset 0 1px 0 rgba(255, 200, 170, 0.3),
+    0 1px 0 #3b0d08,
+    0 3px 7px rgba(40, 10, 0, 0.4);
 }
 
-.boot__bar {
-  flex: none;
-  display: block;
-  width: 108px;
-  height: 6px;
-  background: var(--rule-soft);
-  overflow: hidden;
+.cta:disabled {
+  cursor: progress;
 }
 
-/*
- * Scaled, not resized.
- *
- * This used to animate `width`, which puts a layout pass and a paint on the
- * main thread for every progress update — during boot, which is the one stretch
- * where the main thread is already compiling shaders and decoding assets. A
- * transform is composited and costs neither.
- */
+.cta__icon {
+  width: 32px;
+  height: 32px;
+  stroke-width: 2.1;
+  filter: drop-shadow(0 2px 0 rgba(60, 8, 4, 0.85));
+}
+
+/* ---- Loading: the ship crosses the chart ---------------------------------- */
+
+.boot__progress {
+  margin-top: 8px;
+}
+
+.boot__route {
+  position: relative;
+  width: min(540px, 100%);
+  height: 64px;
+  margin: 0 auto;
+}
+
+.boot__port {
+  position: absolute;
+  bottom: 4px;
+  background: var(--ink);
+}
+
+.boot__port--from {
+  left: 0;
+  width: 28px;
+  height: 36px;
+  -webkit-mask: url('./assets/port.svg') center / contain no-repeat;
+  mask: url('./assets/port.svg') center / contain no-repeat;
+}
+
+.boot__port--to {
+  right: 0;
+  width: 44px;
+  height: 36px;
+  -webkit-mask: url('./assets/isle.svg') center / contain no-repeat;
+  mask: url('./assets/isle.svg') center / contain no-repeat;
+}
+
+/* The planned course, dotted; the course run, inked in wax over it. */
+.boot__line {
+  position: absolute;
+  left: 38px;
+  right: 50px;
+  bottom: 10px;
+  height: 3px;
+  background: repeating-linear-gradient(90deg, rgba(43, 29, 16, 0.5) 0 6px, transparent 6px 12px);
+}
+
+/* Scaled, not resized: animating `width` would lay out and paint on the main
+   thread during the stretch where it is busiest compiling shaders. */
 #boot-bar {
   display: block;
   width: 100%;
   height: 100%;
-  background: var(--red);
+  border-radius: 2px;
+  background:
+    linear-gradient(90deg, transparent 0 40%, rgba(255, 210, 160, 0.75) 50%, transparent 60% 100%) 0 0 / 300% 100% no-repeat,
+    var(--wax);
   transform: scaleX(0);
   transform-origin: left center;
-  transition: transform 280ms var(--ease);
+  transition: transform 600ms var(--ease);
+  animation: ink-wet 2.4s linear infinite;
 }
 
-/* --------------------------------------------------------------------------
-   Responsive — below 900px the panel becomes a collapsible bottom sheet.
-   -------------------------------------------------------------------------- */
-
-@media (max-width: 900px) {
-  :root {
-    --gutter: 12px;
+/* Wet ink catching the light as it runs along the course. */
+@keyframes ink-wet {
+  from {
+    background-position: 150% 0, 0 0;
   }
-
-  .panel {
-    top: auto;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    width: auto;
-    max-width: none;
-    max-height: min(72vh, 560px);
-    border-width: 1px 0 0;
-    border-radius: 0;
-    transform: translateY(101%);
-    transition: transform 0.34s var(--ease);
-    will-change: transform;
-  }
-
-  .panel--open {
-    transform: translateY(0);
-  }
-
-  .panel__body {
-    padding-bottom: max(16px, env(safe-area-inset-bottom));
-  }
-
-  .panel__divider {
-    margin-inline: -16px;
-  }
-
-  .panel-toggle {
-    display: flex;
-    right: 12px;
-    bottom: 12px;
-  }
-
-  .panel--open ~ .panel-toggle {
-    bottom: auto;
-    top: 12px;
-  }
-
-  .hud {
-    width: 166px;
-  }
-
-  .hud__fps {
-    font-size: 32px;
-  }
-
-  .hud__hints {
-    display: none;
+  to {
+    background-position: -50% 0, 0 0;
   }
 }
 
-@media (max-width: 380px) {
-  .hud {
-    width: 150px;
-  }
+.boot__ship-track {
+  position: absolute;
+  left: 38px;
+  right: 50px;
+  bottom: 12px;
+  height: 0;
+  transform: translateX(calc(var(--boot-progress, 0) * 100%));
+  transition: transform 600ms var(--ease);
+}
 
-  .panel__title {
-    font-size: 18px;
-  }
+.boot__ship {
+  position: absolute;
+  left: -22px;
+  bottom: -1px;
+  width: 44px;
+  height: 37px;
+  background: var(--ink);
+  -webkit-mask: url('./assets/ship.svg') center / contain no-repeat;
+  mask: url('./assets/ship.svg') center / contain no-repeat;
+  transform-origin: 50% 88%;
+  animation: ship-bob 2.6s ease-in-out infinite;
+}
 
-  .field__label,
-  .switchrow__label,
-  .seg__name {
-    letter-spacing: 0.14em;
+@keyframes ship-bob {
+  0%,
+  100% {
+    transform: rotate(-3deg);
+  }
+  50% {
+    transform: translateY(-2px) rotate(3deg);
   }
 }
 
-/* Coarse pointers get larger hit targets */
-@media (pointer: coarse) {
-  .range {
-    height: 28px;
-  }
-
-  .range::-webkit-slider-thumb {
-    width: 30px;
-    height: 26px;
-    margin-top: -11px;
-    background: linear-gradient(
-      to right,
-      transparent 0,
-      transparent 14px,
-      var(--red) 14px,
-      var(--red) 16px,
-      transparent 16px,
-      transparent 100%
-    );
-  }
-
-  .range::-moz-range-thumb {
-    width: 3px;
-    height: 28px;
-  }
-
-  .switchrow {
-    padding: 12px 0;
-  }
-
-  .seg {
-    padding-block: 9px;
-  }
+.boot__status {
+  min-height: 1.4em;
+  margin: 12px 0 0;
+  font: 600 15.5px/1.4 var(--font-body);
+  color: var(--ink-soft);
 }
 
-/* --------------------------------------------------------------------------
-   Touch controls (Boat mode, coarse pointers)
-   -------------------------------------------------------------------------- */
+.boot__status--error {
+  color: var(--wax);
+  font-weight: 700;
+}
 
-/*
- * Bottom-left, away from the panel on the right and the panel toggle. Sized in
- * `min()` against the viewport so it stays a thumb's reach on a phone and does
- * not become a dinner plate on a tablet.
- *
- * Square, like everything else here: this is the plotting square on a chart,
- * with a rule through each axis, rather than a game pad's circle.
- */
+/* Failure: the course stops where it was, greyed, and a way to try again. */
+.boot__retry {
+  display: none;
+  width: auto;
+  margin: 14px auto 0;
+  padding-inline: 26px;
+}
+
+.boot__progress:has(.boot__status--error) .boot__retry {
+  display: inline-block;
+}
+
+.boot__progress:has(.boot__status--error) .boot__route {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+.boot__progress:has(.boot__status--error) .boot__ship {
+  animation: none;
+  transform: rotate(14deg) translateY(6px);
+}
+
+/* WebGPU unavailable: a plain note, set like a correction in the margin. */
+.boot__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 52ch;
+  margin: 14px auto 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(142, 27, 23, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(142, 27, 23, 0.35);
+  font: 500 14px/1.4 var(--font-body);
+  color: var(--ink);
+  text-align: left;
+}
+
+.boot__notice-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  color: var(--wax);
+}
+
+.boot__choice.is-unavailable,
+.boot__choice:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.85) brightness(0.8);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 2px 0 var(--brass-edge);
+}
+
+.boot__choice.is-unavailable .boot__choice-name {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+
+.boot__choice.is-unavailable:hover,
+.boot__choice.is-unavailable:active {
+  filter: grayscale(0.85) brightness(0.8);
+  transform: none;
+}
+
+/* ==========================================================================
+   Touch controls (Helm mode, coarse pointers): a brass-rimmed stick.
+   ========================================================================== */
+
 .touchpad {
   position: absolute;
-  left: max(var(--gutter), env(safe-area-inset-left));
-  bottom: max(var(--gutter), env(safe-area-inset-bottom));
-  width: min(38vw, 168px);
-  height: min(38vw, 168px);
+  right: var(--edge-r);
+  bottom: calc(var(--edge-b) + 76px);
+  width: min(38vw, 150px);
+  height: min(38vw, 150px);
   display: grid;
   place-items: center;
-  /* The pad owns its gestures; without this a drag also pans the canvas. */
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -1299,53 +2397,899 @@ body {
   position: relative;
   width: 100%;
   height: 100%;
-  border-radius: 0;
-  border: 1px solid var(--rule);
-  background: rgba(20, 16, 13, 0.82);
-  /* The cross-hairs of the plotting square. */
-  background-image: linear-gradient(var(--rule-soft) 1px, transparent 1px),
-    linear-gradient(90deg, var(--rule-soft) 1px, transparent 1px);
-  background-size: 100% 50%, 50% 100%;
-  background-position: center, center;
+  border: 3px solid transparent;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 0 30%, rgba(241, 226, 191, 0.12) 30.5% 31%, transparent 31.5%) padding-box,
+    linear-gradient(rgba(241, 226, 191, 0.14), rgba(241, 226, 191, 0.14)) center / 1px 100% no-repeat padding-box,
+    linear-gradient(rgba(241, 226, 191, 0.14), rgba(241, 226, 191, 0.14)) center / 100% 1px no-repeat padding-box,
+    radial-gradient(circle, rgba(42, 27, 15, 0.82), rgba(23, 14, 7, 0.9)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 8px 18px rgba(5, 3, 1, 0.45);
 }
 
 .touchpad__knob {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 26%;
-  height: 26%;
+  width: 34%;
+  height: 34%;
   transform: translate(-50%, -50%);
-  border-radius: 0;
-  background: var(--red);
-  border: 0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-  transition: background 120ms var(--ease);
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, #fff5cc 0, #ecc66c 24%, #a87a2c 62%, #5e4012 100%);
+  box-shadow: 0 0 0 1.5px var(--brass-edge), 0 4px 8px rgba(0, 0, 0, 0.5);
 }
 
 .touchpad__label {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
+  font: 800 9px/1 var(--font-body);
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--bone-dim);
+  color: var(--on-wood-dim);
   pointer-events: none;
 }
 
 .touchpad__label--ahead {
-  top: 5px;
+  top: 11px;
 }
 
 .touchpad__label--astern {
-  bottom: 5px;
+  bottom: 11px;
 }
 
-/* --------------------------------------------------------------------------
+/* Sail and anchor orders, stacked beside the stick. */
+.touchhelm {
+  position: absolute;
+  right: calc(var(--edge-r) + min(38vw, 150px) + 10px);
+  bottom: calc(var(--edge-b) + 76px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 3;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touchhelm[hidden] {
+  display: none;
+}
+
+.touchhelm__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 58px;
+  min-height: 52px;
+  padding: 4px 8px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  font: 800 13px/1 var(--font-body);
+  letter-spacing: 0.04em;
+  color: var(--on-wood, #f1e2bf);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 240, 200, 0.12), transparent 70%) padding-box,
+    linear-gradient(rgba(42, 27, 15, 0.92), rgba(23, 14, 7, 0.95)) padding-box,
+    var(--brass-grad) border-box;
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 3px 0 var(--brass-edge), 0 6px 14px rgba(5, 3, 1, 0.45);
+  cursor: pointer;
+  transition: transform 100ms var(--ease), box-shadow 100ms var(--ease), filter 140ms;
+}
+
+.touchhelm__btn:active {
+  transform: translateY(3px);
+  filter: brightness(1.2);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 0 0 var(--brass-edge), 0 2px 5px rgba(5, 3, 1, 0.45);
+}
+
+.touchhelm__icon {
+  width: 24px;
+  height: 24px;
+  color: var(--brass-hi);
+}
+
+.touchhelm__label {
+  font: 800 10px/1 var(--font-body);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.touchhelm__btn:focus-visible {
+  outline: 2px solid var(--gold, #ecc66c);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   Storm quote — the voice. IM Fell English italic, and nowhere else.
+
+   Everything else here is instrument (Alegreya) or title (Pirata One); this
+   one line is authorial, and setting it in either of those faces would make
+   it read as one more readout. That distinction is binding (PRODUCT.md).
+   ========================================================================== */
+
+.quote {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: start center;
+  padding-top: 24vh;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 1.6s var(--ease), transform 1.6s var(--ease);
+  z-index: 5;
+}
+
+/* `#ui-root > *` opts every direct child back into hit-testing; this
+   full-viewport box must not be, or it swallows every drag in the app. */
+#ui-root > .quote {
+  pointer-events: none;
+}
+
+.quote--on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.quote__line {
+  margin: 0;
+  max-width: min(90vw, 40ch);
+  text-align: center;
+  font-family: var(--font-voice);
+  font-size: clamp(1.7rem, 3.6vw, 3.3rem);
+  font-weight: 400;
+  font-style: italic;
+  line-height: 1.2;
+  letter-spacing: 0.005em;
+  color: #fbf3e2;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 6px 34px rgba(6, 4, 2, 0.6);
+}
+
+/* ==========================================================================
+   Responsive
+
+   Three layouts, each laid out around where the ship sits in the chase view:
+
+     desktop        the frame's four corners and its top and bottom centre;
+     phone portrait a top band (compass, objective chip, score ribbon) and a
+                    bottom band (dial, stick, sail orders, icon mode bar), the
+                    middle of the screen left to the hull;
+     phone landscape a left column and a right column, the centre left clear.
+   ========================================================================== */
+
+/* Not enough width for named tabs beside the instruments: icons and keys. */
+@media (max-width: 1240px) {
+  .tab__name {
+    display: none;
+  }
+
+  .tab {
+    padding-inline: 11px;
+  }
+}
+
+/* ---- Phones and narrow windows ------------------------------------------ */
+
+@media (max-width: 900px) {
+  :root {
+    --gutter: 12px;
+  }
+
+  /* -- the ledger becomes a bottom sheet -- */
+  .panel {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-height: min(76vh, 620px);
+    padding: 18px max(18px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px))
+      max(18px, env(safe-area-inset-left, 0px));
+    transform: translateY(105%);
+    transition: transform 0.38s var(--ease), opacity var(--fade-in) var(--ease);
+    will-change: transform;
+  }
+
+  .panel--open {
+    transform: translateY(0);
+  }
+
+  /* On a phone the folded state is the sheet being away, not a title bar. */
+  .panel--collapsed:not(.panel--open) {
+    visibility: hidden;
+  }
+
+  .panel__collapse svg {
+    transform: none;
+  }
+
+  .panel-toggle {
+    display: flex;
+    width: 52px;
+    height: 52px;
+  }
+
+  .panel--open ~ .panel-toggle {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* -- compass -- */
+  .hud-compass {
+    width: calc(100% - var(--edge-l) - var(--edge-r));
+    max-width: 440px;
+  }
+
+  .hud-compass__window {
+    height: 34px;
+  }
+
+  .hud-compass__label {
+    top: 5px;
+    font-size: 11px;
+  }
+
+  .hud-compass__label.is-inter {
+    top: 3px;
+    font-size: 13px;
+  }
+
+  .hud-compass__label.is-cardinal {
+    top: 1px;
+    font-size: 17px;
+  }
+
+  .hud-compass__readout {
+    top: 32px;
+    padding: 2px 10px 3px;
+    font-size: 13px;
+  }
+
+  .hud-compass__mark--objective {
+    top: 12px;
+    width: 17px;
+    height: 17px;
+    margin-left: -8.5px;
+  }
+
+  /* -- top band: objective chip and score ribbon -- */
+  .hud-quest {
+    top: calc(var(--edge-t) + 60px);
+    width: min(272px, calc(100% - var(--edge-l) - var(--edge-r) - 100px));
+    gap: 6px;
+  }
+
+  .objective {
+    align-items: center;
+    gap: 9px;
+    padding: 8px 34px 8px 10px;
+  }
+
+  .objective__seal {
+    width: 30px;
+    height: 30px;
+  }
+
+  .objective__seal svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .objective__title {
+    font-size: 17px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .objective__detail {
+    display: none;
+    font-size: 13px;
+  }
+
+  .objective__bearing {
+    margin-top: 3px;
+    font-size: 12px;
+  }
+
+  .objective__arrow {
+    width: 17px;
+    height: 17px;
+  }
+
+  .objective__arrow::before {
+    top: 1.5px;
+    width: 6px;
+    height: 11px;
+    margin-left: -3px;
+  }
+
+  .objective.is-expanded {
+    align-items: flex-start;
+  }
+
+  .objective.is-expanded .objective__title {
+    white-space: normal;
+  }
+
+  .objective.is-expanded .objective__detail:not([hidden]) {
+    display: block;
+  }
+
+  /* The whole chip is the button; the chevron sits at its right edge. */
+  .objective__more {
+    display: grid;
+    place-items: center end;
+    position: absolute;
+    inset: 0;
+    padding: 0 10px 0 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink-soft);
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .objective__more svg {
+    width: 18px;
+    height: 18px;
+    transition: transform 240ms var(--ease);
+  }
+
+  .objective.is-expanded .objective__more {
+    place-items: start end;
+    padding-top: 14px;
+  }
+
+  .objective.is-expanded .objective__more svg {
+    transform: rotate(180deg);
+  }
+
+  /* Score: one ribbon of label-value pairs instead of a tall plaque. */
+  .score {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    min-width: 0;
+    max-width: calc(100vw - var(--edge-l) - var(--edge-r));
+    width: max-content;
+    padding: 5px 11px;
+    border-radius: 8px;
+  }
+
+  .score__row {
+    gap: 5px;
+  }
+
+  .score__label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+  }
+
+  .score__value {
+    font-size: 14px;
+    /* In the ribbon the label sits to the left, so the bump grows rightward. */
+    transform-origin: left center;
+  }
+
+  /* -- toasts: top centre, narrow, clear of the quest column below it (an
+     unfolded objective and the score ribbon end ~180px down) and over the
+     mast tops rather than the hull -- */
+  .hud-toasts {
+    top: calc(var(--edge-t) + 192px);
+    width: min(300px, calc(100% - var(--edge-l) - var(--edge-r)));
+    z-index: 3;
+  }
+
+  .toast {
+    gap: 9px;
+    padding: 8px 14px 8px 9px;
+  }
+
+  .toast__medal {
+    width: 30px;
+    height: 30px;
+  }
+
+  .toast__medal svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .toast__text {
+    font-size: 14px;
+  }
+
+  .toast__detail {
+    font-size: 13px;
+  }
+
+  /* -- instrument corner: small, top right -- */
+  .hud-corner {
+    top: calc(var(--edge-t) + 60px);
+    bottom: auto;
+    padding: 3px 5px 3px 7px;
+    font-size: 10px;
+  }
+
+  .hud-corner__fps {
+    font-size: 13px;
+  }
+
+  .hud-corner__backend {
+    margin-left: 3px;
+    padding: 2px 4px 1px;
+    font-size: 10px;
+  }
+
+  /* -- bottom band: dial and readings above the mode bar -- */
+  .hud-instruments {
+    bottom: calc(var(--edge-b) + 64px);
+  }
+
+  .dial {
+    width: 64px;
+    height: 64px;
+    padding: 4px;
+  }
+
+  .dial::before {
+    inset: 4px;
+  }
+
+  .dial__lubber {
+    width: 10px;
+    height: 8px;
+  }
+
+  .hud-readings {
+    flex-direction: column;
+    gap: 3px;
+    margin-left: -14px;
+    padding: 6px 11px 6px 20px;
+  }
+
+  .reading {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .reading--log {
+    padding: 3px 0 0;
+    border-left: 0;
+    border-top: 1px solid rgba(200, 151, 63, 0.4);
+  }
+
+  .reading__label {
+    min-width: 3.4em;
+    font-size: 10px;
+  }
+
+  .reading__figure {
+    margin-top: 0;
+  }
+
+  .reading__value {
+    font-size: 18px;
+  }
+
+  .reading__unit {
+    font-size: 11px;
+  }
+
+  .reading__sub {
+    display: none;
+  }
+
+  .hud-helm {
+    left: var(--edge-l);
+    right: calc(var(--edge-r) + 60px);
+    bottom: var(--edge-b);
+    transform: none;
+    align-items: center;
+  }
+
+  .hud-hints {
+    display: none;
+  }
+
+  /* Icons only: four thumb targets, not a plank across a tablet. */
+  .hud-modes {
+    width: 100%;
+    max-width: 300px;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 13px;
+  }
+
+  .tab {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+    padding: 6px 4px;
+  }
+
+  .tab__name {
+    display: none;
+  }
+
+  .tab__icon {
+    width: 23px;
+    height: 23px;
+  }
+
+  /* -- touch helm: the stick bottom right, the sail orders above it -- */
+  .touchpad {
+    bottom: calc(var(--edge-b) + 64px);
+    width: min(34vw, 132px);
+    height: min(34vw, 132px);
+  }
+
+  .touchhelm {
+    right: var(--edge-r);
+    bottom: calc(var(--edge-b) + 64px + min(34vw, 132px) + 10px);
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  .touchhelm__btn {
+    min-width: 50px;
+    min-height: 46px;
+    padding: 3px 6px;
+  }
+
+  .touchhelm__icon {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+/* ---- Phone landscape: two columns, the centre left to the ship ----------- */
+
+@media (max-height: 520px) and (orientation: landscape) {
+  :root {
+    --gutter: 10px;
+  }
+
+  .hud-compass {
+    width: min(340px, 42vw);
+  }
+
+  .hud-compass__window {
+    height: 30px;
+  }
+
+  .hud-compass__label.is-cardinal {
+    font-size: 15px;
+  }
+
+  .hud-compass__readout {
+    top: 28px;
+    font-size: 12px;
+  }
+
+  .hud-quest {
+    top: var(--edge-t);
+    width: min(250px, 29vw);
+  }
+
+  /* The centre belongs to the ship: news goes in the left column, under the
+     quest and above the wind, one strip at a time. */
+  .hud-toasts {
+    top: calc(var(--edge-t) + 128px);
+    left: var(--edge-l);
+    width: min(250px, 29vw);
+    transform: none;
+    align-items: flex-start;
+  }
+
+  .hud-toasts .toast:not(:first-child) {
+    display: none;
+  }
+
+  .hud-corner {
+    top: var(--edge-t);
+    right: calc(var(--edge-r) + 54px);
+  }
+
+  .panel-toggle {
+    top: var(--edge-t);
+    bottom: auto;
+    width: 46px;
+    height: 46px;
+  }
+
+  .panel-toggle__text {
+    display: none;
+  }
+
+  /* The ledger slides in from the right as a drawer rather than up as a sheet. */
+  .panel {
+    top: 0;
+    left: auto;
+    width: min(420px, 58vw);
+    max-height: none;
+    padding-top: max(14px, env(safe-area-inset-top, 0px));
+    transform: translateX(105%);
+  }
+
+  .panel--open {
+    transform: none;
+  }
+
+  .hud-instruments {
+    bottom: calc(var(--edge-b) + 58px);
+  }
+
+  .dial {
+    width: 56px;
+    height: 56px;
+  }
+
+  .hud-helm {
+    right: auto;
+    bottom: var(--edge-b);
+  }
+
+  .hud-modes {
+    width: auto;
+  }
+
+  .tab {
+    flex: none;
+    width: 46px;
+    min-height: 40px;
+  }
+
+  .touchpad {
+    bottom: var(--edge-b);
+    width: min(32vh, 120px);
+    height: min(32vh, 120px);
+  }
+
+  .touchhelm {
+    right: calc(var(--edge-r) + min(32vh, 120px) + 8px);
+    bottom: var(--edge-b);
+    flex-direction: column;
+  }
+
+  .touchhelm__btn {
+    min-height: 40px;
+  }
+}
+
+/* No keyboard, no keys to show. */
+@media (pointer: coarse) {
+  .tab__key {
+    display: none;
+  }
+
+  .range {
+    height: 32px;
+  }
+
+  .range::-webkit-slider-thumb {
+    width: 28px;
+    height: 28px;
+    margin-top: -10px;
+  }
+
+  .range::-moz-range-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
+  .switchrow {
+    padding: 11px 0;
+  }
+}
+
+/* ---- The menu on a short desktop (a 720p laptop) ------------------------- */
+
+@media (max-height: 820px) and (min-height: 521px) and (min-width: 601px) {
+  .boot__sheet {
+    width: min(600px, 100%);
+    padding: 30px 40px 28px;
+  }
+
+  .boot__title {
+    font-size: 66px;
+  }
+
+  .boot__standfirst {
+    margin-top: 8px;
+    font-size: 13px;
+  }
+
+  .boot__flourish {
+    margin: 12px auto;
+  }
+
+  .boot__gate-intro {
+    font-size: 15px;
+  }
+
+  .boot__gate-label {
+    margin: 14px 0 9px;
+  }
+
+  .boot__choice {
+    padding: 9px 4px 8px;
+  }
+
+  .boot__choice-name {
+    font-size: 21px;
+  }
+
+  .boot__notice {
+    margin-top: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .boot__gate-readout {
+    margin-top: 10px;
+  }
+
+  .cta {
+    margin-top: 16px;
+    font-size: 31px;
+    padding: 11px 36px 12px 26px;
+  }
+}
+
+/* ---- The menu on a phone ------------------------------------------------- */
+
+/* Portrait: the chart is a card at the bottom, the sea and ship above it. */
+@media (max-width: 600px) and (orientation: portrait) {
+  .boot {
+    padding: max(16px, env(safe-area-inset-top, 0px)) 12px max(14px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .boot__sheet {
+    margin: auto 0 0;
+    padding: 28px 20px 24px;
+  }
+
+  .boot__title {
+    font-size: 50px;
+  }
+
+  .boot__standfirst {
+    margin-top: 8px;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+  }
+
+  .boot__flourish {
+    margin: 12px auto 10px;
+  }
+
+  .boot__gate-intro {
+    font-size: 14px;
+  }
+
+  .boot__gate-label {
+    margin: 14px 0 9px;
+  }
+
+  .boot__choices {
+    gap: 8px;
+  }
+
+  .boot__choices--quality {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .boot__choice {
+    padding: 9px 2px 8px;
+    border-width: 2px;
+  }
+
+  .boot__choice-name {
+    font-size: 20px;
+  }
+
+  .boot__choices--quality .boot__choice-name {
+    font-size: 16px;
+  }
+
+  .boot__choices--quality .boot__choice-detail {
+    display: none;
+  }
+
+  .boot__gate-readout {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+
+  .cta {
+    margin-top: 14px;
+    font-size: 31px;
+    padding: 11px 30px 12px 22px;
+  }
+
+  .cta__icon {
+    width: 26px;
+    height: 26px;
+  }
+}
+
+/* Landscape phone: a compact chart on the left, the ship on the right. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .boot {
+    padding: max(12px, env(safe-area-inset-top, 0px)) 16px max(12px, env(safe-area-inset-bottom, 0px))
+      max(20px, env(safe-area-inset-left, 0px));
+  }
+
+  .boot__sheet {
+    width: min(520px, 64vw);
+    margin: auto auto auto 0;
+    padding: 20px 26px 18px;
+  }
+
+  .boot__title {
+    font-size: 40px;
+  }
+
+  .boot__standfirst,
+  .boot__flourish,
+  .boot__gate-intro,
+  .boot__gate-readout,
+  .boot__choices--quality .boot__choice-detail {
+    display: none;
+  }
+
+  .boot__gate-label {
+    margin: 10px 0 7px;
+    font-size: 11px;
+  }
+
+  .boot__choices {
+    gap: 6px;
+  }
+
+  .boot__choice {
+    padding: 7px 2px 6px;
+    border-width: 2px;
+  }
+
+  .boot__choice-name {
+    font-size: 18px;
+  }
+
+  .boot__choice-detail {
+    font-size: 11px;
+  }
+
+  .cta {
+    margin-top: 12px;
+    font-size: 25px;
+    padding: 9px 26px 10px 18px;
+  }
+
+  .cta__icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .boot__route {
+    height: 52px;
+  }
+}
+
+/* ==========================================================================
    Motion preferences
-   -------------------------------------------------------------------------- */
+   ========================================================================== */
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1357,86 +3301,13 @@ body {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
   }
-}
 
-/* ==========================================================================
-   Storm quote
-   A single line over the sea when the viewer takes the helm in heavy weather.
-   ========================================================================== */
-
-.quote {
-  position: absolute;
-  /* Centred horizontally, and on the upper third vertically rather than the
-     middle: the hull sits low in frame in chase mode, and a line across the
-     centre would land on it. The upper third is where a title card goes. */
-  inset: 0;
-  display: grid;
-  place-items: start center;
-  padding-top: 22vh;
-  pointer-events: none;
-  opacity: 0;
-  /* Transformed as well as faded. A pure opacity fade reads as a UI element
-     appearing; a few pixels of rise reads as something arriving, which is the
-     difference between a notification and a moment. */
-  transform: translateY(14px);
-  transition: opacity 1.6s var(--ease), transform 1.6s var(--ease);
-  z-index: 5;
-}
-
-/* `#ui-root > *` above opts every direct child back into hit-testing, and this
-   one must not be. The quote is a full-viewport `inset: 0` box, so at `auto` it
-   sits over the entire application and swallows every pointer event in it — the
-   on-screen throttle underneath it, and the canvas drag underneath that. The
-   `.quote` rule already asks for `pointer-events: none` and loses on
-   specificity: (0,1,0) against the id selector's (1,0,0). This restates it at
-   (1,1,0) so it wins, rather than reaching for `!important`.
-
-   Caught by the touch-control test, which is the only test in the suite that
-   dispatches a real pointer gesture rather than driving state directly — every
-   other interaction test would have passed with the whole UI inert. */
-#ui-root > .quote {
-  pointer-events: none;
-}
-
-.quote--on {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/*
- * The one thing in this project that is voice rather than instrument, and the
- * only place the display face is set at length.
- *
- * That separation is the commitment PRODUCT.md records, and it survives the
- * redesign in a different form than it arrived in: the old rule was "a serif,
- * where everything else is a UI sans". Here the whole interface is already a
- * slab serif, so the distinction is carried by the *voice* face — Bodoni,
- * italic, at reading size — against the instrument's Bitter. Setting this line
- * in the same face as the frame-rate counter would make it read as one more
- * readout, which is exactly what must not happen.
- */
-.quote__line {
-  margin: 0;
-  max-width: min(90vw, 44ch);
-  text-align: center;
-  font-family: var(--font-voice);
-  font-optical-sizing: auto;
-  font-size: clamp(1.5rem, 3.2vw, 2.9rem);
-  font-weight: 500;
-  font-style: italic;
-  line-height: 1.24;
-  letter-spacing: 0.005em;
-  color: #f6f0e4;
-  /* Two shadows doing two jobs: a tight dark one for legibility against a
-     bright whitecap, and a wide soft one that lifts the line off the water
-     without turning into a glow. The sea underneath is high-contrast and moving,
-     so a single shadow is not enough to hold the text at any one moment. */
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.72), 0 6px 34px rgba(6, 4, 2, 0.6);
-}
-
-@media (prefers-reduced-motion: reduce) {
   .quote {
     transform: none;
-    transition: opacity 0.4s linear;
+    transition: opacity 0.4s linear !important;
+  }
+
+  .boot__ship {
+    animation: none !important;
   }
 }

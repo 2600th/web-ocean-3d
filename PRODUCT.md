@@ -117,11 +117,14 @@ renderer's own backend fallback.
   over the sea when the visitor takes the helm in heavy weather. It is deliberately
   set in a different face from every other piece of text, because it is the one
   thing that is not instrumentation. This distinction is binding.
-- Nothing else about the current visual treatment is binding. The redesign that
-  this section once called for has shipped: the dark navy glass surface and its
-  blue accent are gone, replaced by the printed-reference-page system recorded in
-  `DESIGN.md`. That system is a record of what was built, not a second binding
-  commitment — the only binding one is the voice/instrument split above.
+- Nothing else about the current visual treatment is binding. The interface is
+  now an original nautical-adventure language — parchment, brass, wood, ink and
+  wax, in the spirit of the genre but borrowing no game's name, fonts, icons or
+  art — recorded in `DESIGN.md`. It replaced the printed-reference-page system,
+  which replaced the dark navy glass before it. That record is of what was
+  built, not a second binding commitment — the only binding one is the
+  voice/instrument split above, now carried by IM Fell English italic against
+  Alegreya and Pirata One.
 
 ## Evidence on Hand
 

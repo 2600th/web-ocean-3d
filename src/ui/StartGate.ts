@@ -1,3 +1,5 @@
+import { icon } from './icons.ts';
+import { MenuSea } from './MenuSea.ts';
 import {
   QUALITY_TIERS,
   type QualityTier,
@@ -41,6 +43,15 @@ const QUALITY_LABELS: Record<QualityTier, string> = {
   high: 'High',
   ultra: 'Ultra',
   max: 'Max',
+};
+
+/** What each tier costs, in a word a visitor can choose by. */
+const QUALITY_DETAILS: Record<QualityTier, string> = {
+  low: 'lightest',
+  medium: 'balanced',
+  high: 'rich',
+  ultra: 'lavish',
+  max: 'everything',
 };
 
 function isQualityTier(value: string | null): value is QualityTier {
@@ -124,15 +135,22 @@ function describeProbe(probe: DeviceProbe): string {
   return 'WebGPU ' + vendor + ' · ' + cores + ' · ' + memory;
 }
 
+/**
+ * A brass-framed plaque. Selected, its face is polished brass with the name
+ * engraved in ink; otherwise it is dark wood with the name inlaid in brass.
+ * `advised` adds the small wax tag that marks what the probe recommends.
+ */
 function choiceButton(
   label: string,
   detail: string,
   selected: boolean,
   onSelect: () => void,
+  advised = false,
 ): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'boot__choice';
+  button.classList.toggle('is-selected', selected);
   button.setAttribute('aria-label', label);
   button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   const name = document.createElement('span');
@@ -142,6 +160,12 @@ function choiceButton(
   caption.className = 'boot__choice-detail';
   caption.textContent = detail;
   button.append(name, caption);
+  if (advised) {
+    const tag = document.createElement('span');
+    tag.className = 'boot__advised';
+    tag.textContent = 'advised';
+    button.append(tag);
+  }
   button.addEventListener('click', onSelect);
   return button;
 }
@@ -159,12 +183,31 @@ function showProgress(root: HTMLElement): void {
   const progress = root.querySelector<HTMLElement>('#boot-progress');
   if (gate) gate.hidden = true;
   if (progress) progress.hidden = false;
+  // The sheet shrinks from the menu to the loading chart; CSS animates the
+  // change of content rather than cutting to it.
+  root.classList.add('boot--loading');
+}
+
+/**
+ * The painted seascape behind the gate and the loading chart, and the retry
+ * control the failure state shows. Neither may stop the boot: a browser
+ * without a 2D canvas still gets the gate on its plain background.
+ */
+function dressBoot(root: HTMLElement): void {
+  try {
+    new MenuSea(root).start();
+  } catch {
+    // No 2D context: the gradient behind the sheet stands in for the sea.
+  }
+  const retry = root.querySelector<HTMLButtonElement>('#boot-retry');
+  retry?.addEventListener('click', () => window.location.reload(), { once: true });
 }
 
 function renderGate(
   root: HTMLElement,
   probe: DeviceProbe,
   initial: StoredSelection,
+  advised: StoredSelection,
 ): Promise<StartSelection> {
   const gate = root.querySelector<HTMLElement>('#boot-gate');
   if (!gate) throw new Error('Failed to start: page markup is missing #boot-gate.');
@@ -182,7 +225,7 @@ function renderGate(
 
   const intro = document.createElement('p');
   intro.className = 'boot__gate-intro';
-  intro.textContent = 'Set the instrument for this device. You can change it later.';
+  intro.textContent = 'Choose how this device should render the sea. Both can be changed later from the ledger.';
 
   const backendLabel = document.createElement('div');
   backendLabel.className = 'boot__gate-label';
@@ -191,17 +234,41 @@ function renderGate(
   backendGroup.className = 'boot__choices boot__choices--backend';
   backendGroup.setAttribute('role', 'group');
   backendGroup.setAttribute('aria-label', 'Renderer backend');
+  // Without an adapter WebGPU is not a choice, and saying so plainly is the
+  // gate's error state: the plaque is struck through and a note says what the
+  // fallback costs, rather than letting the visitor pick a backend that would
+  // silently become WebGL2 anyway.
+  const webgpuAvailable = probe.adapter !== null;
+  if (!webgpuAvailable) selectedBackend = 'webgl';
   const backendButtons = [
-    choiceButton('WebGPU', 'preferred', selectedBackend === 'webgpu', () => {
+    choiceButton('WebGPU', webgpuAvailable ? 'full fidelity' : 'unavailable', selectedBackend === 'webgpu', () => {
       selectedBackend = 'webgpu';
       markSelected(backendButtons, 'WebGPU');
-    }),
+    }, advised.backend === 'webgpu'),
     choiceButton('WebGL2', 'compatibility', selectedBackend === 'webgl', () => {
       selectedBackend = 'webgl';
       markSelected(backendButtons, 'WebGL2');
-    }),
+    }, advised.backend === 'webgl'),
   ];
   backendGroup.append(...backendButtons);
+  const webgpuButton = backendButtons[0];
+  let notice: HTMLElement | null = null;
+  if (!webgpuAvailable && webgpuButton) {
+    webgpuButton.disabled = true;
+    webgpuButton.classList.add('is-unavailable');
+    webgpuButton.setAttribute('aria-describedby', 'boot-notice');
+    notice = document.createElement('p');
+    notice.className = 'boot__notice';
+    notice.id = 'boot-notice';
+    notice.setAttribute('role', 'note');
+    notice.append(
+      icon('warning', 'boot__notice-icon'),
+      document.createTextNode(
+        'This browser does not offer WebGPU, so the sea will be drawn with WebGL2 — '
+          + 'the same waves, without planar reflections, refraction or lens rain.',
+      ),
+    );
+  }
 
   const qualityLabel = document.createElement('div');
   qualityLabel.className = 'boot__gate-label';
@@ -211,10 +278,10 @@ function renderGate(
   qualityGroup.setAttribute('role', 'group');
   qualityGroup.setAttribute('aria-label', 'Quality tier');
   const qualityButtons = QUALITY_TIERS.map((tier) =>
-    choiceButton(QUALITY_LABELS[tier], tier, selectedQuality === tier, () => {
+    choiceButton(QUALITY_LABELS[tier], QUALITY_DETAILS[tier], selectedQuality === tier, () => {
       selectedQuality = tier;
       markSelected(qualityButtons, QUALITY_LABELS[tier]);
-    }),
+    }, advised.quality === tier),
   );
   qualityGroup.append(...qualityButtons);
 
@@ -224,13 +291,17 @@ function renderGate(
 
   const start = document.createElement('button');
   start.type = 'button';
-  start.className = 'btn btn--primary boot__start';
-  start.textContent = 'Start the sea';
+  start.className = 'cta boot__start';
+  const startLabel = document.createElement('span');
+  startLabel.className = 'cta__label';
+  startLabel.textContent = 'Set Sail';
+  start.append(icon('anchor', 'cta__icon'), startLabel);
 
   gate.replaceChildren(
     intro,
     backendLabel,
     backendGroup,
+    ...(notice ? [notice] : []),
     qualityLabel,
     qualityGroup,
     probeReadout,
@@ -279,15 +350,17 @@ export async function openStartGate(root: HTMLElement): Promise<StartSelection> 
     // launch onto WebGL2 — including every benchmark and profile run nominally
     // measuring WebGPU.
     const quality = requestedQuality ?? stored?.quality ?? 'high';
+    dressBoot(root);
     showProgress(root);
     return { quality, backend, forceWebGL: backend === 'webgl', adapter: undefined };
   }
 
+  dressBoot(root);
   const probe = await probeDevice();
   const defaults = defaultSelection(probe);
   const initial: StoredSelection = {
     backend: params.get('webgl') === '1' ? 'webgl' : stored?.backend ?? defaults.backend,
     quality: requestedQuality ?? stored?.quality ?? defaults.quality,
   };
-  return renderGate(root, probe, initial);
+  return renderGate(root, probe, initial, defaults);
 }

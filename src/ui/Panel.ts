@@ -1,12 +1,24 @@
 /**
- * Right-hand control panel.
+ * The captain's ledger: the right-hand control panel.
  *
  * Pure DOM — no three.js, no framework. It owns nothing but its own markup and
  * reports every user edit through {@link UiCallbacks.onChange}. The host app is
  * free to echo values back with {@link Panel.setState} (which never re-fires the
  * callbacks, so it is safe to call from inside a change handler).
+ *
+ * Four sections, in the order a visitor reaches for them: the *look* (preset
+ * cards and quality), the sea and sky (the sliders that change the render), the
+ * cabin (volume, music and resolution), and — folded away, because they are the
+ * author's instruments rather than the visitor's — the shipwright's debug
+ * toggles. The ledger folds to its title on desktop and is a bottom sheet under
+ * 900px.
+ *
+ * Presets and quality are native radio inputs styled as cards and plaques, so
+ * arrow keys, focus and form semantics come from the platform rather than from
+ * a hand-rolled roving tabindex.
  */
 
+import { icon } from './icons.ts';
 import {
   PRESET_IDS,
   QUALITY_TIERS,
@@ -16,7 +28,7 @@ import {
   type UiState,
 } from './types.ts';
 
-/** Where "View Source" goes. It previously pointed at `#`. */
+/** Where "View Source" goes. */
 const SOURCE_URL = 'https://github.com/2600th/web-ocean-3d';
 
 type SliderKey =
@@ -26,6 +38,7 @@ type SliderKey =
   | 'timeOfDay'
   | 'fogDensity'
   | 'volume'
+  | 'musicVolume'
   | 'pixelRatio';
 type ToggleKey = 'buoyancyProbes' | 'wakeProbes' | 'forceWebGL';
 
@@ -45,20 +58,14 @@ interface SliderRefs {
 }
 
 /**
- * Which sliders go above the toggles, and which below.
+ * Which sliders go in which section.
  *
- * Named, not sliced. This used to be `SLIDERS.slice(0, 3)` above the toggles and
- * `SLIDERS[3]` below, on the assumption that index 3 was the pixel-ratio
- * control — which it was, until `fogDensity` and `timeOfDay` were inserted ahead
- * of it. After that the "pixel ratio" slot silently rendered the fog slider, and
- * Time of Day and Pixel Ratio were never built at all. Nothing failed; the
- * controls simply did not exist, and the day/night cycle had no way to be
- * reached from the UI.
- *
- * `assertSlidersPlaced` below makes the same mistake impossible to repeat: every
- * entry in `SLIDERS` has to appear in exactly one group or construction throws.
+ * Named, not sliced. This used to be `SLIDERS.slice(0, 3)` and `SLIDERS[3]`,
+ * which silently stopped building Time of Day and Pixel Ratio when two sliders
+ * were inserted ahead of them. `assertSlidersPlaced` makes every declared
+ * slider appear in exactly one group, or construction throws.
  */
-const ENVIRONMENT_SLIDERS = [
+const SEA_SKY_SLIDERS = [
   'windSpeed',
   'peakWavelength',
   'cloudCoverage',
@@ -66,20 +73,22 @@ const ENVIRONMENT_SLIDERS = [
   'timeOfDay',
 ] as const satisfies readonly SliderKey[];
 
-const DISPLAY_SLIDERS = ['volume', 'pixelRatio'] as const satisfies readonly SliderKey[];
+const CABIN_SLIDERS = ['volume', 'musicVolume', 'pixelRatio'] as const satisfies readonly SliderKey[];
 
 const SLIDERS: readonly SliderSpec[] = [
   {
     key: 'windSpeed',
-    label: 'Wind Speed',
+    label: 'Wind',
     min: 0.5,
     max: 25,
     step: 0.5,
-    format: (v) => `${v.toFixed(1)} m/s`,
+    // Knots alongside m/s: the HUD reads the wind in knots, and the ledger
+    // should not disagree with it about the same number.
+    format: (v) => `${v.toFixed(1)} m/s · ${Math.round(v * 1.943844)} kn`,
   },
   {
     key: 'peakWavelength',
-    label: 'Peak Wavelength',
+    label: 'Swell length',
     min: 10,
     max: 150,
     step: 1,
@@ -87,7 +96,7 @@ const SLIDERS: readonly SliderSpec[] = [
   },
   {
     key: 'cloudCoverage',
-    label: 'Cloud Coverage',
+    label: 'Cloud',
     min: 0,
     max: 1,
     step: 0.01,
@@ -95,19 +104,18 @@ const SLIDERS: readonly SliderSpec[] = [
   },
   {
     key: 'fogDensity',
-    label: 'Volumetric Fog',
+    label: 'Sea fog',
     min: 0,
     max: 1,
     step: 0.01,
-    format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
+    format: (v) => (v === 0 ? 'Clear' : `${Math.round(v * 100)}%`),
   },
   {
     key: 'timeOfDay',
-    label: 'Time of Day',
+    label: 'Hour',
     min: 0,
     max: 24,
     step: 0.1,
-    // Clock face rather than a bare number: "17.4" is not a time anyone reads.
     format: (v) => {
       const hours = Math.floor(v) % 24;
       const minutes = Math.round((v - Math.floor(v)) * 60);
@@ -123,22 +131,38 @@ const SLIDERS: readonly SliderSpec[] = [
     format: (v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`),
   },
   {
+    key: 'musicVolume',
+    label: 'Music',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
+  },
+  {
     key: 'pixelRatio',
-    label: 'Pixel Ratio',
+    label: 'Resolution',
     min: 0.5,
     max: 2,
     step: 0.05,
-    format: (v) => `${v.toFixed(2)}x`,
+    format: (v) => `${v.toFixed(2)}×`,
   },
 ];
 
 const TOGGLES: readonly { key: ToggleKey; label: string }[] = [
-  { key: 'buoyancyProbes', label: 'Buoyancy Probes' },
-  { key: 'wakeProbes', label: 'Wake Probes' },
-  { key: 'forceWebGL', label: 'Force WebGL' },
+  { key: 'buoyancyProbes', label: 'Buoyancy probes' },
+  { key: 'wakeProbes', label: 'Wake probes' },
+  { key: 'forceWebGL', label: 'Force WebGL2' },
 ];
 
 const QUALITY_LABELS: Record<QualityTier, string> = {
+  low: 'Low',
+  medium: 'Med',
+  high: 'High',
+  ultra: 'Ultra',
+  max: 'Max',
+};
+
+const QUALITY_NAMES: Record<QualityTier, string> = {
   low: 'Low',
   medium: 'Medium',
   high: 'High',
@@ -168,15 +192,9 @@ function sliderSpec(key: SliderKey): SliderSpec {
   return spec;
 }
 
-/**
- * Every declared slider must be placed exactly once.
- *
- * Called at construction rather than written as a comment, because the failure
- * this guards against is invisible: a slider that is never built does not throw,
- * does not warn, and does not look different from one the designer left out.
- */
+/** Every declared slider must be placed exactly once. */
 function assertSlidersPlaced(): void {
-  const placed = [...ENVIRONMENT_SLIDERS, ...DISPLAY_SLIDERS] as readonly SliderKey[];
+  const placed = [...SEA_SKY_SLIDERS, ...CABIN_SLIDERS] as readonly SliderKey[];
   for (const spec of SLIDERS) {
     const count = placed.filter((key) => key === spec.key).length;
     if (count !== 1) {
@@ -214,12 +232,15 @@ export class Panel {
   private readonly state: UiState;
   private readonly sliders = new Map<SliderKey, SliderRefs>();
   private readonly toggles = new Map<ToggleKey, HTMLButtonElement>();
-  private readonly qualitySelect: HTMLSelectElement;
-  private readonly presetSelect: HTMLSelectElement;
+  private readonly qualityInputs = new Map<QualityTier, HTMLInputElement>();
+  private readonly presetInputs = new Map<PresetId, HTMLInputElement>();
   private readonly panelEl: HTMLElement;
+  private readonly bodyEl: HTMLElement;
+  private readonly collapseButton: HTMLButtonElement;
   private readonly sheetButton: HTMLButtonElement;
   private disposed = false;
   private sheetOpen = false;
+  private collapsed = false;
 
   constructor(root: HTMLElement, initial: UiState, callbacks: UiCallbacks) {
     this.root = root;
@@ -231,86 +252,104 @@ export class Panel {
     const uid = `panel${++instanceCounter}`;
     const signal = this.controller.signal;
 
-    const panel = el('section', 'panel');
+    const panel = el('section', 'panel parchment');
     panel.setAttribute('aria-label', 'Ocean controls');
     panel.id = `${uid}-sheet`;
 
     // ---- Title block -------------------------------------------------------
-    // No standfirst under the title. An eyebrow or subtitle stacked on a heading
-    // is a label doing work the heading already does — and "Demo" told a visitor
-    // nothing they could not see. The heading carries itself.
     const head = el('header', 'panel__head');
-    const title = el('h1', 'panel__title');
-    title.append('Web ', el('span', 'panel__title-accent', 'Ocean'), ' 3D');
-    head.append(title);
+    const title = el('h1', 'panel__title', 'Web Ocean 3D');
+    const collapse = el('button', 'panel__collapse');
+    collapse.type = 'button';
+    collapse.setAttribute('aria-expanded', 'true');
+    collapse.setAttribute('aria-controls', `${uid}-body`);
+    collapse.setAttribute('aria-label', 'Fold the ledger');
+    collapse.append(icon('chevron'));
+    collapse.addEventListener('click', () => this.onCollapseClick(), { signal });
+    head.append(title, collapse);
     panel.append(head);
 
     const body = el('div', 'panel__body');
+    body.id = `${uid}-body`;
     panel.append(body);
 
-    // ---- Selects -----------------------------------------------------------
-    this.qualitySelect = this.buildSelect(
-      body,
-      `${uid}-quality`,
-      'Quality',
-      QUALITY_TIERS.map((tier) => [tier, QUALITY_LABELS[tier]] as const),
-      this.state.quality,
-    );
-    this.qualitySelect.addEventListener(
-      'change',
-      () => {
-        const value = this.qualitySelect.value as QualityTier;
-        if (!QUALITY_TIERS.includes(value)) return;
-        this.state.quality = value;
-        this.callbacks.onChange('quality', value);
-      },
-      { signal },
-    );
+    // ---- The look ----------------------------------------------------------
+    const look = this.section(body, 'The Look');
+    const presets = el('div', 'presets');
+    presets.setAttribute('role', 'radiogroup');
+    presets.setAttribute('aria-label', 'Preset');
+    for (const id of PRESET_IDS) {
+      const input = this.radio(presets, `${uid}-preset`, id, id === this.state.preset, 'preset');
+      input.setAttribute('aria-label', PRESET_LABELS[id]);
+      const card = input.parentElement as HTMLElement;
+      card.dataset.preset = id;
+      card.append(el('span', 'preset__art'), el('span', 'preset__name', PRESET_LABELS[id]));
+      input.addEventListener(
+        'change',
+        () => {
+          if (!input.checked) return;
+          this.state.preset = id;
+          this.callbacks.onChange('preset', id);
+        },
+        { signal },
+      );
+      this.presetInputs.set(id, input);
+    }
+    look.append(presets);
 
-    this.presetSelect = this.buildSelect(
-      body,
-      `${uid}-preset`,
-      'Preset',
-      PRESET_IDS.map((id) => [id, PRESET_LABELS[id]] as const),
-      this.state.preset,
-    );
-    this.presetSelect.addEventListener(
-      'change',
-      () => {
-        const value = this.presetSelect.value as PresetId;
-        if (!PRESET_IDS.includes(value)) return;
-        this.state.preset = value;
-        this.callbacks.onChange('preset', value);
-      },
-      { signal },
-    );
+    const qualityField = el('div', 'field');
+    const qualityLabel = el('span', 'field__label', 'Quality');
+    qualityLabel.id = `${uid}-quality-label`;
+    const quality = el('div', 'plaques');
+    quality.setAttribute('role', 'radiogroup');
+    quality.setAttribute('aria-labelledby', qualityLabel.id);
+    for (const tier of QUALITY_TIERS) {
+      const input = this.radio(quality, `${uid}-quality`, tier, tier === this.state.quality, 'plaque');
+      input.setAttribute('aria-label', QUALITY_NAMES[tier]);
+      (input.parentElement as HTMLElement).append(el('span', 'plaque__name', QUALITY_LABELS[tier]));
+      input.addEventListener(
+        'change',
+        () => {
+          if (!input.checked) return;
+          this.state.quality = tier;
+          this.callbacks.onChange('quality', tier);
+        },
+        { signal },
+      );
+      this.qualityInputs.set(tier, input);
+    }
+    qualityField.append(qualityLabel, quality);
+    look.append(qualityField);
 
-    // ---- Wave / sky sliders ------------------------------------------------
-    for (const key of ENVIRONMENT_SLIDERS) {
-      this.buildSlider(body, `${uid}-${key}`, sliderSpec(key));
+    // ---- Sea & sky ---------------------------------------------------------
+    const seaSky = this.section(body, 'Sea & Sky');
+    for (const key of SEA_SKY_SLIDERS) {
+      this.buildSlider(seaSky, `${uid}-${key}`, sliderSpec(key));
     }
 
-    body.append(el('div', 'panel__divider'));
+    // ---- Cabin -------------------------------------------------------------
+    const cabin = this.section(body, 'Cabin');
+    for (const key of CABIN_SLIDERS) {
+      this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
+    }
 
-    // ---- Toggles -----------------------------------------------------------
+    // ---- Shipwright (debug) ------------------------------------------------
+    const tools = el('details', 'ledger-tools');
+    const summary = el('summary', 'ledger-tools__summary');
+    summary.append(el('span', undefined, "Shipwright's tools"), icon('chevron', 'ledger-tools__chev'));
+    tools.append(summary);
     for (const toggle of TOGGLES) {
-      this.buildToggle(body, toggle.key, toggle.label);
+      this.buildToggle(tools, toggle.key, toggle.label);
     }
-
-    // ---- Display sliders ---------------------------------------------------
-    for (const key of DISPLAY_SLIDERS) {
-      this.buildSlider(body, `${uid}-${key}`, sliderSpec(key));
-    }
-
-    body.append(el('div', 'panel__divider'));
+    body.append(tools);
 
     // ---- Actions -----------------------------------------------------------
     const actions = el('div', 'panel__actions');
-    const primary = el('a', 'btn btn--primary', 'View Source');
-    primary.href = SOURCE_URL;
-    primary.rel = 'noopener';
-    primary.target = '_blank';
-    actions.append(primary);
+    const source = el('a', 'btn btn--brass', 'View Source');
+    source.href = SOURCE_URL;
+    source.rel = 'noopener';
+    source.target = '_blank';
+    actions.append(source);
     body.append(actions);
 
     // ---- Mobile bottom-sheet trigger --------------------------------------
@@ -318,12 +357,26 @@ export class Panel {
     sheetButton.type = 'button';
     sheetButton.setAttribute('aria-controls', panel.id);
     sheetButton.setAttribute('aria-expanded', 'false');
-    sheetButton.append(el('span', 'panel-toggle__icon'), el('span', undefined, 'Settings'));
+    sheetButton.setAttribute('aria-label', 'Ledger');
+    sheetButton.append(icon('ledger', 'panel-toggle__icon'), el('span', 'panel-toggle__text', 'Ledger'));
     sheetButton.addEventListener('click', () => this.setSheetOpen(!this.sheetOpen), { signal });
 
     this.panelEl = panel;
+    this.bodyEl = body;
+    this.collapseButton = collapse;
     this.sheetButton = sheetButton;
     this.root.append(panel, sheetButton);
+
+    // Folded by default. The sea is the product, and an open ledger is a
+    // third of a laptop screen; the title plate says where the controls are,
+    // and one click opens them.
+    this.setCollapsed(true);
+  }
+
+  /** Opens or folds the ledger (desktop) — for a harness or a host shortcut. */
+  setOpen(open: boolean): void {
+    if (this.disposed) return;
+    this.setCollapsed(!open);
   }
 
   /** Push values in from the host without re-emitting change callbacks. */
@@ -332,11 +385,13 @@ export class Panel {
 
     if (partial.quality !== undefined) {
       this.state.quality = partial.quality;
-      this.qualitySelect.value = partial.quality;
+      const input = this.qualityInputs.get(partial.quality);
+      if (input) input.checked = true;
     }
     if (partial.preset !== undefined) {
       this.state.preset = partial.preset;
-      this.presetSelect.value = partial.preset;
+      const input = this.presetInputs.get(partial.preset);
+      if (input) input.checked = true;
     }
     if (partial.cameraMode !== undefined) {
       this.state.cameraMode = partial.cameraMode;
@@ -345,9 +400,7 @@ export class Panel {
     for (const [key, refs] of this.sliders) {
       const next = partial[key];
       if (next === undefined) continue;
-      // `timeOfDay` is nullable — null means the preset still owns the sun. The
-      // control has to show *something*, so it falls back to the preset's own
-      // elevation, which the app supplies alongside the null.
+      // `timeOfDay` is nullable — null means the preset still owns the sun.
       if (next === null) continue;
       const value = clamp(next, refs.spec.min, refs.spec.max);
       this.state[key] = value;
@@ -372,34 +425,37 @@ export class Panel {
     this.sheetButton.remove();
     this.sliders.clear();
     this.toggles.clear();
+    this.qualityInputs.clear();
+    this.presetInputs.clear();
   }
 
   // -- builders -------------------------------------------------------------
 
-  private buildSelect(
-    parent: HTMLElement,
-    id: string,
-    labelText: string,
-    options: readonly (readonly [string, string])[],
-    selected: string,
-  ): HTMLSelectElement {
-    const field = el('div', 'field');
-    const label = el('label', 'field__label', labelText);
-    label.htmlFor = id;
+  private section(parent: HTMLElement, title: string): HTMLElement {
+    const section = el('section', 'ledger-section');
+    const heading = el('h2', 'ledger-section__title', title);
+    section.append(heading);
+    parent.append(section);
+    return section;
+  }
 
-    const shell = el('div', 'select');
-    const select = el('select', 'select__input');
-    select.id = id;
-    for (const [value, text] of options) {
-      const option = el('option', undefined, text);
-      option.value = value;
-      select.append(option);
-    }
-    select.value = selected;
-    shell.append(select);
-    field.append(label, shell);
-    parent.append(field);
-    return select;
+  /** A visually-hidden native radio inside its own label. */
+  private radio(
+    parent: HTMLElement,
+    name: string,
+    value: string,
+    checked: boolean,
+    className: string,
+  ): HTMLInputElement {
+    const label = el('label', className);
+    const input = el('input', 'sr-radio');
+    input.type = 'radio';
+    input.name = name;
+    input.value = value;
+    input.checked = checked;
+    label.append(input);
+    parent.append(label);
+    return input;
   }
 
   private buildSlider(parent: HTMLElement, id: string, spec: SliderSpec): void {
@@ -445,9 +501,9 @@ export class Panel {
     button.setAttribute('aria-checked', on ? 'true' : 'false');
     button.classList.toggle('is-on', on);
 
-    const track = el('span', 'switch');
-    track.append(el('span', 'switch__knob'));
-    button.append(el('span', 'switchrow__label', labelText), track);
+    const box = el('span', 'switch');
+    box.append(el('span', 'switch__knob'));
+    button.append(box, el('span', 'switchrow__label', labelText));
 
     button.addEventListener(
       'click',
@@ -476,8 +532,31 @@ export class Panel {
     input.setAttribute('aria-valuetext', spec.format(current));
   }
 
+  /**
+   * The head button folds the ledger on a wide screen and closes the sheet on
+   * a narrow one — the same control, doing the same job, "put this away".
+   */
+  private onCollapseClick(): void {
+    if (this.sheetOpen && window.matchMedia('(max-width: 900px)').matches) {
+      this.setSheetOpen(false);
+      this.sheetButton.focus();
+      return;
+    }
+    this.setCollapsed(!this.collapsed);
+  }
+
+  private setCollapsed(collapsed: boolean): void {
+    this.collapsed = collapsed;
+    this.panelEl.classList.toggle('panel--collapsed', collapsed);
+    this.bodyEl.hidden = collapsed;
+    this.collapseButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    this.collapseButton.setAttribute('aria-label', collapsed ? 'Unfold the ledger' : 'Fold the ledger');
+  }
+
   private setSheetOpen(open: boolean): void {
     this.sheetOpen = open;
+    // Opening the sheet always shows its contents, whatever it was folded to.
+    if (open && this.collapsed) this.setCollapsed(false);
     this.panelEl.classList.toggle('panel--open', open);
     this.sheetButton.setAttribute('aria-expanded', open ? 'true' : 'false');
     this.sheetButton.classList.toggle('is-active', open);
