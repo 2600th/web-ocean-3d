@@ -55,6 +55,15 @@ import { SEEDS, mulberry32 } from '../core/random';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;
 
+/**
+ * Rain-soaked ground: the fraction of dry albedo kept, and the roughness it
+ * tends to. Wet sand and soil darken more than planed wood (a third to a half
+ * of their value); the roughness stops well short of the swash's 0.38 because
+ * rain films the grains rather than flooding them.
+ */
+const RAIN_WET_ALBEDO = 0.62;
+const RAIN_WET_ROUGHNESS = 0.5;
+
 // ---------------------------------------------------------------- noise source
 
 const NOISE_SIZE = 256;
@@ -1033,6 +1042,8 @@ export class Seafloor {
   private readonly detailNode: Node;
 
   private readonly uCausticsStrength = uniform(1);
+  /** Rain wetting of the island's ground, 0..1. See `setRainWetness`. */
+  private readonly uRainWet = uniform(0);
   /** Direction toward whichever body is currently the key light. */
   private readonly uKeyDir = uniform(new THREE.Vector3(0, 1, 0));
   /** March steps for the terrain's own shadow; 0 leaves the island unshadowed. */
@@ -1353,7 +1364,21 @@ export class Seafloor {
     this.sandNormal.dispose();
   }
 
+  /**
+   * How wet the island's ground is from rain, 0..1 — the island channel of
+   * `SurfaceWetness`. A uniform write; the term is in the shader from boot.
+   */
+  setRainWetness(level: number): void {
+    this.uRainWet.value = Math.max(0, Math.min(1, level));
+  }
+
   // ------------------------------------------------------------------ internals
+
+  /** Rain wetting at a world point: level × sky exposure × above the swash. */
+  private rainWetFactor(wp: Node): Node {
+    const exposure = mix(float(0.15), float(1), normalWorldGeometry.y.mul(0.5).add(0.5).clamp(0, 1));
+    return this.uRainWet.mul(exposure).mul(wp.y.smoothstep(0.4, 1.4));
+  }
 
   private rebuildColorNode(): void {
     const caustics = this.causticsNode;
@@ -1374,7 +1399,14 @@ export class Seafloor {
       // clips to white. The *ratios* are the targets': warm pale coral sand, a
       // wet band a little under half its value, and greens that stay green
       // rather than going olive under the sky fill.
-      const sandDry: Node = vec3(0.5, 0.41, 0.25);
+      // Lifted from (0.5, 0.41, 0.25) in the lighting audit. That rendered a
+      // mid khaki — sRGB ~(132, 123, 107) under `skyPro`'s 24-degree sun — where
+      // the shore references read near-white cream and the beach is the
+      // brightest ground in frame. Measured coral sand is 0.5-0.65 albedo and
+      // much less yellow than this was; the new value keeps the warm ratio but
+      // takes a quarter off the blue deficit, and still sits under clipping at
+      // a noon sun (checked in the noon helm and island captures).
+      const sandDry: Node = vec3(0.6, 0.52, 0.37);
       const sandWet: Node = vec3(0.21, 0.155, 0.085);
       const shallowSand: Node = vec3(0.46, 0.42, 0.3);
       const deepSilt: Node = vec3(0.1, 0.15, 0.17);
@@ -1465,7 +1497,14 @@ export class Seafloor {
 
       // Shore hook: the swash darkens the sand it reaches and it dries over
       // seconds. Scales whatever the palette above produced; see `ocean/Surf`.
-      const surfed = applySwashToGround(mottled, wp).toVar();
+      const swashed = applySwashToGround(mottled, wp).toVar();
+
+      // Rain on the island: the same darkening the ship and the props take
+      // (`scene/Wetness`), so a squall does not soak the hull and leave the
+      // beach chalk-dry beside it. Above the swash only — the surf already wets
+      // what it reaches — and by how much sky a face sees.
+      const rainWet = this.rainWetFactor(wp).toVar();
+      const surfed = swashed.mul(mix(float(1), float(RAIN_WET_ALBEDO), rainWet)).toVar();
 
       if (caustics === null) return vec4(surfed, 1);
 
@@ -1483,7 +1522,8 @@ export class Seafloor {
         .mul(0.9)
         .add(1.4);
       const wet = smoothstepDownNode(y, wetTop.mul(0.35), wetTop).mul(y.smoothstep(-1.5, -0.4));
-      return mix(float(0.93), float(0.38), wet);
+      const swash = mix(float(0.93), float(0.38), wet);
+      return mix(swash, float(RAIN_WET_ROUGHNESS), this.rainWetFactor(positionWorld));
     })();
 
     this.material.needsUpdate = true;
