@@ -129,13 +129,29 @@ const SHAKE_LIFT = 0.12;
 /** Seconds between HUD pushes for the continuous readouts. */
 const UI_INTERVAL = 0.1;
 
+/**
+ * What the cask turns out to be. Six, and it must stay six: the seeded
+ * generator picks by index, so a longer list would move every later cargo
+ * the deterministic runs depend on.
+ */
 const CARGO_NAMES = [
-  'a cask of rum',
-  'a cask of spice',
-  "a merchant's cask",
-  'a sealed cask',
-  'a cask of tea',
+  'a cask of dark rum',
+  'a cask of cloves',
+  "a merchant's lost cask",
+  'a cask sealed in wax',
+  'a cask of good tea',
   'a cask of salt pork',
+] as const;
+
+/**
+ * The line a recovered cask gets, chosen by the running count rather than the
+ * seeded generator, for the same reason: flavour must not move the cargo.
+ */
+const HAUL_LINES = [
+  'Hauled aboard',
+  'Safe in the hold',
+  'Fished out and stowed',
+  'Another for the hold',
 ] as const;
 
 export type AnchorState = 'up' | 'down' | 'weighing';
@@ -458,7 +474,7 @@ export class Gameplay {
     this.o.audio?.playSplash(0.5);
     this.tmp.set(this.bow.x, this.o.sampler.ready ? this.o.sampler.height(this.bow.x, this.bow.z) : 0, this.bow.z);
     this.burst.fire(this.tmp, 0.45, false);
-    this.ui.toast('Anchor let go', 'info');
+    this.ui.toast("Anchor down. She'll swing to the wind", 'info');
     this.pushTelemetry();
   }
 
@@ -467,7 +483,7 @@ export class Gameplay {
     this.anchor = 'weighing';
     this.weighTimer = WEIGH_SECONDS;
     this.o.audio?.playAnchorChain(WEIGH_SECONDS);
-    this.ui.toast('Weighing anchor…', 'info');
+    this.ui.toast('Hauling the anchor up…', 'info');
   }
 
   /** Moves the current cargo to `distance` metres off the bow. For tests. */
@@ -568,14 +584,10 @@ export class Gameplay {
     this.pushAllUi();
     if (!this.greeted) {
       this.greeted = true;
-      // Phrased for the hands the visitor is actually using: a phone has no W key.
-      const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
-      this.ui.toast(
-        touch
-          ? 'At the helm — More/Less for sail, the pad to steer, Anchor to stop'
-          : 'At the helm — W/S set and take in sail, A/D steer, R anchor',
-        'info',
-      );
+      // A welcome, not a manual. The controls are taught one at a time, as
+      // they are needed, by the HUD's lessons and the key ribbon, phrased for
+      // the hands in use; repeating all of them here would be a wall of keys.
+      this.ui.toast('You have the helm. Fair winds', 'info');
     }
   }
 
@@ -624,7 +636,7 @@ export class Gameplay {
       // the anchor at the full force cap.
       if (this.weighTimer <= 0) {
         this.anchor = 'up';
-        this.ui.toast('Anchor aweigh', 'info');
+        this.ui.toast("Anchor up. She's free to sail", 'info');
         this.pushTelemetry();
         return;
       }
@@ -716,7 +728,8 @@ export class Gameplay {
     this.o.audio?.playSplash(0.7);
     this.o.audio?.playChime();
     this.addTrauma(0.18);
-    this.ui.toast(`Recovered ${this.lootName} · +${this.lootValue} gold`, 'reward');
+    const haul = HAUL_LINES[(this.cargo - 1) % HAUL_LINES.length];
+    this.ui.toast(`${haul}: ${this.lootName} · +${this.lootValue} gold`, 'reward');
     this.ui.setScore('Cargo', this.cargo);
     this.ui.setScore('Gold', this.gold);
     this.spawnLoot(lp.x, lp.z);
@@ -800,7 +813,7 @@ export class Gameplay {
     this.shoalCooldown = Math.max(0, this.shoalCooldown - dt);
     if (depth < GROUND_DEPTH + 3 && speed > 1 && this.shoalCooldown === 0) {
       this.shoalCooldown = 8;
-      this.ui.toast('Shoal water — bear away!', 'warning');
+      this.ui.toast('Shallows! Turn her away', 'warning');
     }
 
     this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * dt);
@@ -827,7 +840,7 @@ export class Gameplay {
       this.ironsTimer += dt;
       if (this.ironsTimer > 2 && this.ironsCooldown === 0) {
         this.ironsCooldown = 12;
-        this.ui.toast('In irons — bear away from the wind to fill the sails', 'warning');
+        this.ui.toast('Stalled head to wind. Turn either way to fill the sails', 'warning');
       }
     } else {
       this.ironsTimer = 0;
@@ -867,7 +880,7 @@ export class Gameplay {
     const ship = this.o.body.object.position;
     const lp = this.loot.position;
     const objective: GameObjective = {
-      title: 'Recover the drifting cargo',
+      title: 'Haul in the drifting cargo',
       detail: capitalise(this.lootName) + ` · ${this.lootValue} gold`,
       bearingDeg: compassFromVector(lp.x - ship.x, lp.z - ship.z),
       distanceM: Math.hypot(lp.x - ship.x, lp.z - ship.z),
