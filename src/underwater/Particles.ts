@@ -205,12 +205,23 @@ export class UnderwaterParticles {
     return mod(world.sub(this.uCenter).add(offset), size).sub(offset).add(this.uCenter);
   }
 
+  /**
+   * Marine snow is *opaque*, masked to a disc, and writes depth.
+   *
+   * It was additive and depth-less, and that made it invisible exactly where it
+   * matters: `UnderwaterPass` fogs each pixel by the depth buffer, so a speck
+   * drawn over open water was fogged as though it were the open water fifty
+   * metres behind it — transmittance zero, gone. Particulate showed only against
+   * the near reef and never in the blue, which is the one place a diver sees it.
+   * Writing its own depth gets each speck its own extinction: crisp near the
+   * lens, fading into the haze with distance, the way suspended matter gives
+   * the water its sense of volume.
+   */
   private buildSnowMaterial(): THREE.SpriteNodeMaterial {
     const material = new THREE.SpriteNodeMaterial();
-    material.transparent = true;
-    material.depthWrite = false;
+    material.transparent = false;
+    material.depthWrite = true;
     material.depthTest = true;
-    material.blending = THREE.AdditiveBlending;
     material.sizeAttenuation = true;
     material.fog = false;
 
@@ -238,17 +249,17 @@ export class UnderwaterParticles {
       new THREE.Vector3(SNOW_RADIUS, SNOW_HEIGHT, SNOW_RADIUS),
     );
 
-    const size = mix(float(0.022), float(0.075), seed.w);
+    const size = mix(float(0.014), float(0.05), seed.w.mul(seed.w));
     material.scaleNode = vec2(size, size);
 
     const coord = uv();
     const d = coord.sub(vec2(0.5, 0.5)).length();
-    // A soft core with a wide skirt: hard-edged dots read as dead pixels.
-    const alpha = smoothstepDown(d, 0.04, 0.5)
-      .mul(mix(float(0.35), float(1.0), seed.w))
-      .mul(this.uSnowOpacity);
-
-    material.colorNode = vec4(this.uSnowColor, alpha);
+    // A disc, and a dimmer rim: the temporal resolve softens the edge into the
+    // soft-cored speck the additive version drew.
+    material.maskNode = d.lessThan(0.45);
+    const shade = smoothstepDown(d, 0.05, 0.45).mul(0.5).add(0.5);
+    const brightness = mix(float(0.45), float(1.1), seed.w).mul(shade).mul(this.uSnowOpacity);
+    material.colorNode = vec4((this.uSnowColor as any).mul(brightness), 1);
     return material;
   }
 
@@ -291,7 +302,7 @@ export class UnderwaterParticles {
       new THREE.Vector3(BUBBLE_RADIUS, BUBBLE_HEIGHT, BUBBLE_RADIUS),
     );
 
-    const size = mix(float(0.06), float(0.22), column.w);
+    const size = mix(float(0.025), float(0.11), column.w.mul(column.w));
     material.scaleNode = vec2(size, size);
 
     const coord = uv();

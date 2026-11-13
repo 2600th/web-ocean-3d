@@ -37,7 +37,7 @@ reinventing it.
 |---|---|---|
 | FFT waves, physical units | 3-cascade JONSWAP + Hasselmann spreading | — |
 | Depth absorption, refraction, SSR | Beer–Lambert per channel, depth refraction, SSR over planar | — |
-| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks |
+| Foam: whitecaps / ambient / shoreline | whitecaps + persistent buffer + depth-driven shore break | fix lighting (done), add drift-advected ambient streaks; **done:** breakers in sets with lip, bore and cellular lace, swash sheet up the sand, wet sand that dries |
 | Foam around objects | **missing** | **done** — depth-intersection contact foam on anything piercing the surface |
 | Caustics on floor | animated caustics + world-space god rays | — (chromatic dispersion deferred: scalar field shared by four consumers) |
 | Interacting wakes | Kelvin wake that displaces the surface | — |
@@ -52,11 +52,11 @@ reinventing it.
 ## Task list
 
 ### A. Load time and payload (asset agent)
-- [ ] Delete unreferenced assets (HDRIs, unused dressing GLBs / LODs) and their fetch-script entries
-- [ ] Ship textures → KTX2 at 1k (hull/sails/rigging), meshopt geometry
-- [ ] Buoy/barrel textures → KTX2 or procedural
-- [ ] Imposter atlas → KTX2/WebP
-- [ ] Measure: `dist/` size and time-to-first-frame before/after
+- [x] Delete unreferenced assets (HDRIs, unused dressing GLBs / LODs) and their fetch-script entries — HDRIs (19 MB) gone; every dressing GLB and LOD on disk is loaded, so none removed. Draco decoder and the duplicate `public/basis` transcoder dropped from the build.
+- [x] Ship textures → KTX2 at 1k (hull/sails/rigging), meshopt geometry — one `/models/hero/dutch_ship_medium.glb`, 26.4 → 13.5 MB; hull colour and normal stay 2k (1k was visibly soft at the close-up).
+- [x] Buoy/barrel textures → KTX2 or procedural — KTX2 + Meshopt; buoy 2.9 → 0.77 MB, barrel 0.56 MB either way at a quarter of the VRAM.
+- [x] Imposter atlas → KTX2/WebP — WebP, 1.8 → 0.37 MB.
+- [x] Measure: `dist/` size and time-to-first-frame before/after — `public/` 88 → 53 MiB, `dist/` 100 → 64 MiB; High on the FXC path: first frame ~7 s → ~6 s, `isReady` ~39 s → ~20 s.
 
 ### B. Procedural island and vegetation (island agent)
 - [x] Seeded procedural palms (curved trunk tube + bent frond cards, canvas atlas, wind) replacing palm GLBs
@@ -66,7 +66,8 @@ reinventing it.
 
 - [x] World detail: skull rock, sea arch, summit spires, strata outcrops, wet barnacled waterlines, beach wrack and driftwood, camp with fire/smoke/torches. 12.8 MB of vegetation GLBs and the imposter atlas removed.
 - [x] Lower slopes no longer read as lawn: open ground is scrub (tufts, straw-dry patches, bare soil) in the terrain shader
-- [ ] Follow-ups: sand swirl/grid pattern at close range (shore agent owns the sand); shell litter is at true scale and reads only up close — accepted
+- [x] Dry-sand swirls removed (ripple map faded out above the swash, relief bump damped on the dry beach); beach wrack blended instead of cut out (no MSAA under TRAA); meadow clumped with bare ground and dry patches
+- Shell litter is at true scale and reads only up close — accepted
 
 ### C. Water, sky and post (lead)
 - [x] Foam lit by sun + sky
@@ -101,8 +102,9 @@ reinventing it.
 - [ ] Underwater look: god rays, particulates, colour depth grading, caustics on life
 
 ### I. Sky, clouds and birds (sky agent)
-- [ ] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer
-- [ ] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks
+- [x] Clouds: sunset/sunrise lighting, silver linings, cloud shadows; high cirrus layer — clouds resolved by TRAA (own velocity), lit by the measured dome (no white deck at night/dusk), sunset underglow, storm base relief, 2D cirrus; twilight dome, milky way, 22° moon halo. Cost unchanged: cloud layer 2.7 ms at High / 1600x900, same as before the pass
+- [x] Birds: gull flocks with flapping animation, circling the ship and island, landing on masts/rocks — M-wing flap/glide in the vertex stage, banking circuits round ship and island, soarers, five perched on the yards and taffrail that take off when she gets under way
+- [ ] Follow-ups: perched and close gulls read as white shapes (no feather/grey-back detail); storm deck is moody but low in structure toward the sun; bright sea horizon line at night is the water/haze, not the sky
 
 ### J. Audio and music (audio agent)
 - [x] Procedural adaptive score (original, synthesised — calm/sailing/storm/underwater/tour states, cargo sting, Music slider)
@@ -110,8 +112,9 @@ reinventing it.
 - [x] Hooks for other systems: `hullImpact`, `waveSlap`, `uiTick`, `setMusicState`, `playSting` (documented at the top of `AudioSystem.ts`)
 
 ### K. Shore and ship–wave interaction (shore agent)
-- [ ] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace
-- [ ] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks
+- [x] Island shore: breaking-wave bands, swash runup on the beach, wet-sand darkening that follows the swash, foam lines and lace — `ocean/Surf` (closed-form breakers in sets, shared by the ocean's vertex and fragment stages, the wake buffer and the ground hook)
+- [x] Ship–wave impacts: bow slam splashes, spray sheets, hull-side foam, wave slap audio hooks, impact camera shake hooks — `physics/Spray` (now visible; see its header for why it was not), routed through `onSprayImpact` in `main.ts`
+- [ ] Audio: `hullImpact` / `waveSlap` are called through an optional interface and stay silent until `AudioSystem` implements them
 
 ### L. Game feel and polish (lead)
 - [ ] Onboarding hints, transitions between modes, pause/settings flow, touch for sails/anchor, end-to-end playtest
@@ -134,6 +137,27 @@ Audit 2026-11-13. Have: TRAA, HDR bloom (exposure-tracked threshold), thin-lens 
 - [x] Lens character, High and up only: film grain in display space, mid-tone weighted, ~1.5 px value noise at 1.2% (static in captures and under reduced motion, animated otherwise); lateral CA, radial, r²-weighted, 0.001 UV at the corner
 - [x] Every effect: per-tier table in `POST_TIERS` (`src/post/PostChain.ts`), A/B on `__ocean.post.chain.setOverride(name, bool|null)`, `?post=0` restores the pre-pass chain, rows in `scripts/profile-frame.mjs` (`post: …`). Costs measured A/B in one session (median of 4–5 alternations, RTX 5090, 1600×900, deck camera): GTAO 0.02–0.04 ms (High, half res), eye adaptation 0.01–0.02 ms, motion blur 0.01–0.04 ms at a 40 px pan, sharpen / CA / grain ≤ 0.01 ms each. WebGL2 gets eye adaptation and grain only (everything else hangs off the velocity MRT that path does not have)
 - Not done / open: the AO multiply also darkens sunlit crevices a little (the price of not having a prepass); motion blur is per-pixel gather with no tile-max dilation, so a fast object's silhouette does not blur outward over a still background; the eye-adaptation anchors are per preset and need re-measuring if a preset's grade or exposure is re-authored
+
+### O. Lighting, materials and shaders to current AAA practice (lighting agent)
+Audit each against what shipped AAA titles do, fix on evidence, measure cost per tier:
+- [ ] **Shadows:** cascade fit/stability (no swimming on camera move), soft filtering, contact hardening where cheap, shadow distance per tier, foliage/rigging shadow quality, no acne/peter-panning
+- [ ] **Image-based lighting:** environment captured from the live sky (incl. clouds/overcast/night), specular occlusion, horizon occlusion, correct diffuse irradiance — no grey ambient wash
+- [ ] **Local lights:** campfire/torches/ship lanterns as real lights at dusk and night (cheap, culled, tier-gated), emissive that blooms correctly
+- [ ] **Lightning:** the strike lights the scene (sea, clouds, ship) with a shaped flash and shadows/direction, not only a full-screen grade lift
+- [ ] **Night:** moonlight as a key light with a cool colour and correct intensity; stars/moon reflected; nothing reads pitch-black or day-bright
+- [ ] **Materials (PBR):** albedo in physically plausible ranges, roughness/metalness sanity, normal map strength, specular AA (no sparkle) on every hero material — ship wood, ropes, sails, metal fittings, rock, sand, foliage, props
+- [ ] **Translucency:** sails and leaves transmit backlight (thin-surface SSS), two-sided foliage lighting
+- [ ] **Wetness:** rain and spray darken albedo and lower roughness consistently across ship, rock, sand, props (per-object, not one global value)
+- [ ] **Shader hygiene:** no NaNs/fireflies, energy-conserving specular, consistent fog/aerial perspective on every material, shader-compile cost kept off the critical path
+
+### Follow-ups found while merging
+- [x] Post-ready main-thread stall (25 s on a contended GPU vs 3.8 s on `main`): prewarm times out and the rest compiles in one frame (assets agent) — fixed: the prewarm now compiles the frame's real contexts (scene pass target + TRAA MRT + velocity, pinned call depths, reflection), pipelines build in parallel, live frames never build a pipeline synchronously. Same session, High: `isReady` ~48 s → ~17 s, worst frame after ready ~1.8 s → <50 ms, loop start ~17 s → ~7 s.
+- [x] Night/dusk clouds no longer outshine the sky (lit by measured sky radiance; moon as key)
+- [x] Sea sun glint fades with overcast on the sky's disc curve
+- [ ] Bright horizon band at night/storm (clear dome sky between the deck's far edge and the sea); dusk squall sea reads purple (sky agent)
+- [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
+- [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
+- [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
 
 ### F. Verification
 - [ ] Progress screenshots each milestone

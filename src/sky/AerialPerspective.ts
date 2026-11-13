@@ -157,6 +157,21 @@ export class AerialPerspective {
    * island dissolve into is exactly the hard-edged ceiling the gap analysis
    * describes. Same function, called by hand.
    */
+  /**
+   * Fraction of what lies at `distance` along `rayDir` that survives the haze.
+   *
+   * For a caller drawn *over the sky* rather than in front of the scene: the
+   * cloud layer. Such a caller should fade into the dome behind it, which is
+   * already the right radiance in every direction, rather than toward the
+   * haze's own `inscatter` — that is built from the CPU-side horizon and
+   * zenith *tints*, which are hues at full scale and at night are hundreds of
+   * times brighter than the dome itself.
+   */
+  transmittance(distance: Node, rayDir: Node): Node {
+    const depth = this.opticalDepth(distance, rayDir) as any;
+    return exp(depth.dot(vec3(0.2126, 0.7152, 0.0722)).negate());
+  }
+
   apply(color: Node, distance: Node, rayDir: Node): Node {
     const transmittance = exp(this.opticalDepth(distance, rayDir).negate());
     return mix(this.inscatter(rayDir), color, transmittance);

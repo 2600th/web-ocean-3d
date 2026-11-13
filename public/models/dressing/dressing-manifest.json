@@ -293,48 +293,6 @@
         }
       ]
     },
-    "stylaster_coral": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/stylaster_coral.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.4,
-          "url": "/models/dressing/stylaster_coral_lod1.glb"
-        }
-      ]
-    },
-    "seriatopora_coral": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/seriatopora_coral.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/seriatopora_coral_lod1.glb"
-        }
-      ]
-    },
-    "goniastrea_coral": {
-      "lods": [
-        {
-          "level": 0,
-          "ratio": 1,
-          "url": "/models/dressing/goniastrea_coral.glb"
-        },
-        {
-          "level": 1,
-          "ratio": 0.3,
-          "url": "/models/dressing/goniastrea_coral_lod1.glb"
-        }
-      ]
-    },
     "soft_coral_set": {
       "lods": [
         {
