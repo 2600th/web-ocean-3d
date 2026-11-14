@@ -74,12 +74,50 @@ export function installThreeFixes(renderer: THREE.WebGPURenderer): void {
  * matrices current — it copies them on the CPU but never bumps the
  * attribute's version — and this fallback has no velocity MRT to need them
  * (see `PostChain`). WebGPU keeps the uniform layout.
+ *
+ * The attribute path also has a frame of lag, fixed below. It draws from
+ * copies (an interleaved buffer for the matrices, an instanced attribute for
+ * the colours) that share the mesh's arrays, and their versions are synced from
+ * the mesh's in an `OnFrameUpdate`. That runs in `Nodes.updateForRender`, which
+ * `Renderer._renderObjectDirect` calls *after* `Geometries.updateForRender` has
+ * already decided what to upload, and the upload is checked once per render
+ * call. So a mesh drawn in one pass a frame showed its new matrices a frame
+ * late, and a burst that reused a slot flashed the previous one for a frame.
+ * The uniform layout re-uploaded every draw and never had this. The sync
+ * three does afterwards is done here first, and three's then finds nothing to
+ * change.
  */
 export function installWebGLFixes(renderer: THREE.WebGPURenderer): void {
   if (THREE.REVISION !== '185') return;
   const capabilities = (renderer as any).backend?.capabilities;
+  const geometries = (renderer as any)._geometries;
   if (!capabilities || typeof capabilities.getUniformBufferLimit !== 'function') return;
+  if (!geometries || typeof geometries.updateForRender !== 'function') return;
   capabilities.getUniformBufferLimit = () => 0;
+
+  const updateForRender = geometries.updateForRender.bind(geometries);
+  geometries.updateForRender = (renderObject: any): void => {
+    const mesh = renderObject.object;
+    if (mesh?.isInstancedMesh) syncInstanceCopies(mesh, renderObject.getAttributes());
+    updateForRender(renderObject);
+  };
+}
+
+/** As `Instance.js`'s `OnFrameUpdate`, for the copies that share the mesh's arrays. */
+function syncInstanceCopies(mesh: THREE.InstancedMesh, attributes: readonly any[]): void {
+  const matrices = mesh.instanceMatrix;
+  const colors = mesh.instanceColor;
+  for (const attribute of attributes) {
+    const source =
+      attribute.isInterleavedBufferAttribute === true ? attribute.data : attribute;
+    if (source === matrices || source === colors) continue;
+    const owner =
+      source.array === matrices.array ? matrices : colors && source.array === colors.array ? colors : null;
+    if (owner === null || source.version === owner.version) continue;
+    source.clearUpdateRanges();
+    source.updateRanges.push(...owner.updateRanges);
+    source.version = owner.version;
+  }
 }
 
 /** Per render context: original shared group -> that context's copy. */
