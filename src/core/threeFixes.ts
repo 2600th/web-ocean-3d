@@ -50,6 +50,38 @@ export function installThreeFixes(renderer: THREE.WebGPURenderer): void {
   };
 }
 
+/**
+ * Instance matrices as vertex attributes on the WebGL2 fallback (three r185).
+ *
+ * r185 puts an `InstancedMesh`'s matrices in a uniform block whenever they fit
+ * — `mat4 buffer[count]` — so the instance **count** is part of the shader
+ * source. Two meshes sharing one material but placing 20 and 36 instances
+ * compile two programs, identical except for that number. The reef alone is
+ * dozens of meshes on two materials, and on ANGLE's D3D11 path every program
+ * costs FXC about 1.2 s to link: 66 copies of the reef-life shader were 80 s
+ * of the 90 s the fallback spent compiling at boot, which is what put its time
+ * to first frame at 65 s against main's 7.
+ *
+ * Above the block-size limit r185 already uses four instanced `vec4`
+ * attributes, the way `WebGLRenderer` always did. That shader does not mention
+ * the count, so meshes on one material share a program again, and the matrices
+ * upload when they change rather than with every draw. Reporting no uniform
+ * block space sends every instanced mesh down that path. The limit is read in
+ * three places (`Instance.js` twice, `RangeNode.js`), all choosing between the
+ * same two layouts.
+ *
+ * WebGL only, because the attribute path does not keep the *previous* frame's
+ * matrices current — it copies them on the CPU but never bumps the
+ * attribute's version — and this fallback has no velocity MRT to need them
+ * (see `PostChain`). WebGPU keeps the uniform layout.
+ */
+export function installWebGLFixes(renderer: THREE.WebGPURenderer): void {
+  if (THREE.REVISION !== '185') return;
+  const capabilities = (renderer as any).backend?.capabilities;
+  if (!capabilities || typeof capabilities.getUniformBufferLimit !== 'function') return;
+  capabilities.getUniformBufferLimit = () => 0;
+}
+
 /** Per render context: original shared group -> that context's copy. */
 const contextCopies = new WeakMap<object, WeakMap<object, any>>();
 
