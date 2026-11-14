@@ -893,7 +893,7 @@ async function runConfiguration(browser, baseUrl, config, options) {
     );
 
     const { verdict, reasons, budget } = verdictFor(
-      config, { ...raw, pacing, consoleErrors }, environment, options,
+      config, { ...raw, boot, pacing, consoleErrors }, environment, options,
     );
 
     return {
