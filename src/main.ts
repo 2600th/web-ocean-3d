@@ -4095,6 +4095,14 @@ class App {
           _pinTarget.set(tx, ty, tz);
           this.director.pin(_pinPosition, _pinTarget);
         },
+        /**
+         * Holds the camera in the hull's heading frame through whatever runs
+         * next; boat mode only. See `CameraDirector.pinToShip`.
+         */
+        setCameraOnShip: (px: number, py: number, pz: number, tx: number, ty: number, tz: number) =>
+          this.director.pinToShip(_pinPosition.set(px, py, pz), _pinTarget.set(tx, ty, tz)),
+        /** The lens for the screenshot harness. See `CameraDirector.setLens`. */
+        setLens: (fov: number | null) => this.director.setLens(fov),
 
         // --- deterministic stepping ------------------------------------------
         /** Detaches the simulation from wall clock. `step` then owns the clock. */
