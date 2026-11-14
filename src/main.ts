@@ -4175,6 +4175,14 @@ class App {
 
           // The sampler holds a readback of the *previous* wave field; drop it so
           // buoyancy re-derives from the field at `time`.
+          //
+          // And put the field itself at the rewound clock first. Each step's
+          // physics reads the field the step before it computed, so the first
+          // settle step would otherwise float the hull on whatever the GPU last
+          // evaluated — the previous shot's sea, or the live session's. That
+          // made the first capture after boot differ from every later one, and
+          // made each capture depend on the shot that ran before it.
+          this.simulation.update(start);
           this.sampler.rebuild();
 
           // Settle: the FFT is stateless in time (h(k, t) is evaluated directly),
