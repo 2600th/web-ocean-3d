@@ -155,8 +155,15 @@ export class CameraDirector {
    * The lens every mode but Cinematic uses, degrees: whatever the camera was
    * built with. The tour changes focal length shot to shot, and leaving it has
    * to hand this back — eased with the rest of the pose rather than snapped.
+   * `setLens` can change it; `defaultFov` is what it started as.
    */
-  private readonly baseFov: number;
+  private baseFov: number;
+  private readonly defaultFov: number;
+  /**
+   * A pose held in the hull's heading frame instead of the chase rig's, or null.
+   * See `pinToShip`.
+   */
+  private shipPin: { position: THREE.Vector3; target: THREE.Vector3 } | null = null;
   private fromFov = 0;
   private readonly rollQuat = new THREE.Quaternion();
   private readonly motionQuery: MediaQueryList | null;
@@ -191,6 +198,7 @@ export class CameraDirector {
     this.domElement = options.domElement;
     this.surfaceHeight = options.surfaceHeight;
     this.baseFov = this.camera.fov;
+    this.defaultFov = this.camera.fov;
     this.fromFov = this.camera.fov;
     // The tour lifts itself over the crests on the same wave query the chase
     // camera uses, and over the terrain on the heightfield's own function.
@@ -317,10 +325,12 @@ export class CameraDirector {
 
   setChaseTarget(target: CameraTarget | null): void {
     this.target = target;
+    if (target === null) this.shipPin = null;
   }
 
   setMode(mode: DirectorMode): void {
     if (mode === this.mode) return;
+    this.shipPin = null;
 
     // Capture the current pose so the new rig can be eased into rather than cut to.
     this.fromPosition.copy(this.camera.position);
@@ -376,6 +386,7 @@ export class CameraDirector {
    */
   pin(position: THREE.Vector3, target: THREE.Vector3): void {
     this.transition = 0;
+    this.shipPin = null;
 
     this.camera.position.copy(position);
     this.tmpQuat.setFromRotationMatrix(lookAtMatrix(position, target, UP));
@@ -411,6 +422,56 @@ export class CameraDirector {
         // clock, which is the only way the two can agree.
         break;
     }
+  }
+
+  /**
+   * The vertical field of view, degrees, for every mode but Cinematic; `null`
+   * restores the one the camera was built with. For the screenshot harness,
+   * which frames each shot with its own lens: nothing in the app calls it, so a
+   * viewer's lens never changes under them.
+   */
+  setLens(fov: number | null): void {
+    this.baseFov = fov !== null && Number.isFinite(fov) ? fov : this.defaultFov;
+    if (this.mode !== 'cinematic') this.applyFov(this.baseFov);
+  }
+
+  /**
+   * Holds the camera at a pose fixed to the hull's heading, in place of the
+   * chase rig, until the mode changes or another pin replaces it. Boat mode
+   * only; false otherwise, or before there is a hull.
+   *
+   * `position` and `target` are metres ahead of the hull (x), above sea level
+   * (y) and to starboard (z). Level whatever the hull's pitch and roll, and with
+   * no lag and no shake: a camera boat running alongside, which is how a ship
+   * under way is photographed. For the screenshot harness — the chase rig can
+   * only ever see the hull from astern, and a pin made after a settle would be
+   * one no frame had been updated for: the sky, the fog and the particles all
+   * read the camera in `update`.
+   */
+  pinToShip(position: THREE.Vector3, target: THREE.Vector3): boolean {
+    if (this.mode !== 'boat' || !this.target) return false;
+    this.shipPin = { position: position.clone(), target: target.clone() };
+    this.transition = 0;
+    this.updateShipPin();
+    return true;
+  }
+
+  private updateShipPin(): void {
+    const pin = this.shipPin;
+    const target = this.target;
+    if (!pin || !target) return;
+    // Bow along (cos, sin) of the heading; starboard is forward x up.
+    const c = Math.cos(target.heading);
+    const s = Math.sin(target.heading);
+    const origin = target.position;
+    const place = (out: THREE.Vector3, p: THREE.Vector3): THREE.Vector3 =>
+      out.set(origin.x + c * p.x - s * p.z, p.y, origin.z + s * p.x + c * p.z);
+    place(this.desiredPosition, pin.position);
+    place(this.tmpVec2, pin.target);
+    this.desiredQuaternion.setFromRotationMatrix(lookAtMatrix(this.desiredPosition, this.tmpVec2, UP));
+    this.camera.position.copy(this.desiredPosition);
+    this.camera.quaternion.copy(this.desiredQuaternion);
+    this.camera.updateMatrixWorld(true);
   }
 
   /**
@@ -457,7 +518,8 @@ export class CameraDirector {
         this.updateFly(dt);
         break;
       case 'boat':
-        this.updateChase(dt);
+        if (this.shipPin) this.updateShipPin();
+        else this.updateChase(dt);
         break;
       case 'cinematic':
         this.updateCinematic(dt);
@@ -480,7 +542,7 @@ export class CameraDirector {
   }
 
   private applyShake(): void {
-    if (this.mode !== 'boat') return;
+    if (this.mode !== 'boat' || this.shipPin) return;
     const e = this.shakeEuler;
     if (this.shakeOffset.lengthSq() === 0 && e.x === 0 && e.y === 0 && e.z === 0) return;
     this.unshakenPosition.copy(this.camera.position);

@@ -34,9 +34,17 @@ visible before it crosses.
 ## The canonical shots
 
 Defined as data in `tests/lib/shots.ts` — preset, quality tier, wind, cloud
-cover, camera mode, camera pose and simulation time — so the harness, any
-before/after review loop and the README screenshots can all frame the same fifteen
+cover, camera mode, camera pose, lens and simulation time — so the harness, any
+before/after review loop and the README screenshots can all frame the same sixteen
 views.
+
+They are photographs as well as test fixtures, and the README gallery is built
+from them, so the pinned ones are composed like photographs: eye-height cameras
+rather than mastheads, subjects on the thirds rather than in the middle, the
+light across or behind the subject, and a lens per shot (`lens`, vertical
+degrees; the app's 55 when omitted). `ship-underway` holds its camera in the
+hull's heading frame through the settle (`frame: 'ship'`), a camera boat
+running alongside, because the chase rig can only see the hull from astern.
 
 | Shot | Preset | What it is there to catch |
 | --- | --- | --- |
@@ -45,6 +53,7 @@ views.
 | `sunset` | sunset | Low-sun specular track, warm/cool gradient, highlight roll-off at the horizon |
 | `storm` | storm | High sea state, rain, dense cloud, foam coverage, low contrast |
 | `boat-chase` | seaOfThieves | Chase framing, buoyancy pose, hull material, contact shadow, wake footprint |
+| `ship-underway` | seaOfThieves | The hull at speed from abeam: bow wave, spray, wake off the quarter, the lit side |
 | `waterline` | skyPro | Grazing near-surface silhouette against sky, up-sun specular path to the horizon |
 | `underwater` | skyPro | Extinction with depth, god rays, particulate, hull underside, surface from below |
 | `island-approach` | skyPro | The whole island: shoreline rock, beach, canopy, summit, and the depth ramp |
@@ -257,18 +266,19 @@ lens flare, the per-preset grades and the output dither, and is superseded.
 | Shot | mean ΔE | p95 ΔE | pixels ΔE > 2.5 |
 | --- | --- | --- | --- |
 | `clear-day-wide` | 0.0000 | 0.00 | 0.000% |
-| `near-water-detail` | 0.0265 | 0.00 | 0.229% |
-| `sunset` | 0.0337 | 0.00 | 0.280% |
-| `storm` | 0.5691 | 3.24 | 6.169% |
+| `near-water-detail` | 0.0000 | 0.00 | 0.000% |
+| `sunset` | 0.0000 | 0.00 | 0.000% |
+| `storm` | 0.8728 | 4.20 | 7.119% |
 | `boat-chase` | 0.3886 | 1.10 | 1.437% |
+| `ship-underway` | 0.0000 | 0.00 | 0.000% |
 | `waterline` | 0.0003 | 0.00 | 0.000% |
-| `underwater` | 0.0210 | 0.00 | 0.225% |
+| `underwater` | 0.0000 | 0.00 | 0.000% |
 | `island-approach` | 0.0000 | 0.00 | 0.000% |
 | `shore-break` | 0.0000 | 0.00 | 0.000% |
 | `reef-dive` | 0.0000 | 0.00 | 0.000% |
 | `cinematic-reef` | 0.0162 | 0.00 | 0.213% |
 | `cinematic-landfall` | 0.0000 | 0.00 | 0.000% |
-| `ship-and-island` | 0.0069 | 0.00 | 0.062% |
+| `ship-and-island` | 0.0000 | 0.00 | 0.000% |
 | `cinematic-surf` | 0.0000 | 0.00 | 0.000% |
 | `cinematic-squall` | 0.0072 | 0.00 | 0.051% |
 | `cinematic-night` | 0.0000 | 0.00 | 0.000% |
@@ -290,6 +300,12 @@ comparison that masks the foam field — not the renderer.
 
 Every other shot is at or below its previous figure, and seven are now exactly
 zero: for those, the whole protocol repeats bit-identically.
+
+The seven shots recomposed on **2026-11-14** (`clear-day-wide`, `near-water-detail`,
+`sunset`, `storm`, `underwater`, `ship-and-island`, and the new `ship-underway`) were
+re-measured with their new framing and are in the table above. Six repeat
+bit-identically. `storm` rose again, to 0.8728: the camera is now three metres off
+the water and twice as close, so foam and rain fill far more of the frame.
 
 `p95 = 0.00` means more than 95% of pixels were bit-identical.
 

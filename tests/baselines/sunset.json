@@ -1,6 +1,6 @@
 {
   "shot": "sunset",
-  "capturedAt": "2026-11-14T06:48:12.379Z",
+  "capturedAt": "2026-11-14T12:13:09.973Z",
   "width": 1280,
   "height": 720,
   "definition": {
@@ -14,16 +14,17 @@
     },
     "camera": {
       "position": [
-        58,
-        7,
-        9
+        92,
+        3,
+        40
       ],
       "target": [
-        0,
-        4,
-        0
+        -4.3,
+        11.6,
+        14.5
       ]
     },
+    "lens": 30,
     "time": 31.25,
     "settleSteps": 90
   },

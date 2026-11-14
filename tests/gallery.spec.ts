@@ -74,7 +74,9 @@ const MOONLIT: Shot = {
     cloudCoverage: 0.25,
     preset: 'moonlit',
   },
-  camera: { position: [-38, 12, 52], target: [0, 3, 0] },
+  // Down the moon's track from four metres up, the hull on the left third in it.
+  camera: { position: [-60, 4, 30], target: [34.9, 14.7, 0.3] },
+  lens: 36,
   time: 18,
   settleSteps: 90,
 };
@@ -89,7 +91,7 @@ const GALLERY: readonly GalleryShot[] = [
   { file: 'moonlit', shot: MOONLIT },
   canonical('near-water-detail', 'waves'),
   canonical('underwater', 'underwater'),
-  canonical('boat-chase', 'boat'),
+  canonical('ship-underway', 'boat'),
   canonical('island-approach', 'island'),
   canonical('shore-break', 'shore'),
   canonical('reef-dive', 'reef'),

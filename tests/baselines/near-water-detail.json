@@ -1,6 +1,6 @@
 {
   "shot": "near-water-detail",
-  "capturedAt": "2026-11-14T06:48:07.867Z",
+  "capturedAt": "2026-11-14T12:13:06.312Z",
   "width": 1280,
   "height": 720,
   "definition": {
@@ -15,15 +15,16 @@
     "camera": {
       "position": [
         -46,
-        5,
+        2.5,
         44
       ],
       "target": [
-        -64,
-        0,
-        26
+        -16.5,
+        -2.5,
+        71
       ]
     },
+    "lens": 45,
     "time": 23.5,
     "settleSteps": 90
   },
