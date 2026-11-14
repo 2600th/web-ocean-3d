@@ -77,6 +77,31 @@ const DEPTH_BIAS_TEXELS = 1.2;
 /** Receiver offset along the normal, in texels. One and a half is the usual figure for PCF 3x3. */
 const NORMAL_BIAS_TEXELS = 1.5;
 
+/**
+ * Makes every lit material use one copy of the node's shading graph.
+ *
+ * Without this, `CSMShadowNode.setup` runs once per material and builds the
+ * graph afresh each time. Each copy reads the split distances through a new
+ * `reference('_cascades')`, which is a new uniform-array node with a new id.
+ * The GLSL builder names that block `NodeBuffer_<id>`, so on the WebGL2
+ * fallback every lit material compiled a program that differed from its
+ * neighbours by that name alone and could not share one with them.
+ *
+ * Sharing is how three treats every other shadow already. `AnalyticLightNode`
+ * builds its shadow node once and hands it to every material, and the
+ * per-cascade `shadow()` nodes this graph reads are shared the same way. The
+ * per-build part, the shadow position, runs inside the graph's `Fn` and so
+ * still runs for each material. Safe to fix once because the graph depends
+ * only on `cascades` and `fade`, both set before anything compiles and never
+ * changed afterwards (see the class notes).
+ */
+function shareOneGraph(node: CSMShadowNode): void {
+  const target = node as unknown as { setup(builder: unknown): unknown };
+  const setup = target.setup.bind(target);
+  let graph: unknown = null;
+  target.setup = (builder) => (graph ??= setup(builder));
+}
+
 export class SunShadows {
   readonly node: CSMShadowNode;
   private readonly light: THREE.DirectionalLight;
@@ -129,6 +154,7 @@ export class SunShadows {
       camera,
       renderer,
     });
+    shareOneGraph(this.node);
     light.shadow.shadowNode = this.node;
     this.refit();
   }
