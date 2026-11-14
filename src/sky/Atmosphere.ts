@@ -886,6 +886,11 @@ export class Atmosphere {
     this.invalidateEnvironment();
   }
 
+  /** True while a forced capture (see `envForce`) is waiting for `updateEnvironment`. */
+  get environmentForced(): boolean {
+    return this.envDirty && this.envForce;
+  }
+
   /**
    * Forces the next `updateEnvironment` to capture, whatever the throttle says.
    */
