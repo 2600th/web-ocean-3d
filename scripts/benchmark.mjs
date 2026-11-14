@@ -112,14 +112,25 @@ const BUDGETS = {
 };
 
 /**
- * Boot budgets are deliberately attached to the low-end configuration. The
- * memory value is the renderer's live resource count, not a guessed byte total;
- * it makes the allocation shape auditable on machines where VRAM telemetry is
- * unavailable to the page.
+ * Boot budgets are deliberately attached to the low-end configuration.
+ *
+ * Memory is gated on the bytes the renderer reports holding (`info.memory.total`
+ * — textures, attributes, index buffers, uniform buffers, programs), measured by
+ * three from the resources it allocates rather than guessed, and so readable on
+ * machines where VRAM telemetry is unavailable to the page.
+ *
+ * It used to be gated on resource *counts* (120 geometries, 100 textures), set
+ * when the boot drew the ocean alone and streamed the island in afterwards. The
+ * island now loads behind the boot overlay, and a count says nothing about size:
+ * main measured 210 textures in 425 MiB, this branch 190 in 183 MiB, and the
+ * count gate failed both while the second holds less than half the memory. The
+ * counts are still recorded. 256 MiB is the Low ceiling: the fallback's targets
+ * are integrated GPUs sharing system memory, and it leaves about a fifth of
+ * headroom over the measured 210 MiB.
  */
 const LOW_BOOT_BUDGET = {
   timeToFirstFrameMs: 15_000,
-  peakRendererMemory: { geometries: 120, textures: 100 },
+  peakRendererMiB: 256,
 };
 
 /** Minimum samples for a verdict. Percentiles over a handful of frames are noise. */
@@ -761,16 +772,13 @@ function verdictFor(config, measurement, environment, options) {
           `${config.bootBudget.timeToFirstFrameMs} ms budget`,
       );
     }
-    if (!boot || boot.peakRendererMemory.geometries > config.bootBudget.peakRendererMemory.geometries) {
+    const peakMiB = boot ? boot.peakRendererMemory.bytes / 1048576 : null;
+    if (peakMiB === null || !(peakMiB > 0)) {
+      exceeded.push('peak renderer memory was not measured');
+    } else if (peakMiB > config.bootBudget.peakRendererMiB) {
       exceeded.push(
-        `peak geometries ${boot?.peakRendererMemory.geometries ?? 'n/a'} exceeds ` +
-          `${config.bootBudget.peakRendererMemory.geometries}`,
-      );
-    }
-    if (!boot || boot.peakRendererMemory.textures > config.bootBudget.peakRendererMemory.textures) {
-      exceeded.push(
-        `peak textures ${boot?.peakRendererMemory.textures ?? 'n/a'} exceeds ` +
-          `${config.bootBudget.peakRendererMemory.textures}`,
+        `peak renderer memory ${round(peakMiB)} MiB exceeds the ` +
+          `${config.bootBudget.peakRendererMiB} MiB budget`,
       );
     }
   }
@@ -805,7 +813,7 @@ async function runConfiguration(browser, baseUrl, config, options) {
     await page.addInitScript(() => {
       window.__benchmarkBoot = {
         firstFrameMs: null,
-        peakRendererMemory: { geometries: 0, textures: 0 },
+        peakRendererMemory: { geometries: 0, textures: 0, bytes: 0, textureBytes: 0 },
         startedAt: performance.now(),
       };
       const observe = () => {
@@ -821,13 +829,20 @@ async function runConfiguration(browser, baseUrl, config, options) {
             boot.peakRendererMemory.textures,
             memory.textures,
           );
+          boot.peakRendererMemory.bytes = Math.max(boot.peakRendererMemory.bytes, memory.total ?? 0);
+          boot.peakRendererMemory.textureBytes = Math.max(
+            boot.peakRendererMemory.textureBytes,
+            memory.texturesSize ?? 0,
+          );
           if (boot.firstFrameMs === null && ocean.loop.stats.frameMs > 0) {
             boot.firstFrameMs = performance.now() - boot.startedAt;
           }
         }
-        if (!ocean || boot.firstFrameMs === null || !ocean.sceneContentLoaded()) {
-          window.setTimeout(observe, 50);
-        }
+        // Kept running until the page closes; the peak is read after the
+        // settle. It used to stop at `sceneContentLoaded`, which on a slow boot
+        // came before the content's first draw had uploaded anything — so the
+        // slowest boots reported the smallest peaks.
+        window.setTimeout(observe, 50);
       };
       observe();
     });
@@ -854,10 +869,6 @@ async function runConfiguration(browser, baseUrl, config, options) {
       undefined,
       { timeout: 180_000 },
     );
-    const boot = await page.evaluate(() => ({
-      firstFrameMs: window.__benchmarkBoot.firstFrameMs,
-      peakRendererMemory: { ...window.__benchmarkBoot.peakRendererMemory },
-    }));
 
     const environment = await collectEnvironment(page);
 
@@ -875,6 +886,12 @@ async function runConfiguration(browser, baseUrl, config, options) {
     // Settle: mip chains, the first sampler readback after the rebuild, and the
     // buoyancy solver finding the new wave field.
     await page.waitForTimeout(options.settleSeconds * 1000);
+
+    // Read after the settle, so the peak covers the content's first draws.
+    const boot = await page.evaluate(() => ({
+      firstFrameMs: window.__benchmarkBoot.firstFrameMs,
+      peakRendererMemory: { ...window.__benchmarkBoot.peakRendererMemory },
+    }));
 
     const raw = await measureInPage(page, {
       warmup: options.warmup,
@@ -950,13 +967,14 @@ async function runConfiguration(browser, baseUrl, config, options) {
 }
 
 function formatTable(results) {
-  const header = ['configuration', 'backend', 'TTFF', 'GPU p50', 'p95', 'p99', 'CPU p50', 'FPS(GPU)', 'delivered', 'draws', 'tris', 'verdict'];
+  const header = ['configuration', 'backend', 'TTFF', 'peak mem', 'GPU p50', 'p95', 'p99', 'CPU p50', 'FPS(GPU)', 'delivered', 'draws', 'tris', 'verdict'];
   const rows = results.map((r) => [
     r.id + (r.gate ? ' *' : ''),
     r.backend,
     r.boot?.firstFrameMs !== null && r.boot?.firstFrameMs !== undefined
       ? `${r.boot.firstFrameMs.toFixed(0)} ms`
       : 'n/a',
+    r.boot?.peakRendererMemory?.bytes ? `${(r.boot.peakRendererMemory.bytes / 1048576).toFixed(0)} MiB` : 'n/a',
     r.gpuFrameMs ? `${r.gpuFrameMs.p50.toFixed(2)} ms` : 'n/a',
     r.gpuFrameMs ? `${r.gpuFrameMs.p95.toFixed(2)}` : 'n/a',
     r.gpuFrameMs ? `${r.gpuFrameMs.p99.toFixed(2)}` : 'n/a',
@@ -1048,7 +1066,7 @@ async function main() {
   writeFileSync(join(RESULTS_DIR, 'latest.json'), `${JSON.stringify(report, null, 2)}\n`);
 
   process.stdout.write(`\n${formatTable(results)}\n\n`);
-  process.stdout.write(`* gated configuration. GPU p50/p95/p99 budgets: WebGPU ${BUDGETS.webgpu.frameMs} ms, WebGL2 ${BUDGETS.webgl.frameMs} ms. Low boot budget: TTFF ${LOW_BOOT_BUDGET.timeToFirstFrameMs} ms, ${LOW_BOOT_BUDGET.peakRendererMemory.geometries} geometries, ${LOW_BOOT_BUDGET.peakRendererMemory.textures} textures.\n`);
+  process.stdout.write(`* gated configuration. GPU p50/p95/p99 budgets: WebGPU ${BUDGETS.webgpu.frameMs} ms, WebGL2 ${BUDGETS.webgl.frameMs} ms. Low boot budget: TTFF ${LOW_BOOT_BUDGET.timeToFirstFrameMs} ms, ${LOW_BOOT_BUDGET.peakRendererMiB} MiB peak renderer memory.\n`);
   process.stdout.write(`Results: ${file}\n`);
 
   const gatesPassed = report.summary.gates.every((gate) => gate.verdict === 'PASS');
