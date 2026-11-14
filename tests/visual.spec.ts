@@ -235,6 +235,10 @@ test.describe('canonical shots', () => {
         if (element instanceof HTMLElement) element.style.visibility = 'hidden';
       }
     });
+    // From the same reset, not straight after the first capture: a capture is a
+    // frame of its own, with its own TRAA jitter and history step, so two in a
+    // row differ by the resolve however the UI is set.
+    await applyShot(page, SHOTS[0]);
     const withoutUi = await capture(page);
     await page.evaluate(() => {
       for (const selector of ['.hud', '.panel', '.panel-toggle']) {
