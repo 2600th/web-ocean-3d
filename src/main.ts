@@ -2981,28 +2981,28 @@ class App {
     // fixed.
     this.wake.setBreaking(
       foamThreshold * 0.34,
-      // The lower clamp moved with it, and finding where took three
-      // measurements because coverage is violently non-linear against the rate
-      // down here. Both 6 and 9 m/s sit under the floor — the clamp binds below
-      // about 11.9 m/s, which the test's own comments call out — so they move
-      // together, and the floor has to put the pair inside two bands at once:
-      // 6 m/s must stay under 0.52% and 9 m/s must stay over 0.23%.
+      // Recalibrated 2026-11-14. The surface work since the last calibration
+      // left fewer texels steep enough to fold, and the old rate (0.5 x
+      // (clamp(0.34, 2.2) + 0.08 r)) measured 0.38x, 0.14x, 0.38x, 0.37x and
+      // 0.24x Monahan at 6, 9, 15, 21 and 24 m/s — two outside the band.
+      // Doubling it fixed the middle and not the ends: 6 m/s rose to 2.96x,
+      // because 6 and 9 m/s shared the floor and moved together, while 21 and
+      // 24 m/s barely moved at all. Above ~7% the buffer saturates, and a
+      // higher rate whitens folds that are already white rather than adding
+      // new ones.
       //
-      //   floor 0.45 -> 0.58% and 0.62%   6 m/s over its ceiling
-      //   floor 0.30 -> 0.15% and 0.18%   9 m/s under its floor
-      //   floor 0.38 -> 0.35% and 0.38%   both inside, but the 6-to-24 dynamic
-      //                                   range collapses to 34x against the
-      //                                   38x the law's own shape demands
-      //   floor 0.34 -> where this sits
+      // So the floor drops below 9 m/s's own ratio (0.175) and the linear share
+      // rises, which separates the calm pair: 9 m/s now gets more than 6. The
+      // cap stays because past it the rate buys nothing. Measured, against
+      // Monahan and in the test's own units:
       //
-      // A 1.5x change in rate moving coverage almost fourfold is the saturation
-      // working backwards: at these levels almost nothing reaches equilibrium,
-      // so the standing coverage is set by how many texels cross the threshold
-      // at all rather than by how white they get. That is also why the floor
-      // cannot simply be scaled by the same factor as the rate — the calm end
-      // responds to it far more strongly than the storm end, which is already
-      // saturating, so a uniform scale flattens the law it is meant to preserve.
-      0.5 * (Math.max(0.34, Math.min(2.2, whitecapRatio)) + 0.08 * whitecapRatio),
+      //   6 m/s  0.15%  0.86x     15 m/s  4.79%  1.22x     24 m/s  7.30%  0.37x
+      //   9 m/s  0.32%  0.47x     21 m/s  6.96%  0.56x
+      //
+      // Monotonic, and the 6-to-24 range is 49x against the 38x the law's
+      // shape demands. 24 m/s is the tight one: it is held by saturation, not
+      // by this rate.
+      Math.max(0.2, Math.min(4, whitecapRatio)) + 0.46 * whitecapRatio,
     );
 
     // The windward-face term rides the same law, and has to: it is the same air
