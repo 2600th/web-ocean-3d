@@ -1881,13 +1881,54 @@ export class OceanMaterial {
         // drove a half-strength deposit to four-fifths white, so foam that should
         // have been thinning as it aged stayed opaque until it vanished.
         const present = accumulated.smoothstep(0.02, 0.2).toVar();
-        accumulated.assign(
-          accumulated
-            .add(perturb.mul(0.5).mul(present))
-            .smoothstep(0.06, 0.68)
-            .clamp(0, 1)
-            .mul(present),
-        );
+        const density = accumulated
+          .add(perturb.mul(0.5).mul(present))
+          .smoothstep(0.06, 0.68)
+          .clamp(0, 1)
+          .mul(present)
+          .toVar();
+        accumulated.assign(density);
+
+        // Bubble structure, so density reads as foam rather than as paint.
+        //
+        // The breakup above decides where a patch's edge falls and nothing
+        // inside it: a saturated deposit came out as an even, untextured
+        // white disc tens of metres across. Real whitecap foam is a network of
+        // bubble rafts with water showing through the cells, and only the
+        // freshest is solid. So density sets a threshold on a cell field —
+        // the same one the surf's lace is drawn from — instead of an opacity.
+        // Thin foam is the cell boundaries; denser foam fills the cells from
+        // the boundaries inward; a fully saturated texel still shows its
+        // centres at half strength.
+        //
+        // Faded to the cells' average with the breakup noise, for the same
+        // reason: past a few hundred metres the cells are under a pixel and
+        // would be shimmer, not texture. Evaluated only where there is foam,
+        // since nine cells per fragment of open sea buy nothing.
+        If(present.greaterThan(0.001), () => {
+          // Two scales, the finer one at less than half the size, so the
+          // network is not one regular net: a single cell size at this range
+          // read as a white fishnet laid on the water.
+          const cellUv = foamUv.mul(0.8).add(vec2(breakup.mul(1.1), breakup.mul(-0.8))).toVar();
+          const cellsA = foamCells(cellUv).toVar();
+          const cellsB = foamCells(cellUv.mul(2.3).add(vec2(5.3, 1.7))).toVar();
+          // 1 on the boundaries, 0 at the cell centres.
+          const rim = cellsA.y
+            .smoothstep(0.02, 0.45)
+            .oneMinus()
+            .max(cellsB.y.smoothstep(0.02, 0.35).oneMinus().mul(0.75))
+            .toVar();
+          // Saturated foam still leaves the cell centres open: a 0.85 reach
+          // rather than 1, so even a fresh patch reads as a raft, not a sheet.
+          const edge0 = density.mul(0.85).oneMinus().sub(0.15).toVar();
+          const textured = rim.smoothstep(edge0, edge0.add(0.3)).mul(density.mul(2).min(1));
+          // What the cells average to where they are too small to draw, so a
+          // patch keeps its brightness as it recedes: about 0.7 of the density
+          // once the cells have filled, less while it is only their rims.
+          const averaged = density.mul(density.mul(2).min(1)).mul(0.7);
+          const near = smoothstepDownClamped(viewDistance, FOAM_BREAKUP_NEAR, FOAM_BREAKUP_FAR);
+          accumulated.assign(mix(averaged, textured, near));
+        });
       }
 
       // Where the buffer reaches, the buffer *is* the whitecaps.
