@@ -1571,11 +1571,29 @@ class App {
         // A step can start an LOD compile; the next one waits it out.
         await this.compilesIdle();
         await this.sampler.readNow();
+        this.beginNodeFrame();
         await this.loop.step(dt, 1);
       }
     } finally {
       this.deterministic = false;
     }
+  }
+
+  /**
+   * Starts a new node frame, as a browser tick does for a live frame.
+   *
+   * three advances its frame counter on its own rAF tick (and in
+   * `compileAsync`), never on a render, and the nodes it gates on that counter
+   * include the scene pass and the bloom. A harness step is a frame that no
+   * tick has to have started: two steps issued inside one tick drew the scene
+   * pass once, and the second step's TRAA resolved the first one's image at a
+   * new jitter offset. How many steps shared a tick depended on how fast each
+   * ran, so at Low, where steps are quick, two captures from the same reset
+   * could differ across every edge in the frame. One counter step per harness
+   * frame makes each draw its own scene, however the browser schedules them.
+   */
+  private beginNodeFrame(): void {
+    (this.renderer as unknown as { _nodes: { nodeFrame: { update(): void } } })._nodes.nodeFrame.update();
   }
 
   /**
@@ -1597,10 +1615,57 @@ class App {
    */
   async capturePixels(): Promise<{ width: number; height: number; data: Uint8Array }> {
     await this.compilesIdle();
+    const target = this.ensureCaptureTarget();
+    const { width, height } = target;
+
+    const previous = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(target);
+    // Exactly one render, and that matters.
+    //
+    // This used to render twice and discard the first, to let the wave textures'
+    // generated mip chains settle. That became actively wrong once the surface
+    // started sampling the framebuffer for refraction: the second render's
+    // backdrop can contain the first render's output, so the image feeds back
+    // into itself and two consecutive captures of an unchanged world no longer
+    // agree — which is precisely the property the whole visual harness rests on.
+    //
+    // Settling is the caller's job instead, and the harness already does it by
+    // discarding warm-up captures before the one it keeps.
+    //
+    // Its own node frame, like a step: see `beginNodeFrame`. So a capture is a
+    // whole frame, with its own TRAA jitter and history step, and two in a row
+    // differ by the resolve. What is reproducible is a capture from a reset:
+    // the same reset gives the same pixels, which is what every comparison in
+    // the harness takes. Before this, whether the capture redrew the scene at
+    // all depended on whether the browser had ticked since the last step.
+    this.beginNodeFrame();
+    await this.renderFrame();
+    this.renderer.setRenderTarget(previous);
+
+    const raw = (await this.renderer.readRenderTargetPixelsAsync(
+      target,
+      0,
+      0,
+      width,
+      height,
+    )) as ArrayBufferView;
+
+    // Copied to an exactly-sized buffer, honouring the view's offset and length.
+    //
+    // Not `new Uint8Array(raw.buffer)`: the readback allocation is pooled and can
+    // be larger than the image, so taking the whole backing store appends stale
+    // bytes from a previous read. The pixels are identical either way, but the
+    // trailing garbage is not, and it made two captures of an unchanged frame
+    // compare unequal — a false regression in every byte-exact check.
+    const view = new Uint8Array(raw.buffer, raw.byteOffset, width * height * 4);
+    return { width, height, data: new Uint8Array(view) };
+  }
+
+  /** The RGBA8 target captures render into, sized to the drawing buffer. */
+  private ensureCaptureTarget(): THREE.RenderTarget {
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     const width = Math.max(1, Math.floor(size.x));
     const height = Math.max(1, Math.floor(size.y));
-
     if (
       this.captureTarget === null ||
       this.captureTarget.width !== width ||
@@ -1618,40 +1683,7 @@ class App {
         magFilter: THREE.LinearFilter,
       });
     }
-
-    const previous = this.renderer.getRenderTarget();
-    this.renderer.setRenderTarget(this.captureTarget);
-    // Exactly one render, and that matters.
-    //
-    // This used to render twice and discard the first, to let the wave textures'
-    // generated mip chains settle. That became actively wrong once the surface
-    // started sampling the framebuffer for refraction: the second render's
-    // backdrop can contain the first render's output, so the image feeds back
-    // into itself and two consecutive captures of an unchanged world no longer
-    // agree — which is precisely the property the whole visual harness rests on.
-    //
-    // Settling is the caller's job instead, and the harness already does it by
-    // discarding warm-up captures before the one it keeps.
-    await this.renderFrame();
-    this.renderer.setRenderTarget(previous);
-
-    const raw = (await this.renderer.readRenderTargetPixelsAsync(
-      this.captureTarget,
-      0,
-      0,
-      width,
-      height,
-    )) as ArrayBufferView;
-
-    // Copied to an exactly-sized buffer, honouring the view's offset and length.
-    //
-    // Not `new Uint8Array(raw.buffer)`: the readback allocation is pooled and can
-    // be larger than the image, so taking the whole backing store appends stale
-    // bytes from a previous read. The pixels are identical either way, but the
-    // trailing garbage is not, and it made two captures of an unchanged frame
-    // compare unequal — a false regression in every byte-exact check.
-    const view = new Uint8Array(raw.buffer, raw.byteOffset, width * height * 4);
-    return { width, height, data: new Uint8Array(view) };
+    return this.captureTarget;
   }
 
   /**
@@ -4038,6 +4070,20 @@ class App {
           // And the live frame that may still be drawing, which the pause does
           // not stop: the first step must not overlap it.
           await this.loop.settle();
+          // One frame drawn into the capture target and thrown away, before the
+          // history is cleared. The first render into a new capture target
+          // changes what the frames after it draw — measured, at Low, as 3.3k
+          // pixels between the first reset of a session and every later one,
+          // and gone once any capture had been taken. Drawing it here, where
+          // the history is about to be reset anyway, makes the first capture of
+          // a session the same as the rest.
+          {
+            const previous = this.renderer.getRenderTarget();
+            this.renderer.setRenderTarget(this.ensureCaptureTarget());
+            this.beginNodeFrame();
+            await this.renderFrame();
+            this.renderer.setRenderTarget(previous);
+          }
           this.resetTemporal();
 
           // Settle the LOD levels for wherever this shot's camera is, and build
