@@ -1237,7 +1237,7 @@ class App {
     await this.prewarm();
     this.loop.start();
     boot.set(0.84, 'Bringing the ship and island in…');
-    window.setTimeout(() => boot.hide(), 350);
+    void this.firstViewComplete().then(() => window.setTimeout(() => boot.hide(), 350));
 
     boot.set(0.86, 'Bringing the ship and island in…');
     this.contentReady = this.loadSceneContent();
@@ -1401,9 +1401,20 @@ class App {
    * complete — the deterministic harness compares them — so they keep the
    * synchronous build, and `isReady` waits for the asynchronous builds to
    * drain, so a harness that waits for it never captures a frame with a hole.
+   *
+   * The WebGL2 fallback takes the same path and gains the same two things. Its
+   * backend links a program asynchronously when handed a promise list and
+   * `KHR_parallel_shader_compile` is present, polling for completion once a
+   * frame, and marks the pipeline ready the same way, so `isReady` holds there
+   * too. Without the extension it links synchronously and pushes no promise,
+   * which the counting below already treats as built. Measured at Low on
+   * ANGLE's FXC path: the prewarm from ~12.5 s to ~1.5 s, because ANGLE links
+   * on a worker pool and `compileAsync` had been waiting for each program in
+   * turn; and the first live frame no longer links, one after another, the
+   * six seconds of programs the prewarm does not cover (the ocean as the scene
+   * pass draws it, the fog, the lens rain).
    */
   private installAsyncPipelines(): void {
-    if (this.backend !== 'webgpu') return;
     const internals = this.renderer as unknown as {
       _pipelines: {
         getForRender(renderObject: unknown, promises?: Promise<unknown>[] | null): unknown;
@@ -1455,6 +1466,33 @@ class App {
       });
       promises[promises.length - 1] = Promise.resolve();
     };
+  }
+
+  /**
+   * Resolves when the opening view can be shown whole, so the boot overlay
+   * lifts on a finished picture rather than one still filling in.
+   *
+   * WebGL2 only. The fallback's prewarm compiles for the frame buffer rather
+   * than the scene pass (see `compileForFrame`), so its first live frame asks
+   * for a handful of programs the prewarm did not build, and leaves those
+   * objects out until they link (`installAsyncPipelines`) — on the measured
+   * Low boot, the ocean itself among them, for about a second. This waits for
+   * the first frame and then for those builds. It stops waiting if a compile
+   * takes over, because the content compile pauses the loop and counts its own
+   * builds, and after `timeoutMs` in any case: a late overlay is worse than a
+   * brief hole.
+   *
+   * WebGPU compiles for the scene pass itself, so its first frame is already
+   * whole and the overlay lifts as it always did.
+   */
+  private async firstViewComplete(timeoutMs = 10_000): Promise<void> {
+    if (this.backend === 'webgpu') return;
+    const deadline = performance.now() + timeoutMs;
+    const nextFrame = (): Promise<void> =>
+      new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    const waiting = (): boolean => !this.disposed && performance.now() < deadline;
+    while (this.loop.stats.frameMs === 0 && waiting()) await nextFrame();
+    while (this.pendingPipelines > 0 && this.compilesInFlight === 0 && waiting()) await nextFrame();
   }
 
   /**
@@ -1770,11 +1808,15 @@ class App {
     // too; see `installAsyncPipelines`.
     this.compilesInFlight++;
     const run = async (): Promise<void> => {
-      // WebGL keeps the plain compile: it has neither the MRT nor the FXC
-      // build cost, and compiling into the scene pass's multisampled target
-      // there sets off an invalid depth-stencil blit.
+      // WebGL keeps the plain compile: it has no MRT, and compiling into the
+      // scene pass's multisampled target there sets off an invalid
+      // depth-stencil blit.
       if (!scenePass || this.backend !== 'webgpu') {
         await this.renderer.compileAsync(this.scene, this.camera);
+        // Started, not built: see `installAsyncPipelines`. Same wait as below.
+        if (!(await this.pipelinesSettled(PIPELINE_SETTLE_MS))) {
+          console.warn('[ocean] pipelines still building after the compile:', this.pendingPipelines);
+        }
         return;
       }
       const generation = ++this.compileGeneration;
