@@ -1174,8 +1174,11 @@ test.describe('interaction', () => {
     // the flock.
     await setState(page, { preset: 'moonlit', quality: 'ultra' });
     // Looking up and out across the flock's altitude band: the circuits sit
-    // 9-62 m up and 35-142 m out from the anchor.
-    await setCamera(page, [0, 26, 0], [40, 64, 40]);
+    // 9-62 m up and 35-142 m out from the anchor. This bearing is the one the
+    // flock actually crosses at t = 30 since part of it moved to the ship and
+    // island anchors; the old north-east aim caught two or three gulls, about
+    // 30 pixels, and failed on a flock that was rendering fine.
+    await setCamera(page, [0, 12, 0], [60, 40, -60]);
     await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
 
     const withFlock = await capture(page);
@@ -1200,7 +1203,7 @@ test.describe('interaction', () => {
 
     // The bar is 80, and it is low on purpose.
     //
-    // Measured, this frame moves ~135 pixels out of 1.44 million: forty gulls at
+    // Measured, this frame moves ~600 pixels out of 1.44 million: gulls at
     // 60-140 m are three or four pixels each. That is what a flock at that
     // distance *is*, and inflating the birds until the number looks impressive
     // would be tuning the scene to the test. What the assertion has to separate
