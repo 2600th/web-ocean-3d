@@ -130,9 +130,25 @@ class ScaledTRAA extends (TRAANode as unknown as new (...args: any[]) => any) {
   }
 
   updateBefore(frame: any): any {
-    const result = super.updateBefore(frame);
     const self = this as any;
     const renderer = frame.renderer;
+    const beauty = self.beautyNode.isRTTNode ? self.beautyNode.renderTarget : self.beautyNode.passNode.renderTarget;
+    const restart =
+      self._historyRenderTarget.width !== beauty.texture.width ||
+      self._historyRenderTarget.height !== beauty.texture.height;
+    const result = super.updateBefore(frame);
+    // A restart (a resize, or `resetTemporal`) seeds the history with this frame
+    // and then resolves against it anyway. That resolve still reprojects through
+    // the velocity buffer, and on this one frame the velocities describe the
+    // move from wherever the camera last drew — after a cut, the old shot. The
+    // history is sampled at the wrong place, clamped, and blended in, and a
+    // TRAA's history decays slowly enough that the error was still flipping
+    // 8-bit values 92 frames later: the first capture after any camera jump
+    // differed from the next one. On a restart the frame *is* the resolve.
+    if (restart) {
+      renderer.copyTextureToTexture(beauty.texture, self._resolveRenderTarget.texture);
+      renderer.copyTextureToTexture(beauty.texture, self._historyRenderTarget.texture);
+    }
     renderer.getDrawingBufferSize(_drawingBuffer);
     const history = self._historyRenderTarget;
     if (history.width === _drawingBuffer.x && history.height === _drawingBuffer.y) return result;
