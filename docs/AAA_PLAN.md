@@ -179,13 +179,23 @@ User direction 2026-11-13: make the language more interesting, engaging and user
 - [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
 
 ### Follow-ups found while verifying
-- [ ] **Capture history.** The first capture after a camera jump still carries a little of the previous pose: ~6k px of foam round the hull, amplified by TRAA, AO and eye adaptation. `resetDeterministic` does not clear it, and re-centring the wake before the reset did not either. Tests that compare two captures discard one, or reset before each.
+- [x] **Capture history.** Four causes, each measured with repeated reset-and-capture pairs and fixed:
+  - **TRAA restart frame.** The resolve reprojected through motion vectors still describing the previous pose. Fixed: a restart frame now resolves to itself.
+  - **Wave field at the rewound time.** A reset rewound the clock but left the GPU wave field at the old time, so the hull's first settle step floated on the previous shot's sea. Fixed: the reset recomputes the field first.
+  - **One node frame per harness frame.** three advances its node frame only on its own rAF tick, so two harness steps in one tick shared a scene pass. At Low, captures of the same reset differed across every edge. Fixed: each harness step and capture starts its own node frame.
+  - **New capture target.** The first render into a fresh capture target changed the frames after it. Fixed: the reset draws one throwaway frame into it.
+
+  Repeated captures are now byte-identical at High and Low, including the first after boot. One residue: after the ship has sailed under live control, the first reset's capture differs by about 90 bytes on two distant floats; not yet traced.
 - [ ] **WebGL fallback compile cost.** Under the harness the WebGL path is ready at ~114 s and each full compile takes ~80 s (synchronous GLSL programs, the whole scene). A tier change there still takes over 90 s, inside the drain's own compile, so the WebGL Low budget test times out. Needs a lighter content set for WebGL, not a faster wait.
 - [ ] **Boot compile cost of the lighting pass.** One run at High: ready 17.3 s → 21.8 s (the light set is part of every lit material's shader). Re-measure on a quiet GPU before deciding.
 - [ ] **three's async pipeline error scope.** `WebGPUPipelineUtils` pops its validation scope only after awaiting the pipeline, so any unrelated validation error in between is reported against that pipeline and marks it failed. That is how a render pass ended twice surfaced as "Async render pipeline creation failed". Worth an upstream issue.
 - [ ] **Wave cascade count is fixed at boot.** A tier change rescales the FFT but keeps the boot tier's cascades.
-- [ ] **Whitecap coverage** (`foam.spec`, visual project) measures 0.11 % at one wind speed against a 0.23 % floor (a third of Monahan's prediction); same figure before and after the verification fixes. Recheck after the foam lighting changes, with the visual rebaseline.
-- [ ] Failing on `main` as well, so not regressions of this branch: the spectrum's directional-spread bound (0.642 against 0.62), bloom on Low, the output transform's dither determinism, and the bird test's first half (birds change 56 px on `main` and 29 px here against an 80 px floor).
+- [x] **Whitecap coverage.** Re-measured, it was low at every wind speed, not only 9 m/s. The deposit rate is recalibrated: 0.86x, 0.47x, 1.22x, 0.56x and 0.37x Monahan at 6, 9, 15, 21 and 24 m/s, against 49x of the law's 38x range. At that rate, saturated foam drew as flat white discs, so open-water foam now thresholds a two-scale bubble-cell field rather than mixing to white: thin foam is the cell rims, dense foam fills in from the rims, and fresh foam still shows its cells.
+- [ ] **Sky streaks toward the sun.** In `island-approach` and `waterline`, thin radial lines cross the upper-left sky and the cloud edges are hatched. They are likely the fog march's crepuscular shafts sampling a cloud shadow too fine for 24 steps. Not traced.
+- [x] Failing on `main` as well, now fixed:
+  - **Spectrum bound.** The spectrum was right and the bound wrong: on the diagonal wind, a uniform spectrum scores 0.653 on the ripple tile's grid. The test now compares against that.
+  - **Bloom on Low and the dither.** Both were capture history (above).
+  - **Bird test.** It aimed at a patch of sky the reworked flock rarely crosses; re-aimed, it measures ~600 px.
 - [ ] Storm palette reads grey-green; a daytime storm shows a horizon line; the moon's path on the water is broad; clouds are not lit by lightning.
 
 ### F. Verification
