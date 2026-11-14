@@ -138,8 +138,8 @@ GPUs and only the browser knows which one it bound.
 | Driver | 32.0.16.1062 — OS-reported, for provenance only |
 | Also present | AMD Radeon(TM) Graphics (integrated); not the adapter Chrome selected |
 | CPU | AMD Ryzen 7 9800X3D, 16 threads |
-| OS | Windows 11 Pro 10.0.26200 |
-| Browser | Chrome 150.0.7871.187, headed, focused, driven by Playwright 1.62.1 |
+| OS | Windows 11 Pro 10.0.26300 |
+| Browser | Chrome 157.0.8103.51, headed, focused, driven by Playwright 1.62.1 |
 | Resolution | 1600 × 900 @ DPR 1 |
 
 ## Budgets
@@ -160,7 +160,59 @@ has already been burned once by treating the second as if it were the first.
 
 ## Results
 
-**Re-measured 2026-08-05, after the wave transform was folded into one atlas.**
+**Re-measured 2026-11-14, on the AAA pass.** Full matrix in
+`bench-results/bench-2026-11-14T08-47-41-374Z.json`. All nine configurations
+pass, both gates and the Low boot budget included. The underwater view and a
+CPU-throttled WebGL Low (`webgl-low-cpu`, 4x) are new rows.
+
+| Configuration | GPU p50 (2026-08-05) | now | p99 | delivered | TTFF | peak memory | Verdict |
+|---|---|---|---|---|---|---|---|
+| WebGPU · Low | 0.79 | 2.08 | 2.58 | 208 | 10.2 s | 207 MiB | PASS |
+| WebGPU · Medium | 5.25 | 4.18 | 4.36 | 122 | 10.6 s | 262 MiB | PASS |
+| **WebGPU · High** | **8.07** | **7.11** | **7.17** | **92** | 10.7 s | 402 MiB | **PASS** (16.7) |
+| WebGPU · High, underwater | — | 13.94 | 14.11 | 60 | 10.6 s | 402 MiB | PASS |
+| WebGPU · Ultra | 12.90 | 11.93 | 12.06 | 63 | 11.3 s | 409 MiB | PASS |
+| WebGPU · Max | 13.55 | 12.57 | 12.72 | 60 | 11.5 s | 510 MiB | PASS |
+| **WebGL2 · Low** | **7.59** | **5.14** | **7.00** | **213** | **6.3 s** | **210 MiB** | **PASS** (33.3; 15 s; 256 MiB) |
+| **WebGL2 · Low, CPU 4x** | — | **14.65** | **18.02** | **54** | **9.0 s** | **210 MiB** | **PASS** |
+| WebGL2 · High | 21.85 | 22.43 | 24.86 | 244 | 7.7 s | 354 MiB | PASS |
+
+Low WebGPU rose from 0.79 to 2.08 ms. This pass gave Low content it did not
+have, the procedural reef among it (`reefLife: 0.3`), and the rise has not
+been attributed further. It is still the cheapest row by a factor of two, and
+every other WebGPU tier got cheaper.
+
+**The WebGL2 boot was the finding of this run.** Its first frame had gone from
+7.9 s on main to 65 s here. Program by program with `KHR_parallel_shader_compile`
+disabled, the fallback linked 112 programs for 90 s of FXC time, and 66 of
+them were the same reef-life shader. Three causes, all fixed:
+
+- **The instance count was in the shader.** r185 puts an `InstancedMesh`'s
+  matrices in a `mat4[count]` uniform block when they fit, so each distinct
+  count is a new program. The fallback now reports no uniform-block space and
+  takes three's instanced-attribute path (`installWebGLFixes`).
+- **So was a node id.** `CSMShadowNode` rebuilt its graph for every material,
+  and GLSL names the cascade array `NodeBuffer_<id>`. The graph is now built
+  once and shared (`SunShadows`).
+- **Programs linked one at a time.** The fallback skipped the asynchronous
+  pipeline path, so `compileAsync` awaited each link and the first live frame
+  linked what the prewarm missed, serially. With the WebGPU path enabled, the
+  prewarm went from ~12.5 s to ~1.5 s on ANGLE's worker pool.
+
+Together: 86 programs and 29 s of link work, all of it in parallel. First
+frame 65 s → 6.3 s, fully ready 35 s → 7.1 s, with no frame over 100 ms in
+the 25 s after.
+
+The boot budget now gates **bytes**, not resource counts; see `LOW_BOOT_BUDGET`
+in the script for the reasoning. This branch peaks at 210 MiB at WebGL2 Low.
+Main peaks at 452 MiB, 425 MiB of it textures. The likely source of the
+difference is that this branch ships the hero models as KTX2 where main
+decodes JPEGs (the dressing is KTX2 on both, see Memory); it has not been
+measured separately. The count gate (100 textures) had never actually
+run: the harness never passed the boot measurements to the verdict, and its
+observer stopped before the content's first draw. Both are fixed.
+
+### 2026-08-05, after the wave transform was folded into one atlas
 Full matrix in `bench-results/bench-2026-08-05T18-34-24-131Z.json`. All seven
 configurations pass; both gates pass.
 
@@ -336,6 +388,7 @@ Each `configurations[]` entry carries:
 | `cpuFrameMs`, `gpuFrameMs` | `{samples, min, p50, p90, p95, p99, max, mean}` |
 | `fps` | delivered p50, and the rates implied by GPU p50 and CPU p50 |
 | `render`, `memory` | `renderer.info.render` and `renderer.info.memory` snapshots |
+| `boot` | time to first frame, and peak renderer memory from page load to the end of the settle: `geometries`, `textures`, `bytes` (`info.memory.total`), `textureBytes` |
 | `sceneContent` | whether the ship loaded, and which binaries the harness served |
 | `budget`, `verdict`, `reasons`, `consoleErrors` | the judgement and its evidence |
 
