@@ -88,17 +88,17 @@ together, so switching reads as a different *place*, not a colour filter.
 | Under way | Underwater |
 |---|---|
 | ![Boat](docs/images/boat.png) | ![Underwater](docs/images/underwater.png) |
-| Chase camera at ~8 m/s: Kelvin wake, bow wave, hull in wave contact | Snell's window overhead, the hull's silhouette and its shadow in the shafts |
+| From a camera boat off the bow at ~8 m/s: bow wave, spray, the wake off the quarter | Snell's window overhead, the sun in it, and the hull's silhouette beside it |
 
 | Storm | Moonlit |
 |---|---|
 | ![Storm](docs/images/storm.png) | ![Moonlit](docs/images/moonlit.png) |
-| 21 m/s, overcast attenuating the key light, rain on the lens | Sun below the horizon: moon glitter, star field, long swell |
+| 21 m/s from the waterline, overcast attenuating the key light, rain on the lens | Sun below the horizon: the hull in the moon's glitter, long swell |
 
 | Sunset | Wave detail |
 |---|---|
 | ![Sunset](docs/images/sunset.png) | ![Waves](docs/images/waves.png) |
-| Anisotropic glitter stretching down the sun's track | Whitecaps where the surface genuinely folds, at 15 m/s |
+| The ship rim-lit beside the sun, the island's flank behind it, glitter down the sun's track | Whitecaps where the surface genuinely folds, at 15 m/s |
 
 | Clear day | The night watch |
 |---|---|
