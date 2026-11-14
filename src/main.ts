@@ -1477,10 +1477,13 @@ class App {
    * for a handful of programs the prewarm did not build, and leaves those
    * objects out until they link (`installAsyncPipelines`) — on the measured
    * Low boot, the ocean itself among them, for about a second. This waits for
-   * the first frame and then for those builds. It stops waiting if a compile
-   * takes over, because the content compile pauses the loop and counts its own
-   * builds, and after `timeoutMs` in any case: a late overlay is worse than a
-   * brief hole.
+   * the first frame and then for every counted build, the content compile's
+   * included: that compile holds the loop, so lifting the overlay during it
+   * would show a frozen frame with holes in it, and on WebGL it lands within
+   * about a second of the first frame (fully ready 7.1 s at Low). Capped at
+   * `timeoutMs`, because a late overlay is worse than a brief hole, and
+   * because the backend polls each link once per animation frame, so a hidden
+   * tab drains nothing until it is shown again.
    *
    * WebGPU compiles for the scene pass itself, so its first frame is already
    * whole and the overlay lifts as it always did.
@@ -1492,7 +1495,7 @@ class App {
       new Promise((resolve) => requestAnimationFrame(() => resolve()));
     const waiting = (): boolean => !this.disposed && performance.now() < deadline;
     while (this.loop.stats.frameMs === 0 && waiting()) await nextFrame();
-    while (this.pendingPipelines > 0 && this.compilesInFlight === 0 && waiting()) await nextFrame();
+    while (this.pendingPipelines > 0 && waiting()) await nextFrame();
   }
 
   /**
