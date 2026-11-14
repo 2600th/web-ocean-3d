@@ -3556,6 +3556,25 @@ class App {
     // Idempotent, and the tour has already done it before its own capture — this
     // covers the free-camera path, where the coverage comes from the UI.
     this.atmosphere.setCloudCoverage(this.clouds.getParams().coverage);
+    // And take the capture any of that forced, here rather than at the next
+    // preset change.
+    //
+    // A coverage change, a structural sky change and `resetClock` all force the
+    // next environment capture, and outside the tour nothing ever asked for one
+    // until the viewer picked another preset. So the cloud slider never reached
+    // the reflections or the ambient light, and a preset that sets its own
+    // coverage was lit by the cube captured under the previous one: `setState`
+    // applies the preset first, captures, and only then sets the coverage. That
+    // made the first capture of a test session differ from every later one by
+    // 41k bytes around the floating barrels, because each later shot's preset
+    // re-capture finally caught up.
+    //
+    // Forced captures only: the light's own bearing keeps its throttle, and
+    // the tour, whose weather changes the sky every frame, keeps its
+    // elevation-gated refresh (`refreshTourEnvironment`).
+    if (this.state.cameraMode !== 'cinematic' && this.atmosphere.environmentForced) {
+      this.atmosphere.updateEnvironment(this.renderer, this.scene);
+    }
     // From the *scene* camera, so the planar reflector's mirrored camera cannot
     // take the haze off the reflected island.
     this.aerial.setEyeHeight(this.camera.position.y);
