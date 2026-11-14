@@ -87,12 +87,17 @@ test.describe('directional spreading', () => {
     expect(swellAxis).toBeGreaterThan(chopAxis + 0.05);
     expect(chopAxis).toBeGreaterThan(rippleAxis + 0.05);
 
+    // Measured against a uniform sea on the same grid, not against 2/pi. The
+    // ripple band starts five texels from the centre of a 16 m tile, so its
+    // headings are quantised, and on the diagonal wind the default uses a
+    // uniform spectrum scores 0.653 there, above the continuous 0.637. A fixed
+    // bound under 2/pi failed a correct spectrum for that reason alone.
+    const uniform = (cascade: number) => directionality({ ...DEFAULT_SPECTRUM, standingWaveRatio: 1 }, cascade);
+
     // The swell still knows where the wind is...
-    expect(swellAxis).toBeGreaterThan(0.75);
-    // ...and the ripples have very nearly forgotten. 2/pi ~= 0.637 is the
-    // uniform value; the bound sits just under it because the back lobe and the
-    // band edges both pull the measured figure around a little.
-    expect(rippleAxis).toBeLessThan(0.62);
+    expect(swellAxis).toBeGreaterThan(uniform(0) + 0.15);
+    // ...and the ripples have very nearly forgotten.
+    expect(rippleAxis).toBeLessThan(uniform(2) + 0.01);
   });
 
   /**

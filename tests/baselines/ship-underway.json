@@ -1,0 +1,45 @@
+{
+  "shot": "ship-underway",
+  "capturedAt": "2026-11-14T12:13:46.618Z",
+  "width": 1280,
+  "height": 720,
+  "definition": {
+    "state": {
+      "quality": "high",
+      "cameraMode": "boat",
+      "windSpeed": 13,
+      "peakWavelength": 40,
+      "cloudCoverage": 0.4,
+      "preset": "seaOfThieves"
+    },
+    "camera": {
+      "position": [
+        30,
+        4,
+        -38
+      ],
+      "target": [
+        -16.2,
+        13.5,
+        50.2
+      ],
+      "frame": "ship"
+    },
+    "lens": 38,
+    "time": 55.5,
+    "settleSteps": 480,
+    "shipInput": {
+      "throttle": 1,
+      "rudder": 0
+    }
+  },
+  "stack": {
+    "backend": "webgpu",
+    "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5090 (0x00002B85) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "adapter": "nvidia/blackwell",
+    "browser": "Chrome/151.0.7922.34",
+    "width": 1280,
+    "height": 720,
+    "devicePixelRatio": 1
+  }
+}

@@ -5,6 +5,7 @@ import {
   float,
   materialColor,
   mix,
+  normalWorld,
   positionGeometry,
   positionLocal,
   positionWorld,
@@ -103,6 +104,12 @@ export interface GroundShadingInputs {
  */
 export const TRANSLUCENCY_POWER = 4;
 export const TRANSLUCENCY_GAIN = 0.55;
+/**
+ * Fraction of the light on a leaf's far face that its near face passes on.
+ * Broadleaf transmittance runs about 0.2-0.4 in the visible green; this is the
+ * low end, because the lobe above already carries the view-aligned part.
+ */
+export const LEAF_DIFFUSE_TRANSMITTANCE = 0.22;
 
 /**
  * Sway shared by the near trees and the distant canopy cards.
@@ -115,15 +122,13 @@ export const TRANSLUCENCY_GAIN = 0.55;
  * a viewer walking up the beach watched the far forest breathe and the palms in
  * front of them stand perfectly still.
  *
- * The wavelength, speed and amplitude below are `Canopy`'s, deliberately, and
- * `Imposters` uses them too. There are real handovers now — a plant becomes a
- * card at 60 m if it is understorey and 120 m if it is a tree, and the canopy
- * field fades in over 90-180 m behind both — so the shared constants have
- * stopped being a hedge against a future fade and started doing their job.
+ * The wavelength, speed and amplitude below are `Canopy`'s, deliberately: the
+ * canopy card field fades in over 90-180 m behind the planted trees, and the
+ * shared constants are what keep that handover from changing how the forest
+ * moves.
  *
  * They do **not** share a phase, and no comment elsewhere should claim they do.
- * `Canopy` adds a per-instance offset from its card seed and `Imposters` adds
- * one from its yaw; a mesh has no equivalent constant available in the vertex
+ * `Canopy` adds a per-instance offset from its card seed; a mesh has no equivalent constant available in the vertex
  * stage without new plumbing — `positionGeometry` varies across the tree and
  * `positionLocal` is post-instancing. What survives a handover is an amplitude
  * and frequency match, not a continuous phase: a plant swapping to a card keeps
@@ -335,6 +340,9 @@ export function applyGroundShadingTo(
     // loader produces is one; anything else is left alone rather than silently
     // skipped in a way that looks like it worked.
     if ((material as THREE.NodeMaterial).isNodeMaterial !== true) continue;
+    // Light sources and translucent effects (fire, smoke) opt out: contact
+    // shade and cloud shadow on something that glows reads as a dirty lamp.
+    if (material.userData.noGroundShading === true) continue;
     const node = material as THREE.NodeMaterial;
     applyGroundShading(node, inputs);
     if (use.all && inputs.foliage) {
@@ -375,9 +383,18 @@ function applyLeafTranslucency(
       .clamp(0, 1)
       .pow(TRANSLUCENCY_POWER)
       .toVar('ltBack');
+    // And the diffuse half: light arriving on the leaf's far face comes through
+    // it whatever the viewing angle. Without this a frond lit from the other
+    // side was lit by the sky alone — one face of the foliage was never lit by
+    // the sun at all. `normalWorld` faces the viewer on a double-sided leaf, so
+    // a negative dot with the key means the key is behind the leaf. See
+    // `lighting/Translucency` for the form; the key colour is normalised to a
+    // noon sun of 1, hence the 3.4 / pi.
+    const far = normalWorld.dot(vec3(foliage.sunDirection)).negate().max(0);
+    const diffuse = far.mul(LEAF_DIFFUSE_TRANSMITTANCE * (3.4 / Math.PI));
     return vec3(materialColor)
       .mul(vec3(foliage.sunColor))
-      .mul(back.mul(TRANSLUCENCY_GAIN))
+      .mul(back.mul(TRANSLUCENCY_GAIN).add(diffuse))
       .mul(inputs.keyShadow(wp));
   })();
 

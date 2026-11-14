@@ -161,6 +161,36 @@ const ABSORPTION_REACH = 0.5;
 /** Clock wrap, seconds. */
 const CLOCK_WRAP = 3600;
 
+/**
+ * Fraction of the view extinction applied to sunlight on its way *down* to a
+ * submerged surface. See `uDownwell`.
+ */
+const DOWNWELL_SCALE = 0.55;
+
+/** Fraction of the achromatic (scattering) floor that downwelling still loses. */
+const DOWNWELL_SCATTER = 0.25;
+
+/**
+ * The water column's brightness by view elevation, as multipliers on the medium
+ * colour: looking straight down into the deep, horizontally, and straight up at
+ * the lit surface. A diver's whole sense of up and down in open water comes from
+ * this gradient — the medium was one flat colour in every direction, which is
+ * why the empty water read as fog rather than as depth.
+ */
+const MEDIUM_BELOW = 0.42;
+const MEDIUM_LEVEL = 0.95;
+const MEDIUM_ABOVE = 1.75;
+
+/** Forward-scatter lobe around the refracted sun: asymmetry and strength. */
+const SUN_LOBE_G = 0.72;
+const SUN_LOBE_GAIN = 0.05;
+
+/** Darkening at the frame corners when submerged. */
+const VIGNETTE = 0.22;
+
+/** Chroma boost on the in-scattered medium colour. */
+const MEDIUM_SATURATION = 1.3;
+
 export class UnderwaterPass {
   private readonly params: UnderwaterParams;
 
@@ -200,6 +230,18 @@ export class UnderwaterPass {
   /** Total extinction per metre per channel: absorption + the visibility floor. */
   private readonly uSigma = uniform(new THREE.Vector3(0.2, 0.09, 0.08));
   /**
+   * Extinction of the sunlight on its way down to a surface, per metre of that
+   * surface's depth below the sea.
+   *
+   * The scene is lit as though every surface were at the top of the column: the
+   * sand at seventeen metres received the same warm sun the beach did, and the
+   * only thing that made it read as deep was the view path's fog — so a reef
+   * seen from a metre away at depth was the colour of a reef in a rock pool.
+   * Applying the column above each pixel's own world position is what makes a
+   * deep reef blue and a shallow one gold, independently of where the eye is.
+   */
+  private readonly uDownwell = uniform(new THREE.Vector3(0.1, 0.05, 0.04));
+  /**
    * Brightness of light scattered back out of the medium toward the viewer.
    *
    * 0.36, down from 0.95 and then from 0.55. The inscatter term replaces the
@@ -227,6 +269,11 @@ export class UnderwaterPass {
   private readonly uSteps: any = uniform(24, 'int');
   private readonly uInvSteps = uniform(1 / 24);
   private readonly uSunColor = uniform(new THREE.Color(DEFAULT_UNDERWATER_PARAMS.sunColor));
+  /** Caustic intensity below which no shaft forms, and the gain on the rest. */
+  private readonly uShaftFloor = uniform(0.9);
+  private readonly uShaftGain = uniform(3);
+  /** Mips coarser than the march's own at which the field's local mean is read. */
+  private readonly uShaftMeanLod = uniform(7);
   /** How far along the view ray shafts are integrated, metres. */
   private readonly uShaftRange = uniform(90);
   /**
@@ -621,9 +668,48 @@ export class UnderwaterPass {
         // How much daylight is left at the camera's own depth. Drives both the
         // inscatter brightness and the shaft brightness, so diving gets darker.
         const daylight = exp(this.uSigma.mul(this.uCameraDepth.mul(-0.55))).toVar('uwDay');
-        const medium = this.uWaterColor.mul(this.uAmbient).mul(daylight).toVar('uwMedium');
 
-        const fogged = warped.rgb.mul(transmit).add(medium.mul(transmit.oneMinus())).toVar('uwFog');
+        // The medium by direction. See `MEDIUM_ABOVE`: brighter toward the lit
+        // surface, darker into the deep, and a forward-scatter glow around where
+        // the sun is after refraction — the bright patch a diver sees overhead
+        // and to the sun's side, which is the one thing that tells them which way
+        // is up without looking for the surface.
+        const elevation = worldRay.y.toVar('uwElev');
+        const gradient = mix(
+          mix(float(MEDIUM_BELOW), float(MEDIUM_LEVEL), elevation.smoothstep(-0.85, 0)),
+          float(MEDIUM_ABOVE),
+          elevation.smoothstep(0, 0.95),
+        ).toVar('uwGrad');
+        // Snell's law on the sun's horizontal component, then renormalised.
+        const sunH = this.uSunUp.xz.mul(1 / 1.333).toVar('uwSunH');
+        const sunUnder = vec3(sunH.x, float(1).sub(sunH.dot(sunH)).max(0).sqrt(), sunH.y).toVar('uwSunDir');
+        const cosSun = worldRay.dot(sunUnder).toVar('uwCosSun');
+        const g = SUN_LOBE_G;
+        const lobe = float((1 - g * g) / (4 * Math.PI))
+          .div(float(1 + g * g).sub(cosSun.mul(2 * g)).max(1e-3).pow(1.5))
+          .mul(this.uSunUp.y.smoothstep(-0.02, 0.15))
+          .toVar('uwLobe');
+        const mediumRaw = this.uWaterColor
+          .mul(this.uAmbient)
+          .mul(gradient)
+          .add((this.uSunColor as any).mul(mix(this.uWaterColor.mul(2.2), vec3(1, 1, 1), 0.2)).mul(lobe.mul(SUN_LOBE_GAIN)))
+          .mul(daylight)
+          .toVar('uwMediumRaw');
+        // A little more chroma than the product gives: the medium is the colour
+        // of most of the frame, and the grade downstream desaturates it again.
+        const medium = mix(vec3(luminance(mediumRaw)), mediumRaw, MEDIUM_SATURATION).max(0).toVar('uwMedium');
+
+        // Sunlight that reached the surface this pixel shows came down through
+        // the column above it — see `uDownwell`. Where the view ray found the sky
+        // or anything above the sea, the depth is zero and nothing changes.
+        const hitY = this.uCameraPos.y.add(worldRay.y.mul(warpedDist.min(2000))).toVar('uwHitY');
+        const downwell = exp(this.uDownwell.mul(this.uSeaLevel.sub(hitY).max(0).negate())).toVar('uwDown');
+
+        const fogged = warped.rgb
+          .mul(downwell)
+          .mul(transmit)
+          .add(medium.mul(transmit.oneMinus()))
+          .toVar('uwFog');
 
         // The rim. Tinted by the medium rather than added as white, because what
         // is bright at a meniscus is the water itself catching the light above
@@ -746,7 +832,24 @@ export class UnderwaterPass {
             // surface down to the sample, so this is the light *arriving* here.
             // What it does not know is how much survives the trip back to the
             // eye, which is the second term.
-            const arriving = caustics(p, shaftLod).mul(submerged).toVar('uwArriving');
+            //
+            // Only the field's *excess over its own local mean* scatters into a
+            // shaft. Integrated whole, the mean put a uniform grey veil over
+            // every submerged frame — tens of metres of average brightness,
+            // against which the streaks were a few percent of modulation — and
+            // that veil was most of what made the water read as fog rather than
+            // as blue. The local mean is the same field several mips coarser, so
+            // the term follows the field's own depth fade with no constant to
+            // keep in step with it. The diffuse in-scatter the mean stood for is
+            // the medium's job, and the medium now has a direction-dependent one.
+            const shaftLocal = caustics(p, shaftLod).toVar('uwShaftC');
+            const mean = caustics(p, shaftLod.add(this.uShaftMeanLod)).toVar('uwShaftMean');
+            const arriving = shaftLocal
+              .sub(mean.mul(this.uShaftFloor))
+              .max(0)
+              .mul(this.uShaftGain)
+              .mul(submerged)
+              .toVar('uwArriving');
 
             // What is between this sample and the sun.
             //
@@ -826,7 +929,12 @@ export class UnderwaterPass {
         const grey = vec3(luminance(lit));
         const flat = mix(lit, grey, this.uDesaturate);
         const lifted = mix(flat, medium.mul(1.2), this.uContrastLoss);
-        const tinted = lifted.mul(this.uTint);
+        // A mask's worth of vignette, only while the eye itself is under: the
+        // frame edge darkening is what a lens behind a port or a mask does, and
+        // it pulls the eye to the lit middle of the frame where the reef is.
+        const corner = suv.sub(0.5).mul(1.4).toVar('uwCorner');
+        const vignette = mix(float(1), float(1 - VIGNETTE).max(float(1).sub(corner.dot(corner).mul(VIGNETTE))), eyeUnder);
+        const tinted = lifted.mul(this.uTint).mul(vignette);
 
         outRgb.assign(mix(src.rgb, tinted, pixelSubmersion));
       });
@@ -967,20 +1075,48 @@ export class UnderwaterPass {
     // range from 9 m to 16 m and green's from 21 to 32, which is much closer to
     // what the preset says it wants. The far field is unaffected: past a couple
     // of visibility lengths the achromatic floor was always what closed it.
+    //
+    // And the floor is now what `visibility` says it is: the range of the
+    // *clearest* channel. Only the excess absorption of each channel over the
+    // clearest one is added on top, so `skyPro`'s 62 m is 62 m of blue rather
+    // than 62 m minus whatever blue's own absorption took — which had been
+    // quietly taking a third of it, and is the difference between a reef that
+    // reads at fifteen metres and one that is a silhouette at ten. Red still
+    // goes first by the same margin, which is all the hue behaviour needs.
     const floorSigma = LN10 / Math.max(1, p.visibility);
+    const ex = p.extinction;
+    const clearest = Math.max(0, Math.min(ex.x, ex.y, ex.z));
     this.uSigma.value.set(
-      Math.max(0, p.extinction.x) * ABSORPTION_REACH + floorSigma,
-      Math.max(0, p.extinction.y) * ABSORPTION_REACH + floorSigma,
-      Math.max(0, p.extinction.z) * ABSORPTION_REACH + floorSigma,
+      (Math.max(0, ex.x) - clearest) * ABSORPTION_REACH + floorSigma,
+      (Math.max(0, ex.y) - clearest) * ABSORPTION_REACH + floorSigma,
+      (Math.max(0, ex.z) - clearest) * ABSORPTION_REACH + floorSigma,
+    );
+    // Sunlight reaching a submerged surface has come down through the column
+    // above it, so its colour is the colour of that depth. Weaker than the view
+    // path's extinction because the light arriving at a reef is mostly diffuse
+    // downwelling from a wide cone, not one straight ray. And the achromatic
+    // floor is mostly scattering, which turns light aside rather than removing
+    // it: what one ray loses the cone around it largely regains, so the floor
+    // dims downwelling far less than it dims a line of sight.
+    const scatterKept = floorSigma * DOWNWELL_SCATTER;
+    (this.uDownwell.value as THREE.Vector3).set(
+      (this.uSigma.value.x - floorSigma) * DOWNWELL_SCALE + scatterKept,
+      (this.uSigma.value.y - floorSigma) * DOWNWELL_SCALE + scatterKept,
+      (this.uSigma.value.z - floorSigma) * DOWNWELL_SCALE + scatterKept,
     );
 
     const depth = Math.max(0, p.cameraDepth);
     this.uCameraDepth.value = depth;
 
     // Grade strength ramps over the first ~40 m of descent and then holds.
+    //
+    // Lighter at the top of the range than it was. The downwelling term now does
+    // the depth-driven loss of colour physically, per pixel, so a grade that
+    // also desaturated the shallows was applying the same idea twice and taking
+    // the reef's colour away exactly where a diver is closest to it.
     const descent = Math.min(1, depth / 40);
-    this.uDesaturate.value = 0.14 + 0.3 * descent;
-    this.uContrastLoss.value = 0.08 + 0.24 * descent;
+    this.uDesaturate.value = 0.05 + 0.3 * descent;
+    this.uContrastLoss.value = 0.03 + 0.2 * descent;
 
     const steps = Math.max(0, Math.min(MAX_GODRAY_STEPS, Math.round(p.godRaySteps)));
     // steps === 0 is the Low tier: the march must cost nothing at all.

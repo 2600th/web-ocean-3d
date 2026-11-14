@@ -1,6 +1,6 @@
 {
   "shot": "clear-day-wide",
-  "capturedAt": "2026-08-08T22:19:34.278Z",
+  "capturedAt": "2026-11-14T12:13:02.713Z",
   "width": 1280,
   "height": 720,
   "definition": {
@@ -14,16 +14,17 @@
     },
     "camera": {
       "position": [
-        -42,
-        21,
-        63
+        -46,
+        4,
+        42
       ],
       "target": [
-        0,
-        3,
-        0
+        12.5,
+        7,
+        -39
       ]
     },
+    "lens": 38,
     "time": 12,
     "settleSteps": 90
   },

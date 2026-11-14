@@ -2,8 +2,17 @@
 
 export interface QualitySettings {
   /** Resolution of each FFT cascade (square). */
-  fftSize: 128 | 256 | 512;
-  /** Number of spectral cascades composited into the surface. */
+  fftSize: 64 | 128 | 256 | 512;
+  /**
+   * Number of spectral cascades composited into the surface, largest first
+   * (1024 m swell, 128 m sea, 16 m ripple).
+   *
+   * Every tier keeps all three and scales `fftSize` instead. Dropping cascades
+   * drops the *small* ones, which is the detail a viewer near the water sees:
+   * one 1024 m cascade at 128^2 is an 8 m texel, and Low rendered a glassy
+   * sheet whose sun glint came out in 8 m blocks. Three at 64^2 is fewer
+   * texels than that one was, and keeps ripples down to half a metre.
+   */
   cascades: 1 | 2 | 3;
   /**
    * Concentric rings in the radial ocean grid. The single strongest lever on
@@ -62,6 +71,23 @@ export interface QualitySettings {
    * cost worth taking to make tier changes unable to crash.
    */
   shadowMapSize: 512 | 1024 | 2048 | 4096;
+  /**
+   * Sun shadow cascades, and how far from the eye the last one reaches (metres).
+   *
+   * `shadowMapSize` is per cascade. The count is part of every lit material's
+   * shader, so it is taken from the tier the session *boots* on and a later tier
+   * change moves only the size and the distance — see `lighting/SunShadows`.
+   */
+  shadowCascades: 1 | 2 | 3 | 4;
+  shadowDistance: number;
+  /**
+   * Point lights for the camp fire, the jetty torches and lanterns, and the
+   * ship's stern lantern, at dusk and night. 0 creates none (the emissive meshes
+   * still glow); otherwise the number of lights the scene carries. Fixed at boot
+   * for the same reason as the cascade count: a light's existence is part of
+   * every lit material's shader, its intensity is not.
+   */
+  localLights: number;
   /**
    * Resolution per side of each of the wake's three RGBA16F targets.
    *
@@ -309,6 +335,23 @@ export interface QualitySettings {
    */
   kelp: number;
   /**
+   * Fraction of the procedural reef drawn — corals, sponges, fans, anemones,
+   * seagrass, rocks and shells (see `src/scene/ReefLife.ts`).
+   *
+   * Moves `InstancedMesh.count` per species and nothing else, so a tier change
+   * compiles nothing. Placement is shuffled, so any fraction thins every site
+   * evenly rather than deleting the far ones. Low keeps a sparse reef rather
+   * than none: it is static, cheap per triangle, and the thing that makes a
+   * dive anywhere worth taking.
+   */
+  reefLife: number;
+  /**
+   * Fraction of the procedural sea creatures — turtles, rays, jellyfish, reef
+   * fish clouds, crabs (see `src/scene/SeaCreatures.ts`). Zero at Low, for the
+   * same reason the fish are.
+   */
+  seaCreatures: number;
+  /**
    * Blades in the island's grass field.
    *
    * Instanced and placed on the GPU from the heightfield, so this is
@@ -334,11 +377,14 @@ export interface QualitySettings {
 
 export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
   low: {
-    fftSize: 128,
-    cascades: 1,
+    fftSize: 64,
+    cascades: 3,
     meshRings: 206,
     meshSegments: 119,
     shadowMapSize: 512,
+    shadowCascades: 1,
+    shadowDistance: 120,
+    localLights: 0,
     wakeResolution: 768,
     causticsResolution: 256,
     environmentResolution: 256,
@@ -364,15 +410,20 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 0,
     propsDetail: 0.3,
     kelp: 0,
+    reefLife: 0.3,
+    seaCreatures: 0,
     meadow: 0,
     canopy: 4000,
   },
   medium: {
     fftSize: 128,
-    cascades: 2,
+    cascades: 3,
     meshRings: 308,
     meshSegments: 179,
     shadowMapSize: 1024,
+    shadowCascades: 3,
+    shadowDistance: 200,
+    localLights: 4,
     wakeResolution: 768,
     causticsResolution: 512,
     environmentResolution: 256,
@@ -398,6 +449,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 0.75,
     propsDetail: 0.5,
     kelp: 800,
+    reefLife: 0.5,
+    seaCreatures: 0.5,
     meadow: 18000,
     canopy: 9000,
   },
@@ -407,6 +460,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 469,
     meshSegments: 275,
     shadowMapSize: 2048,
+    shadowCascades: 3,
+    shadowDistance: 300,
+    localLights: 4,
     wakeResolution: 1024,
     causticsResolution: 768,
     environmentResolution: 256,
@@ -430,6 +486,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     propsDetail: 0.75,
     kelp: 1800,
+    reefLife: 0.8,
+    seaCreatures: 0.8,
     meadow: 38000,
     canopy: 15000,
   },
@@ -439,6 +497,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meshRings: 613,
     meshSegments: 360,
     shadowMapSize: 2048,
+    shadowCascades: 3,
+    shadowDistance: 400,
+    localLights: 4,
     wakeResolution: 1024,
     causticsResolution: 768,
     environmentResolution: 256,
@@ -462,6 +523,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     propsDetail: 1,
     kelp: 2900,
+    reefLife: 1,
+    seaCreatures: 1,
     meadow: 62000,
     canopy: 20000,
   },
@@ -470,7 +533,12 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cascades: 3,
     meshRings: 817,
     meshSegments: 481,
-    shadowMapSize: 4096,
+    // Per cascade: four 2048 maps rather than one 4096 — the same memory, and
+    // the near cascade is twenty times denser than the old single box was.
+    shadowMapSize: 2048,
+    shadowCascades: 4,
+    shadowDistance: 500,
+    localLights: 4,
     wakeResolution: 1024,
     causticsResolution: 768,
     environmentResolution: 256,
@@ -494,6 +562,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     propsDetail: 1,
     kelp: 4000,
+    reefLife: 1,
+    seaCreatures: 1,
     meadow: 90000,
     canopy: 24000,
   },

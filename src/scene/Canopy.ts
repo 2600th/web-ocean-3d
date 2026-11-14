@@ -132,15 +132,17 @@ const FADE_IN_FAR = 180;
  */
 const CANOPY_MIN_HEIGHT = 6;
 const CANOPY_FULL_HEIGHT = 21;
-const CANOPY_FADE_HEIGHT = ISLAND.peak * 0.5;
-const CANOPY_MAX_HEIGHT = ISLAND.peak * 0.78;
+// Past the summit: the forest runs to the top, and bare rock is decided by
+// slope (see the presence term) rather than by a treeline contour.
+const CANOPY_FADE_HEIGHT = ISLAND.peak + 60;
+const CANOPY_MAX_HEIGHT = ISLAND.peak + 90;
 
 /** How far past the shore radius cards may sit, in island radii. */
 const ISLAND_REACH = 1.22;
 
 /** Canopy colours. Deliberately the same family as `Seafloor`'s ground biome. */
-const CANOPY_SUNLIT = new THREE.Color(0.062, 0.078, 0.036);
-const CANOPY_SHADE = new THREE.Color(0.026, 0.034, 0.02);
+const CANOPY_SUNLIT = new THREE.Color(0.06, 0.13, 0.03);
+const CANOPY_SHADE = new THREE.Color(0.016, 0.046, 0.016);
 /** The flowering accent, on a small fraction of cards. See `bloom` below. */
 const CANOPY_BLOOM = new THREE.Color(0.44, 0.1, 0.03);
 /**
@@ -150,7 +152,7 @@ const CANOPY_BLOOM = new THREE.Color(0.44, 0.1, 0.03);
  * different *stand* of the same forest, not a different biome, and pushing it
  * further turns the hillside patchy rather than varied.
  */
-const CANOPY_DRY = new THREE.Color(0.072, 0.07, 0.03);
+const CANOPY_DRY = new THREE.Color(0.1, 0.13, 0.03);
 
 /**
  * Feature width of the stand-variation field, metres, and how far it and the
@@ -482,7 +484,21 @@ export class IslandCanopy {
       const distance = toCamera.length();
       const handover = distance.smoothstep(FADE_IN_NEAR, FADE_IN_FAR);
 
-      const presence = band.mul(onIsland).mul(handover);
+      // Two terrain taps approximate the local slope normal. Used twice: no
+      // canopy on ground too steep to hold soil — that is where `Seafloor`
+      // paints rock — and below, to bias the dry stands onto sunny spurs.
+      const eastGround = this.groundHeight(
+        vec3n(foot.x.add(SLOPE_SAMPLE_METRES), 0, foot.y),
+      ) as Node;
+      const northGround = this.groundHeight(
+        vec3n(foot.x, 0, foot.y.add(SLOPE_SAMPLE_METRES)),
+      ) as Node;
+      const slopeNormal = normalize(
+        vec3n(ground.sub(eastGround), SLOPE_SAMPLE_METRES, ground.sub(northGround)),
+      ) as Node;
+      const holdsSoil = slopeNormal.y.smoothstep(0.8, 0.88);
+
+      const presence = band.mul(onIsland).mul(handover).mul(holdsSoil);
 
       const size = float(1)
         .sub(CARD_VARIATION)
@@ -536,7 +552,9 @@ export class IslandCanopy {
       // same seed the sway phase uses. `Props` plants twenty real ones; this is
       // what keeps them present in the mass rather than only where a mesh
       // happens to stand.
-      bloomMix.assign(seed.w.smoothstep(0.978, 0.998).mul(0.7));
+      // Flowering now comes from the flame trees and shrubs themselves; a red
+      // card in the far canopy read as a blob, not a tree in flower.
+      bloomMix.assign(float(0));
 
       // Stand tone: a broad field across the island, plus a per-crown offset.
       //
@@ -555,18 +573,9 @@ export class IslandCanopy {
         .mul(0.5)
         .add(0.5);
       const crown = fract(sin(seed.z.mul(127.1).add(seed.w.mul(311.7))).mul(43758.5453));
-      // Two terrain taps approximate the local slope normal. The aspect term is
-      // deliberately only a quarter of the stand tone: exposure should bias
-      // CANOPY_DRY toward sun-facing spurs, not turn every ridge into a stripe.
-      const eastGround = this.groundHeight(
-        vec3n(foot.x.add(SLOPE_SAMPLE_METRES), 0, foot.y),
-      ) as Node;
-      const northGround = this.groundHeight(
-        vec3n(foot.x, 0, foot.y.add(SLOPE_SAMPLE_METRES)),
-      ) as Node;
-      const slopeNormal = normalize(
-        vec3n(ground.sub(eastGround), SLOPE_SAMPLE_METRES, ground.sub(northGround)),
-      ) as Node;
+      // The aspect term is deliberately only a quarter of the stand tone:
+      // exposure should bias CANOPY_DRY toward sun-facing spurs, not turn every
+      // ridge into a stripe.
       const slopeExposure = slopeNormal.dot(this.uSunDir).clamp(0, 1);
       const organicStand = field.mul(STAND_FIELD_WEIGHT).add(crown.mul(STAND_INSTANCE_WEIGHT));
       stand.assign(

@@ -55,7 +55,20 @@ export interface Shot {
    * `update()`, so a camera moved after the world settled would be photographed
    * with another camera's atmosphere.
    */
-  camera: { position: Vec3; target: Vec3 } | null;
+  camera: { position: Vec3; target: Vec3; frame?: 'world' | 'ship' } | null;
+  // `frame: 'ship'` measures both points from the hull instead of the world:
+  // x metres ahead of it, y above sea level, z to starboard. Boat mode only. The
+  // camera is held there through the settle, riding along with the hull, which
+  // is how a ship under way is photographed from a camera boat.
+  /**
+   * Vertical field of view in degrees, or omitted for the app's 55.
+   *
+   * A shot is a photograph, and the lens is half of how one is composed. 55 is a
+   * play camera's lens: wide enough to steer by. A ship against an island at a
+   * kilometre wants something longer, which draws the background up behind the
+   * subject instead of shrinking it to a strip along the horizon.
+   */
+  lens?: number;
   /** Simulation time, in seconds, that the world is rewound to. */
   time: number;
   /** Steps of 1/60 s used to settle buoyancy, foam and the chase rig. */
@@ -115,9 +128,12 @@ export const SHOTS: readonly Shot[] = [
       cloudCoverage: 0.32,
       preset: 'skyPro',
     },
-    // Looking roughly up-sun (skyPro's sun is toward +X/-Z) so the glitter track
-    // runs through the frame instead of behind the camera.
-    camera: { position: [-42, 21, 63], target: [0, 3, 0] },
+    // Up-sun (skyPro's sun is toward +X/-Z), so the glitter track runs at the
+    // lens, and four metres up rather than twenty-one: from a masthead the hull
+    // is a plan view on a flat sheet; from the water it is a silhouette against
+    // the glare, standing on the right third with the track beside it.
+    camera: { position: [-46, 4, 42], target: [12.5, 7, -39] },
+    lens: 38,
     time: 12,
     settleSteps: 90,
   },
@@ -136,9 +152,12 @@ export const SHOTS: readonly Shot[] = [
       cloudCoverage: 0.32,
       preset: 'skyPro',
     },
-    // Away from the ship, cross-lit rather than up-sun, so the frame is water
-    // and only water: this shot must fail for wave reasons, not hull reasons.
-    camera: { position: [-46, 5, 44], target: [-64, 0, 26] },
+    // Away from the ship and from the island, cross-lit rather than up-sun, so
+    // the frame is water and only water: this shot must fail for wave reasons,
+    // not hull reasons. Two and a half metres up, so the near swell stands in
+    // the foreground and the horizon sits on the upper third.
+    camera: { position: [-46, 2.5, 44], target: [-16.5, -2.5, 71] },
+    lens: 45,
     time: 23.5,
     settleSteps: 90,
   },
@@ -157,8 +176,13 @@ export const SHOTS: readonly Shot[] = [
       cloudCoverage: 0.45,
       preset: 'sunset',
     },
-    // The sunset sun sits almost due -X, so the camera looks straight down it.
-    camera: { position: [58, 7, 9], target: [0, 4, 0] },
+    // The sunset sun sits almost due -X. The camera looks down it, but not
+    // *through the ship*: with the hull standing in the sun's disc the frame was
+    // one blown-out blot. Here the sun holds the left third and the ship the
+    // right, a silhouette with its rim lit, and the island's flank runs behind
+    // it. A 30-degree lens draws the low sun and the island up behind the hull.
+    camera: { position: [92, 3, 40], target: [-4.3, 11.6, 14.5] },
+    lens: 30,
     time: 31.25,
     settleSteps: 90,
   },
@@ -177,7 +201,11 @@ export const SHOTS: readonly Shot[] = [
       cloudCoverage: 0.95,
       preset: 'storm',
     },
-    camera: { position: [34, 15, 54], target: [0, 4, 0] },
+    // Low, off the starboard bow, with the hull on the left third and the sea
+    // filling the frame toward it. Fifteen metres up looked down on the storm;
+    // three metres up, the swell is level with the gunwale.
+    camera: { position: [34, 3, 30], target: [-24.8, 9.6, -50.6] },
+    lens: 48,
     time: 41,
     settleSteps: 90,
   },
@@ -223,6 +251,36 @@ export const SHOTS: readonly Shot[] = [
      * photographed.
      */
     camera: null,
+    time: 55.5,
+    shipInput: { throttle: 1, rudder: 0 },
+    settleSteps: 480,
+  },
+  {
+    id: 'ship-underway',
+    title: 'The ship under way',
+    purpose:
+      'The hull at speed seen from abeam, which the chase rig never shows: bow ' +
+      'wave and spray, the wake peeling off the quarter, sails and rigging ' +
+      'against the sky, and the lit side of the hull.',
+    state: {
+      quality: 'high',
+      cameraMode: 'boat',
+      windSpeed: 13,
+      peakWavelength: 40,
+      cloudCoverage: 0.4,
+      preset: 'seaOfThieves',
+    },
+    /**
+     * A camera boat off the port bow, riding along with the hull.
+     *
+     * The same run as `boat-chase` — full ahead for eight seconds — with the
+     * camera held thirty metres ahead and thirty-eight to port, four metres up,
+     * rather than astern. Port, because this preset's sun is forward of the
+     * port beam: from starboard the hull is in its own shadow. The ship holds
+     * the right third and sails into the open water on the left.
+     */
+    camera: { position: [30, 4, -38], target: [-16.2, 13.5, 50.2], frame: 'ship' },
+    lens: 38,
     time: 55.5,
     shipInput: { throttle: 1, rudder: 0 },
     settleSteps: 480,
@@ -276,9 +334,12 @@ export const SHOTS: readonly Shot[] = [
       cloudCoverage: 0.32,
       preset: 'skyPro',
     },
-    // Well clear of the 0.35 m surface band, angled up so the surface underside
-    // and the Snell window are both in frame.
-    camera: { position: [-16, -7, 16], target: [-6, 2, 2] },
+    // Twelve metres down, well clear of the 0.35 m surface band, looking up past
+    // the keel: the hull holds the upper third, the sun stands in the Snell
+    // window beside it, and the water darkens to blue below. A wide lens, since
+    // underwater is about being inside a volume.
+    camera: { position: [-14, -12, 12], target: [43.9, 17.7, -63.9] },
+    lens: 62,
     time: 72.5,
     settleSteps: 90,
   },
@@ -426,7 +487,7 @@ export const SHOTS: readonly Shot[] = [
     id: 'cinematic-reef',
     title: 'The tour, under the surface',
     purpose:
-      "What the cinematic flight's `reef-run` beat actually sees. The tour is " +
+      "What the cinematic tour's `reef-dive` shot actually sees. The tour is " +
       'the one camera a viewer does not steer, so a leg of it pointed at empty ' +
       'sand is a defect nobody can work around — and that is what it was, for ' +
       'the whole 26 s of it.',
@@ -451,27 +512,20 @@ export const SHOTS: readonly Shot[] = [
      */
     camera: null,
     time: 44,
-    // 53.5 s, and the precision is not fussiness — the window is genuinely that
-    // narrow. The beat crosses the reef patch at (-97, -102) at about 20 m/s, so
-    // the coral is at a useful size and inside the view cone for roughly two
-    // seconds of the lap. 52.5 has it 34 m off and small; 55 has already passed
-    // it and photographs open sand, which is the failure this shot exists to
-    // catch and has twice been captured *as* the evidence for.
-    //
-    // It also has to be lit, and on a 60-second lap that is a real constraint:
-    // the dive goes under at 03:57 and this is about the earliest the tour's
-    // dawn has the sun high enough to reach 11 m of water.
-    cinematicTime: 53.5,
+    // The middle of `reef-dive`, with the lens five metres over the coral at
+    // the patch the shot is built around (`DIVE_REEF` in `Cinematic`), at noon
+    // on the tour's day so the sun reaches the floor. If the shot moves, this
+    // moves with it.
+    cinematicTime: 25,
     settleSteps: 90,
   },
   {
     id: 'cinematic-landfall',
-    title: 'The tour, standing off the island',
+    title: 'The tour, along the beach',
     purpose:
-      "The `landfall` beat's middle key: the whole landmass in one frame from " +
-      '1.08 km, which is where the re-cut tour holds it. Headland, bay, canopy ' +
-      'band and bare summit together, at the range the billboard canopy and the ' +
-      'aerial perspective are both built to work at.',
+      "The `beach-flyover` shot at its middle: low over the shallows off the " +
+      "island's north-east face, looking along the coast past the cove to the " +
+      'treeline and the hill behind it. The closest the tour comes to the land.',
     state: {
       quality: 'high',
       cameraMode: 'cinematic',
@@ -482,7 +536,7 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 30,
-    cinematicTime: 26,
+    cinematicTime: 56,
     settleSteps: 90,
   },
   {
@@ -537,7 +591,19 @@ export const SHOTS: readonly Shot[] = [
      * island's centre about 10 to the right: the ship just overlapping the
      * island's near flank, with open water to its left.
      */
-    camera: { position: [64, 15, 89], target: [-214, 23, -198] },
+    /**
+     * Recomposed: eye height and a long lens.
+     *
+     * The first cut stood fifteen metres up with the app's 55-degree lens, which
+     * put the hull in the middle of the frame and shrank the island to a strip
+     * on the horizon. This one is three and a half metres off the water, 85 m
+     * off the starboard bow, with a 30-degree lens: the ship on the left third
+     * with the swell in front of it, and the island drawn up across the right
+     * two thirds behind it. The orbit clamp above does not bite, because the aim
+     * point is near the ship.
+     */
+    camera: { position: [80, 3.5, 30], target: [-5, 12.6, -21.8] },
+    lens: 30,
     time: 36,
     settleSteps: 90,
   },
@@ -560,20 +626,18 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 76,
-    // The rain envelope is centred on 40 s (`RAIN_CENTRE_SECONDS`) with a 9 s
+    // The rain envelope is centred on 76 s (`RAIN_CENTRE_SECONDS`) with an 8 s
     // half-width, so this sits exactly on the peak and the shot cannot be
     // quietly satisfied by a squall that arrives late.
-    cinematicTime: 40,
+    cinematicTime: 76,
     settleSteps: 90,
   },
   {
     id: 'cinematic-night',
     title: 'The tour, on the night watch',
     purpose:
-      'The night half of the `squall` beat, which absorbed the night watch when ' +
-      'the lap was re-cut to 60 s: moon glitter, the star field, and a hull lit ' +
-      'by nothing else. The whole night half of the atmosphere, which the ' +
-      "previous flight's 08:18-to-16:42 sun swing could not reach.",
+      "The `night-watch` shot at about 01:00 on the tour's day: moonlight, the " +
+      'star field, and a hull lit by nothing else, with the squall clearing.',
     state: {
       quality: 'high',
       cameraMode: 'cinematic',
@@ -584,7 +648,7 @@ export const SHOTS: readonly Shot[] = [
     },
     camera: null,
     time: 88,
-    cinematicTime: 44,
+    cinematicTime: 85,
     settleSteps: 90,
   },
 ] as const;
@@ -635,22 +699,24 @@ export interface NoiseFloor {
  * came from, and how sensitive the resulting gate is to a real change.
  */
 export const MEASURED_NOISE_FLOOR: Readonly<Record<string, NoiseFloor>> = {
-  // Re-measured 2026-08-04 against the post chain, on the stack recorded in
+  // Re-measured 2026-08-04 against the post chain, and on 2026-11-14 for the
+  // seven shots recomposed that day, on the stack recorded in
   // docs/VERIFICATION.md. Two of these rose by more than an order of magnitude
   // and that is a real cost, not a rounding change -- see the note below.
   'clear-day-wide': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
-  'near-water-detail': { meanDeltaE: 0.0265, p95DeltaE: 0.0000, fractionAbove: 0.00229 },
-  sunset: { meanDeltaE: 0.0337, p95DeltaE: 0.0000, fractionAbove: 0.00280 },
-  storm: { meanDeltaE: 0.5691, p95DeltaE: 3.2400, fractionAbove: 0.06169 },
+  'near-water-detail': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
+  sunset: { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
+  storm: { meanDeltaE: 0.8728, p95DeltaE: 4.2000, fractionAbove: 0.07119 },
   'boat-chase': { meanDeltaE: 0.3886, p95DeltaE: 1.1000, fractionAbove: 0.01437 },
+  'ship-underway': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
   waterline: { meanDeltaE: 0.0003, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
-  underwater: { meanDeltaE: 0.0210, p95DeltaE: 0.0000, fractionAbove: 0.00225 },
+  underwater: { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
   'island-approach': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
   'shore-break': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
   'reef-dive': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
   'cinematic-reef': { meanDeltaE: 0.0162, p95DeltaE: 0.0000, fractionAbove: 0.00213 },
   'cinematic-landfall': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
-  'ship-and-island': { meanDeltaE: 0.0069, p95DeltaE: 0.0000, fractionAbove: 0.00062 },
+  'ship-and-island': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
   'cinematic-squall': { meanDeltaE: 0.0072, p95DeltaE: 0.0000, fractionAbove: 0.00051 },
   'cinematic-night': { meanDeltaE: 0.0000, p95DeltaE: 0.0000, fractionAbove: 0.00000 },
 };

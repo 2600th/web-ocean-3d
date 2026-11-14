@@ -97,12 +97,47 @@ async function decodeImage(buffer) {
   };
 }
 
+/**
+ * Index of basisu's box filter in its resampler table, for `setMipFilter`.
+ *
+ * basisu builds mip chains with a Kaiser filter by default, which is softer
+ * than the 2x2 box three.js uses when it generates mips for an uncompressed
+ * texture on the GPU — measured on the ship's hull map, level 1 carried 11% less
+ * high-frequency energy than the GPU's own chain read back from the JPEG build.
+ * With the box filter the KTX2 levels match that chain (389 vs 391 at level 1,
+ * 449 vs 466 at level 2), so a hero model's mips look like the ones it had.
+ */
+const BASIS_MIP_FILTER_BOX = 0;
+
+/**
+ * The encoder package does not expose basisu's mip filter, so the worker reaches
+ * the encoder class it uses and has `setMipGen` — which the package always calls
+ * — apply the filter as well. The module is a singleton, so this is the same
+ * class `encodeToKTX2` instantiates.
+ */
+let mipFilterForNextEncode = null;
+async function installMipFilterHook() {
+  const loader = new URL('../basis/loadBasisNode.js', import.meta.resolve('babylonpress-ktx2-encoder'));
+  const { loadNodeBasisModule } = await import(loader.href);
+  const prototype = (await loadNodeBasisModule()).BasisEncoder.prototype;
+  const setMipGen = prototype.setMipGen;
+  prototype.setMipGen = function (generate) {
+    setMipGen.call(this, generate);
+    if (generate && mipFilterForNextEncode !== null) this.setMipFilter(mipFilterForNextEncode);
+  };
+}
+
 async function startKTX2Worker() {
   if (!parentPort) return;
+  await installMipFilterHook();
   parentPort.on('message', async (job) => {
     try {
+      const { mipFilter, ...options } = job.options;
+      // One job at a time per worker (the pool only hands an idle worker a job),
+      // so a module-level slot is not shared between concurrent encodes.
+      mipFilterForNextEncode = mipFilter === 'box' ? BASIS_MIP_FILTER_BOX : null;
       const encoded = await encodeToKTX2(new Uint8Array(job.image), {
-        ...job.options,
+        ...options,
         imageDecoder: decodeImage,
       });
       const data = new Uint8Array(encoded);
@@ -236,68 +271,10 @@ const PLATE_MIN_FOOTPRINT = 0.05;
  *    channel back to `OPAQUE`.
  */
 const ASSETS = [
-  // Trees are the worst case for a simplifier, and the reason is measurable
-  // rather than aesthetic. `error` is a fraction of the *mesh radius*, so on a
-  // 2.4 m canopy an error of 0.06 licenses 14 cm of deviation — and a leaf on
-  // these models is about 4 cm across. Every leaf therefore fits inside the
-  // error bound, the simplifier collapses whole leaves rather than simplifying
-  // them, and the first tree through this script came out with 2% of its canopy
-  // and the silhouette of a tree in February. The fix is not a higher ratio: it
-  // is an error bound smaller than a leaf. At 0.004 (about 1 cm) the collapses
-  // that delete leaves are refused and the ones that flatten a leaf's interior
-  // are allowed, so the canopy survives whatever ratio it is given.
-  //
-  // The ratio then buys canopy against frame time, and 0.04 is where that trade
-  // was settled: 116 trees stand on the island, so every thousand triangles of
-  // leaf is 116,000 triangles of scene. At 0.022/0.06 the canopy was 23k and
-  // the tree was bare; at 0.06/0.004 it was 64k and the island alone was seven
-  // million triangles; 0.04 is a full canopy for a little over four.
-  //
-  // The trunk has the opposite problem — one closed surface, no small features
-  // worth protecting — so it keeps the aggressive budget it always had. Hence
-  // `parts`: one file, two materials, two completely different jobs.
-  //
-  // `plate` is the other thing Poly Haven ships that a scene does not want.
-  // These are photogrammetry scans, and the scan includes the patch of ground
-  // the tree was standing on: a flat sheet welded under the trunk, which reads
-  // as a white dinner plate at the foot of every tree on the island.
-  { slug: 'pachira_aquatica_01', ratio: 0.15, error: 0.012, texture: 512 },
-  {
-    slug: 'island_tree_02',
-    ratio: 0.03,
-    error: 0.06,
-    texture: 512,
-    parts: [{ match: /_leaves$/, ratio: 0.04, error: 0.004 }],
-    plate: /^island_tree_02$/,
-    opaque: /_leaves$/,
-  },
-  // The jacaranda is the same problem at four times the size, and the size is
-  // what changes the arithmetic. `error` is a fraction of the mesh radius, so on
-  // an 11.8 m canopy the 1 cm tolerance the small trees need is 0.0008 — and at
-  // that tolerance the simplifier refuses almost everything and the model comes
-  // out at half a million triangles and 8.5 MB, for one background tree. What
-  // this canopy actually needs is a *ratio* bound rather than an error bound:
-  // it is the largest crown on the island and the only tree whose leaf clusters
-  // are big enough to survive being merged into each other. It is also the one
-  // tree here with no scanned ground plate under it.
-  {
-    slug: 'jacaranda_tree',
-    ratio: 0.008,
-    error: 0.08,
-    texture: 512,
-    parts: [{ match: /_leaves$/, ratio: 0.012, error: 0.006 }],
-    opaque: /_leaves$/,
-  },
-  { slug: 'fern_02', ratio: 0.35, error: 0.01, texture: 512 },
-  { slug: 'shrub_sorrel_01', ratio: 0.35, error: 0.01, texture: 512 },
-  // Ground cover is the highest instance count in the project — six hundred
-  // tufts on the island — so these are budgeted like the coral carpet is, by
-  // what the count multiplies out to rather than by how the tuft looks alone.
-  // Both also ship `alphaMode: BLEND` over a JPEG diffuse, which is the same
-  // spurious declaration the tree leaves carry: nothing to blend, and the whole
-  // kind pushed out of the opaque pass for it.
-  { slug: 'grass_medium_01', ratio: 0.12, error: 0.004, texture: 512, opaque: /^grass_medium/ },
-  { slug: 'grass_medium_02', ratio: 0.2, error: 0.004, texture: 512, opaque: /^grass_medium/ },
+  // The island's vegetation is no longer in this table: every plant is
+  // generated at load time by `src/scene/flora`, so there is nothing to fetch,
+  // decimate or LOD. The tree, palm, fern and grass entries — and the two-budget
+  // leaf/trunk treatment they needed — went with the models.
 
   // Coastline edges carry the shoreline's silhouette, so they keep a little more
   // than the rock masses do — a decimated edge reads as a bitten one.
@@ -313,8 +290,6 @@ const ASSETS = [
   { slug: 'coast_rocks_01', ratio: 0.06, error: 0.012, texture: 1024 },
   { slug: 'coast_rocks_03', ratio: 0.06, error: 0.012, texture: 1024 },
 
-  { slug: 'anthurium_botany_01', ratio: 0.3, error: 0.01, texture: 512 },
-  { slug: 'calathea_orbifolia_01', ratio: 0.3, error: 0.01, texture: 512 },
 
   // Pirate cove. `ship_pinnace` and `cannon_01` are rigged in the source; the
   // rig is stripped by `prune` because nothing here animates them, and a boat
@@ -340,24 +315,6 @@ const ASSETS = [
 
   // ---- The reef (Sketchfab; see the SKETCHFAB manifest in fetch-assets.mjs) --
   //
-  // The Smithsonian's three corals are 100k-face photogrammetry of a single
-  // colony each, which is the same kind of asset as Poly Haven's rocks and takes
-  // the same kind of decimation. They are also *small* — `stylaster_coral` is
-  // 17 cm tall — because they are museum specimens; `Props` scales them to reef
-  // heads. A tighter error than the rocks get, because a coral's whole
-  // silhouette is its branching and that is exactly what a loose error eats.
-  //
-  // The budgets are set by instance count, not by how the model looks in
-  // isolation. A coral head is placed sixty to ninety times and the reef already
-  // carries ninety 15k rocks, so a 30k coral would double the scene's triangle
-  // count to add detail nobody can resolve: these are seen from five metres and
-  // up through water that has thrown away most of the contrast by ten. Three to
-  // four thousand each is what survives that, and the error bounds are small in
-  // absolute terms — a millimetre or two on a 17 cm specimen — so what is lost
-  // is surface detail rather than the branching, which is the whole silhouette.
-  { slug: 'stylaster_coral', ratio: 0.035, error: 0.01, texture: 512 },
-  { slug: 'seriatopora_coral', ratio: 0.035, error: 0.01, texture: 512 },
-  { slug: 'goniastrea_coral', ratio: 0.035, error: 0.012, texture: 512 },
   // The carpet, and therefore the one asset here whose budget is set by how many
   // of it there are. `Props` plants four hundred clumps of three forms each, so
   // a thousand triangles per form is fifteen hundred thousand triangles of
@@ -372,40 +329,6 @@ const ASSETS = [
   // `static` for why the rig goes.
   { slug: 'emperor_angelfish', ratio: 1, error: 0.001, texture: 512, static: true },
 
-  // ---- The island's palms (Sketchfab) --------------------------------------
-  //
-  // Both replace `Remains.ts`'s procedural palm. `palm_coconut` is already
-  // game-ready at 6.6k and needs no decimation at LOD0; `palm_tall` is 27k for a
-  // 4.5 m tree, which is four times what it needs at the density it is planted.
-  // Botanical trees, replacing the two Poly Haven scans that read as dead
-  // scrub. Same two-budget treatment the scans get — the leaves need an error
-  // bound smaller than a leaf or the simplifier deletes them wholesale — and
-  // the flowers are held to the leaves' budget for the same reason.
-  //
-  // `cutOut` rather than `opaque`, which is the whole difference between these
-  // and the scans above: a scanned leaf is geometry over a JPEG and an authored
-  // one is a card over a PNG cut-out. See `cutOutFoliage`.
-  {
-    slug: 'tree_poinciana',
-    ratio: 0.05,
-    error: 0.02,
-    texture: 1024,
-    parts: [{ match: /leaf|flower/i, ratio: 0.12, error: 0.003 }],
-    cutOut: /leaf|flower/i,
-    atlas: /leaf|flower|bud/i,
-    lods: [0.3, 0.09],
-  },
-  {
-    slug: 'tree_orchid',
-    ratio: 0.06,
-    error: 0.02,
-    texture: 1024,
-    parts: [{ match: /leaf/i, ratio: 0.14, error: 0.003 }],
-    cutOut: /leaf/i,
-    atlas: /leaf|flower|bud/i,
-    lods: [0.3, 0.09],
-  },
-
   // Closed rock, replacing the coastal facades on the island — see the note in
   // the SKETCHFAB manifest. Decimated like the Poly Haven rocks are: one closed
   // surface with no small features to protect takes it freely.
@@ -415,8 +338,6 @@ const ASSETS = [
   // the rock, so without the correction every instance is placed underground.
   { slug: 'rock_boulder', ratio: 0.12, error: 0.012, texture: 1024, ground: true, lods: [0.3, 0.09] },
 
-  { slug: 'palm_coconut', ratio: 1, error: 0.001, texture: 1024, lods: [0.4, 0.14] },
-  { slug: 'palm_tall', ratio: 0.35, error: 0.004, texture: 1024, lods: [0.4, 0.14] },
 ];
 
 /**
@@ -434,15 +355,6 @@ const ASSETS = [
  * tenth far better than the same cut survives at arm's length.
  */
 const LOD_RATIOS = {
-  island_tree_02: [0.3, 0.09],
-  jacaranda_tree: [0.3, 0.09],
-  pachira_aquatica_01: [0.35, 0.12],
-  anthurium_botany_01: [0.35, 0.12],
-  calathea_orbifolia_01: [0.35, 0.12],
-  fern_02: [0.4],
-  shrub_sorrel_01: [0.4],
-  grass_medium_01: [0.4, 0.15],
-  grass_medium_02: [0.4, 0.15],
 
   coast_line_01: [0.25, 0.07],
   coast_line_02: [0.25, 0.07],
@@ -463,35 +375,74 @@ const LOD_RATIOS = {
   // so its LOD1 is gentler and there is no LOD2: a coral head is either in the
   // patch you are swimming through or invisible in the haze, with very little in
   // between.
-  stylaster_coral: [0.4],
-  seriatopora_coral: [0.3],
-  goniastrea_coral: [0.3],
   soft_coral_set: [0.45],
 };
 
-// These species are replaced by billboard imposters before LOD_SWITCH_METRES
-// reaches their first mesh LOD. Keeping the unused chains costs downloads and
-// render-object compilation without ever being drawn.
-const IMPOSTER_ONLY_ASSETS = new Set([
-  'fern_02',
-  'shrub_sorrel_01',
-  'calathea_orbifolia_01',
-  'anthurium_botany_01',
-  'grass_medium_01',
-  'grass_medium_02',
-  'tree_orchid',
-  'tree_poinciana',
-  'jacaranda_tree',
-  'island_tree_02',
-  'palm_coconut',
-  'palm_tall',
-  'pachira_aquatica_01',
-]);
+/**
+ * The hero models: the ship and the two floaters.
+ *
+ * These are not dressing — nothing decimates them, they have no LOD chain and
+ * they are not in the manifest — but they were the largest thing the project
+ * shipped, and for no reason a pipeline could not remove. Poly Haven's
+ * `dutch_ship_medium` is nine 2k JPEGs and a raw float32 `.bin`: 26 MB to
+ * download, then every map decoded on the main thread and uploaded as RGBA8 with
+ * a full mip chain — about 200 MB of video memory for one ship. The buoy and
+ * barrel are the same shape of problem at 1k.
+ *
+ * So they take the dressing's back half and nothing else: textures capped per
+ * map, KTX2 through the same encoder pool and the same per-slot colour-space
+ * rule, Meshopt geometry, one self-contained `.glb` each.
+ *
+ * The encoder choices are tighter than the dressing's because these are the
+ * objects the camera is closest to, and every one of them was settled by a
+ * deterministic side-by-side against the JPEG build (hull close-up from 9 m):
+ *
+ *  - `keep`: the hull's colour and normal maps stay 2k. At 1k the carved rail
+ *    and the plank seams went visibly soft; the hull fills the frame from the
+ *    boat camera and the tour, and its UV layout spends few texels per metre.
+ *    The rigging, the sails and every roughness map drop to 1k with no
+ *    difference the comparison could find.
+ *  - `uastc` names the maps that take UASTC instead of ETC1S: colour and
+ *    normals. ETC1S on the 1k hull colour lost the carving outright (34.6 dB);
+ *    metallic-roughness stays ETC1S — smooth fields, and nobody sees a block in
+ *    a roughness value.
+ *  - `supercompress` adds Zstandard over UASTC. Without it a UASTC 1k map is
+ *    1.4 MB on the wire, because RDO only buys anything once something
+ *    entropy-codes the result; `KTX2Loader` decodes Zstandard itself. The RDO
+ *    level stays at the default: level 3 saved 1.7 MB and put visible grain in
+ *    the planking.
+ *  - `mipFilter: 'box'`. See `BASIS_MIP_FILTER_BOX`.
+ *  - Positions keep 16 bits and UVs 14 rather than Meshopt's 14 and 12. The
+ *    rigging is centimetre-thick rope across a 23 m model, which is exactly
+ *    where a 14-bit grid starts to show.
+ *
+ * Two runtime counterparts. The loader asks for anisotropic filtering on these
+ * textures (`HERO_ANISOTROPY` in `src/scene/AssetLoader.ts`), without which the
+ * KTX2 hull was softer than the JPEG one even at 2k. And Meshopt quantisation
+ * moves each mesh's dequantisation scale onto its node, so `Ship` multiplies its
+ * sail billow into the scale it loaded with rather than overwriting it.
+ */
+const HERO_ASSETS = [
+  {
+    slug: 'dutch_ship_medium',
+    source: 'dutch_ship_medium_2k.gltf',
+    texture: 1024,
+    normal: 1024,
+    keep: [{ match: /hull_(diff|nor_gl)/, size: 2048 }],
+    ktx2: { uastc: /_(diff|nor_gl)/, supercompress: true, mipFilter: 'box' },
+  },
+  // The floaters are a metre or two tall and never fill the frame, so they take
+  // the dressing's trade instead: ETC1S colour, and normals at half size. UASTC
+  // colour would make the barrel's textures three times the JPEGs they replace;
+  // as built it is the same size on the wire and a quarter of the video memory.
+  { slug: 'ocean_buoy', source: 'ocean_buoy_1k.gltf', texture: 1024, normal: 512, ktx2: { supercompress: true, mipFilter: 'box' } },
+  { slug: 'barrel_03', source: 'barrel_03_1k.gltf', texture: 1024, normal: 512, ktx2: { supercompress: true, mipFilter: 'box' } },
+];
+const HERO_OUT = join(ROOT, 'public', 'models', 'hero');
+const HERO_MESHOPT = { quantizePosition: 16, quantizeTexcoord: 14, quantizeNormal: 10 };
 
 for (const asset of ASSETS) {
-  if (IMPOSTER_ONLY_ASSETS.has(asset.slug)) {
-    asset.lods = [];
-  } else if (asset.lods === undefined && LOD_RATIOS[asset.slug]) {
+  if (asset.lods === undefined && LOD_RATIOS[asset.slug]) {
     asset.lods = LOD_RATIOS[asset.slug];
   }
 }
@@ -687,6 +638,12 @@ async function main() {
     }
   }
 
+  const heroes = await buildHeroes(io, ktx2Pool, ktx2Stats, ktx2Jobs);
+  inTotal += heroes.inTotal;
+  outTotal += heroes.outTotal;
+  built += heroes.built;
+  failed += heroes.failed;
+
   const manifest = { version: 1, basePath: '/models/dressing/', models: {} };
   for (const asset of ASSETS) {
     const base = join(OUT, asset.slug + '.glb');
@@ -725,6 +682,96 @@ async function main() {
     console.error(`  FAILED   : ${failed}`);
     process.exitCode = 1;
   }
+}
+
+/** Builds `HERO_ASSETS` into `public/models/hero/`. See the note on the table. */
+async function buildHeroes(io, pool, stats, inFlight) {
+  const totals = { inTotal: 0, outTotal: 0, built: 0, failed: 0 };
+  mkdirSync(HERO_OUT, { recursive: true });
+
+  for (const asset of HERO_ASSETS) {
+    if (ONLY.length && !ONLY.some((needle) => asset.slug.includes(needle))) continue;
+    const source = join(MODELS, asset.slug, asset.source);
+    const dest = join(HERO_OUT, `${asset.slug}.glb`);
+
+    if (!existsSync(source)) {
+      // Unlike the Sketchfab half of the dressing there is no fallback to the
+      // committed output: it is already KTX2, and re-encoding an encoded
+      // texture is the lossy loop the dressing's note warns about.
+      if (existsSync(dest)) {
+        console.log(`  keep     hero/${asset.slug}.glb (${bytes(statSync(dest).size)}) — source not fetched`);
+        totals.outTotal += statSync(dest).size;
+      } else {
+        console.error(`  MISSING  ${asset.slug} — run: node scripts/fetch-assets.mjs`);
+        totals.failed += 1;
+      }
+      continue;
+    }
+    if (existsSync(dest) && !FORCE) {
+      console.log(`  skip     hero/${asset.slug}.glb (${bytes(statSync(dest).size)})`);
+      totals.outTotal += statSync(dest).size;
+      continue;
+    }
+
+    try {
+      const sourceSize = directorySize(join(MODELS, asset.slug));
+      const document = await io.read(source);
+      await document.transform(weld(), dedup(), prune());
+      await resizeTextures(document, (texture) => {
+        const name = `${texture.getName()} ${texture.getURI()}`;
+        const kept = asset.keep?.find((rule) => rule.match.test(name));
+        if (kept) return kept.size;
+        return listTextureSlots(texture).includes('normalTexture') ? asset.normal : asset.texture;
+      });
+      await compressDocumentTextures(document, pool, stats, inFlight, asset);
+      await document.transform(meshopt({ encoder: MeshoptEncoder, level: 'high', ...HERO_MESHOPT }));
+      await io.write(dest, document);
+
+      const destSize = statSync(dest).size;
+      totals.inTotal += sourceSize;
+      totals.outTotal += destSize;
+      totals.built += 1;
+      console.log(
+        `  build    hero/${asset.slug}.glb  ${bytes(sourceSize)} -> ${bytes(destSize)}  ` +
+          `${countTriangles(document).toLocaleString('en-US')} tris, textures <= ${asset.texture}, normals <= ${asset.normal}` +
+          (asset.keep ? `, ${asset.keep.map((rule) => `${rule.match.source} at ${rule.size}`).join(', ')}` : ''),
+      );
+    } catch (error) {
+      console.error(`  ERROR    ${asset.slug}: ${error instanceof Error ? error.message : error}`);
+      totals.failed += 1;
+    }
+  }
+  return totals;
+}
+
+/**
+ * Caps every texture at `sizeFor(texture)` on the long edge, losslessly
+ * re-encoded.
+ *
+ * PNG rather than the dressing's WebP step: the next stop is the KTX2 encoder,
+ * and a lossy intermediate would be a second generation of loss for nothing.
+ */
+async function resizeTextures(document, sizeFor) {
+  await Promise.all(
+    document
+      .getRoot()
+      .listTextures()
+      .map(async (texture) => {
+        const image = texture.getImage();
+        if (!image) return;
+        const metadata = await sharp(image).metadata();
+        if (!metadata.width || !metadata.height) return;
+        const maxDimension = sizeFor(texture);
+        if (Math.max(metadata.width, metadata.height) <= maxDimension && texture.getMimeType() === 'image/png') return;
+        const resized = await sharp(image)
+          .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+          .png()
+          .toBuffer();
+        texture.setImage(resized).setMimeType('image/png');
+        const uri = texture.getURI();
+        if (uri && !uri.startsWith('data:')) texture.setURI(uri.replace(/\.[^./]+$/i, '.png'));
+      }),
+  );
 }
 
 /**
@@ -1255,7 +1302,12 @@ async function compressDocumentTextures(document, pool, stats, inFlight, asset) 
       const channelMask = getTextureChannelMask(texture);
       const normal = slots.includes('normalTexture');
       const leafCutout = isLeafCutoutTexture(document, asset, texture, slots, channelMask);
-      const uastc = normal || leafCutout;
+      const uastcRule = asset?.ktx2?.uastc;
+      const uastc =
+        normal ||
+        leafCutout ||
+        uastcRule === true ||
+        (uastcRule instanceof RegExp && uastcRule.test(`${texture.getName()} ${texture.getURI()}`));
       // Colour data is sRGB; everything that encodes *numbers* rather than
       // colour is linear. Normal maps store directions, metallic-roughness and
       // occlusion store coefficients — de-gamma any of them on read and a
@@ -1280,7 +1332,12 @@ async function compressDocumentTextures(document, pool, stats, inFlight, asset) 
         isSetKTX2SRGBTransferFunc: perceptual,
         generateMipmap: true,
         enableRDO: uastc,
-        rdoQualityLevel: uastc ? UASTC_RDO_QUALITY : undefined,
+        rdoQualityLevel: uastc ? (asset?.ktx2?.rdo ?? UASTC_RDO_QUALITY) : undefined,
+        // Only set when asked for, so the dressing's cache keys — which hash
+        // these options — are exactly what they were before heroes existed.
+        ...(uastc && asset?.ktx2?.supercompress ? { needSupercompression: true } : {}),
+        ...(!uastc && asset?.ktx2?.etc1sQuality ? { qualityLevel: asset.ktx2.etc1sQuality } : {}),
+        ...(asset?.ktx2?.mipFilter ? { mipFilter: asset.ktx2.mipFilter } : {}),
       };
       const key = textureCacheKey(image, options);
 

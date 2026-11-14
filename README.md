@@ -1,13 +1,10 @@
 # Web Ocean 3D
 
-A realtime spectral ocean and tropical island rendered with **Three.js**, **WebGPU** and
-**TSL** — FFT wave synthesis, physically motivated water optics, a depth-driven shore break,
-foam, caustics, buoyancy, wakes, underwater transitions and a volumetric sky, photographed
-through a lens rather than a pinhole: a thin-lens circle of confusion, veiling glare over a
-capped highlight, a sun-anchored flare the scene can occlude, and a per-preset ASC CDL grade.
-With a graceful WebGL2 fallback from the same shader source.
+**Take the helm of a square-rigger on a sea that is worked out live in your browser.**
 
-![Web Ocean 3D](docs/images/hero.png)
+### [▶ Set sail — web-ocean-3d.vercel.app](https://web-ocean-3d.vercel.app/)
+
+![A square-rigger on open water, the island a kilometre and a half beyond](docs/images/hero.png)
 
 <p align="center"><em>A hundred metres off the hull, with the island a kilometre and a half
 beyond it. Every image in this README is regenerated from the current renderer by one command;
@@ -21,80 +18,87 @@ none of them is hand-captured.</em></p>
   <img alt="Assets CC0 and CC-BY" src="https://img.shields.io/badge/assets-CC0%20%2B%20CC--BY-4ade80?style=flat-square">
 </p>
 
+Nothing here is a video. Every wave, every whitecap and every glint of sun is computed on your
+graphics card, every frame, and the ship floats on the same water you are looking at.
+
 ---
 
-## Quick start
+## What you can do
 
-```bash
-npm install
-npm run dev            # http://127.0.0.1:5173
-```
+- **Sail her yourself.** Set canvas, steer, and feel her heel to the wind. Point too close to
+  the wind and she stalls; put it across her side and she flies. Drop anchor and watch her
+  swing round to face the breeze.
+- **Haul in drifting cargo.** A column of gold light marks a cask somewhere in open water.
+  Come alongside to bring it aboard, and the next one is sighted from where you took the last.
+- **Change the weather and the hour.** Nine looks, from a tropical noon to a moonlit swell to
+  a storm with rain on the lens, and sliders for the wind, the swell, the cloud, the fog and the
+  time of day.
+- **Go under.** Take any camera below the surface: the sky shrinks to a bright disc overhead,
+  light shafts fall through the water, and fish school over the reef.
+- **Sit back.** The tour sails through a whole day and a squall on its own, cut like a trailer.
+- **Fly anywhere.** Up over the island's summit, down to skim the wave tops.
 
-```bash
-npm run build          # typecheck + production bundle
-npm run preview        # http://127.0.0.1:4173
-npm test               # Playwright suite (starts its own preview server)
-```
+The first minute teaches itself: the controls appear one at a time, as you need them, and
+go away once you have used them.
 
-Assets are committed, but the set is reproducible from scratch:
+## Controls
 
-```bash
-node scripts/fetch-assets.mjs             # idempotent
-node scripts/fetch-assets.mjs --force     # re-fetch everything
-node scripts/fetch-assets.mjs --verify    # offline integrity check
-node scripts/optimize-assets.mjs          # decimate + Meshopt what actually ships
-```
+| | Keyboard and mouse | Touch |
+|---|---|---|
+| **Choose a view** | **1** Orbit · **2** Fly · **3** Helm · **4** Tour | The tabs along the bottom |
+| **Look around** | Drag · right-drag to slide · scroll to zoom | Drag |
+| **At the helm** | **W / S** more or less sail (furled, half, full) · **A / D** steer · **R** drop or raise the anchor · drag to look | **More / Less** for sail · the stick to steer · **Anchor** |
+| **Fly** | Click to capture the mouse · **WASD** · **Space / Ctrl** up and down · scroll to set speed · **Shift** to boost | — |
+| **Settings** | The ledger, top right | The **Ledger** button |
 
-Most of it is CC0 from [Poly Haven](https://polyhaven.com). Twelve assets come
-from Sketchfab instead, because Poly Haven publishes no marine life, no coconut
-palm, and — for the shoreline — nothing that can be dropped at an arbitrary angle
-without showing its back. Three of the twelve are CC0 Smithsonian coral scans;
-**nine are CC-BY**, whose credits are a licence condition and are recorded in
-[`ASSET_LICENSES.md`](ASSET_LICENSES.md#sketchfab-assets). Fetching those needs a
-Sketchfab API token in `SKETCHFAB_API_TOKEN` or a git-ignored `sketchfab-token`
-file; without one that step is skipped, which costs nothing unless you are
-re-running the optimiser.
+**A little seamanship.** The ship sails on the wind the sea is built from. Head to wind (within
+about 35°) she cannot sail: the canvas flaps and she drifts backwards until you turn away. With
+the wind on her side she is fastest, and dead downwind she slows a little as the after sails
+shelter the fore. Full sail at her best makes twelve or thirteen knots in a fresh breeze, and
+the canvas heels her to leeward against her own weight. The anchor goes from the bow on the
+windward side; when the cable comes tight she snubs up with a jolt and swings her head toward
+the wind. Raising it takes a few seconds at the capstan. Steer clear of bright turquoise
+water: the shallows turn her away, and the hull is turned from shoaling water by the slope of
+the seabed rather than by a fence.
 
-The raw downloads land in `assets/source/` rather than under `public/`, and that
-is not filing: Vite copies `public/` into `dist/` verbatim, so while they sat
-there the optimiser was being undone one directory up and the build shipped
-818 MB of film-quality scan data that no URL points at. It ships 99 MB now.
+The rudder is a foil: it has little grip until she is moving, and it reverses when she makes
+sternway. Helm mode takes the ship, not just a camera; leaving it hands the keys back to Orbit
+and Fly.
 
-`scripts/modelkit/` is the workbench for all of this — search and fetch Sketchfab
-under a hard CC0/CC-BY filter, then measure what arrived:
+**Cinematic tour.** A looping 90 s attract-mode trailer, cut rather than flown, in nine shots —
+dawn crane, wave-skim alongside the hull, reef dive through the waterline, hero orbit, island
+reveal over the swell, beach flyover, golden-hour dolly-zoom, squall, night watch — framed on
+the live hull and held clear of the crests, the terrain and the ship. It carries its own hour
+and weather, so one lap runs a full day and a squall. `prefers-reduced-motion` drops the
+handheld, the whips and the zooms.
 
-```bash
-node scripts/modelkit/sketchfab.mjs search "coral reef" --animated
-node scripts/modelkit/inspect.mjs public/models/dressing   # triangles, alpha modes, texture slots
-node scripts/modelkit/shells.mjs  public/models/dressing   # can this be placed at any angle?
-node scripts/modelkit/plates.mjs  public/models/dressing   # is a scan's ground slab still attached?
-```
-
-**Requirements** — Node 20+, and a browser with WebGPU for the full experience
-(Chrome/Edge 113+, Safari 18+). Without it the app falls back to WebGL2 automatically; the
-**Force WebGL** switch exercises that path deliberately.
+**Requirements.** A browser with WebGPU gives the full sea: current Chrome or Edge (113+), or
+Safari 18+. Anywhere else it falls back to WebGL2 automatically — the same waves, without the
+mirror reflections, the view into the water or the rain on the lens — and says so in the corner
+of the screen. The menu suggests a quality for your device; the sea also steps itself down a
+tier if frames keep dropping.
 
 ---
 
 ## Gallery
 
-Nine environment presets. Each moves the sun, sea state, water optics, aerial perspective
-and weather together — so switching reads as a different *place*, not a colour filter.
+Nine looks. Each moves the sun, the sea state, the water's colour, the haze and the weather
+together, so switching reads as a different *place*, not a colour filter.
 
 | Under way | Underwater |
 |---|---|
 | ![Boat](docs/images/boat.png) | ![Underwater](docs/images/underwater.png) |
-| Chase camera at ~8 m/s: Kelvin wake, bow wave, hull in wave contact | Snell's window overhead, the hull's silhouette and its shadow in the shafts |
+| From a camera boat off the bow at ~8 m/s: bow wave, spray, the wake off the quarter | Snell's window overhead, the sun in it, and the hull's silhouette beside it |
 
 | Storm | Moonlit |
 |---|---|
 | ![Storm](docs/images/storm.png) | ![Moonlit](docs/images/moonlit.png) |
-| 21 m/s, overcast attenuating the key light, rain on the lens | Sun below the horizon: moon glitter, star field, long swell |
+| 21 m/s from the waterline, overcast attenuating the key light, rain on the lens | Sun below the horizon: the hull in the moon's glitter, long swell |
 
 | Sunset | Wave detail |
 |---|---|
 | ![Sunset](docs/images/sunset.png) | ![Waves](docs/images/waves.png) |
-| Anisotropic glitter stretching down the sun's track | Whitecaps where the surface genuinely folds, at 15 m/s |
+| The ship rim-lit beside the sun, the island's flank behind it, glitter down the sun's track | Whitecaps where the surface genuinely folds, at 15 m/s |
 
 | Clear day | The night watch |
 |---|---|
@@ -142,26 +146,62 @@ would be meaningless.
 
 ---
 
-## Controls
+## Run it locally
 
-| | |
-|---|---|
-| **1 / 2 / 3 / 4** | Orbit / Fly / Boat / Cinematic camera |
-| **Orbit** | LMB drag rotate · RMB drag pan · scroll zoom |
-| **Fly** | click to capture the mouse · WASD · Space/Ctrl up-down · **scroll** speed (1.5–600 m/s) · Shift boost |
-| **Boat** | **W/S** throttle ahead and astern · **A/D** rudder · **drag** to orbit the chase camera · **scroll** to dolly · the hull is turned away from shoaling water rather than fenced by a radius |
-| **Cinematic** | A looping 60 s authored tour in six beats — open water, outbound, landfall, return, squall, reef run — carrying its own hour and weather, so one lap runs a full day and a squall through the scene |
-| **Touch** | Boat mode on a touch device gets an on-screen stick: forward for ahead, back for astern, left and right for rudder |
+```bash
+npm install
+npm run dev            # http://127.0.0.1:5173
+```
 
-Boat mode selects the ship, not just a camera. Leaving it releases ship input, so Orbit and
-Fly keep their own keys. The rudder is a foil: it has little authority until the ship has way
-on, and it reverses when making sternway.
+```bash
+npm run build          # typecheck + production bundle
+npm run preview        # http://127.0.0.1:4173
+npm test               # Playwright suite (starts its own preview server)
+```
 
-Drop the camera below the surface in any mode to trigger the underwater state.
+Assets are committed, but the set is reproducible from scratch:
+
+```bash
+node scripts/fetch-assets.mjs             # idempotent
+node scripts/fetch-assets.mjs --force     # re-fetch everything
+node scripts/fetch-assets.mjs --verify    # offline integrity check
+node scripts/optimize-assets.mjs          # decimate + Meshopt what actually ships
+```
+
+Most of it is CC0 from [Poly Haven](https://polyhaven.com). Twelve assets come
+from Sketchfab instead, because Poly Haven publishes no marine life, no coconut
+palm, and — for the shoreline — nothing that can be dropped at an arbitrary angle
+without showing its back. Three of the twelve are CC0 Smithsonian coral scans;
+**nine are CC-BY**, whose credits are a licence condition and are recorded in
+[`ASSET_LICENSES.md`](ASSET_LICENSES.md#sketchfab-assets). Fetching those needs a
+Sketchfab API token in `SKETCHFAB_API_TOKEN` or a git-ignored `sketchfab-token`
+file; without one that step is skipped, which costs nothing unless you are
+re-running the optimiser.
+
+The raw downloads land in `assets/source/` rather than under `public/`, and that
+is not filing: Vite copies `public/` into `dist/` verbatim, so while they sat
+there the optimiser was being undone one directory up and the build shipped
+818 MB of film-quality scan data that no URL points at. The build is about 64 MiB now
+(measured in [`docs/AAA_PLAN.md`](docs/AAA_PLAN.md), section A).
+
+`scripts/modelkit/` is the workbench for all of this — search and fetch Sketchfab
+under a hard CC0/CC-BY filter, then measure what arrived:
+
+```bash
+node scripts/modelkit/sketchfab.mjs search "coral reef" --animated
+node scripts/modelkit/inspect.mjs public/models/dressing   # triangles, alpha modes, texture slots
+node scripts/modelkit/shells.mjs  public/models/dressing   # can this be placed at any angle?
+node scripts/modelkit/plates.mjs  public/models/dressing   # is a scan's ground slab still attached?
+```
+
+**Requirements** — Node 20+. The ledger's *Draw with WebGL2* switch (under *Shipwright's
+tools*) exercises the fallback path deliberately.
 
 ---
 
-## Features
+## How it works
+
+The short version is in the ledger's folded *About the tech*. The long version:
 
 **Ocean**
 - Depth-aware refraction: the scene behind the surface, distorted by the wave normal, with
@@ -252,6 +292,7 @@ src/
   post/        depth of field, bloom, lens flare, grade, volumetric fog, lens rain, output transform
   scene/       asset loading, ship, props, seafloor, island planting, fish, birds
   physics/     buoyancy, ship control, wake accumulation, spray
+  gameplay/    helm mode: sails against the wind, anchor, cargo objective, camera shake
   cameras/     orbit / fly / boat / cinematic director, and the authored tour
   audio/       synthesised ambience — noise beds, not samples
   ui/          control panel, HUD, touch controls (framework-free DOM)
@@ -385,7 +426,10 @@ Full methodology, cost model and the honest list of what remains unmeasured:
 
 ## Known limitations
 
-- **No temporal antialiasing or reconstruction.** Geometry is multisampled at 4x and the output
+- **Spatial-only antialiasing — superseded, not re-measured.** Since this entry was written,
+  TRAA has replaced 4x MSAA on the scene pass (see [`docs/AAA_PLAN.md`](docs/AAA_PLAN.md),
+  section C). What follows describes the earlier build and is kept until it is re-measured.
+  Geometry is multisampled at 4x and the output
   carries a spatial FXAA resolve at 0.3, but every stochastic effect here — the fog march, the
   cloud march, the shaft march, the specular lobe — still resolves spatially within one frame.
   A spatial filter can soften a shading stair-step; it cannot supply the samples that made it.
@@ -477,7 +521,7 @@ Project code is original. Techniques are implemented from published literature �
 FFT ocean, JONSWAP and Pierson–Moskowitz spectra, the Preetham sky model — and from
 MIT-licensed Three.js examples.
 
-**Most** 3D models and HDRIs are CC0, sourced from
+**Most** 3D models are CC0, sourced from
 [Poly Haven](https://polyhaven.com), for which no attribution is legally required — the
 authors are recorded anyway. The exceptions matter: twelve assets come from Sketchfab, of
 which three are CC0 Smithsonian coral scans and **nine are CC-BY 4.0, whose attribution is a

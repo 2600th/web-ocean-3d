@@ -1,6 +1,6 @@
 {
   "shot": "ship-and-island",
-  "capturedAt": "2026-08-08T22:20:39.961Z",
+  "capturedAt": "2026-11-14T12:14:27.177Z",
   "width": 1280,
   "height": 720,
   "definition": {
@@ -14,16 +14,17 @@
     },
     "camera": {
       "position": [
-        64,
-        15,
-        89
+        80,
+        3.5,
+        30
       ],
       "target": [
-        -214,
-        23,
-        -198
+        -5,
+        12.6,
+        -21.8
       ]
     },
+    "lens": 30,
     "time": 36,
     "settleSteps": 90
   },

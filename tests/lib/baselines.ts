@@ -31,7 +31,7 @@ export interface BaselineMeta {
   height: number;
   /** Snapshot of the shot definition, so a moved camera is distinguishable
    *  from a changed renderer. */
-  definition: Pick<Shot, 'state' | 'camera' | 'time' | 'settleSteps' | 'shipInput'>;
+  definition: Pick<Shot, 'state' | 'camera' | 'lens' | 'time' | 'settleSteps' | 'shipInput'>;
   stack: StackFingerprint;
 }
 
@@ -69,6 +69,7 @@ export function writeBaseline(shot: Shot, image: RgbaImage, stack: StackFingerpr
     definition: {
       state: shot.state,
       camera: shot.camera,
+      lens: shot.lens,
       time: shot.time,
       settleSteps: shot.settleSteps,
       shipInput: shot.shipInput,
@@ -100,6 +101,7 @@ export function definitionDifferences(shot: Shot, meta: BaselineMeta): string[] 
   const current = JSON.stringify({
     state: shot.state,
     camera: shot.camera,
+    lens: shot.lens,
     time: shot.time,
     settleSteps: shot.settleSteps,
     shipInput: shot.shipInput,

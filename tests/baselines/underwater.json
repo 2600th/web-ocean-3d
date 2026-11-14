@@ -1,6 +1,6 @@
 {
   "shot": "underwater",
-  "capturedAt": "2026-08-08T22:20:15.278Z",
+  "capturedAt": "2026-11-14T12:13:54.921Z",
   "width": 1280,
   "height": 720,
   "definition": {
@@ -14,16 +14,17 @@
     },
     "camera": {
       "position": [
-        -16,
-        -7,
-        16
+        -14,
+        -12,
+        12
       ],
       "target": [
-        -6,
-        2,
-        2
+        43.9,
+        17.7,
+        -63.9
       ]
     },
+    "lens": 62,
     "time": 72.5,
     "settleSteps": 90
   },

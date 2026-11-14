@@ -1174,8 +1174,11 @@ test.describe('interaction', () => {
     // the flock.
     await setState(page, { preset: 'moonlit', quality: 'ultra' });
     // Looking up and out across the flock's altitude band: the circuits sit
-    // 9-62 m up and 35-142 m out from the anchor.
-    await setCamera(page, [0, 26, 0], [40, 64, 40]);
+    // 9-62 m up and 35-142 m out from the anchor. This bearing is the one the
+    // flock actually crosses at t = 30 since part of it moved to the ship and
+    // island anchors; the old north-east aim caught two or three gulls, about
+    // 30 pixels, and failed on a flock that was rendering fine.
+    await setCamera(page, [0, 12, 0], [60, 40, -60]);
     await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
 
     const withFlock = await capture(page);
@@ -1183,6 +1186,10 @@ test.describe('interaction', () => {
       const birds = window.__ocean.scene.getObjectByName('birds');
       if (birds) birds.visible = false;
     });
+    // Each capture from a fresh reset: with TRAA two captures in a row differ
+    // by the resolve's history, which at Low's render scale is thousands of
+    // pixels and would read as birds.
+    await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
     const without = await capture(page);
     await page.evaluate(() => {
       const birds = window.__ocean.scene.getObjectByName('birds');
@@ -1196,7 +1203,7 @@ test.describe('interaction', () => {
 
     // The bar is 80, and it is low on purpose.
     //
-    // Measured, this frame moves ~135 pixels out of 1.44 million: forty gulls at
+    // Measured, this frame moves ~600 pixels out of 1.44 million: gulls at
     // 60-140 m are three or four pixels each. That is what a flock at that
     // distance *is*, and inflating the birds until the number looks impressive
     // would be tuning the scene to the test. What the assertion has to separate
@@ -1222,6 +1229,7 @@ test.describe('interaction', () => {
       const birds = window.__ocean.scene.getObjectByName('birds');
       if (birds) birds.visible = false;
     });
+    await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
     const lowWithout = await capture(page);
 
     let lowChanged = 0;
@@ -1294,7 +1302,11 @@ test.describe('interaction', () => {
     // well and the difference would be dominated by ordinary motion rather than
     // by wetting. Holding the clock still is what makes this a measurement of
     // one variable.
+    // Each from a fresh reset, wetness set after it: with TRAA two captures in
+    // a row differ across the whole sea by the resolve's history, which pulled
+    // the median ratio to ~1 and drowned the hull.
     const shoot = async (wetness: number) => {
+      await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
       await page.evaluate((w: number) => window.__ocean.setSurfaceWetness(w), wetness);
       return capture(page);
     };
@@ -1867,6 +1879,11 @@ test.describe('responsiveness', () => {
     await page.goto('/?gate=0&quality=high');
     await waitForOcean(page, 1200);
 
+    // The ledger ships folded so the sea leads; unfold it the way a visitor
+    // does before measuring what it holds.
+    const fold = page.locator('.panel__collapse');
+    if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+
     const geometry = await page.evaluate(() => {
       const panel = document.querySelector('.panel') as HTMLElement;
       const body = document.querySelector('.panel__body') as HTMLElement;
@@ -1902,6 +1919,7 @@ test.describe('responsiveness', () => {
       [
         'cloudCoverage',
         'fogDensity',
+        'musicVolume',
         'peakWavelength',
         'pixelRatio',
         'timeOfDay',

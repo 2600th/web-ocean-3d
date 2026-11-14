@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
-import { Imposters } from './Imposters';
+import { HERO_ANISOTROPY, dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
+import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
+import { IslandDetail, applyTideline } from './islandDetail';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
 
@@ -49,8 +50,10 @@ import { SEEDS, mulberry32 } from '../core/random';
  * rather than the horizon, which is why the detail scale thins it hardest.
  */
 
-const BUOY_URL = '/models/ocean_buoy/ocean_buoy_1k.gltf';
-const BARREL_URL = '/models/barrel_03/barrel_03_1k.gltf';
+// KTX2 + Meshopt builds of the Poly Haven 1k glTFs; see `HERO_ASSETS` in
+// `scripts/optimize-assets.mjs`.
+const BUOY_URL = '/models/hero/ocean_buoy.glb';
+const BARREL_URL = '/models/hero/barrel_03.glb';
 
 /** Scene-dressing library. Every entry is optional: a 404 thins the scene. */
 const DRESSING_URLS = {
@@ -70,17 +73,6 @@ const DRESSING_URLS = {
   // pipeline — which meant the scene's two largest instanced costs were the
   // only kinds in it without a LOD chain. `rock_07` alone stands 154 times.
   islandRock: '/models/dressing/rock_07.glb',
-  // The canopy. `tree` and `treeFlame` are botanical models; `treeMid` is the
-  // one Poly Haven scan good enough to stand with them.
-  tree: '/models/dressing/tree_orchid.glb',
-  treeFlame: '/models/dressing/tree_poinciana.glb',
-  treeMid: '/models/dressing/island_tree_02.glb',
-  jacaranda: '/models/dressing/jacaranda_tree.glb',
-  pachira: '/models/dressing/pachira_aquatica_01.glb',
-  fern: '/models/dressing/fern_02.glb',
-  sorrel: '/models/dressing/shrub_sorrel_01.glb',
-  anthurium: '/models/dressing/anthurium_botany_01.glb',
-  calathea: '/models/dressing/calathea_orbifolia_01.glb',
   pinnace: '/models/dressing/ship_pinnace.glb',
   pier: '/models/dressing/modular_wooden_pier.glb',
   fort: '/models/dressing/modular_fort_01.glb',
@@ -94,23 +86,17 @@ const DRESSING_URLS = {
   chest: '/models/dressing/treasure_chest.glb',
   reefCrate: '/models/dressing/wooden_crate_01.glb',
   shell: '/models/dressing/lambis_shell.glb',
-  // The reef garden. See `placeReefGarden` for why these are the shapes and
-  // ASSET_LICENSES.md for where they come from — these are the only assets in
+  // The reef garden's carpet. See `placeReefGarden` for why these are the
+  // shapes and ASSET_LICENSES.md for where they come from — the only asset in
   // the project not from Poly Haven, because Poly Haven publishes no coral.
   coralSoft: '/models/dressing/soft_coral_set.glb',
-  coralFan: '/models/dressing/stylaster_coral.glb',
-  coralBirdsnest: '/models/dressing/seriatopora_coral.glb',
-  coralBrain: '/models/dressing/goniastrea_coral.glb',
-  // Ground cover, replacing the lawn-grass sprig that used to carry the island.
-  grassMeadow: '/models/dressing/grass_medium_01.glb',
-  grassTussock: '/models/dressing/grass_medium_02.glb',
-  // The palms. These replace `Remains.ts`'s procedural one — see the note over
-  // their scatters in `dressIsland`.
-  palmCoconut: '/models/dressing/palm_coconut.glb',
-  palmTall: '/models/dressing/palm_tall.glb',
+  // The planting is not in this table: every plant on the island is generated
+  // by `./flora` at load time. See `buildFlora`. The fan, bird's-nest and brain
+  // corals went the same way — `ReefLife` grows them.
 } as const;
 
-type DressingKey = keyof typeof DRESSING_URLS;
+type UrlKey = keyof typeof DRESSING_URLS;
+type DressingKey = UrlKey | FloraKey;
 
 /**
  * One dressing asset: the full-detail model and whatever LOD levels ship with it.
@@ -129,47 +115,6 @@ interface DressingEntry {
 type Dressing = Record<DressingKey, DressingEntry>;
 
 export type PropsQualityTier = 'low' | 'medium' | 'high' | 'ultra' | 'max';
-export type PropsImposterMode = 'off' | 'always' | 'hybrid';
-
-interface ImposterKind {
-  species: string;
-  meshCullDistance: number;
-  minDistance: number;
-  maxDistance: number;
-}
-
-const IMPOSTER_KINDS: Readonly<Record<string, ImposterKind>> = {
-  'island-jacaranda': { species: 'jacaranda_tree', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
-  'island-trees': { species: 'tree_orchid', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
-  'island-flame-trees': { species: 'tree_poinciana', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
-  'island-trees-mid': { species: 'island_tree_02', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
-  'island-palms': { species: 'palm_coconut', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
-  'island-palms-tall': { species: 'palm_tall', meshCullDistance: 120, minDistance: 120, maxDistance: 600 },
-  'island-anthurium': { species: 'anthurium_botany_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
-  'island-calathea': { species: 'calathea_orbifolia_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
-  'island-ferns': { species: 'fern_02', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
-  'island-sorrel': { species: 'shrub_sorrel_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
-  'island-meadow': { species: 'grass_medium_01', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
-  'island-tussock': { species: 'grass_medium_02', meshCullDistance: 60, minDistance: 60, maxDistance: 400 },
-};
-
-const IMPOSTER_MANAGED_KEYS = new Set<DressingKey>([
-  'tree',
-  'treeFlame',
-  'treeMid',
-  'jacaranda',
-  'palmCoconut',
-  'palmTall',
-  'anthurium',
-  'calathea',
-  'fern',
-  'sorrel',
-  'grassMeadow',
-  'grassTussock',
-]);
-
-const IMPOSTER_NO_CULL_DISTANCE = 1_000_000;
-
 const LOD_TEXTURE_SLOTS = [
   'map',
   'roughnessMap',
@@ -236,12 +181,12 @@ const REEF_PATCH_SHARE = 0.62;
 /**
  * The reef garden.
  *
- * Two jobs, and they want different assets. `coralSoft` is the carpet — small
- * varied heads at high density, which is what makes a patch read as *reef*
- * rather than as rocks with decoration on them. The three photogrammetry
- * colonies are the statement pieces: an order of magnitude more expensive per
- * instance, so they are placed an order of magnitude less often, one or two per
- * patch where the eye lands.
+ * `coralSoft` is the carpet — small varied heads at high density, which is what
+ * makes a patch read as *reef* rather than as rocks with decoration on them.
+ * The statement pieces that used to sit on it (three photogrammetry colonies:
+ * a stylaster fan, a seriatopora birdsnest and a goniastrea brain) are now
+ * `ReefLife`'s procedural fans, branching and brain corals and bommies, which
+ * vary per instance, sway, and cost a fraction of the triangles.
  *
  * Counts are per detail scale 1, thinned by `propsDetail` like everything else.
  */
@@ -250,25 +195,18 @@ const CORAL_BED_ALT_COUNT = 200;
 const CORAL_HEAD_COUNT = 150;
 const CORAL_HEAD_ALT_COUNT = 110;
 const CORAL_PLATE_COUNT = 60;
-const CORAL_FAN_COUNT = 24;
-const CORAL_BIRDSNEST_COUNT = 9;
-const CORAL_BRAIN_COUNT = 13;
 
 /**
  * Metres a coral stands, before per-instance variation.
  *
- * The source scales differ by an order of magnitude — `stylaster_coral` is a
- * 17 cm museum specimen, the kit pieces are authored against a unit box — so
- * every kind is scaled to a target *height* rather than by a factor. That keeps
- * one comparable table instead of a column of magic numbers whose meaning
- * depends on which file the row came from.
+ * Source scales vary between files, so every kind is scaled to a target
+ * *height* rather than by a factor. That keeps one comparable table instead of
+ * a column of magic numbers whose meaning depends on which file the row came
+ * from.
  */
 const CORAL_BED_HEIGHT = 0.9;
 const CORAL_HEAD_HEIGHT = 1.8;
 const CORAL_PLATE_HEIGHT = 1.0;
-const CORAL_FAN_HEIGHT = 2.1;
-const CORAL_BIRDSNEST_HEIGHT = 1.7;
-const CORAL_BRAIN_HEIGHT = 1.3;
 
 /**
  * Radius of a coral colony's own clump, metres, and how many heads it gets.
@@ -337,41 +275,27 @@ const LAND_ROCKS_COUNT = 4;
  * and lose the density. The reef, at 90 instances of a 15k-triangle rock, is
  * still the largest single cost in this file; the entire canopy is less.
  */
-const JACARANDA_COUNT = 14;
-const TREE_COUNT = 52;
-const TREE_MID_COUNT = 44;
+const JACARANDA_COUNT = 26;
+const TREE_COUNT = 420;
+const TREE_MID_COUNT = 150;
 /**
- * The flame trees, and why there are so few of them.
- *
- * A royal poinciana in full flower is the loudest thing that grows on an island
- * and the reference frame has four of them in a canopy of hundreds. That ratio
- * is the point: at twenty they are what the eye finds in the green, and at sixty
- * the island is an orange hill.
+ * The flame trees, and why there are so few of them: a poinciana in flower is
+ * the loudest thing that grows on an island, and at this count it is an accent
+ * the eye finds in the green rather than an orange hill.
  */
-const TREE_FLAME_COUNT = 20;
-const PACHIRA_COUNT = 40;
-const ANTHURIUM_COUNT = 70;
-const CALATHEA_COUNT = 84;
-const FERN_COUNT = 110;
-const SORREL_COUNT = 130;
-const MEADOW_COUNT = 380;
-const TUSSOCK_COUNT = 200;
+const TREE_FLAME_COUNT = 12;
+const PACHIRA_COUNT = 90;
+const ANTHURIUM_COUNT = 50;
+const CALATHEA_COUNT = 1300;
+const FERN_COUNT = 1500;
+const SORREL_COUNT = 650;
+const MEADOW_COUNT = 500;
+const TUSSOCK_COUNT = 400;
 
-/**
- * Palms, and why there are two kinds of them.
- *
- * A coconut grove is the one silhouette everybody associates with a tropical
- * island, so it is also the one where a single repeated shape is most obvious.
- * `palmCoconut` is a low double-trunk bearing fruit and `palmTall` is a tall
- * slender single; between them the shoreline reads as a grove rather than as
- * one asset stamped seventy times.
- *
- * Weighted toward the coconut because it is the cheaper mesh and the better
- * shape: 6.6k triangles against 9.9k, and it breaks the skyline at two heights
- * on its own.
- */
-const PALM_COCONUT_COUNT = 54;
-const PALM_TALL_COUNT = 34;
+/** Palms: the arched coconut, the tall slender one, and the beach leaner. */
+const PALM_COCONUT_COUNT = 90;
+const PALM_TALL_COUNT = 60;
+const PALM_LEAN_COUNT = 50;
 const SHELL_COUNT = 9;
 
 /**
@@ -428,6 +352,10 @@ const CONTOUR_JITTER = 0.3;
  * building at all.
  */
 const COVE_BEARING = 0.7;
+
+/** Scatter meshes that stand in the surf and get a waterline. */
+const SHORE_ROCK_MESHES = /^island-(shore|coast|headland|rocks)/;
+const BLUE_SCANS = /^island-(rocks|shore-boulders)/;
 
 /**
  * Bearing of the headland from the island centre.
@@ -631,10 +559,8 @@ export interface PropsOptions {
    * writes. Defaults to 1.
    */
   detailScale?: number;
-  /** Quality tier used to select the default mesh/imposter policy. */
+  /** Quality tier. Accepted for the caller's convenience; density is `detailScale`. */
   qualityTier?: PropsQualityTier;
-  /** Explicitly overrides the quality tier policy. */
-  imposterMode?: PropsImposterMode;
 }
 
 /** An instanced kind the detail scale is allowed to thin. */
@@ -761,8 +687,11 @@ interface ScatterSpec {
   slopeSpan?: number;
   /** Peak random tilt added on top of the ground normal, radians. */
   lean?: number;
-  /** Where the model's long axis points. */
-  facing?: 'random' | 'contour';
+  /**
+   * Where the model's long axis points. `'downhill'` turns the model's +x down
+   * the fall line, which is how a leaning palm reaches out over the beach.
+   */
+  facing?: 'random' | 'contour' | 'downhill';
   /** Number of clumps to gather the instances into; 0 scatters evenly. */
   clusters?: number;
   /** Radius of one clump, metres. */
@@ -773,13 +702,14 @@ interface ScatterSpec {
    * second time into the depth map, which is not worth it for ground cover.
    */
   casts?: boolean;
+  /** Metres from the camera beyond which no level of this kind is drawn. */
+  cullDistance?: number;
   bake?: BakeOptions;
 }
 
 export class Props {
   readonly object: THREE.Object3D;
   readonly floaters: Floater[] = [];
-  readonly imposters: Imposters | null;
 
   private readonly ownedGeometries: THREE.BufferGeometry[] = [];
   private readonly sources: THREE.Group[] = [];
@@ -787,39 +717,18 @@ export class Props {
   /** Where the reef gathers. Shared by the rock scatter and the coral garden. */
   private reefPatches: readonly { x: number; z: number }[] = [];
   private detail = 1;
-  /**
-   * Whether vegetation is meshes, cards, or both — decided once, at load.
-   *
-   * `readonly` is a real limitation and not an oversight. The mode determines
-   * which GLBs are *requested at all*: Low and Medium never fetch the thirteen
-   * imposter-replaced species, which is where most of their saving comes from.
-   * Changing it mid-session would therefore mean either downloading a set the
-   * tier deliberately skipped, or disposing meshes a later upgrade could not
-   * get back without a network round trip in the middle of a frame.
-   *
-   * The consequences, stated plainly: a High-to-Low change keeps the meshes it
-   * already downloaded, so it sheds their draw calls but not their VRAM; and a
-   * Low-to-High change cannot restore meshes that were never fetched, so it
-   * stays on cards. Both are acceptable because the pre-load gate is the
-   * primary mechanism and `AdaptiveQuality` is one-way within a session; a
-   * visitor who wants the other tier's assets reloads, which the gate makes a
-   * deliberate, one-click action.
-   */
-  private readonly imposterMode: PropsImposterMode;
   private disposed = false;
+  /** Landmarks, beach dressing and the camp; all generated, nine draws. */
+  private readonly islandDetail: IslandDetail;
 
   private constructor(
     sources: LoadedSources,
     dressing: Dressing,
     seed: number,
     detailScale: number,
-    imposterMode: PropsImposterMode,
-    imposters: Imposters | null,
   ) {
     this.object = new THREE.Group();
     this.object.name = 'props';
-    this.imposterMode = imposterMode;
-    this.imposters = imposters;
     this.sources.push(sources.buoy, sources.barrel);
     for (const entry of Object.values(dressing)) {
       if (entry.base) this.sources.push(entry.base);
@@ -840,36 +749,39 @@ export class Props {
     this.placeFort(dressing);
     this.placeFind(dressing, dressingRandom);
 
-    if (this.imposters) this.object.add(this.imposters.object);
-    this.imposters?.finalize();
+    this.islandDetail = new IslandDetail({ bearing: COVE_BEARING, shore: shorelineRadius(COVE_BEARING) });
+    this.object.add(this.islandDetail.object);
+
+    // The scanned coastal rocks get the same waterline the generated ones
+    // have: dark and glossy through the swash, barnacles, weed below.
+    this.object.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.isMesh || !SHORE_ROCK_MESHES.test(mesh.name)) return;
+      // The beach boulder scan is a cold blue-grey that reads as plastic on
+      // coral sand; warm it toward the island's own stone.
+      const tint: [number, number, number] = BLUE_SCANS.test(mesh.name) ? [1.18, 1.0, 0.78] : [1, 1, 1];
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) applyTideline(material, tint);
+    });
+
     this.setDetailScale(detailScale);
   }
 
   static async load(loader: AssetLoader, options: PropsOptions = {}): Promise<Props> {
-    const dressingKeys = Object.keys(DRESSING_URLS) as DressingKey[];
-    const requestedMode = resolveImposterMode(options);
+    const urlKeys = Object.keys(DRESSING_URLS) as UrlKey[];
 
-    const [hero, manifest, imposters] = await Promise.all([
-      Promise.all([loader.load(BUOY_URL), loader.load(BARREL_URL)]),
+    const [hero, manifest] = await Promise.all([
+      Promise.all([
+        loader.load(BUOY_URL, { anisotropy: HERO_ANISOTROPY }),
+        loader.load(BARREL_URL, { anisotropy: HERO_ANISOTROPY }),
+      ]),
       loadDressingManifest().catch((error: unknown) => {
         console.warn('[ocean] dressing manifest unavailable; loading base models only', error);
         return null;
       }),
-      requestedMode === 'off'
-        ? Promise.resolve(null)
-        : Imposters.load().catch((error: unknown) => {
-            console.warn('[ocean] vegetation imposters unavailable; falling back to meshes', error);
-            return null;
-          }),
     ]);
 
-    // If the atlas is unavailable, keep the source models in the request plan
-    // even when the caller asked for Low/Medium. A failed optional optimisation
-    // must not turn the island into an empty field.
-    const imposterMode = imposters ? requestedMode : 'off';
-    const requests = dressingKeys.flatMap((key) => {
-      if (imposterMode === 'always' && IMPOSTER_MANAGED_KEYS.has(key)) return [];
-
+    const requests = urlKeys.map((key) => {
       const model = manifest?.models[modelSlug(DRESSING_URLS[key])];
       const lods =
         model?.lods
@@ -877,8 +789,12 @@ export class Props {
           .sort((a, b) => a.level - b.level) ?? [
           { level: 0, ratio: 1, url: DRESSING_URLS[key] },
         ];
-      return [{ key, lods }];
+      return { key, lods };
     });
+
+    // The planting is generated while the models download: tens of milliseconds
+    // of main-thread work against seconds of network.
+    const flora = buildFlora();
 
     const loaded = await Promise.all(
       requests.map(async (request) => ({
@@ -896,7 +812,8 @@ export class Props {
     for (const group of hero) group.updateMatrixWorld(true);
 
     const dressing = {} as Dressing;
-    for (const key of dressingKeys) {
+    for (const key of FLORA_KEYS) dressing[key] = flora[key];
+    for (const key of urlKeys) {
       const entry: DressingEntry = { base: null, lods: [] };
       const request = requests.find((candidate) => candidate.key === key);
       const results = resultsByKey.get(key);
@@ -932,8 +849,6 @@ export class Props {
       dressing,
       options.seed ?? SEEDS.props,
       options.detailScale ?? 1,
-      imposterMode,
-      imposters,
     );
   }
   /** Current scattered-dressing density, 0..1. */
@@ -963,22 +878,41 @@ export class Props {
       // the camera is. Invalidating is enough — `updateLod` redeals next frame.
       if (entry.lod) entry.lod.dealt = false;
     }
-    this.imposters?.setDetailScale(clamped);
   }
 
-  /** Updates the atlas wind phase; call this beside FoliageWind.update. */
+  /** Advances the island's animated set dressing; call beside FoliageWind.update. */
   update(dt: number): void {
-    this.imposters?.update(dt);
+    this.islandDetail.update(dt);
   }
 
-  /** Sets the shared wind direction and strength for vegetation cards. */
+  /** Wind for the animated set dressing. */
   setWind(direction: THREE.Vector2, strength: number): void {
-    this.imposters?.setWind(direction, strength);
+    this.islandDetail.setWind(direction, strength);
   }
 
-  /** Aligns the atlas phase with a scene clock after a reset or seek. */
+  /**
+   * World positions of the island's light sources — the camp fire, the jetty
+   * torches and the jetty lantern — for `lighting/LocalLights`.
+   */
+  lightAnchors(): { fire: THREE.Vector3; torches: THREE.Vector3[]; lanterns: THREE.Vector3[] } {
+    const lanterns: THREE.Vector3[] = [];
+    const lantern = this.object.getObjectByName('cove-lantern');
+    if (lantern) {
+      lantern.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(lantern);
+      if (!box.isEmpty()) lanterns.push(box.getCenter(new THREE.Vector3()));
+    }
+    return { ...this.islandDetail.lightAnchors, lanterns };
+  }
+
+  /** Light on the camp smoke: what the sky gives it, and the fire under it. See `IslandDetail.setLighting`. */
+  setDetailLighting(ambient: THREE.Color, fire: number): void {
+    this.islandDetail.setLighting(ambient, fire);
+  }
+
+  /** Aligns the animated dressing with a scene clock after a reset or seek. */
   resetClock(time = 0): void {
-    this.imposters?.resetClock(time);
+    this.islandDetail.resetClock(time);
   }
 
   /**
@@ -1125,9 +1059,9 @@ export class Props {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.imposters?.dispose();
     this.object.removeFromParent();
     this.object.clear();
+    this.islandDetail.dispose();
     this.floaters.length = 0;
     this.thinnable.length = 0;
     // Only the geometries this class *created* (baked instancing copies) are
@@ -1265,8 +1199,8 @@ export class Props {
    * Density comes from `coralSoft`, which is a set of twenty-four distinct forms
    * in one file: `bake.include` takes a different three of them per kind and
    * stacks them into a clump, so two draws' worth of geometry produce a bed that
-   * does not read as one shape repeated. The three photogrammetry colonies are
-   * placed sparsely on top of that as the pieces the eye actually lands on.
+   * does not read as one shape repeated. The pieces the eye lands on are
+   * `ReefLife`'s procedural colonies and bommies, placed on the same patches.
    */
   private placeReefGarden(dressing: Dressing, random: () => number): void {
     const garden = new THREE.Group();
@@ -1336,30 +1270,6 @@ export class Props {
         include: (n) => /^coral(13|14)_/.test(n),
         lean: 0.22,
         sink: 0.1,
-      },
-      {
-        source: dressing.coralFan,
-        count: CORAL_FAN_COUNT,
-        height: CORAL_FAN_HEIGHT,
-        name: 'reef-coral-fan',
-        lean: 0.3,
-        sink: 0.08,
-      },
-      {
-        source: dressing.coralBirdsnest,
-        count: CORAL_BIRDSNEST_COUNT,
-        height: CORAL_BIRDSNEST_HEIGHT,
-        name: 'reef-coral-birdsnest',
-        lean: 0.2,
-        sink: 0.1,
-      },
-      {
-        source: dressing.coralBrain,
-        count: CORAL_BRAIN_COUNT,
-        height: CORAL_BRAIN_HEIGHT,
-        name: 'reef-coral-brain',
-        lean: 0.16,
-        sink: 0.22,
       },
     ];
 
@@ -1746,306 +1656,284 @@ export class Props {
       clusterRadius: ISLAND.radius * 0.09,
     });
 
-    // The biggest crowns, in two groves on sheltered ground. Only four of them:
-    // this scan is 45k triangles and 19 m across at unit scale, so it is worth
-    // having where it can be the thing that gives the canopy a top and worth
-    // nothing at all repeated across a hillside.
-    this.scatter(island, dressing.jacaranda, JACARANDA_COUNT, 'island-jacaranda', random, {
-      inner: 0.25,
-      outer: 1.15,
+    // --- the planting --------------------------------------------------------
+    //
+    // Every kind below is generated by `./flora` and built at its real size in
+    // metres, so the scales are variation about 1 rather than the 1.5-14x the
+    // scanned models needed. They cost a few hundred to a couple of thousand
+    // triangles each at LOD0 and tens at LOD2, which is what buys the density:
+    // the old scans were 30-45k triangles a tree and could only be planted in
+    // the dozens, and an island planted in the dozens is a bald dome.
+    //
+    // The canopy now runs to the summit. Rock shows where the slope is too
+    // steep to hold soil — `Seafloor` paints that from the ground's own normal —
+    // rather than as a cap above a contour.
+
+    // Rain trees: the widest crowns, in groves on the gentler ground.
+    this.scatter(island, dressing.jacaranda, JACARANDA_COUNT, 'flora-umbrella', random, {
+      inner: 0.15,
+      outer: 1.12,
       minHeight: 6,
-      maxHeight: 40,
-      maxSlope: 0.22,
-      minScale: 0.55,
-      maxScale: 0.95,
+      maxHeight: 70,
+      maxSlope: 0.32,
+      minScale: 0.8,
+      maxScale: 1.15,
       minStretch: 0.9,
       maxStretch: 1.1,
       sink: 0.2,
-      slope: 0.15,
-      slopeSpan: 24,
+      slope: 0.1,
+      slopeSpan: 16,
       lean: 0.04,
-      clusters: 2,
-      clusterRadius: ISLAND.radius * 0.16,
-    });
-
-    // Trees in groves rather than an even scatter. Evenly spaced trees read as
-    // an orchard from any distance; clumps read as vegetation, and at 1.4 km the
-    // clumping is most of what is left of them. The grove radius is a fraction
-    // of the island rather than a fixed 45 m, or the same five groves would
-    // cover a quarter of the ground they used to.
-    //
-    // The canopy is a Hong Kong orchid tree now, not `island_tree_01`. That scan
-    // is 5 m of half-bare coastal scrub — a beautiful capture of the wrong
-    // plant, and on a tropical island it read as a dead stick, which is exactly
-    // what it was asked about. This one is an authored botanical model: 5.2 m of
-    // closed broadleaf crown, leaves as alpha-tested cards rather than modelled
-    // geometry, so it costs a third of the triangles and fills four times the
-    // silhouette.
-    //
-    // Scale 1.5-2.4 puts it at 8-12 m, which is what a mature Bauhinia is.
-    this.scatter(island, dressing.tree, TREE_COUNT, 'island-trees', random, {
-      inner: 0.1,
-      outer: 1.25,
-      minHeight: 5,
-      maxHeight: 100,
-      maxSlope: 0.4,
-      minScale: 1.5,
-      maxScale: 2.4,
-      minStretch: 0.9,
-      maxStretch: 1.2,
-      sink: 0.1,
-      slope: 0.25,
-      slopeSpan: 12,
-      lean: 0.06,
       clusters: 5,
-      clusterRadius: ISLAND.radius * 0.18,
+      clusterRadius: ISLAND.radius * 0.14,
     });
 
-    // The flame trees. Held to the sheltered mid-slopes and clustered tightly:
-    // a poinciana is a valley tree, and the reference shows them in two or three
-    // clumps rather than spread through the wood. Scale 1.2-1.9 on a 9 m crown
-    // gives 11-17 m across, which is the shape — this is a tree that is half
-    // again as wide as it is tall.
-    this.scatter(island, dressing.treeFlame, TREE_FLAME_COUNT, 'island-flame-trees', random, {
-      inner: 0.2,
-      outer: 1.1,
-      minHeight: 7,
-      maxHeight: 78,
-      maxSlope: 0.3,
-      minScale: 1.2,
-      maxScale: 1.9,
+    // The closed canopy. Clumped, because evenly spaced trees read as an orchard
+    // from any distance and clumps read as forest.
+    this.scatter(island, dressing.tree, TREE_COUNT, 'flora-canopy', random, {
+      inner: 0.02,
+      outer: 1.2,
+      minHeight: 5,
+      maxHeight: ISLAND.peak + 30,
+      maxSlope: 0.75,
+      minScale: 0.8,
+      maxScale: 1.3,
       minStretch: 0.9,
       maxStretch: 1.15,
       sink: 0.15,
+      slope: 0.2,
+      slopeSpan: 10,
+      lean: 0.06,
+      clusters: 12,
+      clusterRadius: ISLAND.radius * 0.16,
+    });
+
+    // Emergents: tall clear boles standing out of the canopy, which is what
+    // gives the skyline its broken edge.
+    this.scatter(island, dressing.treeMid, TREE_MID_COUNT, 'flora-emergent', random, {
+      inner: 0.02,
+      outer: 1.1,
+      minHeight: 12,
+      maxHeight: ISLAND.peak + 40,
+      maxSlope: 0.7,
+      minScale: 0.85,
+      maxScale: 1.25,
+      minStretch: 0.9,
+      maxStretch: 1.2,
+      sink: 0.2,
       slope: 0.12,
-      slopeSpan: 16,
+      slopeSpan: 10,
+      lean: 0.05,
+      clusters: 9,
+      clusterRadius: ISLAND.radius * 0.18,
+    });
+
+    // Flame trees, held to a couple of sheltered clumps: an accent the eye
+    // finds in the green, not an orange hill.
+    this.scatter(island, dressing.treeFlame, TREE_FLAME_COUNT, 'flora-flame', random, {
+      inner: 0.25,
+      outer: 1.05,
+      minHeight: 6,
+      maxHeight: 60,
+      maxSlope: 0.35,
+      minScale: 0.85,
+      maxScale: 1.2,
+      sink: 0.15,
+      slope: 0.1,
+      slopeSpan: 14,
       lean: 0.05,
       clusters: 3,
-      clusterRadius: ISLAND.radius * 0.12,
+      clusterRadius: ISLAND.radius * 0.08,
     });
 
-    this.scatter(island, dressing.treeMid, TREE_MID_COUNT, 'island-trees-mid', random, {
-      inner: 0.05,
-      outer: 1.15,
-      minHeight: 10,
-      maxHeight: 108,
-      minScale: 2.2,
-      maxScale: 3.6,
-      minStretch: 0.9,
-      maxStretch: 1.15,
-      sink: 0.08,
-      slope: 0.25,
-      slopeSpan: 10,
-      lean: 0.08,
-      clusters: 5,
-      clusterRadius: ISLAND.radius * 0.15,
-    });
-
-    // The pachira ships as four plants laid out in a row; `_d` is the tallest of
-    // them, and taking one variant rather than the row is what keeps this to a
-    // single instanced clump instead of four plants marching sideways. Held to
-    // the low fringe: the species is a swamp tree, and it is what turns the join
-    // between beach and canopy into a gradient.
-    this.scatter(island, dressing.pachira, PACHIRA_COUNT, 'island-pachira', random, {
-      inner: 0.55,
+    // Bananas on the low fringe, where the beach meets the forest.
+    this.scatter(island, dressing.pachira, PACHIRA_COUNT, 'flora-banana', random, {
+      inner: 0.5,
       outer: 1.3,
-      minHeight: 2.5,
-      maxHeight: 14,
-      minScale: 2.2,
-      maxScale: 3.8,
+      minHeight: 2.2,
+      maxHeight: 30,
+      maxSlope: 0.45,
+      minScale: 0.8,
+      maxScale: 1.25,
       sink: 0.05,
-      slope: 0.2,
-      slopeSpan: 7,
-      lean: 0.08,
-      clusters: 4,
-      clusterRadius: ISLAND.radius * 0.09,
-      bake: { include: (name) => name.endsWith('_d'), origin: 'cluster' },
-    });
-
-    // Understorey. Everything below here only *receives* shadow: it lives under
-    // the canopy, where the light is already the canopy's shadow, and drawing a
-    // few thousand leaf cards a second time into the depth map buys a contact
-    // shadow nobody will ever be close enough to see.
-    this.scatter(island, dressing.anthurium, ANTHURIUM_COUNT, 'island-anthurium', random, {
-      inner: 0.1,
-      outer: 1.22,
-      minHeight: 4,
-      maxHeight: 84,
-      maxSlope: 0.3,
-      minScale: 1.8,
-      maxScale: 3.2,
-      slope: 0.3,
-      slopeSpan: 8,
-      lean: 0.1,
-      clusters: 5,
-      clusterRadius: ISLAND.radius * 0.07,
-      casts: false,
-      bake: { include: (name) => name.endsWith('_a'), origin: 'cluster' },
-    });
-
-    this.scatter(island, dressing.calathea, CALATHEA_COUNT, 'island-calathea', random, {
-      inner: 0.1,
-      outer: 1.22,
-      minHeight: 4,
-      maxHeight: 76,
-      maxSlope: 0.3,
-      minScale: 2.2,
-      maxScale: 3.8,
-      slope: 0.3,
-      slopeSpan: 8,
-      lean: 0.1,
-      clusters: 6,
-      clusterRadius: ISLAND.radius * 0.07,
-      casts: false,
-      bake: { include: (name) => name.endsWith('_a'), origin: 'cluster' },
-    });
-
-    this.scatter(island, dressing.fern, FERN_COUNT, 'island-ferns', random, {
-      inner: 0.08,
-      outer: 1.28,
-      minHeight: 3,
-      maxHeight: 96,
-      minScale: 2.4,
-      maxScale: 4.2,
-      slope: 0.35,
+      slope: 0.15,
       slopeSpan: 6,
-      lean: 0.12,
-      clusters: 7,
-      clusterRadius: ISLAND.radius * 0.07,
-      casts: false,
-      bake: { include: (name) => name.endsWith('_b'), origin: 'cluster' },
+      lean: 0.08,
+      clusters: 8,
+      clusterRadius: ISLAND.radius * 0.06,
+      cullDistance: 520,
     });
 
-    this.scatter(island, dressing.sorrel, SORREL_COUNT, 'island-sorrel', random, {
-      inner: 0.08,
-      outer: 1.28,
+    // Understorey. Receives shadow, casts none: it lives under the canopy,
+    // where the light is already the canopy's shadow.
+    this.scatter(island, dressing.calathea, CALATHEA_COUNT, 'flora-bush', random, {
+      inner: 0.02,
+      outer: 1.25,
+      minHeight: 2.5,
+      maxHeight: ISLAND.peak + 30,
+      maxSlope: 0.8,
+      minScale: 0.8,
+      maxScale: 1.5,
+      slope: 0.3,
+      slopeSpan: 6,
+      lean: 0.1,
+      clusters: 28,
+      clusterRadius: ISLAND.radius * 0.1,
+      casts: false,
+      cullDistance: 460,
+    });
+
+    this.scatter(island, dressing.fern, FERN_COUNT, 'flora-ferns', random, {
+      inner: 0.02,
+      outer: 1.25,
       minHeight: 3,
-      maxHeight: 98,
-      minScale: 7,
-      maxScale: 14,
-      slope: 0.4,
+      maxHeight: ISLAND.peak + 30,
+      maxSlope: 0.9,
+      minScale: 0.8,
+      maxScale: 1.35,
+      slope: 0.35,
       slopeSpan: 5,
       lean: 0.12,
-      clusters: 7,
-      clusterRadius: ISLAND.radius * 0.06,
+      clusters: 30,
+      clusterRadius: ISLAND.radius * 0.08,
       casts: false,
-      bake: { include: (name) => name.endsWith('_d'), origin: 'cluster' },
+      cullDistance: 360,
+    });
+
+    this.scatter(island, dressing.sorrel, SORREL_COUNT, 'flora-aroid', random, {
+      inner: 0.02,
+      outer: 1.25,
+      minHeight: 3,
+      maxHeight: ISLAND.peak,
+      maxSlope: 0.7,
+      minScale: 0.8,
+      maxScale: 1.4,
+      slope: 0.3,
+      slopeSpan: 5,
+      lean: 0.1,
+      clusters: 12,
+      clusterRadius: ISLAND.radius * 0.07,
+      casts: false,
+      cullDistance: 360,
+    });
+
+    // Flowering shrubs, sparingly, along the forest edge where they get light.
+    this.scatter(island, dressing.anthurium, ANTHURIUM_COUNT, 'flora-hibiscus', random, {
+      inner: 0.45,
+      outer: 1.25,
+      minHeight: 2.5,
+      maxHeight: 30,
+      maxSlope: 0.4,
+      minScale: 0.8,
+      maxScale: 1.3,
+      slope: 0.3,
+      slopeSpan: 5,
+      lean: 0.1,
+      clusters: 7,
+      clusterRadius: ISLAND.radius * 0.05,
+      casts: false,
+      cullDistance: 420,
     });
 
     // --- palms -------------------------------------------------------------
     //
-    // These replace the procedural palm `Remains.ts` used to build. That palm
-    // was a good piece of engineering and a bad tree: its fronds faked
-    // transmission through `emissiveNode`, which is neither shadowed nor
-    // tone-mapped with the rest of the scene, so on a clear day the whole grove
-    // came out chrome blue against a blue sky.
-    //
-    // A coconut grows to the high-tide line and no further inland than the first
-    // rise, which is what the elevation band is: low enough to stand on the
-    // beach, high enough to climb the first slope behind it. The bearing weights
-    // them toward the cove, because that is the shoreline anyone arrives at.
-    this.scatter(island, dressing.palmCoconut, PALM_COCONUT_COUNT, 'island-palms', random, {
+    // A coconut grows to the high-tide line and no further inland than the
+    // first rise. Three shapes — the arched coconut, the tall slender one and
+    // the beach leaner — so the shoreline reads as a grove rather than as one
+    // model stamped a hundred times. The leaners take `facing: 'downhill'`:
+    // their curve is built toward +x, and turning +x down the fall line makes
+    // every one of them reach out over the sand toward the water.
+    this.scatter(island, dressing.palmCoconut, PALM_COCONUT_COUNT, 'flora-palms', random, {
       inner: 0.55,
       outer: 1.32,
-      minHeight: 1.2,
-      maxHeight: 22,
-      maxSlope: 0.34,
-      bearing: 0.7,
-      spread: 1.6,
-      minScale: 1.5,
-      maxScale: 2.6,
+      minHeight: 1.4,
+      maxHeight: 24,
+      maxSlope: 0.4,
+      minScale: 0.8,
+      maxScale: 1.2,
       minStretch: 0.9,
-      maxStretch: 1.25,
-      sink: 0.12,
-      // Palms grow *up*, not out of the slope, so the tilt toward the ground
-      // normal is small — but not zero: a shoreline coconut leans seaward, and
-      // a grove of perfectly vertical ones reads as telegraph poles.
-      slope: 0.18,
+      maxStretch: 1.15,
+      sink: 0.1,
+      slope: 0.1,
       slopeSpan: 12,
-      lean: 0.16,
-      clusters: 7,
-      clusterRadius: ISLAND.radius * 0.11,
+      lean: 0.08,
+      facing: 'downhill',
+      clusters: 12,
+      clusterRadius: ISLAND.radius * 0.09,
     });
 
-    this.scatter(island, dressing.palmTall, PALM_TALL_COUNT, 'island-palms-tall', random, {
-      inner: 0.5,
+    this.scatter(island, dressing.palmTall, PALM_TALL_COUNT, 'flora-palms-tall', random, {
+      inner: 0.45,
       outer: 1.3,
-      minHeight: 1.6,
-      maxHeight: 30,
-      maxSlope: 0.34,
-      bearing: 0.7,
-      spread: 2.1,
-      minScale: 1.8,
-      maxScale: 3.2,
+      minHeight: 1.8,
+      maxHeight: 50,
+      maxSlope: 0.5,
+      minScale: 0.85,
+      maxScale: 1.2,
       minStretch: 0.9,
-      maxStretch: 1.3,
+      maxStretch: 1.2,
       sink: 0.1,
-      slope: 0.15,
+      slope: 0.08,
       slopeSpan: 12,
-      lean: 0.14,
-      clusters: 6,
-      clusterRadius: ISLAND.radius * 0.13,
+      lean: 0.08,
+      clusters: 10,
+      clusterRadius: ISLAND.radius * 0.12,
+    });
+
+    this.scatter(island, dressing.palmLean, PALM_LEAN_COUNT, 'flora-palms-lean', random, {
+      inner: 0.6,
+      outer: 1.35,
+      minHeight: 0.9,
+      maxHeight: 6,
+      maxSlope: 0.35,
+      minScale: 0.85,
+      maxScale: 1.15,
+      sink: 0.1,
+      slope: 0.05,
+      slopeSpan: 14,
+      lean: 0.06,
+      facing: 'downhill',
+      clusters: 10,
+      clusterRadius: ISLAND.radius * 0.07,
     });
 
     // --- ground cover ------------------------------------------------------
     //
-    // Grass is the one kind with a slope test, and the one kind whose source
-    // files are rows of separate tufts rather than single plants: stacking a
-    // few variants on a common origin turns a row into a clump, and merging
-    // them makes the clump a single geometry and therefore a single draw.
-    //
-    // `grass_medium_01` and `_02` carry this, with `IslandMeadow`'s GPU field
-    // under them for the density no scatter can pay for.
-    //
-    // `grass_bermuda_01` used to be here and is gone. It is a *lawn* grass — the
-    // whole Poly Haven model is 15 cm tall and 8 cm across, twenty-one separate
-    // blades of it — so covering a hillside with it needed a scale of four to
-    // eight, and a 15 cm plant blown up to a metre does not read as grass. It
-    // reads as a black spiked shrub, which is how it looked on the slope. It was
-    // demoted to "fine turf close in" rather than removed, and that was the
-    // wrong call twice over: the shader meadow now owns close-in turf entirely,
-    // so the demotion left six hundred instances of a broken-looking model
-    // drawing underneath a field that had already replaced it.
-    this.scatter(island, dressing.grassMeadow, MEADOW_COUNT, 'island-meadow', random, {
-      inner: 0.05,
-      outer: 1.3,
-      minHeight: 2,
-      maxHeight: 108,
-      maxSlope: 0.2,
-      minScale: 1.6,
-      maxScale: 2.8,
+    // Dune grass on the back of the beach and in the clearings; `IslandMeadow`'s
+    // GPU field carries the close-in turf under it.
+    this.scatter(island, dressing.grassMeadow, MEADOW_COUNT, 'flora-grass', random, {
+      inner: 0.3,
+      outer: 1.32,
+      minHeight: 1.6,
+      maxHeight: 30,
+      maxSlope: 0.4,
+      minScale: 0.8,
+      maxScale: 1.4,
       slope: 0.6,
       slopeSpan: 5,
       lean: 0.06,
-      clusters: 9,
-      clusterRadius: ISLAND.radius * 0.09,
+      clusters: 14,
+      clusterRadius: ISLAND.radius * 0.06,
       casts: false,
-      bake: {
-        include: (name) => /_(mid_b|small_b|tall_a|tall_c)_/.test(name),
-        origin: 'stack',
-      },
+      cullDistance: 300,
     });
 
-    this.scatter(island, dressing.grassTussock, TUSSOCK_COUNT, 'island-tussock', random, {
+    this.scatter(island, dressing.grassTussock, TUSSOCK_COUNT, 'flora-tussock', random, {
       inner: 0.05,
       outer: 1.28,
-      minHeight: 3,
-      maxHeight: 100,
-      maxSlope: 0.26,
-      minScale: 2,
-      maxScale: 3.2,
+      minHeight: 2.5,
+      maxHeight: ISLAND.peak,
+      maxSlope: 0.6,
+      minScale: 0.8,
+      maxScale: 1.3,
       slope: 0.5,
       slopeSpan: 5,
       lean: 0.08,
-      clusters: 8,
+      clusters: 12,
       clusterRadius: ISLAND.radius * 0.07,
       casts: false,
-      bake: {
-        include: (name) => /_(a|c|e)$/.test(name),
-        origin: 'stack',
-      },
+      cullDistance: 300,
     });
-
   }
 
   // -------------------------------------------------------------- pirate cove
@@ -2311,40 +2199,20 @@ export class Props {
     random: () => number,
     spec: ScatterSpec,
   ): void {
-    const imposterKind = IMPOSTER_KINDS[name];
-    const useImposter =
-      this.imposters !== null &&
-      imposterKind !== undefined &&
-      this.imposterMode !== 'off';
-    const buildMeshes = this.imposterMode !== 'always' || !useImposter;
-    const meshes = buildMeshes
-      ? this.buildScatter(this.bakeParts(source.base, spec.bake), count, name)
-      : null;
-    if (!meshes && !useImposter) return;
+    const meshes = this.buildScatter(this.bakeParts(source.base, spec.bake), count, name);
+    if (!meshes) return;
 
-    // The same placement loop feeds both representations. In Hybrid, mesh
-    // levels cover the near band and the atlas covers the far band; in Always
-    // the source groups are absent and only the atlas receives these transforms.
-    const lodMeshes = meshes
-      ? source.lods.map((group, index) =>
-          this.buildScatter(
-            this.bakeParts(group, spec.bake),
-            count,
-            name + '-lod' + (index + 1),
-          ),
-        )
-      : [];
-    const levels: THREE.InstancedMesh[][] = meshes ? [meshes] : [];
+    const lodMeshes = source.lods.map((group, index) =>
+      this.buildScatter(this.bakeParts(group, spec.bake), count, name + '-lod' + (index + 1)),
+    );
+    const levels: THREE.InstancedMesh[][] = [meshes];
     for (const level of lodMeshes) if (level) levels.push(level);
-    if (meshes) {
-      for (const level of lodMeshes) {
-        if (level) this.shareLodMaterials(meshes, level);
-      }
+    for (const level of lodMeshes) {
+      if (level) this.shareLodMaterials(meshes, level);
     }
 
-    const needsDeal =
-      levels.length > 1 ||
-      (meshes !== null && useImposter && this.imposterMode === 'hybrid');
+    // A cull distance needs the deal even for a kind with a single level.
+    const needsDeal = levels.length > 1 || spec.cullDistance !== undefined;
     const matrices = needsDeal ? new Float32Array(count * 16) : null;
     const centres = needsDeal ? new Float32Array(count * 3) : null;
 
@@ -2369,6 +2237,7 @@ export class Props {
     const minStretch = spec.minStretch ?? 1;
     const maxStretch = spec.maxStretch ?? minStretch;
     const contour = spec.facing === 'contour';
+    const downhill = spec.facing === 'downhill';
 
     let placed = 0;
     for (let i = 0; i < count; i++) {
@@ -2387,9 +2256,13 @@ export class Props {
 
       const s = spec.minScale + random() * (spec.maxScale - spec.minScale);
       position.set(point.x, point.y - sink * s, point.z);
-      if (slope > 0 || contour) groundNormal(point.x, point.z, slopeSpan, normal);
+      if (slope > 0 || contour || downhill) groundNormal(point.x, point.z, slopeSpan, normal);
 
       let yaw = random() * TAU;
+      if (downhill && Math.hypot(normal.x, normal.z) > CONTOUR_MIN_GRADE) {
+        // spinAbout(UP, yaw) carries +x to (cos yaw, 0, -sin yaw).
+        yaw = Math.atan2(-normal.z, normal.x) + (random() - 0.5) * 0.8;
+      }
       if (contour) {
         const derived = contourYaw(normal);
         if (derived !== null) {
@@ -2413,35 +2286,12 @@ export class Props {
       scale.set(s, s * stretch, s);
       matrix.compose(position, quaternion, scale);
 
-      if (meshes) {
-        for (const mesh of meshes) mesh.setMatrixAt(placed, matrix);
-      }
+      for (const mesh of meshes) mesh.setMatrixAt(placed, matrix);
       if (matrices && centres) {
         matrix.toArray(matrices, placed * 16);
         centres[placed * 3] = position.x;
         centres[placed * 3 + 1] = position.y;
         centres[placed * 3 + 2] = position.z;
-      }
-      if (useImposter) {
-        const near =
-          this.imposterMode === 'hybrid' && meshes
-            ? imposterKind.minDistance
-            : 0;
-        const far =
-          this.imposterMode === 'hybrid' && meshes
-            ? imposterKind.maxDistance
-            : IMPOSTER_NO_CULL_DISTANCE;
-        this.imposters!.addPlacement({
-          species: imposterKind.species,
-          position: [position.x, position.y, position.z],
-          scale: s,
-          stretch,
-          yaw,
-          minDistance: near,
-          maxDistance: far,
-          detailSlot: placed,
-          detailCapacity: count,
-        });
       }
       placed++;
     }
@@ -2453,26 +2303,17 @@ export class Props {
       return;
     }
 
-    if (meshes) {
-      const lod =
-        matrices && centres && levels.length > 0
-          ? { levels, matrices, centres }
-          : undefined;
-      const cullDistance =
-        useImposter && this.imposterMode === 'hybrid'
-          ? imposterKind.meshCullDistance
-          : undefined;
-      this.seal(meshes, placed, lod, cullDistance);
+    const lod = matrices && centres ? { levels, matrices, centres } : undefined;
+    this.seal(meshes, placed, lod, spec.cullDistance);
 
-      for (const mesh of meshes) {
-        mesh.castShadow = spec.casts ?? true;
+    for (const mesh of meshes) {
+      mesh.castShadow = spec.casts ?? true;
+      parent.add(mesh);
+    }
+    for (let i = 1; i < levels.length; i++) {
+      for (const mesh of levels[i]) {
+        mesh.castShadow = false;
         parent.add(mesh);
-      }
-      for (let i = 1; i < levels.length; i++) {
-        for (const mesh of levels[i]) {
-          mesh.castShadow = false;
-          parent.add(mesh);
-        }
       }
     }
   }
@@ -2971,14 +2812,6 @@ function modelSlug(url: string): string {
   return filename.replace(/\.glb$/i, '');
 }
 
-function resolveImposterMode(options: PropsOptions): PropsImposterMode {
-  if (options.imposterMode) return options.imposterMode;
-  if (options.qualityTier === 'low' || options.qualityTier === 'medium') {
-    return 'always';
-  }
-  if (options.qualityTier) return 'hybrid';
-  return (options.detailScale ?? 1) <= 0.5 ? 'always' : 'hybrid';
-}
 /** A point on the open plateau, even in area over the reef annulus. */
 function reefScatterSample(random: () => number): { x: number; z: number } {
   const angle = random() * Math.PI * 2;

@@ -1,3 +1,6 @@
+import { icon } from './icons.ts';
+import { startLoadingTips } from './LoadingTips.ts';
+import { MenuSea } from './MenuSea.ts';
 import {
   QUALITY_TIERS,
   type QualityTier,
@@ -41,6 +44,24 @@ const QUALITY_LABELS: Record<QualityTier, string> = {
   high: 'High',
   ultra: 'Ultra',
   max: 'Max',
+};
+
+/** What each tier costs, in a word a visitor can choose by. */
+const QUALITY_DETAILS: Record<QualityTier, string> = {
+  low: 'smoothest',
+  medium: 'balanced',
+  high: 'rich',
+  ultra: 'lavish',
+  max: 'everything',
+};
+
+/** The same, as a sentence, for the plaque's tooltip. */
+const QUALITY_TIPS: Record<QualityTier, string> = {
+  low: 'Lightest on the device. For phones and older laptops',
+  medium: 'A good balance for most laptops',
+  high: 'Rich detail for a desktop graphics card',
+  ultra: 'Lavish. For a fast graphics card',
+  max: 'Everything at once. For the fastest graphics cards',
 };
 
 function isQualityTier(value: string | null): value is QualityTier {
@@ -112,29 +133,44 @@ function defaultSelection(probe: DeviceProbe): StoredSelection {
   return { backend: 'webgpu', quality: 'high' };
 }
 
+/**
+ * What the probe found, as a plain readout. Instrumentation, not voice: it
+ * says only what the browser reported, and says so when it reported nothing.
+ */
 function describeProbe(probe: DeviceProbe): string {
+  // `deviceMemory` is rounded and capped by the browser (8 GB in Chrome), so
+  // it is quoted as "at least".
   const memory = probe.deviceMemory === null
-    ? 'memory n/a'
-    : String(probe.deviceMemory) + ' GB RAM hint';
+    ? 'memory not reported'
+    : String(probe.deviceMemory) + ' GB+ memory';
   const cores = probe.hardwareConcurrency > 0
-    ? String(probe.hardwareConcurrency) + ' threads'
-    : 'threads n/a';
-  if (!probe.adapter) return 'WebGPU unavailable · WebGL2 ready · ' + cores + ' · ' + memory;
-  const vendor = probe.vendor || 'unreported adapter';
-  return 'WebGPU ' + vendor + ' · ' + cores + ' · ' + memory;
+    ? String(probe.hardwareConcurrency) + ' CPU threads'
+    : 'CPU not reported';
+  if (!probe.adapter) return 'No WebGPU · WebGL2 ready · ' + cores + ' · ' + memory;
+  const vendor = probe.vendor ? probe.vendor + ' graphics' : 'graphics not named';
+  return 'WebGPU on ' + vendor + ' · ' + cores + ' · ' + memory;
 }
 
+/**
+ * A brass-framed plaque. Selected, its face is polished brass with the name
+ * engraved in ink; otherwise it is dark wood with the name inlaid in brass.
+ * `advised` adds the small wax tag that marks what the probe recommends.
+ */
 function choiceButton(
   label: string,
   detail: string,
   selected: boolean,
   onSelect: () => void,
+  advised = false,
+  tip = '',
 ): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'boot__choice';
+  button.classList.toggle('is-selected', selected);
   button.setAttribute('aria-label', label);
   button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  if (tip) button.title = tip;
   const name = document.createElement('span');
   name.className = 'boot__choice-name';
   name.textContent = label;
@@ -142,6 +178,12 @@ function choiceButton(
   caption.className = 'boot__choice-detail';
   caption.textContent = detail;
   button.append(name, caption);
+  if (advised) {
+    const tag = document.createElement('span');
+    tag.className = 'boot__advised';
+    tag.textContent = 'advised';
+    button.append(tag);
+  }
   button.addEventListener('click', onSelect);
   return button;
 }
@@ -159,12 +201,32 @@ function showProgress(root: HTMLElement): void {
   const progress = root.querySelector<HTMLElement>('#boot-progress');
   if (gate) gate.hidden = true;
   if (progress) progress.hidden = false;
+  // The sheet shrinks from the menu to the loading chart; CSS animates the
+  // change of content rather than cutting to it.
+  root.classList.add('boot--loading');
+  startLoadingTips(root);
+}
+
+/**
+ * The painted seascape behind the gate and the loading chart, and the retry
+ * control the failure state shows. Neither may stop the boot: a browser
+ * without a 2D canvas still gets the gate on its plain background.
+ */
+function dressBoot(root: HTMLElement): void {
+  try {
+    new MenuSea(root).start();
+  } catch {
+    // No 2D context: the gradient behind the sheet stands in for the sea.
+  }
+  const retry = root.querySelector<HTMLButtonElement>('#boot-retry');
+  retry?.addEventListener('click', () => window.location.reload(), { once: true });
 }
 
 function renderGate(
   root: HTMLElement,
   probe: DeviceProbe,
   initial: StoredSelection,
+  advised: StoredSelection,
 ): Promise<StartSelection> {
   const gate = root.querySelector<HTMLElement>('#boot-gate');
   if (!gate) throw new Error('Failed to start: page markup is missing #boot-gate.');
@@ -174,7 +236,7 @@ function renderGate(
   const bar = root.querySelector<HTMLElement>('#boot-bar');
   gate.hidden = false;
   if (progress) progress.hidden = true;
-  if (status) status.textContent = 'Choose a profile';
+  if (status) status.textContent = 'Choose your settings';
   if (bar) bar.style.transform = 'scaleX(0)';
 
   let selectedBackend = initial.backend;
@@ -182,26 +244,53 @@ function renderGate(
 
   const intro = document.createElement('p');
   intro.className = 'boot__gate-intro';
-  intro.textContent = 'Set the instrument for this device. You can change it later.';
+  intro.textContent = 'Choose how hard this device should work. The wax tag marks what suits it, and either can be changed later from the ledger.';
 
   const backendLabel = document.createElement('div');
   backendLabel.className = 'boot__gate-label';
-  backendLabel.textContent = 'Renderer';
+  backendLabel.textContent = 'Graphics';
   const backendGroup = document.createElement('div');
   backendGroup.className = 'boot__choices boot__choices--backend';
   backendGroup.setAttribute('role', 'group');
   backendGroup.setAttribute('aria-label', 'Renderer backend');
+  // Without an adapter WebGPU is not a choice, and saying so plainly is the
+  // gate's error state: the plaque is struck through and a note says what the
+  // fallback costs, rather than letting the visitor pick a backend that would
+  // silently become WebGL2 anyway.
+  const webgpuAvailable = probe.adapter !== null;
+  if (!webgpuAvailable) selectedBackend = 'webgl';
   const backendButtons = [
-    choiceButton('WebGPU', 'preferred', selectedBackend === 'webgpu', () => {
+    choiceButton('WebGPU', webgpuAvailable ? 'every effect' : 'not in this browser', selectedBackend === 'webgpu', () => {
       selectedBackend = 'webgpu';
       markSelected(backendButtons, 'WebGPU');
-    }),
-    choiceButton('WebGL2', 'compatibility', selectedBackend === 'webgl', () => {
+    }, advised.backend === 'webgpu', webgpuAvailable
+      ? 'The modern graphics path: reflections, the view into the water and rain on the lens'
+      : 'This browser does not offer WebGPU'),
+    choiceButton('WebGL2', 'runs anywhere', selectedBackend === 'webgl', () => {
       selectedBackend = 'webgl';
       markSelected(backendButtons, 'WebGL2');
-    }),
+    }, advised.backend === 'webgl', 'The older graphics path: the same waves, with fewer effects'),
   ];
   backendGroup.append(...backendButtons);
+  const webgpuButton = backendButtons[0];
+  let notice: HTMLElement | null = null;
+  if (!webgpuAvailable && webgpuButton) {
+    webgpuButton.disabled = true;
+    webgpuButton.classList.add('is-unavailable');
+    webgpuButton.setAttribute('aria-describedby', 'boot-notice');
+    notice = document.createElement('p');
+    notice.className = 'boot__notice';
+    notice.id = 'boot-notice';
+    notice.setAttribute('role', 'note');
+    notice.append(
+      icon('warning', 'boot__notice-icon'),
+      document.createTextNode(
+        'This browser does not offer WebGPU, so the sea will be drawn with WebGL2: '
+          + 'the same waves, without mirror reflections, the view into the water or rain on the lens. '
+          + 'For the full sea, open this in a current Chrome, Edge or Safari.',
+      ),
+    );
+  }
 
   const qualityLabel = document.createElement('div');
   qualityLabel.className = 'boot__gate-label';
@@ -211,10 +300,10 @@ function renderGate(
   qualityGroup.setAttribute('role', 'group');
   qualityGroup.setAttribute('aria-label', 'Quality tier');
   const qualityButtons = QUALITY_TIERS.map((tier) =>
-    choiceButton(QUALITY_LABELS[tier], tier, selectedQuality === tier, () => {
+    choiceButton(QUALITY_LABELS[tier], QUALITY_DETAILS[tier], selectedQuality === tier, () => {
       selectedQuality = tier;
       markSelected(qualityButtons, QUALITY_LABELS[tier]);
-    }),
+    }, advised.quality === tier, QUALITY_TIPS[tier]),
   );
   qualityGroup.append(...qualityButtons);
 
@@ -224,13 +313,17 @@ function renderGate(
 
   const start = document.createElement('button');
   start.type = 'button';
-  start.className = 'btn btn--primary boot__start';
-  start.textContent = 'Start the sea';
+  start.className = 'cta boot__start';
+  const startLabel = document.createElement('span');
+  startLabel.className = 'cta__label';
+  startLabel.textContent = 'Set Sail';
+  start.append(icon('anchor', 'cta__icon'), startLabel);
 
   gate.replaceChildren(
     intro,
     backendLabel,
     backendGroup,
+    ...(notice ? [notice] : []),
     qualityLabel,
     qualityGroup,
     probeReadout,
@@ -279,15 +372,17 @@ export async function openStartGate(root: HTMLElement): Promise<StartSelection> 
     // launch onto WebGL2 — including every benchmark and profile run nominally
     // measuring WebGPU.
     const quality = requestedQuality ?? stored?.quality ?? 'high';
+    dressBoot(root);
     showProgress(root);
     return { quality, backend, forceWebGL: backend === 'webgl', adapter: undefined };
   }
 
+  dressBoot(root);
   const probe = await probeDevice();
   const defaults = defaultSelection(probe);
   const initial: StoredSelection = {
     backend: params.get('webgl') === '1' ? 'webgl' : stored?.backend ?? defaults.backend,
     quality: requestedQuality ?? stored?.quality ?? defaults.quality,
   };
-  return renderGate(root, probe, initial);
+  return renderGate(root, probe, initial, defaults);
 }

@@ -42,6 +42,15 @@ export interface Preset {
     thickness: number;
     color: THREE.Color;
     shadowColor: THREE.Color;
+    /**
+     * Relief on the deck's underside, 0..1 — flat fair-weather bases at the
+     * low end, a storm's hanging lobes at the top. Required for the reason
+     * `atmosphere.overcast` is: `Clouds.setParams` merges, so a key only the
+     * storm set would leak into every preset chosen after it.
+     */
+    baseRoughness: number;
+    /** High cirrus veil, 0..1. Required for the same reason. */
+    cirrus: number;
   };
   weather: { kind: WeatherKind; intensity: number };
   /**
@@ -155,6 +164,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 700,
       color: color(0xffffff),
       shadowColor: color(0x8fa8c4),
+      baseRoughness: 0.1,
+      cirrus: 0.45,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -283,6 +294,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 500,
       color: color(0xeaf3ff),
       shadowColor: color(0x9db4cc),
+      baseRoughness: 0.15,
+      cirrus: 0.6,
     },
     weather: { kind: 'snow', intensity: 0.45 },
     sea: {
@@ -347,6 +360,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 900,
       color: color(0xfff6e8),
       shadowColor: color(0x7f93ad),
+      baseRoughness: 0.1,
+      cirrus: 0.35,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -411,6 +426,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 800,
       color: color(0xffd9b3),
       shadowColor: color(0x5a5470),
+      baseRoughness: 0.1,
+      cirrus: 0.7,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -478,6 +495,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 600,
       color: color(0xdfe6ea),
       shadowColor: color(0xa8b4bd),
+      baseRoughness: 0.3,
+      cirrus: 0.0,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -543,6 +562,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 700,
       color: color(0x9fb0c8),
       shadowColor: color(0x18202e),
+      baseRoughness: 0.1,
+      cirrus: 0.5,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -609,6 +630,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 1000,
       color: color(0xffffff),
       shadowColor: color(0x86a6c8),
+      baseRoughness: 0.08,
+      cirrus: 0.5,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
@@ -622,12 +645,17 @@ export const PRESETS: Record<PresetId, Preset> = {
       windwardFoam: 0.06,
     },
     water: {
-      deepColor: color(0x03414f),
-      shallowColor: color(0x2fd4c0),
-      scatterColor: color(0x4ee0c2),
-      extinction: vec(0.22, 0.06, 0.035),
+      // Deep water goes properly blue within a few tens of metres, so the open
+      // sea reads as ocean and only the island's shallows turn turquoise. At
+      // the old (0.22, 0.06, 0.035) thirty metres of water still showed the
+      // sand through it, and the whole sea read as a lagoon.
+      deepColor: color(0x022c48),
+      shallowColor: color(0x27d0bf),
+      scatterColor: color(0x3fe6b4),
+      extinction: vec(0.46, 0.12, 0.07),
       roughness: 0.055,
       foamThreshold: 0.42,
+      crestGlow: 0.85,
     },
     fog: { color: color(0xcfeaf4), density: 0.00012, volumetric: 9e-05 },
     underwater: {
@@ -676,8 +704,10 @@ export const PRESETS: Record<PresetId, Preset> = {
       density: 1.6,
       altitude: 800,
       thickness: 1400,
-      color: color(0x9aa3ad),
-      shadowColor: color(0x2b3138),
+      color: color(0x7d8791),
+      shadowColor: color(0x1e2329),
+      baseRoughness: 1.0,
+      cirrus: 0.0,
     },
     weather: { kind: 'rain', intensity: 0.9 },
     sea: {
@@ -691,14 +721,16 @@ export const PRESETS: Record<PresetId, Preset> = {
       windwardFoam: 0.07,
     },
     water: {
-      deepColor: color(0x0a1620),
-      shallowColor: color(0x21525f),
-      scatterColor: color(0x2c6a6f),
+      deepColor: color(0x071820),
+      shallowColor: color(0x1d5a5a),
+      scatterColor: color(0x2f7f72),
       extinction: vec(0.4, 0.18, 0.12),
       roughness: 0.12,
-      foamThreshold: 0.55,
+      // Raised with the foam relighting: lit as bubbles rather than at 40 % of
+      // albedo, a 21 m/s sea at 0.55 read as a snowfield.
+      foamThreshold: 0.66,
     },
-    fog: { color: color(0x6f7a86), density: 0.0007, volumetric: 0.00075 },
+    fog: { color: color(0x4a555f), density: 0.00042, volumetric: 0.00055 },
     underwater: {
       color: color(0x16323f),
       distortion: 0.02,
@@ -712,10 +744,13 @@ export const PRESETS: Record<PresetId, Preset> = {
       // look at, it is *flat*: the deck kills the key light, everything is lit
       // by an overcast hemisphere, and the air between the viewer and anything
       // worth seeing is full of water. The heaviest vignette of the nine.
-      slope: new THREE.Color(0.97, 0.98, 1.02),
-      offset: new THREE.Color(0.014, 0.015, 0.018),
-      power: new THREE.Color(0.96, 0.96, 0.96),
-      saturation: 0.76,
+      // Re-cut darker and harder for the relit foam and the lightning: a storm
+      // read as a pale wash, and a flash has nothing to land on in a frame that
+      // is already white. Slate water, white crests, a heavy deck.
+      slope: new THREE.Color(0.92, 0.97, 1.0),
+      offset: new THREE.Color(0.0, 0.002, 0.004),
+      power: new THREE.Color(1.1, 1.08, 1.06),
+      saturation: 0.86,
       vignette: 0.32,
     },
   },
@@ -743,6 +778,8 @@ export const PRESETS: Record<PresetId, Preset> = {
       thickness: 900,
       color: color(0xffcfa8),
       shadowColor: color(0x6b5f78),
+      baseRoughness: 0.1,
+      cirrus: 0.75,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {

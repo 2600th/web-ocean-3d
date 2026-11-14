@@ -11,17 +11,25 @@ export interface FrameStats {
  * Frame driver. Simulation receives a clamped delta so that a tab switch or a
  * long shader compile cannot teleport the ship across the ocean.
  */
+/**
+ * Draws one frame. `live` is true for the free-running frames `tick` draws and
+ * false for `step`'s deterministic ones, which must come out complete.
+ */
+export type RenderFn = (dt: number, elapsed: number, live: boolean) => void | Promise<void>;
+
 export class Loop {
   private readonly updates: Updatable[] = [];
-  private readonly renderFn: (dt: number, elapsed: number) => void | Promise<void>;
+  private readonly renderFn: RenderFn;
   private running = false;
   private paused = false;
+  /** Outstanding `hold()`s; the loop is paused while any is. */
+  private holds = 0;
   private last = 0;
   private elapsed = 0;
   private handle = 0;
   private inFlight = false;
   /**
-   * The frame currently inside `renderFn`, so a caller can join it.
+   * The frames in flight (see `beginFrame`), so a caller can join them.
    *
    * `inFlight` on its own is a flag with no join operation: pausing the loop
    * stops *new* frames but says nothing about the one already awaiting its
@@ -29,7 +37,8 @@ export class Loop {
    * do so while that frame's command buffer still references it, which WebGPU
    * reports as "Destroyed texture used in a submit". `settle()` is the join.
    */
-  private inFlightPromise: Promise<void> | null = null;
+  private readonly inFlightFrames = new Set<Promise<void>>();
+  private frameWaiters: Array<() => void> = [];
 
   readonly stats: FrameStats = { fps: 0, frameMs: 0 };
 
@@ -37,7 +46,7 @@ export class Loop {
   private static readonly FPS_SMOOTHING = 0.1;
   private static readonly MAX_DELTA = 1 / 15;
 
-  constructor(renderFn: (dt: number, elapsed: number) => void | Promise<void>) {
+  constructor(renderFn: RenderFn) {
     this.renderFn = renderFn;
   }
 
@@ -60,6 +69,7 @@ export class Loop {
   stop(): void {
     this.running = false;
     cancelAnimationFrame(this.handle);
+    for (const resolve of this.frameWaiters.splice(0)) resolve();
   }
 
   /**
@@ -72,20 +82,54 @@ export class Loop {
   }
 
   /**
-   * Resolves once no frame is inside `renderFn`.
+   * Resolves once no frame is in flight: neither running its updates nor
+   * inside `renderFn`, whether the loop drew it or `step` did.
    *
    * Pair with `setPaused(true)`: pause first so no *new* frame starts, then
    * settle so the one already running has finished. Doing it the other way round
    * leaves a window in which a fresh frame begins between the two calls.
    */
   async settle(): Promise<void> {
-    while (this.inFlightPromise !== null) {
-      await this.inFlightPromise;
+    while (this.inFlightFrames.size > 0) {
+      await Promise.all(this.inFlightFrames);
     }
   }
 
+  /**
+   * Resolves once the loop has finished drawing a frame it started after this
+   * call. Resolves immediately if the loop is not running, since no frame is
+   * coming; while paused it waits for the resume.
+   */
+  nextFrame(): Promise<void> {
+    if (!this.running) return Promise.resolve();
+    return new Promise((resolve) => this.frameWaiters.push(resolve));
+  }
+
+  /** Paused by `setPaused`, or by any outstanding `hold()`. */
   get isPaused(): boolean {
-    return this.paused;
+    return this.paused || this.holds > 0;
+  }
+
+  /**
+   * Pauses the loop until the returned call, whatever anyone else does.
+   *
+   * For work that must not share the renderer with a frame — a compile, a
+   * teardown. A flag cannot do this when two such jobs overlap: each records
+   * whether the loop was paused when it began and restores that when it ends,
+   * so the first to finish resumes frames under the other. Holds are counted,
+   * so the loop resumes only once every hold is released and nothing has
+   * called `setPaused(true)`. The returned call is idempotent.
+   */
+  hold(): () => void {
+    this.holds++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.holds--;
+      // Resuming must not integrate the whole hold as one delta.
+      if (!this.isPaused) this.last = performance.now();
+    };
   }
 
   /**
@@ -102,7 +146,9 @@ export class Loop {
   }
 
   /**
-   * Detaches the simulation from wall clock.
+   * Detaches the simulation from wall clock. Independent of `hold()`: a hold
+   * released while this is set leaves the loop paused, and clearing this
+   * leaves it paused while a hold is outstanding.
    *
    * While paused the rAF callback keeps firing but neither advances time nor
    * renders; `step()` becomes the only way the world moves. This is the basis of
@@ -131,13 +177,40 @@ export class Loop {
    * would.
    */
   async step(dt: number, steps = 1): Promise<void> {
-    for (let s = 0; s < steps; s++) {
-      this.elapsed += dt;
-      for (const update of this.updates) update(dt, this.elapsed);
+    const finish = this.beginFrame();
+    try {
+      for (let s = 0; s < steps; s++) {
+        this.elapsed += dt;
+        for (const update of this.updates) update(dt, this.elapsed);
+      }
+      const started = performance.now();
+      await this.renderFn(dt, this.elapsed, false);
+      this.stats.frameMs = performance.now() - started;
+    } finally {
+      finish();
     }
-    const started = performance.now();
-    await this.renderFn(dt, this.elapsed);
-    this.stats.frameMs = performance.now() - started;
+  }
+
+  /**
+   * Marks a frame as in flight, from *before* its updates run, and returns the
+   * call that ends it.
+   *
+   * Before the updates matters: an update can start work that pauses the loop
+   * and settles before touching the renderer (an LOD compile does), and a
+   * `settle()` that did not count the frame it was called from would let that
+   * work take the renderer before this frame has drawn. Stepped frames count
+   * too, for the same reason.
+   */
+  private beginFrame(): () => void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    // A set, not a slot: a `step` can start while a live frame is still
+    // drawing, and the first to finish must not clear the other.
+    this.inFlightFrames.add(promise);
+    return () => {
+      this.inFlightFrames.delete(promise);
+      resolve();
+    };
   }
 
   private tick = async (now: number): Promise<void> => {
@@ -146,7 +219,7 @@ export class Loop {
 
     // Paused: `step()` owns the clock. Keep the rAF chain alive so resuming does
     // not need to restart it.
-    if (this.paused) return;
+    if (this.isPaused) return;
 
     // Skip if the previous async render has not resolved — prevents unbounded
     // queueing of GPU work when the device is the bottleneck.
@@ -155,28 +228,25 @@ export class Loop {
     const rawDelta = (now - this.last) / 1000;
     this.last = now;
     const dt = Math.min(rawDelta, Loop.MAX_DELTA);
-    this.elapsed += dt;
-
-    for (const update of this.updates) update(dt, this.elapsed);
 
     this.inFlight = true;
+    const finish = this.beginFrame();
+    const waiters = this.frameWaiters.splice(0);
     const started = performance.now();
-    const render = this.renderFn(dt, this.elapsed);
-    this.inFlightPromise = Promise.resolve(render).then(
-      () => undefined,
-      () => undefined,
-    );
     try {
-      await render;
+      this.elapsed += dt;
+      for (const update of this.updates) update(dt, this.elapsed);
+      await this.renderFn(dt, this.elapsed, true);
     } finally {
       this.inFlight = false;
-      this.inFlightPromise = null;
+      finish();
       this.stats.frameMs = performance.now() - started;
       const instantaneous = rawDelta > 0 ? 1 / rawDelta : 0;
       this.stats.fps =
         this.stats.fps === 0
           ? instantaneous
           : this.stats.fps + (instantaneous - this.stats.fps) * Loop.FPS_SMOOTHING;
+      for (const resolve of waiters) resolve();
     }
   };
 }

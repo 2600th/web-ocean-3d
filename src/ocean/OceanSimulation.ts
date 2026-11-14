@@ -63,14 +63,14 @@ interface Cascade {
 const HEIGHT_SLOTS = 3;
 
 export interface OceanSimulationOptions {
-  size: 128 | 256 | 512;
+  size: 64 | 128 | 256 | 512;
   cascadeCount: 1 | 2 | 3;
   params: SpectrumParams;
 }
 
 export class OceanSimulation {
   private readonly renderer: THREE.WebGPURenderer;
-  private readonly quad = new THREE.QuadMesh();
+  private readonly quad = new THREE.QuadMesh(new THREE.NodeMaterial());
   private readonly cascades: Cascade[] = [];
   private fft: FFTResources;
 

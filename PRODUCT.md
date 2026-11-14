@@ -56,17 +56,20 @@ neighbouring demo could not truthfully copy is the combination of:
 
 ## Operating Context
 
-Desktop browser, one tab, mouse and keyboard, usually a single sitting with no
-return visit and nothing saved. There is no account, no persistence and no back end
-the app talks to. The one exception to "no data" is Vercel Web Analytics, injected
+Desktop browser, one tab, mouse and keyboard, usually a single sitting. There is
+no account and no back end the app talks to. Two small things are kept in the
+visitor's own browser (localStorage, and the app works without it): the menu
+choice of graphics and quality, and which first-minute lessons have been
+learned, so a returning visitor is not taught to drag the camera twice. The one exception to "no data" is Vercel Web Analytics, injected
 at boot from `main.ts` — aggregate page traffic, no account and nothing the visitor
 enters, because there is nothing to enter. Touch and coarse-pointer use is real but secondary: below
 900px the control panel becomes a bottom sheet and Boat mode gains an on-screen
 throttle ring.
 
 The visitor cannot break anything and there is nothing to recover from, which is
-why the interface carries no confirmation, no undo and no error surface beyond the
-renderer's own backend fallback.
+why the interface carries no confirmation and no undo. The error surfaces are the
+renderer's own backend fallback and a failed boot, which says what happened and
+what to try next.
 
 ## Capabilities and Constraints
 
@@ -113,15 +116,24 @@ renderer's own backend fallback.
 ## Brand Commitments
 
 - The name is **Web Ocean 3D**. It appears in the boot overlay and the panel head.
-- The only *voice* in the product is the storm quote — one line of serif italic
-  over the sea when the visitor takes the helm in heavy weather. It is deliberately
-  set in a different face from every other piece of text, because it is the one
-  thing that is not instrumentation. This distinction is binding.
-- Nothing else about the current visual treatment is binding. The redesign that
-  this section once called for has shipped: the dark navy glass surface and its
-  blue accent are gone, replaced by the printed-reference-page system recorded in
-  `DESIGN.md`. That system is a record of what was built, not a second binding
-  commitment — the only binding one is the voice/instrument split above.
+- **Player-facing text has a voice; readouts stay plain.** Everything the
+  visitor reads in play — the menu, the loading lines, objectives, toasts,
+  lessons, ledger titles and labels, finish and error states — is written in
+  one original seafaring voice (see *Voice* below). The readouts — frame rate,
+  backend and the WebGL2 fallback, quality tier, frame time, the probe line on
+  the menu, compass and wind figures — are instrumentation: plain, exact, and
+  never dressed up. This split is binding.
+- **The storm quote is the most authorial line, and keeps its own face.** One
+  line of serif italic over the sea when the visitor takes the helm in heavy
+  weather. Other copy has a voice; this is the one line that is the author
+  speaking, which is why it alone is set in IM Fell English italic.
+- Nothing else about the current visual treatment is binding. The interface is
+  now an original nautical-adventure language — parchment, brass, wood, ink and
+  wax, in the spirit of the genre but borrowing no game's name, fonts, icons or
+  art — recorded in `DESIGN.md`. It replaced the printed-reference-page system,
+  which replaced the dark navy glass before it. That record is of what was
+  built, not a second binding commitment — the binding ones are the
+  voice/readout split and the storm quote's face above.
 
 ## Evidence on Hand
 
@@ -154,8 +166,36 @@ one.
 4. **The controls are an invitation, not a cockpit.** A visitor who touches
    nothing should still get the best version; a visitor who touches everything
    should not be able to reach a broken one.
-5. **Instrumentation and voice stay separate.** Readouts read as software. The one
-   line that is authorial does not.
+5. **Voice for the player, plain for the readouts.** Copy the visitor reads in
+   play has a voice; instruments read as instruments. Nothing in the voice may
+   blur a readout — "WebGL2 fallback" is never softened into something kinder.
+
+## Voice
+
+Original, seafaring, and the visitor's own: warm, a little wry, confident and
+short. Never pirate-speak, never parody, never a pastiche of one game; no
+line, name or catchphrase borrowed from any.
+
+- **Say what to do, then stop.** "Shallows! Turn her away." The instruction
+  comes first; the flavour is in the word choice, not in extra words.
+- **Plain words over sailing words when they compete.** "Stalled head to wind"
+  rather than "in irons"; "Hauling the anchor up" rather than "weighing". A
+  nautical word stays only when the plain one would be longer or vaguer
+  ("helm", "cargo").
+- **Kind about failure.** A stall or a shoal is news and a way out, never a
+  scolding. An error says what happened and what to try, and puts the raw
+  message underneath for a bug report.
+- **Teach by doing.** Controls are taught one at a time, at the moment they
+  are needed, and the lesson leaves once it has been done. Lessons and tips
+  are phrased for the hands in use: keys for a keyboard, buttons and gestures
+  for touch.
+- **No jargon in a label.** FFT, JONSWAP, TRAA and their kin live in the
+  README and the ledger's folded *About the tech*, each explained in a
+  sentence. A label or tooltip has to make sense to someone who has never
+  heard of a shader.
+- **Truthful flavour.** A tip may be charming, but it must be true of what is
+  on screen ("Gulls ride the yards until she gets under way" is in the scene).
+  No line implies an audience, a team or a product the project does not have.
 
 ## Accessibility & Inclusion
 

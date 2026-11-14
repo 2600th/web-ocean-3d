@@ -72,6 +72,10 @@ interface OceanHooks {
   shadersReady(): boolean;
   setState(partial: Record<string, unknown>): void | Promise<void>;
   setCamera(px: number, py: number, pz: number, tx: number, ty: number, tz: number): void;
+  /** Holds the camera in the hull's heading frame; boat mode. False without a hull. */
+  setCameraOnShip(px: number, py: number, pz: number, tx: number, ty: number, tz: number): boolean;
+  /** Vertical field of view for every mode but Cinematic; null restores the default. */
+  setLens(fov: number | null): void;
   resetDeterministic(
     time?: number,
     settleSteps?: number,
@@ -167,7 +171,11 @@ export async function applyShot(page: Page, shot: Shot): Promise<void> {
     });
   }, shot.state);
 
-  if (shot.camera) {
+  // Every shot sets its lens, including the ones that leave it at the default,
+  // so a long lens cannot leak from one shot into the next.
+  await page.evaluate((fov) => window.__ocean.setLens(fov), shot.lens ?? null);
+
+  if (shot.camera && shot.camera.frame !== 'ship') {
     await page.evaluate(
       ({ position, target }) => {
         window.__ocean.setCamera(
@@ -177,6 +185,20 @@ export async function applyShot(page: Page, shot: Shot): Promise<void> {
       },
       { position: shot.camera.position, target: shot.camera.target },
     );
+  }
+
+  if (shot.camera?.frame === 'ship') {
+    // Held through the settle, so the camera rides along with the hull and
+    // every frame of it, the last included, is updated for the pose captured.
+    const placed = await page.evaluate(
+      ({ position, target }) =>
+        window.__ocean.setCameraOnShip(
+          position[0], position[1], position[2],
+          target[0], target[1], target[2],
+        ),
+      { position: shot.camera.position, target: shot.camera.target },
+    );
+    if (!placed) throw new Error(`shot "${shot.id}" frames the ship, and there is no ship in boat mode`);
   }
 
   if (shot.state.cameraMode === 'cinematic' && shot.cinematicTime === undefined) {

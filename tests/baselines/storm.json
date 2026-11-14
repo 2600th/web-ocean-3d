@@ -1,6 +1,6 @@
 {
   "shot": "storm",
-  "capturedAt": "2026-08-08T22:19:47.406Z",
+  "capturedAt": "2026-11-14T12:13:14.438Z",
   "width": 1280,
   "height": 720,
   "definition": {
@@ -15,15 +15,16 @@
     "camera": {
       "position": [
         34,
-        15,
-        54
+        3,
+        30
       ],
       "target": [
-        0,
-        4,
-        0
+        -24.8,
+        9.6,
+        -50.6
       ]
     },
+    "lens": 48,
     "time": 41,
     "settleSteps": 90
   },
