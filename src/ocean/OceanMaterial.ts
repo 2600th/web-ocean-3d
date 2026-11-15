@@ -32,6 +32,7 @@ import { smoothstepDownClamped } from '../core/tslMath';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import {
   featherFoam,
+  foamBubbleCloud,
   foamLace,
   foamPatchiness,
   foamPattern,
@@ -399,7 +400,46 @@ const HULL_FOAM_GAIN = 1;
  * Most a wake's foam covers the water. Water Pro's wake is milky, never paint:
  * the sea's colour reads through even the densest churn.
  */
-const HULL_FOAM_OPACITY = 0.8;
+const HULL_FOAM_OPACITY = 0.68;
+
+/**
+ * Opacity of open-sea foam: the breaking core, and the raft it leaves.
+ *
+ * Set against the references: over Water Pro's residual lace (foam-3) the
+ * film lifts the water toward white by 0.35–0.6 of the way in display terms,
+ * and web-ocean's freshest crest fragments by about 0.9. The composite is in
+ * linear light, where 0.4 reads as about 0.6 of the way after the transfer
+ * curve. A raft is a few bubbles thick; light reaches the water under it and
+ * comes back.
+ */
+const FRESH_FOAM_OPACITY = 0.92;
+const AGED_FOAM_OPACITY = 0.4;
+
+/**
+ * Most of the foam pattern an amount may clear, for aged and for breaking
+ * foam. The pattern runs from about 0.25 to 0.85 (`foamPattern`), so a
+ * threshold at `1 - 0.62` keeps its lowest quarter — the ragged gaps between
+ * its sheets — open however much foam the buffer holds. Breaking water clears
+ * all of it.
+ */
+const AGED_SHAPE_CAP = 0.62;
+/** How much a thin aged raft's amount is lifted before the threshold. */
+const AGED_SPREAD = 1.6;
+
+/** Opacity of the wind-combed streaks old foam fades out as. */
+const RESIDUE_OPACITY = 0.38;
+const FRESH_SHAPE_CAP = 1.15;
+
+/**
+ * Depth of the aerated layer under the foam, metres, for its parallax (Crest's
+ * `_FoamBubbleParallax`). Read through this offset the bubble cloud slides
+ * against the white above it as the eye moves, which is what gives a raft
+ * thickness.
+ */
+const BUBBLE_PARALLAX = 0.35;
+
+/** Reach of the jitter that tears a buffered patch's outline, metres. */
+const FOAM_TEAR = 2.2;
 
 const SHORE_GRADIENT_EPSILON = 12;
 
@@ -2284,10 +2324,27 @@ export class OceanMaterial {
         const inside = edge.x.min(edge.y).smoothstep(0, 0.02).clamp(0, 1).toVar();
         buffered.assign(inside);
 
-        const foamTap = this.wakeNode.sample(foamUvw).toVar();
+        // Read at a point jittered by a metre-scale noise, so a patch's
+        // outline is ragged at the scale a whitecap's is — torn, fibrous —
+        // rather than the smooth contour of the Jacobian it was deposited
+        // from. The pattern tears it again at the sub-metre scales, but those
+        // fade out by a hundred metres; this survives to the buffer's edge,
+        // and it is what kept a distant whitecap from reading as a cut-out
+        // (foam-3's "decals"). Not in the surf, whose standing foam the shore
+        // lays against the waterline.
+        const tear = vec2(
+          valueNoise(foamUv.mul(0.55).add(vec2(5.2, 1.3))),
+          valueNoise(foamUv.mul(0.55).add(vec2(2.7, 8.4))),
+        )
+          .sub(0.5)
+          .mul(surfSwellLeft.mul(FOAM_TEAR / foam.extent))
+          .toVar();
+        const foamTap = this.wakeNode.sample(foamUvw.add(tear)).toVar();
         accumulated.assign(foamTap.r.clamp(0, 1).mul(inside));
         freshFoam.assign(foamTap.b.clamp(0, 1).mul(inside));
-        hullFoam.assign(foamTap.a.clamp(0, 1).mul(inside));
+        // The hulls' foam is read where it was laid: a collar torn a metre off
+        // the waterline would float beside the hull.
+        hullFoam.assign(this.wakeNode.sample(foamUvw).a.clamp(0, 1).mul(inside));
       }
 
       // Where the buffer reaches, the buffer *is* the whitecaps: it carries the
@@ -2326,7 +2383,7 @@ export class OceanMaterial {
         .clamp(0, 1.5)
         .toVar();
       /** How much of the sea's foam is still dense breaking water, 0..1. */
-      const seaFresh = freshFoam.mul(2).add(crestNow).clamp(0, 1).toVar();
+      const seaFresh = freshFoam.mul(2).add(crestNow.mul(0.6)).clamp(0, 1).toVar();
       // The wake is not torn into wind lanes and not drawn as a whitecap: it is
       // its own cover, dense at the transom and thinning astern (see
       // `HULL_FOAM_GAIN`).
@@ -2672,38 +2729,96 @@ export class OceanMaterial {
         // Aged open-sea foam into the wind's lanes (web-ocean's streaks near,
         // the 5–26 m patchiness far, where the lanes are under a pixel).
         const streakNear = smoothstepDownClamped(viewDistance, 200, 450);
-        const lanes = mix(
+        const laneField = mix(
           foamPatchiness(foamXZ),
           foamStreaks(foamXZ, viewDistance).smoothstep(0.25, 0.75),
           streakNear,
-        ).mul(1.5);
+        ).toVar();
+        const lanes = laneField.mul(1.5);
         const cover = seaCover.mul(mix(lanes, float(1), seaFresh)).max(contactAmount).toVar();
 
-        // web-ocean's soft threshold: thin foam is a translucent film with a
-        // soft margin, dense foam opaque with a crisp edge.
-        const soft = cover.clamp(0, 1).oneMinus().mul(0.14).add(0.04);
-        const edge = cover.oneMinus();
+        // **Foam, not paint.** A whitecap is opaque only while it is breaking;
+        // what it leaves is a raft of bubbles a few millimetres to centimetres
+        // thick, a translucent film that the sea's colour reads through, riddled
+        // with holes and combed into streaks by the wind (Water Pro's foam-3,
+        // web-ocean's foam-2). Drawn at face value — the amount as a threshold
+        // on the pattern, composited 0.95 opaque — a buffer patch whose amount
+        // had saturated cleared the whole pattern and came out as a flat white
+        // decal with a hard rim: the critic's "uniform white paint splats"
+        // (foam-2) and "flat white decals with no thickness" (foam-3). So the
+        // amount now drives three separate things:
+        //
+        //  - the patch's *shape*: web-ocean's soft threshold on the pattern,
+        //    but on an amount capped below the pattern's floor for aged foam
+        //    (`AGED_SHAPE_CAP`), so its ragged sheets always keep their gaps,
+        //    and with a margin twice as soft;
+        //  - its *holes* (`foamLace`): pinholes in fresh water, widening and
+        //    merging as the raft thins;
+        //  - its *opacity*: `FRESH_FOAM_OPACITY` in the breaking core,
+        //    `AGED_FOAM_OPACITY` in the raft and less as it thins, varied by
+        //    the pattern's own density so the film is thicker in some places
+        //    than others.
+        // How much of this is still breaking water. Not `seaFresh`, which
+        // doubles the freshness to decide what the lanes may tear: a patch is
+        // drawn as breaking only while its freshness is high, so its opacity
+        // falls through the second after the crest has passed.
+        const breaking = freshFoam.smoothstep(0.1, 0.85).max(crestNow.mul(0.6)).toVar();
+        //
+        // Thin aged foam is spread, not shrunk: its amount is lifted before the
+        // threshold (`AGED_SPREAD`), so a raft at a third of full strength still
+        // covers half the water it lies on, as a faint lace, rather than a
+        // quarter of it as small bright shreds. Its faintness is the opacity's
+        // job.
+        const shapeCover = cover
+          .mul(mix(float(AGED_SPREAD), float(1), breaking))
+          .min(mix(float(AGED_SHAPE_CAP), float(FRESH_SHAPE_CAP), breaking))
+          .toVar();
+        const soft = cover.clamp(0, 1).oneMinus().mul(0.2).add(0.08);
+        const edge = shapeCover.oneMinus();
         const film = pattern.smoothstep(edge.sub(foamRamp).sub(soft), edge.add(foamRamp).add(soft));
-        // Freshly broken water: a dense core. web-ocean multiplies a smooth
-        // ramp of the freshness by the pattern, and over a fold region larger
-        // than a few metres that ramp *is* the visible edge — the "huge flat
-        // slab with a blurred edge" over waves-4's foreground. Thresholding the
-        // pattern by it instead (`featherFoam`) puts the core's edge where the
-        // pattern runs out, ragged at every scale the pattern has, and leaves
-        // the bubbles' holes in it.
-        const seaCore = featherFoam(freshFoam.smoothstep(0.3, 0.9).mul(0.92), pattern);
-        // Aged foam is a raft that is dying: its bubbles burst and the holes
-        // between them widen (`foamLace`) until it is a lace of rims, which is
-        // the "foreground foam lace with cellular holes that thins as it ages"
-        // of Water Pro's foam-3. Fresh water is not punched: it is still being
-        // made.
-        const aged = foamLace(foamXZ.add(vec2(37.1, 11.9)), cover.mul(1.3), viewDistance);
+        const lace = foamLace(foamXZ.add(vec2(37.1, 11.9)), cover.mul(0.8).max(breaking), viewDistance).toVar();
+        const patternN = pattern.sub(0.29).div(0.53).clamp(0, 1).toVar();
+        const thickness = mix(float(AGED_FOAM_OPACITY), float(FRESH_FOAM_OPACITY), breaking)
+          .mul(cover.smoothstep(0.05, 0.9).mul(0.5).add(0.5))
+          .mul(patternN.mul(0.6).add(0.4))
+          .toVar();
+        // Freshly broken water: the dense core. Thresholded on the pattern
+        // (`featherFoam`), so its edge is ragged at every scale the pattern has
+        // rather than the contour of a smooth ramp of the freshness — the "flat
+        // slab with a blurred edge" of round 2's waves-4 — and pinholed by the
+        // lace like everything else.
+        //
+        // Its opacity follows the freshness, so a whitecap is densest at the
+        // crest that is breaking now and thins over the water it broke on a
+        // moment ago (its leading edge stays sharp: that is where the front
+        // is), and it is varied along the crest by the wind's lanes and the
+        // pattern's density. Without that a distant whitecap, whose pattern
+        // has faded to its mean, was one flat white shape (foam-3's "decals").
+        const seaCore = featherFoam(freshFoam.smoothstep(0.3, 0.9).mul(0.78), pattern)
+          .mul(lace.mul(0.3).add(0.7))
+          .mul(freshFoam.smoothstep(0.25, 0.95).mul(0.45).add(0.55))
+          .mul(laneField.mul(0.4).add(0.6))
+          .mul(patternN.mul(0.3).add(0.7))
+          .mul(FRESH_FOAM_OPACITY);
+        // What is left after that: the old foam a strong wind combs into
+        // streaks along itself (Beaufort 7–8, "foam blown in well-marked
+        // streaks"). An amount too thin to clear the pattern any more is drawn
+        // as a faint lace only where the wind's lanes gather it, so a raft
+        // fades out as streaks rather than shrinking to a blob; at a lower wind
+        // there is less old foam in the buffer and so fewer streaks.
+        const residue = laneField
+          .smoothstep(0.5, 0.85)
+          .mul(seaCover.smoothstep(0.01, 0.12))
+          .mul(lace)
+          .mul(patternN.mul(0.6).add(0.4))
+          .mul(RESIDUE_OPACITY);
         const open = film
-          .mul(mix(aged, float(1), seaFresh))
-          .mul(cover.smoothstep(0, 0.5))
+          .mul(lace)
+          .mul(cover.smoothstep(0, 0.2))
+          .mul(thickness)
+          .max(residue)
           .clamp(0, 1)
-          .mul(cover.smoothstep(0.3, 0.9).mul(0.32).add(0.68))
-          .max(seaCore.mul(0.95))
+          .max(seaCore)
           .toVar();
 
         // The wake: not a whitecap and not lanes, but Water Pro's "cellular,
@@ -2715,9 +2830,15 @@ export class OceanMaterial {
             hullCover.oneMinus().sub(0.2).sub(foamRamp),
             hullCover.oneMinus().add(0.2).add(foamRamp),
           );
-          const hullMask = foamLace(foamXZ, hullCover, viewDistance)
+          // Thinned like the sea's rafts: the churn at the transom is the
+          // densest, and astern the film both opens (the lace's amount) and
+          // goes translucent (the opacity), varied by the pattern's density so
+          // a long wake does not read as one white sheet.
+          const hullMask = foamLace(foamXZ, hullCover.mul(0.85), viewDistance)
             .mul(hullEdge)
             .mul(hullCover.smoothstep(0, 0.4))
+            .mul(hullCover.smoothstep(0.15, 0.9).mul(0.4).add(0.6))
+            .mul(patternN.mul(0.35).add(0.65))
             .mul(HULL_FOAM_OPACITY);
           open.assign(open.max(hullMask));
         });
@@ -2728,13 +2849,16 @@ export class OceanMaterial {
         // hard rim. So the threshold hands over to plain coverage, the amount
         // itself scaled by what survives of the pattern, with its own soft edge.
         const resolved = smoothstepDownClamped(viewDistance, 200, 420);
-        const patternN = pattern.sub(0.29).div(0.53).clamp(0, 1);
-        const openFar = cover
+        // Past the pattern's resolution the shape's area fraction is about the
+        // capped amount itself, and `lace` has faded to its mean, so the far
+        // foam is drawn with the same translucency as the near.
+        const openFar = shapeCover
           .max(hullCover.mul(0.6))
           .clamp(0, 1)
-          .mul(mix(float(0.45), float(1.1), patternN))
-          .clamp(0, 1)
-          .mul(0.85);
+          .mul(mix(float(0.5), float(1.1), patternN))
+          .mul(lace)
+          .mul(thickness)
+          .clamp(0, 1);
         const openMask = mix(openFar, open, resolved);
 
         // The surf keeps the feather: its amounts were tuned as white fractions.
@@ -2751,8 +2875,20 @@ export class OceanMaterial {
       // second, blurred foam layer under the first; the amount *before* the
       // feather is exactly that layer — smooth, wider than the white, and gone
       // where the foam is.
+      //
+      // Crest draws that layer from its foam texture at a coarse mip, offset by
+      // a parallax of the view over the surface normal (`BubbleFoamTexture`,
+      // `OceanFoam.hlsl`, MIT): bubbles hanging under the white, sliding against
+      // it as the eye moves, so a raft has depth instead of sitting on the
+      // water as a decal. The open sea's share is that cloud; the surf and the
+      // hulls keep their own smooth amounts.
+      const bubbleCloud = float(0.5).toVar();
+      If(openCover.greaterThan(0.01), () => {
+        const parallax = vec2(viewDir.x, viewDir.z).div(n.dot(viewDir).max(0.2)).mul(-BUBBLE_PARALLAX);
+        bubbleCloud.assign(foamBubbleCloud(fieldXZ.sub(this.uFoamDrift).add(parallax)));
+      });
       const aeration = surfAerated
-        .max(openCover.mul(0.3))
+        .max(seaCover.clamp(0, 1).mul(mix(float(0.12), float(0.6), bubbleCloud)))
         .max(hullCover.clamp(0, 1).mul(0.45))
         .max(contactAmount.mul(0.3))
         .clamp(0, 1)

@@ -109,8 +109,9 @@ cut-off and band gains from `js/wgsl/sim.js`), and the foam model (the
 `FOAM_TEX` pattern, the cover and soft-threshold composite, wind streaks, the
 foam-freshness channel, and the foam buffer's injection: breaking on the
 surface's total Jacobian, `max(previous, inject)` with growth and a 1.6 cap,
-and the 0.22 / s decay, from `FOAM_UPDATE`) are ported from `js/wgsl/ocean.js`
-and `js/wgsl/sim.js`:
+and the 0.22 / s decay, from `FOAM_UPDATE`; and the swiss-cheese `bubbles` of
+`FOAM_TEX`, now also the multi-scale bubble lace every open-sea foam and wake
+is drawn through) are ported from `js/wgsl/ocean.js` and `js/wgsl/sim.js`:
 
 - `src/ocean/OceanMaterial.ts`
 - `src/ocean/FoamPattern.ts`
@@ -122,6 +123,43 @@ and `js/wgsl/sim.js`:
 MIT License
 
 Copyright (c) 2026 Maksymilian Dendura
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Crest
+
+https://github.com/wave-harmonic/crest
+
+The aerated layer under the foam reads a blurred bubble field through a
+parallax offset of the view over the surface normal, after Crest's
+`BubbleFoamTexture` (`Crest/Shaders/OceanFoam.hlsl`); the white foam's
+threshold of a foam pattern by the foam amount ("black point fade",
+`WhiteFoamTexture`) is the same construction:
+
+- `src/ocean/OceanMaterial.ts`
+- `src/ocean/FoamPattern.ts`
+
+```
+MIT License
+
+Copyright (c) 2019 Wave Harmonic and contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
