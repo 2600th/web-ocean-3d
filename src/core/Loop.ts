@@ -1,3 +1,5 @@
+import { FramePacer } from './FramePacer';
+
 export type Updatable = (dt: number, elapsed: number) => void;
 
 export interface FrameStats {
@@ -5,7 +7,17 @@ export interface FrameStats {
   fps: number;
   /** Milliseconds of wall clock spent in the last frame. */
   frameMs: number;
+  /** Display refresh rate the pacer measured, Hz. */
+  refreshHz: number;
+  /** The rate the pacer is holding: the refresh rate over a whole divisor. */
+  targetFps: number;
 }
+
+/**
+ * Resolves when the GPU has finished the work submitted so far. Lets the pacer
+ * tell a rate the device cannot hold from one it can; see `FramePacer`.
+ */
+export type GpuFence = () => Promise<void>;
 
 /**
  * Frame driver. Simulation receives a clamped delta so that a tab switch or a
@@ -40,7 +52,10 @@ export class Loop {
   private readonly inFlightFrames = new Set<Promise<void>>();
   private frameWaiters: Array<() => void> = [];
 
-  readonly stats: FrameStats = { fps: 0, frameMs: 0 };
+  readonly stats: FrameStats = { fps: 0, frameMs: 0, refreshHz: 60, targetFps: 60 };
+  /** Which refreshes live frames are drawn on; see `FramePacer`. */
+  readonly pacer = new FramePacer();
+  private gpuFence: GpuFence | null = null;
 
   /** Exponential moving average keeps the readout stable without lagging real drops. */
   private static readonly FPS_SMOOTHING = 0.1;
@@ -48,6 +63,11 @@ export class Loop {
 
   constructor(renderFn: RenderFn) {
     this.renderFn = renderFn;
+  }
+
+  /** Supplies the fence the pacer times GPU work with. Optional. */
+  setGpuFence(fence: GpuFence | null): void {
+    this.gpuFence = fence;
   }
 
   add(update: Updatable): void {
@@ -216,6 +236,7 @@ export class Loop {
   private tick = async (now: number): Promise<void> => {
     if (!this.running) return;
     this.handle = requestAnimationFrame(this.tick);
+    this.pacer.vsync(now);
 
     // Paused: `step()` owns the clock. Keep the rAF chain alive so resuming does
     // not need to restart it.
@@ -225,9 +246,13 @@ export class Loop {
     // queueing of GPU work when the device is the bottleneck.
     if (this.inFlight) return;
 
+    // Not this refresh: the pacer is holding a divisor of the display rate.
+    if (!this.pacer.shouldRender(now, this.last)) return;
+
     const rawDelta = (now - this.last) / 1000;
+    this.pacer.rendered(now, this.last);
+    const dt = Math.min(this.pacer.delta(now, this.last), Loop.MAX_DELTA);
     this.last = now;
-    const dt = Math.min(rawDelta, Loop.MAX_DELTA);
 
     this.inFlight = true;
     const finish = this.beginFrame();
@@ -237,10 +262,17 @@ export class Loop {
       this.elapsed += dt;
       for (const update of this.updates) update(dt, this.elapsed);
       await this.renderFn(dt, this.elapsed, true);
+      // Timed from the callback, not from `started`: the latency a frame has
+      // to fit is the one from its refresh to the GPU finishing it.
+      this.gpuFence?.()
+        .then(() => this.pacer.gpuLatency(performance.now() - now))
+        .catch(() => undefined);
     } finally {
       this.inFlight = false;
       finish();
       this.stats.frameMs = performance.now() - started;
+      this.stats.refreshHz = 1000 / this.pacer.period;
+      this.stats.targetFps = this.pacer.targetFps;
       const instantaneous = rawDelta > 0 ? 1 / rawDelta : 0;
       this.stats.fps =
         this.stats.fps === 0

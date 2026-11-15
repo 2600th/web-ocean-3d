@@ -54,7 +54,7 @@ import {
   type ShipControlState,
   type SprayImpact,
 } from './physics';
-import { Loop } from './core/Loop';
+import { Loop, type GpuFence } from './core/Loop';
 import { AdaptiveQuality, QUALITY_TIERS, type QualityTier } from './core/QualityManager';
 import { OceanSimulation } from './ocean/OceanSimulation';
 import { OceanMesh } from './ocean/OceanMesh';
@@ -1186,6 +1186,7 @@ class App {
     // that was still in flight, which is what made repeated captures of an
     // identical world disagree.
     this.loop = new Loop((_dt, _elapsed, live) => this.renderFrame(live));
+    this.loop.setGpuFence(this.createGpuFence());
     this.installAsyncPipelines();
     this.installStableContexts();
     this.installOrphanedCompileGuard();
@@ -1272,6 +1273,43 @@ class App {
    * needs. Both are read *outside* the render, where TRAA has not yet applied
    * (or has already cleared) its jitter.
    */
+  /**
+   * A fence for the frame pacer: resolves when the GPU has finished what has
+   * been submitted. WebGPU has one on the queue. WebGL2 has a sync object,
+   * which cannot be awaited and is polled instead; a millisecond poll is well
+   * inside the precision the pacer needs, which is a fraction of a refresh.
+   */
+  private createGpuFence(): GpuFence | null {
+    const backend = (this.renderer as unknown as {
+      backend?: { device?: GPUDevice; gl?: WebGL2RenderingContext };
+    }).backend;
+    const queue = backend?.device?.queue;
+    if (queue) return () => queue.onSubmittedWorkDone();
+    const gl = backend?.gl;
+    if (!gl || typeof gl.fenceSync !== 'function') return null;
+    return () =>
+      new Promise<void>((resolve, reject) => {
+        const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!sync) {
+          reject(new Error('fenceSync failed'));
+          return;
+        }
+        gl.flush();
+        const poll = (): void => {
+          if (gl.isContextLost()) {
+            gl.deleteSync(sync);
+            reject(new Error('context lost'));
+          } else if (gl.getSyncParameter(sync, gl.SYNC_STATUS) === gl.SIGNALED) {
+            gl.deleteSync(sync);
+            resolve();
+          } else {
+            setTimeout(poll, 1);
+          }
+        };
+        poll();
+      });
+  }
+
   private async renderFrame(live = false): Promise<void> {
     this.camera.updateMatrixWorld();
     this.currViewProjection.value.multiplyMatrices(
