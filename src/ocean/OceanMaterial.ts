@@ -42,6 +42,8 @@ import {
 } from './FoamPattern';
 import {
   breaker,
+  chopBreaker,
+  CHOP_PERIOD,
   setSurfState,
   surfPhaseGradient,
   surfReachDepth,
@@ -1266,6 +1268,11 @@ export class OceanMaterial {
       const surfBreak = float(0).toVar();
       const surfBreakLast = float(0).toVar();
       const surfBreakPrevious = float(0).toVar();
+      const surfBreakOlder = float(0).toVar();
+      /** The wind sea's bores; see `Surf.chopBreaker`. */
+      const chopS = float(0.5).toVar();
+      const chopPhase = float(0).toVar();
+      const chopBreak = float(0).toVar();
       const inSurf = float(0).toVar();
       /** How much of the open-sea swell is left here, 0..1. See `surfFftFade`. */
       const surfSwellLeft = float(1).toVar();
@@ -1299,6 +1306,7 @@ export class OceanMaterial {
           surfBreak.assign(wave.breakDepth);
           surfBreakLast.assign(wave.breakDepthLast);
           surfBreakPrevious.assign(wave.breakDepthPrevious);
+          surfBreakOlder.assign(wave.breakDepthOlder);
           surfCompression.assign(wave.compression);
           surfSteep.assign(wave.steep);
           surfXi.assign(wave.xi);
@@ -1336,6 +1344,13 @@ export class OceanMaterial {
               .mul(wave.etaPerPhase.mul(surfPhaseGradient(seabedDepth)).div(wave.compression))
               .mul(reach),
           );
+          // The wind sea's bores: slope only, faded sooner because they are
+          // smaller.
+          const chop = chopBreaker(seabedDepth, fieldXZ);
+          chopS.assign(chop.s);
+          chopPhase.assign(chop.phase);
+          chopBreak.assign(chop.breakDepth);
+          slope.addAssign(shoreward.mul(chop.slope).mul(smoothstepDownClamped(viewDistance, 120, 400)));
         });
       }
 
@@ -2135,11 +2150,16 @@ export class OceanMaterial {
           // seaward edge of every foam band as a ruled line along the bottom.
           const lastBroke = smoothstepDownClamped(d, surfBreakLast.mul(0.82), surfBreakLast.mul(1.06)).toVar();
           const previousBroke = smoothstepDownClamped(d, surfBreakPrevious.mul(0.82), surfBreakPrevious.mul(1.06)).toVar();
+          const olderBroke = smoothstepDownClamped(d, surfBreakOlder.mul(0.82), surfBreakOlder.mul(1.06)).toVar();
           // Age, in periods, of the youngest broken water at this point: the
-          // last crest if it broke here, the one before it otherwise.
+          // last crest if it broke here, else the one before, else the one
+          // before that.
           const laceAge = lastBroke
             .greaterThan(0.5)
-            .select(age, previousBroke.greaterThan(0.5).select(age.add(1), float(9)))
+            .select(
+              age,
+              previousBroke.greaterThan(0.5).select(age.add(1), olderBroke.greaterThan(0.5).select(age.add(2), float(9))),
+            )
             .toVar();
           // Not every section of a crest breaks equally hard. Horizon Forbidden
           // West fades its breakers along the wavefront with a strength texture
@@ -2151,10 +2171,19 @@ export class OceanMaterial {
             .mul(0.5)
             .add(0.6)
             .toVar();
-          // Dense right behind the roller, then thinning: 0.82 at a twentieth
-          // of a period, under half by a third of one, a tenth after a period —
-          // and gone before the one after.
-          const whitewaterAt = (a: any) => a.mul(-2.3).exp().mul(0.92).mul(smoothstepDownClamped(a, 1.3, 1.9));
+          // Two stages, the way a surf zone's foam ages (Monahan's stage A and
+          // B whitecaps, and NeuralSpecOcean's long-tail roller wake): the dense
+          // white right behind the roller, gone within half a period; and the
+          // lace it leaves, which outlives the bore by two more and is what
+          // stands between the breakers as a field. The lace used to die with
+          // the dense part, after about a period, so a surf zone was the white
+          // band of the newest bore on clear water (foam-4).
+          //
+          // The lace is held to two and a bit periods and then gone by three,
+          // exactly when the oldest crest tracked here hands over to one that
+          // is not — so nothing pops as the crests renumber.
+          const denseAt = (a: any) => a.mul(-3.2).exp().mul(0.92);
+          const laceAt = (a: any) => a.mul(-0.6).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3));
 
           // **Foam lines.** The white a bore leaves is not a sheet: it is torn
           // into streaks lying *along* the crest that made them, a metre or two
@@ -2180,18 +2209,41 @@ export class OceanMaterial {
           // Dense where it is fresh, lanes as it ages: a bore's first second is
           // white all through, and only then tears.
           const tearing = age.smoothstep(0.03, 0.18).toVar();
-          const whitewater = whitewaterAt(age)
+          // The wind sea's bores: a thinner roller and a short dense wake, where
+          // its crests have broken. No lace of their own: their foam joins the
+          // swell's field.
+          const chopBroken = smoothstepDownClamped(d, chopBreak.mul(0.86), chopBreak.mul(1.04));
+          const chopR = chopS.add(ragged.mul(0.7)).toVar();
+          const chopRoller = chopR
+            .smoothstep(-0.05, -0.012)
+            .mul(smoothstepDownClamped(chopR, 0.02, 0.08))
+            .mul(chopBroken)
+            .mul(d.smoothstep(0.05, 0.25))
+            .mul(0.85)
+            .toVar();
+          const chopDense = denseAt(chopPhase.fract().mul(CHOP_PERIOD))
+            .mul(chopBroken)
+            .mul(mix(float(0.3), float(1.1), lanes))
+            .mul(0.7);
+          const dense = denseAt(age).mul(lastBroke).max(denseAt(age.add(1)).mul(previousBroke)).max(chopDense);
+          // The lace is the foam lines and nothing else: aged foam has torn all
+          // the way into them, with clear water between.
+          const lace = laceAt(age)
             .mul(lastBroke)
-            .max(whitewaterAt(age.add(1)).mul(previousBroke))
-            .mul(sections)
+            .max(laceAt(age.add(1)).mul(previousBroke))
+            .max(laceAt(age.add(2)).mul(olderBroke))
+            .mul(mix(float(0.06), float(1.3), lanes));
+          const whitewater = dense
             .mul(mix(float(1), mix(float(0.18), float(1.15), lanes), tearing))
+            .max(lace)
+            .mul(sections)
             .min(0.9)
             .toVar();
           // What is left of a bore is still being carried up the beach by the
           // next, so the pattern drifts shoreward as it ages — and stops doing so
           // at the waterline, where the ground draws the same pattern unmoved.
           surfAdvect.assign(
-            shoreward.mul(laceAge.min(2).mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
+            shoreward.mul(laceAge.min(3).mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
           );
 
           // Centimetres of water: the waterline and the front of the swash. The
@@ -2225,21 +2277,21 @@ export class OceanMaterial {
           // The far band keeps the lanes too, which at a few hundred metres are
           // still several pixels apart, so it reads as foam lines rather than
           // the flat plate the time-average alone drew.
-          // The residual field: what is left of every bore that has crossed the
-          // inner surf zone, a thin lace of lanes standing between the breakers
-          // that the next one adds to before it has burst. It is what makes a
-          // surf zone a field of foam with lines in it rather than one white
-          // band on clear water (foam-4: "a single thin surf band with no foam
-          // field").
+          // The residual floor: the old, stable foam of many sets, a sparse
+          // scatter of lines over the inner surf zone that is there even in a
+          // lull. The field itself is the lace above, which follows the sets;
+          // this is only what keeps a lull from going glass-clear. Carried in
+          // to the waterline, where the swash's own foam takes over.
           const residual = lanes
             .mul(lanes)
             .mul(smoothstepDownClamped(d, surfBreak.mul(0.45), surfBreak.mul(1.15)))
-            .mul(d.smoothstep(0.15, 0.6))
-            .mul(0.42)
+            .mul(d.smoothstep(0.05, 0.3))
+            .mul(0.2)
             .toVar();
           surf.assign(
             roller
               .mul(mix(float(0.6), float(1), lanes.max(sections.sub(0.6).mul(2.5))))
+              .max(chopRoller.mul(mix(float(0.55), float(1), lanes)))
               .max(residual)
               .max(lip)
               .max(pitching)
@@ -2255,7 +2307,9 @@ export class OceanMaterial {
           // white has torn: the milky turquoise of every surf photograph, and
           // what the lace sits *on*. Without it the lace sat on glass-clear
           // shallows and read as a decal.
-          surfAerated.assign(roller.max(whitewater.mul(1.15)).max(lip).clamp(0, 1).mul(strength));
+          // The dense stage is what carries the bubbles; the lace floats on
+          // water that has mostly cleared.
+          surfAerated.assign(roller.max(dense.mul(1.15)).max(whitewater.mul(0.5)).max(lip).clamp(0, 1).mul(strength));
         });
       }
 

@@ -201,8 +201,12 @@ ray (`depth / cos(refracted)`, floored at 0.66), and the bed attenuated on the
 way down by a diffuse coefficient derived from the same extinction. The wet-sand
 model is adapted from its `source/src/ShoreVisual.js`: the dry-to-film roughness
 range, the water film's normal flattened toward the beach plane, and the
-wet/dry edge perturbed by multi-scale seepage noise. Ported to three.js TSL;
-the surf, the foam and the wetting state are this project's own. Affected files:
+wet/dry edge perturbed by multi-scale seepage noise. The surf's second, wind-sea
+wave train follows the secondary train in its `source/src/CoastalWaves.js`, at
+about two thirds of the swell's period, and the surf foam's long-tail wake
+behind each bore follows that file's roller envelope. Ported to three.js TSL;
+the surf's closed form, the foam and the wetting state are this project's own.
+Affected files:
 
 - `src/ocean/OceanMaterial.ts`
 - `src/ocean/Surf.ts`
