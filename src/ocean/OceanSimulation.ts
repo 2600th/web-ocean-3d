@@ -717,7 +717,13 @@ export class OceanSimulation {
         .mul(parity)
         .toVar();
 
-      const lambda = choppiness.mul(config.choppiness).toVar();
+      // Negated. With this transform's convention (slopes come out as `i k h`,
+      // so a wave is `e^{+ikx}`), Tessendorf's D = -i (k/|k|) h moves water
+      // *away* from a crest: measured on all three cascades, the rendered
+      // displacement's own Jacobian correlated +0.87 to +0.97 with the height —
+      // crests stretched flat, troughs pinched, the inverse of a wind sea's
+      // sharp-crested trochoid. Choppiness has to pull toward the crests.
+      const lambda = choppiness.mul(config.choppiness).negate().toVar();
 
       // Jacobian of the horizontal displacement map. Where it falls below 1 the
       // surface is folding onto itself — physically where whitecaps form.
