@@ -1,8 +1,45 @@
 import * as THREE from 'three/webgpu';
 import GTAONode from 'three/addons/tsl/display/GTAONode.js';
-import { Fn, float, mix, perspectiveDepthToViewZ, reference, smoothstep, uniform, uv, vec4 } from 'three/tsl';
+import { Fn, float, floor, mix, perspectiveDepthToViewZ, reference, smoothstep, uniform, uv, vec2, vec4 } from 'three/tsl';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+/**
+ * Catmull-Rom sample of `tex` at `p`, in nine bilinear taps (the separable
+ * weights folded so the middle two texels share a tap).
+ *
+ * For moving the scene colour back off TRAA's jitter. A plain bilinear read
+ * does that too, but it is a tent filter laid over every frame, and the
+ * accumulated image softened: the steepest step across the horizon fell 14%
+ * (0.79 to 0.68 in `corr.mjs`'s log-luminance units, camera still). The
+ * negative lobes can undershoot below zero next to a bright edge, so the
+ * result is clamped; TRAA's neighbourhood clip takes care of any overshoot.
+ */
+function sampleCatmullRom(tex: any, p: any): any {
+  const size = vec2(tex.size());
+  const pos = p.mul(size);
+  const t1 = floor(pos.sub(0.5)).add(0.5);
+  const f = pos.sub(t1);
+  const w0 = f.mul(f.mul(f.mul(-0.5).add(1)).sub(0.5));
+  const w1 = f.mul(f).mul(f.mul(1.5).sub(2.5)).add(1);
+  const w2 = f.mul(f.mul(f.mul(-1.5).add(2)).add(0.5));
+  const w3 = f.mul(f).mul(f.mul(0.5).sub(0.5));
+  const w12 = w1.add(w2);
+  const t0 = t1.sub(1).div(size);
+  const t3 = t1.add(2).div(size);
+  const t12 = t1.add(w2.div(w12)).div(size);
+  const tap = (x: any, y: any, w: any): any => tex.sample(vec2(x, y)).mul(w);
+  return tap(t0.x, t0.y, w0.x.mul(w0.y))
+    .add(tap(t12.x, t0.y, w12.x.mul(w0.y)))
+    .add(tap(t3.x, t0.y, w3.x.mul(w0.y)))
+    .add(tap(t0.x, t12.y, w0.x.mul(w12.y)))
+    .add(tap(t12.x, t12.y, w12.x.mul(w12.y)))
+    .add(tap(t3.x, t12.y, w3.x.mul(w12.y)))
+    .add(tap(t0.x, t3.y, w0.x.mul(w3.y)))
+    .add(tap(t12.x, t3.y, w12.x.mul(w3.y)))
+    .add(tap(t3.x, t3.y, w3.x.mul(w3.y)))
+    .max(0);
+}
 
 /**
  * GTAO from three's own node, with two things the stock node cannot do here.
@@ -112,16 +149,18 @@ export class AmbientOcclusion {
   /**
    * @param color Scene colour, linear HDR, texture node.
    * @param velocity The MRT velocity texture; its `.z` is the water flag.
+   * @param unjitter UV offset of this frame's TRAA jitter; the colour is read
+   *   back at the unjittered position. See `PostChain`'s `jitterUv`.
    * @returns The occluded colour as a composited node (the resolve converts it).
    */
-  build(color: any, velocity: any): any {
+  build(color: any, velocity: any, unjitter: any = null): any {
     const aoTexture = this.node.getTextureNode() as any;
     const depth = this.depth;
     const near = reference('near', 'float', this.camera);
     const far = reference('far', 'float', this.camera);
     return Fn(() => {
       const p = uv();
-      const c = color.sample(p).toVar('aoColor');
+      const c = (unjitter === null ? color.sample(p) : sampleCatmullRom(color, p.sub(unjitter))).toVar('aoColor');
       const water = velocity.sample(p).z.saturate();
       const a = aoTexture.sample(p).r;
       // Near field only. A half-metre occluder is sub-pixel past a hundred

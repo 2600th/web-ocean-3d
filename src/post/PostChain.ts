@@ -114,6 +114,9 @@ const _drawingBuffer = new THREE.Vector2();
  * matters, the input's.
  */
 class ScaledTRAA extends (TRAANode as unknown as new (...args: any[]) => any) {
+  /** Written with this frame's jitter as a UV offset; see `PostChain.jitterUv`. */
+  jitterUv: { value: THREE.Vector2 } | null = null;
+
   constructor(...args: any[]) {
     super(...args);
     // Resolve once per *pipeline render*, not once per animation frame.
@@ -127,6 +130,41 @@ class ScaledTRAA extends (TRAANode as unknown as new (...args: any[]) => any) {
     // resolve follow the same count the jitter does. The same change is made
     // to GTAO's rotation and to eye adaptation for the same reason.
     this.updateBeforeType = THREE.NodeUpdateType.RENDER;
+  }
+
+  /**
+   * Publishes the jitter TRAA is about to put on the camera, so the colour
+   * TRAA reads can be taken back to the unjittered grid (`AmbientOcclusion.build`).
+   *
+   * Stock TRAA samples the current frame where it landed, half a pixel either
+   * way of the true position. That only cancels while the history carries the
+   * pixel; once the camera moves, the resolve gives the current frame weight —
+   * the subpixel term alone adds up to 0.25 — and variance clipping pulls the
+   * history into the jittered 3x3 box, so the Halton offsets reach the screen.
+   * Measured on the horizon (`imgshift.mjs`, High, 1920x945): with the camera
+   * still, 18% of the vertical jitter reached the output (0.09 px rms per
+   * frame); turning at 0.25 rad/s, 73% (0.36 px rms) — every edge in the frame
+   * stepping up and down by a fraction of a pixel, frame to frame, in no
+   * rhythm, which is the whole-frame jitter seen whenever the view moves.
+   * Reading the current frame at the unjittered position takes the offsets
+   * out of both the current sample and the clipping box, as reference TAA
+   * implementations do (Karis 2014; Playdead's `_JitterUV`). Same harness,
+   * after: 10% still, 8% turning (0.10 px rms, the rest being the scene's own
+   * motion), with the horizon's edge as steep as before.
+   */
+  setViewOffset(width: number, height: number): void {
+    super.setViewOffset(width, height);
+    if (this.jitterUv === null) return;
+    const index = (this as any)._jitterIndex as number;
+    // TRAA's own sequence: Halton (2, 3) at index + 1, centred on the pixel.
+    // A view offset of +d pixels moves the image content by -d, in screen
+    // space (y down), which is also the UV convention of the passes here.
+    this.jitterUv.value.set((halton(index + 1, 2) - 0.5) / width, (halton(index + 1, 3) - 0.5) / height);
+  }
+
+  clearViewOffset(): void {
+    super.clearViewOffset();
+    this.jitterUv?.value.set(0, 0);
   }
 
   updateBefore(frame: any): any {
@@ -160,6 +198,17 @@ class ScaledTRAA extends (TRAANode as unknown as new (...args: any[]) => any) {
     }
     return result;
   }
+}
+
+/** Radical inverse in `base`: TRAA's jitter sequence, which it keeps private. */
+function halton(index: number, base: number): number {
+  let fraction = 1;
+  let result = 0;
+  for (let i = index; i > 0; i = Math.floor(i / base)) {
+    fraction /= base;
+    result += fraction * (i % base);
+  }
+  return result;
 }
 
 function hash21(p: any): any {
@@ -240,6 +289,11 @@ export class PostChain {
   private readonly legacy =
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('post') === '0';
 
+  /** This frame's TRAA jitter as a UV offset (screen space, y down). */
+  private readonly jitterUv = uniform(new THREE.Vector2());
+  private readonly unjitter =
+    typeof window === 'undefined' || new URLSearchParams(window.location.search).get('unjitter') !== '0';
+
   private readonly uGrain = uniform(0);
   private readonly uGrainSeed = uniform(0);
   private grainFrame = 0;
@@ -289,7 +343,10 @@ export class PostChain {
     // when the tier renders below native — TAAU sizes its input from this
     // target, and an RTT left at the drawing buffer would tell it there was
     // nothing to upscale.
-    this.aoComposite = rtt(this.ao.build(color, velocity));
+    // Read at the unjittered position, so TRAA's input stops carrying the
+    // jitter; see `ScaledTRAA.setViewOffset`. `?unjitter=0` keeps the stock
+    // behaviour, for A/B.
+    this.aoComposite = rtt(this.ao.build(color, velocity, this.unjitter ? this.jitterUv : null));
 
     // TRAA at every render scale, including the ones below native.
     //
@@ -304,6 +361,7 @@ export class PostChain {
     // sub-pixel offset of the smaller grid. `docs/AAA_PLAN.md` section N has
     // the comparison frames.
     this.temporalNode = new ScaledTRAA(this.aoComposite, depth, velocity, camera);
+    if (this.unjitter) this.temporalNode.jitterUv = this.jitterUv;
 
     return rtt(this.resolve.build(this.temporalNode.getTextureNode(), velocity));
   }
