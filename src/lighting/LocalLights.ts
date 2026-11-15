@@ -115,6 +115,8 @@ export class LocalLights {
       blending: THREE.AdditiveBlending,
     });
     glowMaterial.name = 'ship-lantern-glow';
+    // Additive: fog would turn its unlit rim into a pale fog-coloured ball.
+    glowMaterial.fog = false;
     // HDR on purpose: past the bloom threshold at night, so the flame has a halo.
     // Soft-edged by the facing ratio, so the ball reads as a glow, not a bead.
     glowMaterial.colorNode = color(LANTERN_COLOR).mul(this.uGlow).mul(normalView.z.max(0).pow(2)).mul(7);
