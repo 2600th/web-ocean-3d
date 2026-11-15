@@ -42,9 +42,10 @@ const MEADOW_RADIUS: readonly [number, number] = [8, 15];
 const TUFT_SPACING = 0.32;
 
 /** Gorgonian or Halimeda clumps per reef site's apron, and per grove. */
-const GORGONIANS_PER_SITE = 16;
+// [underwater-look-2] 16/22 -> 24/34, with the reef's own density.
+const GORGONIANS_PER_SITE = 24;
 /** Clumps among the corals inside a site. */
-const GORGONIANS_INSIDE = 22;
+const GORGONIANS_INSIDE = 34;
 const GORGONIANS_PER_FOREST = 6;
 /** Understorey tufts per kelp column. */
 const UNDERSTOREY_PER_COLUMN = 2.2;
