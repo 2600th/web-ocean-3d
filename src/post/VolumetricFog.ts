@@ -65,15 +65,16 @@ import {
  *      phase term is constant along the ray for a directional light, so it is
  *      evaluated once per pixel rather than once per step.
  *
- *   3. **An analytic tail.** Past `maxDistance` the march stops, but the fog does
- *      not, and stopping the integral there would leave a visible shell at that
- *      radius. The remaining segment is closed out with the same
- *      `L * (T(end) - T(scene))` the cells use, which costs one more evaluation
- *      per pixel and makes `maxDistance` a pure performance control with no
- *      visual signature. Together with item 2 this means that for a uniformly lit
- *      medium the whole pass collapses *exactly* to `scene * T + L * (1 - T)` —
- *      the classic fog lerp, which is the correct limit to degrade to. Everything
- *      that makes it volumetric is the structure layered on top of that.
+ *   3. **A bounded medium.** The layer ends at `maxDistance` for every pixel,
+ *      sky included; past it the far-field haze is `AerialPerspective`'s and the
+ *      dome's. Because every ray is clamped to the same range there is no shell:
+ *      a pixel past the bound gets the same integral as one exactly at it, and
+ *      the sea's last row and the sky's first row integrate the same path. This
+ *      used to be an analytic tail out to the far plane, and on near-horizontal
+ *      sky rays that tail, lit by an unoccluded forward-scattered sun, was the
+ *      white seam along the horizon (see `build`). For a uniformly lit medium the
+ *      pass still collapses *exactly* to `scene * T + L * (1 - T)` — the classic
+ *      fog lerp, which is the correct limit to degrade to.
  *
  * Banks are a two-octave procedural field modulating the *scattering*, not the
  * extinction. That is a deliberate approximation and worth being honest about:
@@ -144,7 +145,10 @@ export interface VolumetricFogParams {
    * used for plain haze and 0.6+ only when a visible sunbeam is the point.
    */
   anisotropy: number;
-  /** Metres. Bounds the march only — beyond it the analytic tail takes over. */
+  /**
+   * Metres. The extent of the medium along every ray, sky included. Beyond it
+   * the haze is `AerialPerspective`'s and the dome's, not this layer's.
+   */
   maxDistance: number;
   /** 0..1 strength of the procedural bank variation. 0 skips it per step. */
   detail: number;
@@ -444,7 +448,21 @@ export class VolumetricFog {
           this.uNear,
           this.uFar,
         ).negate();
-        const dist = sceneZ.div(axial).max(0).toVar('fogDist');
+        //
+        // **Bounded at `maxDistance`, sky and sea alike.** This is a local sea
+        // fog, not the atmosphere: past the march the haze belongs to
+        // `AerialPerspective` (geometry) and to the dome (sky), which already
+        // carry the low-altitude path toward the horizon. Integrating this layer
+        // out to the far plane as well counted that path twice, and on exactly
+        // the rays where it is longest — a sky pixel one row above the horizon
+        // ran tens of kilometres through the layer while the sea pixel one row
+        // below stopped a few kilometres out. The sun's forward lobe on that
+        // extra path, unoccluded because the tail took no cloud shadow, was the
+        // white seam along every horizon (A/B critic: reflections-1, sky-3,
+        // waves-4, waves-5, foam-3). Measured with the sun term zeroed the band
+        // went away; with this bound the sea's last row and the sky's first row
+        // integrate the same path, so they meet without a step.
+        const dist = sceneZ.div(axial).max(0).min(this.uMaxDistance).toVar('fogDist');
 
         // Rate of change of the height exponent per metre travelled. The whole
         // closed form is a function of this and the origin density.
@@ -542,19 +560,11 @@ export class VolumetricFog {
           acc.addAssign(light.mul(weight));
         });
 
-        // --- the tail past the march -----------------------------------------
-        // `boundary` is now T(tEnd) exactly, so the segment from there to the
-        // scene closes with the same weight the cells used. This is why
-        // `maxDistance` can be lowered for performance without carving a visible
-        // shell out of the horizon.
-        // The tail is unoccluded on purpose. It stands for everything past the
-        // march, which by construction has no resolved structure — giving it one
-        // sample's worth of shadow would put a hard edge at `maxDistance` in
-        // exactly the region the tail exists to make smooth.
-        const tailLight = this.lightAt(this.sigmaAt(tEnd, sigmaOrigin, slope), phase, null);
-        const tail = tailLight.mul(boundary.sub(transmittance).max(0));
-
-        outRgb.assign(src.rgb.mul(transmittance).add(acc).add(tail));
+        // No tail past the march: `dist` is bounded at `maxDistance` above, so
+        // `tEnd` is the whole ray and `boundary` already equals `transmittance`.
+        // The analytic tail that used to close the segment out to the far plane
+        // was the source of the horizon seam; see the note on `dist`.
+        outRgb.assign(src.rgb.mul(transmittance).add(acc));
       });
 
       return vec4(outRgb, src.a);

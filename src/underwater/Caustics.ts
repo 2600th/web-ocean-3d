@@ -1,74 +1,94 @@
 import * as THREE from 'three/webgpu';
-import {
-  Fn,
-  clamp,
-  exp,
-  float,
-  int,
-  mix,
-  mx_worley_noise_float,
-  pow,
-  texture,
-  uniform,
-  uv,
-  vec2,
-  vec3,
-  vec4,
-} from 'three/tsl';
+import { Fn, exp, float, mix, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /**
- * Procedural light caustics.
+ * Procedural light caustics: one small, periodic, animated tile, read at
+ * several scales.
  *
- * The classic interlocking-web look comes from cellular (worley) noise rather
- * than from a scrolling texture: the distance-to-nearest-feature field of a
- * jittered point lattice already has exactly the right topology — closed cells
- * separated by thin bright ridges. Two octaves at different scales, drifting in
- * different directions, are multiplied together so the ridges of one break the
- * ridges of the other into the short, restless arcs real caustics have. A power
- * curve then crushes the midtones so only the ridges survive.
+ * The arrangement is abyssal-garden's (MIT, (c) 2026 Maksymilian Dendura; see
+ * THIRD_PARTY_NOTICES.md): its `caus` reads a tiling water texture at metre
+ * scale for the web a surface shows (`q / 3.3`), modulated by a second read at
+ * another scale and orientation (`q.yx / 6.9 + .37`) so the repeat never lines
+ * up, and its `W_RAYS` reads the *same* texture eight and three times larger,
+ * thresholded, as the beams the shafts are made of (`q / 27`, `q.yx / 11`).
+ * The pattern in the tile is our own: two wrapping Voronoi webs with orbiting
+ * feature points and a periodic warp, which gives the curved, boiling
+ * filaments of a refracting surface.
  *
- * Everything is a pure function of world position, so the same node can be
- * dropped into a seafloor material, a rock material and a hull material and the
- * pattern stays continuous across all of them — there is no projection texture
- * and no second render pass to keep in sync.
+ * This replaced a 3D-worley field baked into a 320 m world-anchored target.
+ * That field had two faults, and both showed in the blind review. Its texel
+ * was 0.42 m (High) to 0.62 m, while a filament is a few centimetres wide, so
+ * every surface read soft blotches; and its mean was 0.38 with the brightest
+ * filament at 1.4, while every consumer — `groundShading`, `LeafField`,
+ * `LifeShading`, the seafloor — writes `mix(1, caustics, reach)` and so
+ * assumes a field centred on 1. "Caustics" darkened the sand to a third and
+ * never brightened it at all. Both lagoon frames were judged to have none.
  *
  * Refraction at the surface is approximated by shearing the sample coordinate
- * along the sun's tilt: a point `d` metres below the surface is lit by the patch
- * of surface at `xz + (sunDir.xz / sunDir.y) * d`, which is what makes caustics
- * slide sideways as the sun moves toward the horizon.
+ * along the refracted sun: a point `d` metres below the surface is lit by the
+ * patch of surface at `xz + (sunDir.xz / sunDir.y) * d`, so the pattern slides
+ * sideways as the sun lowers and the shafts stand at the refracted angle.
  *
- * The spatial field is baked into one mipmapped render target per frame, so the
- * volumetric pass can sample it instead of re-running both Worley lattices at
- * every march step. There are no external assets or compute-only dependencies;
- * the bake and all consumers compile to WGSL and GLSL alike.
+ * The bake is one fullscreen pass over the tile per frame and compiles to WGSL
+ * and GLSL alike.
  */
 
 export interface CausticsParams {
-  /** Peak intensity of the web, before depth fade. */
+  /** Contrast of the web, 0..2. 1 is the authored pattern; 0 is uniform light. */
   strength: number;
-  /** Cells per metre. Larger = finer, busier caustics. */
+  /** Cells of the coarser web per metre. Larger = finer, busier caustics. */
   scale: number;
   /** Animation rate of the cell drift. */
   speed: number;
-  /** Extinction per metre applied to the caustic below the surface. */
+  /** Per metre of depth: how fast the web's contrast relaxes toward uniform light. */
   depthFade: number;
-  /** Exponent of the sharpening curve. Higher = thinner, brighter filaments. */
+  /** Line sharpness. Higher = thinner, brighter filaments. */
   sharpness: number;
   /** World Y of the water surface the caustics are cast from. */
   surfaceLevel: number;
 }
 
+/** Cells of each web across the tile. Integers: the tile must wrap. */
+const CELLS_A = 6;
+const CELLS_B = 10;
+
 export const DEFAULT_CAUSTICS_PARAMS: CausticsParams = {
   strength: 1.0,
-  scale: 0.34,
+  scale: CELLS_A / 4.2,
   speed: 0.35,
   depthFade: 0.055,
-  sharpness: 9,
+  sharpness: 14,
   surfaceLevel: 0,
 };
 
 /** Clock wrap, seconds — long enough to be invisible, short enough for float32. */
 const CLOCK_WRAP = 3600;
+
+/**
+ * Reciprocal of the tile's mean, measured by reading the bake back at the
+ * default sharpness. Dividing by it centres the pattern on 1.
+ */
+const TILE_NORM = 1 / 0.125;
+
+/**
+ * The shafts' two reads, as multiples of the tile: abyssal's `27 / 3.3` and
+ * `11 / 3.3`. At these scales the web's cells are metres across and its lines
+ * decimetres, so thresholded and extruded along the refracted sun they are the
+ * thin sheets of light a real shaft field is, not the blobs a broad ratio made.
+ */
+const SHAFT_SCALE_A = 8.2;
+const SHAFT_SCALE_B = 3.3;
+
+/**
+ * How far the web moves a surface's light, below and above the mean; see
+ * `applyWeb`. The gaps between filaments keep half the light; the filaments
+ * keep most of their excess.
+ */
+const SURFACE_DARK_SHARE = 0.5;
+const SURFACE_BRIGHT_SHARE = 0.8;
+
+/** The surfaces' second, modulating read, abyssal's `6.9 / 3.3`. */
+const BROAD_SCALE = 2.1;
 
 /** Sanity bound on the shear; the refracted sun cannot exceed ~1.13. */
 const MAX_TILT = 3;
@@ -82,7 +102,8 @@ export class Caustics {
   // --- uniforms ------------------------------------------------------------
   private readonly uTime = uniform(0);
   private readonly uStrength = uniform(DEFAULT_CAUSTICS_PARAMS.strength);
-  private readonly uScale = uniform(DEFAULT_CAUSTICS_PARAMS.scale);
+  /** World metres one repeat of the tile spans: `CELLS_A / scale`. */
+  private readonly uTile = uniform(CELLS_A / DEFAULT_CAUSTICS_PARAMS.scale);
   private readonly uSpeed = uniform(DEFAULT_CAUSTICS_PARAMS.speed);
   private readonly uDepthFade = uniform(DEFAULT_CAUSTICS_PARAMS.depthFade);
   private readonly uSharpness = uniform(DEFAULT_CAUSTICS_PARAMS.sharpness);
@@ -92,166 +113,102 @@ export class Caustics {
   /**
    * Red-to-blue separation of the chromatic taps, metres: a constant part plus
    * a part per metre of depth. See `chromaticNode`.
+   *
+   * About a filament's width at 5 m, so each line carries a red edge and a
+   * blue one rather than splitting into three — abyssal's `vec2(.004, .0025)`
+   * of its 3.3 m tile, which is 1.3 cm.
    */
-  private readonly uDispersion = uniform(new THREE.Vector2(0.09, 0.008));
+  private readonly uDispersion = uniform(new THREE.Vector2(0.012, 0.0028));
 
   /**
-   * The node graph, built exactly once. TSL functions are lazily compiled at
-   * shader build time, so constructing this in the constructor is safe even
-   * though there is no assign stack yet.
+   * The node graphs, built exactly once. TSL functions are lazily compiled at
+   * shader build time, so constructing them here is safe.
    */
   private readonly fn: any;
   private readonly fnLod: any;
   private readonly fnChroma: any;
-  /** The web as a function of surface xz, before depth shear and extinction. */
-  private readonly surfaceFn: any;
 
-  /** Baked field. Stable reference — safe for materials to bind once. */
+  /** The baked tile. Stable reference — safe for materials to bind once. */
   readonly texture: THREE.Texture;
-  /** World size of the square the baked field covers. */
-  readonly extent: number;
   /** Texels per side. Updated by `setResolution` without replacing the texture. */
   resolution: number;
 
   private readonly target: THREE.RenderTarget;
   private readonly bakeMaterial: THREE.NodeMaterial;
   private readonly quad = new THREE.QuadMesh(new THREE.NodeMaterial());
-  /** World centre of the baked region. */
-  private readonly uCenter = uniform(new THREE.Vector2());
 
   private clock = 0;
   private disposed = false;
 
   /**
-   * @param resolution Texels per side of the baked field.
-   * @param extent World metres the field spans.
-   *
-   * The pair is chosen for metres-per-texel, not for either number alone. Caustic
-   * filaments are decimetre-scale features; at the first attempt's 512 over 480 m
-   * — nearly a metre per texel — they came out as a soft radial glow rather than
-   * distinct blades. 768 over 320 m is 0.42 m/texel and resolves them. Shrinking
-   * the extent costs nothing real: extinction has closed the pattern down to a
-   * few percent by 50 m of depth, so a region much larger than the water you can
-   * actually see through is texels spent on black.
+   * @param resolution Texels per side of the tile. 512 over the default 4.2 m
+   *   is 8 mm a texel; the filaments are a few centimetres.
    */
-  constructor(resolution = 768, extent = 320) {
+  constructor(resolution = 512) {
     this.params = { ...DEFAULT_CAUSTICS_PARAMS };
     this.resolution = normalizeResolution(resolution);
-    this.extent = extent;
 
-    /**
-     * The web itself, as a function of a point *on the surface*.
-     *
-     * Deliberately knows nothing about depth. Depth enters twice — as the
-     * horizontal shear of the refracted ray and as the extinction along it — and
-     * both are cheap closed forms applied at sample time. Keeping them out of
-     * here is what lets the expensive part be evaluated once per surface texel
-     * per frame instead of once per shaded fragment.
-     */
-    this.surfaceFn = Fn(([surfaceXZ]: any) => {
-      const s = vec2(surfaceXZ).mul(this.uScale).toVar('causticsS');
-      const t = this.uTime.mul(this.uSpeed);
-
-      // `mx_worley_noise_float` is overloaded on the point type; the typings
-      // only model the two-argument form, hence the loose view.
-      const worley = mx_worley_noise_float as unknown as (
-        p: unknown,
-        jitter: number,
-        metric: unknown,
-      ) => any;
-
-      // Octave A: the large cells. Time is the third noise axis, so the pattern
-      // boils rather than sliding rigidly.
-      const a = worley(vec3(s.x, s.y, t), 1.0, int(0));
-
-      // Octave B: finer, counter-drifting, offset so the lattices never align.
-      const q = s.mul(1.87).add(vec2(13.7, -5.3));
-      const b = worley(vec3(q.x, q.y, t.mul(-1.43).add(31.0)), 1.0, int(0));
-
-      // The filaments live where the two distance fields agree: `a - b == 0` is
-      // a set of curves through the plane, and because the two lattices have
-      // different scales and drift in opposite directions those curves close on
-      // themselves and cross — which is exactly the interlocking web. Raising it
-      // to a high power is what turns a broad ramp into a thin bright line.
-      const filament = pow(clamp(float(1).sub(a.sub(b).abs()), 0.0, 1.0), this.uSharpness);
-
-      // A much dimmer pool of light inside each cell, so the web sits on top of
-      // a soft dapple instead of floating on black.
-      const ridgeA = clamp(float(1).sub(a), 0.0, 1.0);
-      const ridgeB = clamp(float(1).sub(b), 0.0, 1.0);
-      const dapple = pow(ridgeA.mul(ridgeB), 2.5).mul(0.45);
-
-      return filament.add(dapple);
-    });
-
-    // --- the baked field ----------------------------------------------------
     this.target = new THREE.RenderTarget(this.resolution, this.resolution, {
       type: THREE.HalfFloatType,
       format: THREE.RGBAFormat,
-      // Mipmapped, and the god-ray march depends on it.
-      //
-      // The march steps several metres between samples while the field's texel
-      // is 0.42 m, so it point-samples a signal it is nowhere near resolving.
-      // With no mip chain to fall back on, the result is variance — and because
-      // the march's start offset is an interleaved gradient noise, that variance
-      // arrives as a *stationary screen-space lattice* rather than as noise,
-      // which is what showed up as a fine grid over the seafloor.
-      //
-      // Implicit LOD cannot fix it either: inside the loop, adjacent pixels are
-      // sampling positions metres apart, so the derivative the hardware infers is
-      // meaningless. The consumer has to ask for the level that matches its own
-      // sampling rate, which is what `intensityNode`'s `lod` is for.
+      // Mipmapped, and three consumers depend on it. A surface far away reads
+      // a coarse level, which averages the web back to its mean of 1, so
+      // distant sand neither shimmers nor changes brightness. The shafts read
+      // explicit coarse levels, because the march's neighbouring fragments
+      // sample points metres apart and the hardware's inferred derivative is
+      // meaningless there. And depth reads a biased level, which is how the
+      // filaments soften in deep water.
       minFilter: THREE.LinearMipmapLinearFilter,
       magFilter: THREE.LinearFilter,
-      // Clamped, not repeated. The pattern is anchored in the world; wrapping it
-      // would tile a visibly identical web onto the far side of the region.
-      wrapS: THREE.ClampToEdgeWrapping,
-      wrapT: THREE.ClampToEdgeWrapping,
+      // Repeated: the tile is periodic by construction.
+      wrapS: THREE.RepeatWrapping,
+      wrapT: THREE.RepeatWrapping,
       depthBuffer: false,
       stencilBuffer: false,
       generateMipmaps: true,
     });
+    // Anisotropic: the sand is mostly seen at a grazing angle, where an
+    // isotropic mip picks its level from the long axis of the footprint and
+    // averages the web back to flat grey a few metres out.
+    this.target.texture.anisotropy = 8;
     this.texture = this.target.texture;
 
     this.bakeMaterial = new THREE.NodeMaterial();
     this.bakeMaterial.depthTest = false;
     this.bakeMaterial.depthWrite = false;
     this.bakeMaterial.fragmentNode = Fn(() => {
-      const world = uv().sub(0.5).mul(this.extent).add(this.uCenter);
-      return vec4(this.surfaceFn(world), 0, 0, 1);
+      const tuv = uv().toVar('cdUv');
+      const t = this.uTime.mul(this.uSpeed).toVar('cdT');
+      // A gentle periodic warp bends the Voronoi edges into the curved
+      // filaments a refracting surface makes; straight edges read as cracked
+      // mud. Integer frequencies, so the warp wraps with the tile.
+      const tau = 6.2831853;
+      const warp = vec2(
+        tuv.y.mul(2 * tau).add(t.mul(0.31)).sin().add(tuv.x.mul(3 * tau).sub(t.mul(0.23)).sin().mul(0.6)),
+        tuv.x.mul(2 * tau).sub(t.mul(0.27)).sin().add(tuv.y.mul(3 * tau).add(t.mul(0.19)).sin().mul(0.6)),
+      ).mul(0.04);
+      const w = tuv.add(warp).toVar('cdW');
+      const ea = periodicVoronoiEdge(w.mul(CELLS_A), CELLS_A, t.mul(0.9), 0);
+      const eb = periodicVoronoiEdge(w.yx.mul(CELLS_B).add(vec2(0.37, 0.61)), CELLS_B, t.mul(-1.2), 17);
+      // Edge distance to a line: narrow and bright, with a short glow, which is
+      // how a focal curve sits on sand. Squared after summing so a crossing of
+      // the two webs flares the way real caustic cusps do.
+      const la = exp(ea.mul(this.uSharpness.negate()));
+      const lb = exp(eb.mul(this.uSharpness.mul(-1.3))).mul(0.6);
+      const web = la.add(lb).pow(2.2).mul(TILE_NORM);
+      return vec4(web, 0, 0, 1);
     })();
 
-    /**
-     * Sampling entry point: the same quantity the old analytic version returned,
-     * but as one texture fetch plus two closed forms.
-     */
-    // Two variants of one field: one that lets the hardware pick the mip level
-    // from its own derivatives, and one that is told the level explicitly.
-    //
-    // A surface being shaded wants the first. Its neighbouring fragments are
-    // neighbouring points on the floor, so the derivative is exactly the right
-    // footprint — and at a grazing view over the seafloor that footprint spans
-    // many texels, which is the case that was aliasing into a visible lattice.
-    // Forcing level 0 there defeated the mip chain entirely.
-    //
-    // The volumetric march wants the second. Its neighbouring fragments sample
-    // points metres apart along different rays, so the inferred derivative is
-    // meaningless; it has to state the level its own step length implies.
-    this.fn = Fn(([worldPosition]: any) => this.field(worldPosition, null));
-    this.fnLod = Fn(([worldPosition, lod]: any) => this.field(worldPosition, lod));
+    this.fn = Fn(([worldPosition]: any) => this.surfaceField(worldPosition));
+    this.fnLod = Fn(([worldPosition, lod]: any) => this.shaftField(worldPosition, lod));
     this.fnChroma = Fn(([worldPosition]: any) => this.chromaticField(worldPosition));
 
     this.setSunDirection(new THREE.Vector3(0.35, 0.62, 0.7));
   }
 
   /**
-   * Resizes the mipmapped bake target in place.
-   *
-   * The render target is already referenced by both the seafloor and the
-   * underwater node graphs through `texture`. `RenderTarget.setSize` retires
-   * the old GPU allocation while retaining that texture object, which makes a
-   * tier change safe after the application's submitted-work fence. The next
-   * `bake` repopulates the resized mip chain.
+   * Resizes the tile in place. The texture object is retained, so every graph
+   * that bound it stays valid; the next `bake` repopulates the mip chain.
    */
   setResolution(resolution: number): void {
     if (this.disposed) return;
@@ -261,95 +218,121 @@ export class Caustics {
     this.resolution = next;
   }
 
-  /** Shared body of both sampler variants. `lod` null selects implicit LOD. */
-  private field(worldPosition: any, lod: any): any {
-    return (() => {
-      const p = vec3(worldPosition).toVar('causticsP');
+  /** World metres one repeat of the tile spans. */
+  get tileSize(): number {
+    return this.uTile.value;
+  }
 
-      // Depth below the surface; above water there is nothing to cast.
-      const below = this.uSurfaceY.sub(p.y).max(0.0).toVar('causticsDepth');
+  // ------------------------------------------------------------------ fields
 
-      // Walk the refracted ray back up to the surface patch that lit this point.
-      const surfaceXZ = vec2(p.x, p.z).add(this.uSunTilt.mul(below)).toVar('causticsXZ');
-
-      const coord = surfaceXZ.sub(this.uCenter).div(this.extent).add(0.5).toVar('causticsUv');
-
-      // Outside the baked region there is no pattern to read, and clamp-to-edge
-      // would streak the border across the whole seafloor. Fade instead.
-      const edge = coord.min(coord.oneMinus()).toVar();
-      const inside = edge.x.min(edge.y).smoothstep(0, 0.03).clamp(0, 1).toVar();
-
-      const sampled = texture(this.texture, coord);
-      const web = (lod === null ? sampled : sampled.level(lod)).r.mul(inside).toVar();
-      const fade = exp(below.mul(this.uDepthFade).negate());
-
-      return web.mul(this.uStrength).mul(fade);
-    })();
+  /** Depth below the surface and the surface point that lit `p`. */
+  private surfacePoint(p: any): { below: any; xz: any } {
+    const below = this.uSurfaceY.sub(p.y).max(0.0).toVar();
+    const xz = vec2(p.x, p.z).add(this.uSunTilt.mul(below)).toVar();
+    return { below, xz };
   }
 
   /**
-   * The same field read three times, once per colour channel, a few centimetres
-   * apart along the refracted sun's horizontal direction.
+   * The web a lit surface shows, centred on 1: bright filaments over dimmer
+   * cells, sharp in the shallows and relaxing toward uniform light with depth.
+   *
+   * Depth does two things to a caustic, and both are here. The focal curves
+   * spread, because the surface patch that lights a point grows with the
+   * column above it — a mip bias, so the lines soften rather than vanish. And
+   * the contrast falls, because the many patches start to overlap — a mix
+   * toward 1, *not* toward 0. The old field multiplied by `exp(-k depth)`,
+   * which turned depth into darkness on top of the medium's own (already
+   * applied by the underwater pass), so a reef at 17 m lost its sunlight twice.
+   */
+  private surfaceField(worldPosition: any): any {
+    const p = vec3(worldPosition).toVar('causticsSP');
+    const { below, xz } = this.surfacePoint(p);
+    const web = texture(this.texture, xz.div(this.uTile))
+      .bias(this.detailBias(below))
+      .r.mul(this.broadPattern(xz));
+    return applyWeb(web, this.detailContrast(below));
+  }
+
+  /**
+   * The same field read three times, once per colour channel, a little apart
+   * along the refracted sun's horizontal direction.
    *
    * Water is dispersive: blue refracts about 1.3% more than red (n = 1.343 at
    * 450 nm against 1.331 at 650 nm), so the focus each filament forms lands at
    * a slightly different place per wavelength and the bright lines carry a red
    * fringe on one side and a blue one on the other. Adapted from the three-tap
-   * `caus` in abyssal-garden (MIT, (c) 2026 Maksymilian Dendura), with the
-   * separation in metres and growing with depth instead of a fixed uv offset —
-   * the spread is a property of the refracted ray's length, so a reef at 17 m
-   * fringes more than sand at 3 m.
-   *
-   * The physical spread at 17 m is ~4 cm, a tenth of a texel of the 0.42 m bake,
-   * and would be invisible; `uDispersion` exaggerates it to ~0.2 m there, which
-   * is what reads as colour at the distances the reef is seen from.
+   * `caus` in abyssal-garden, with the separation in metres and growing with
+   * depth — the spread is a property of the refracted ray's length.
    */
   private chromaticField(worldPosition: any): any {
-    return (() => {
-      const p = vec3(worldPosition).toVar('causticsCP');
-      const below = this.uSurfaceY.sub(p.y).max(0.0).toVar('causticsCDepth');
-      const surfaceXZ = vec2(p.x, p.z).add(this.uSunTilt.mul(below)).toVar('causticsCXZ');
-      const coord = surfaceXZ.sub(this.uCenter).div(this.extent).add(0.5).toVar('causticsCUv');
-      const edge = coord.min(coord.oneMinus()).toVar();
-      const inside = edge.x.min(edge.y).smoothstep(0, 0.03).clamp(0, 1).toVar();
+    const p = vec3(worldPosition).toVar('causticsCP');
+    const { below, xz } = this.surfacePoint(p);
+    const tileUv = xz.div(this.uTile).toVar('causticsCUv');
 
-      // Along the tilt where there is one; a fixed diagonal under a vertical sun,
-      // where the refracted ray has no horizontal direction to spread along.
-      const tiltLen = this.uSunTilt.length().toVar();
-      const axis = mix(vec2(0.7071, 0.7071), this.uSunTilt.div(tiltLen.max(1e-4)), tiltLen.smoothstep(0.02, 0.2));
-      const spread = this.uDispersion.x.add(this.uDispersion.y.mul(below));
-      const offset = axis.mul(spread.div(this.extent)).toVar('causticsCOff');
+    // Along the tilt where there is one; a fixed diagonal under a vertical sun,
+    // where the refracted ray has no horizontal direction to spread along.
+    const tiltLen = this.uSunTilt.length().toVar();
+    const axis = mix(vec2(0.7071, 0.7071), this.uSunTilt.div(tiltLen.max(1e-4)), tiltLen.smoothstep(0.02, 0.2));
+    const spread = this.uDispersion.x.add(this.uDispersion.y.mul(below));
+    const offset = axis.mul(spread.div(this.uTile)).toVar('causticsCOff');
 
-      const r = texture(this.texture, coord.add(offset)).r;
-      const g = texture(this.texture, coord).r;
-      const b = texture(this.texture, coord.sub(offset)).r;
-      const fade = exp(below.mul(this.uDepthFade).negate());
-      return vec3(r, g, b).mul(inside).mul(this.uStrength).mul(fade);
-    })();
+    const bias = this.detailBias(below);
+    const r = texture(this.texture, tileUv.add(offset)).bias(bias).r;
+    const g = texture(this.texture, tileUv).bias(bias).r;
+    const b = texture(this.texture, tileUv.sub(offset)).bias(bias).r;
+    const web = vec3(r, g, b).mul(this.broadPattern(xz));
+    return vec3(
+      applyWeb(web.x, this.detailContrast(below)),
+      applyWeb(web.y, this.detailContrast(below)),
+      applyWeb(web.z, this.detailContrast(below)),
+    );
   }
 
   /**
-   * Re-bakes the field around `centerX, centerZ`.
-   *
-   * One 512² pass per frame, against the alternative of evaluating two 3D worley
-   * lattices per shaded fragment. That was affordable while the only consumer
-   * was the seafloor; it stopped being affordable the moment the volumetric
-   * shafts began asking for the same value at every step of a 24-sample march,
-   * which is around fifty hash lookups per step per pixel and took the frame
-   * from milliseconds to seconds.
+   * The beams the shafts are made of, 0..1: abyssal-garden's `W_RAYS`
+   * pattern, `ss(.3, .7, A) * ss(.15, .6, B)`, with `A` and `B` the tile read
+   * eight and three times larger and blurred by `lod`. The thresholds are set
+   * for this tile's distribution (mean 1, filaments ~9) rather than abyssal's.
+   */
+  private shaftField(worldPosition: any, lod: any): any {
+    const p = vec3(worldPosition).toVar('causticsRP');
+    const { xz } = this.surfacePoint(p);
+    const a = texture(this.texture, xz.div(this.uTile.mul(SHAFT_SCALE_A))).level(float(lod).add(1)).r;
+    const b = texture(this.texture, xz.yx.div(this.uTile.mul(SHAFT_SCALE_B)).add(0.3)).level(float(lod).add(0.5)).r;
+    return a.smoothstep(0.9, 2.6).mul(b.smoothstep(0.5, 1.8));
+  }
+
+  /** Mip bias for the tile at `below` metres: sharp at the top, softer down. */
+  private detailBias(below: any): any {
+    return below.mul(0.08).add(1).log2();
+  }
+
+  /** How much of the web survives at `below` metres, times the strength. */
+  private detailContrast(below: any): any {
+    return exp(below.mul(this.uDepthFade).negate()).mul(this.uStrength).clamp(0, 1.5);
+  }
+
+  /**
+   * The surfaces' second read: the tile again at another scale and turned a
+   * quarter, heavily blurred, as a brightness modulation around 1 — the
+   * `.45 + b * 1.3` in abyssal's `caus`. It breaks the repeat and gives the
+   * web the larger bright and dim patches real caustics have.
+   */
+  private broadPattern(xz: any): any {
+    const b = texture(this.texture, xz.yx.div(this.uTile.mul(BROAD_SCALE)).add(0.37)).bias(float(3)).r;
+    return mix(float(1), b, 0.55).clamp(0.4, 2.2);
+  }
+
+  // ------------------------------------------------------------------ bake
+
+  /**
+   * Re-bakes the tile. The arguments are the camera's world position, kept so
+   * callers need not change; a periodic tile has no centre.
    *
    * Must run outside an active render target; it saves and restores its own.
    */
-  bake(renderer: THREE.WebGPURenderer, centerX: number, centerZ: number): void {
+  bake(renderer: THREE.WebGPURenderer, _centerX = 0, _centerZ = 0): void {
     if (this.disposed) return;
-
-    // Quantised to a texel, so the pattern does not crawl sub-texel against the
-    // world as the camera creeps — the same reason the ocean mesh snaps.
-    const texel = this.extent / this.resolution;
-    const centre = this.uCenter.value as THREE.Vector2;
-    centre.x = Math.round(centerX / texel) * texel;
-    centre.y = Math.round(centerZ / texel) * texel;
-
     const previous = renderer.getRenderTarget();
     this.quad.material = this.bakeMaterial;
     renderer.setRenderTarget(this.target);
@@ -358,26 +341,18 @@ export class Caustics {
   }
 
   /**
-   * Caustic intensity, in the range `[0, strength]`, at a world-space point.
+   * Caustic light at a world-space point.
    *
-   * Pure: the result depends only on `worldPosition` and the uniforms, so it can
-   * be shared by any number of materials.
-   *
-   * @param worldPosition A `vec3` node — typically `positionWorld`.
-   * @param lod Explicit mip level. 0 for a surface being shaded, where the
-   *   hardware's own derivatives would be right anyway; higher for a consumer
-   *   that samples far apart, such as the volumetric march. Passing the level
-   *   that matches the caller's sampling rate is what turns aliasing into blur,
-   *   and blur is what a shaft sampled every few metres should look like.
+   * With `lod` null: the web a lit surface shows, centred on 1 — what every
+   * material multiplies its key light by. With an explicit `lod`: the shaft
+   * pattern, 0..1, blurred by that many levels — what the volumetric march
+   * integrates. Pure: depends only on `worldPosition` and the uniforms.
    */
   intensityNode(worldPosition: unknown, lod: unknown = null): unknown {
     return lod === null ? this.fn(worldPosition) : this.fnLod(worldPosition, lod);
   }
 
-  /**
-   * The field as an RGB triple with per-channel dispersion; see
-   * `chromaticField`. Implicit LOD, so for a surface being shaded.
-   */
+  /** The surface field as RGB with per-channel dispersion; see `chromaticField`. */
   chromaticNode(worldPosition: unknown): unknown {
     return this.fnChroma(worldPosition);
   }
@@ -391,7 +366,7 @@ export class Caustics {
     if (p.surfaceLevel !== undefined) this.params.surfaceLevel = p.surfaceLevel;
 
     this.uStrength.value = Math.max(0, this.params.strength);
-    this.uScale.value = Math.max(1e-4, this.params.scale);
+    this.uTile.value = CELLS_A / Math.max(1e-3, this.params.scale);
     this.uSpeed.value = this.params.speed;
     this.uDepthFade.value = Math.max(0, this.params.depthFade);
     this.uSharpness.value = Math.max(1, this.params.sharpness);
@@ -407,13 +382,9 @@ export class Caustics {
    *
    * The shear follows the **refracted** ray, not the one in air. Snell's law
    * divides the horizontal component of the unit direction by 1.333, so
-   * `skyPro`'s 24-degree sun, which sheared the pattern by 2.2 m per metre of
-   * depth (the ray in air), arrives under water at 47 degrees and shears by 0.93.
-   * The difference was invisible while the field only lit the floor, and
-   * decisive once the volumetric shafts began following it: shafts slanting at
-   * the air angle lay nearly flat across the frame, where every reference shows
-   * them standing steep. The refracted elevation also never falls below
-   * 41 degrees, so the old low-sun clamp is no longer needed.
+   * `skyPro`'s 24-degree sun, which would shear the pattern by 2.2 m per metre
+   * of depth in air, arrives under water at 47 degrees and shears by 0.93 —
+   * which is what stands the shafts steep, as every reference shows them.
    */
   setSunDirection(dir: THREE.Vector3): void {
     const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
@@ -445,8 +416,57 @@ export class Caustics {
   }
 }
 
+/**
+ * A surface's light under the web `w` (mean 1) at contrast `c`.
+ *
+ * Not `mix(1, w, c)`. The tile's median is 0.09 against its mean of 1, so at
+ * full contrast the brightest tenth carried all the light, the tone curve
+ * clipped it, and the rest of the shelf read darker than with no caustics at
+ * all: 0.82x mean and 0.58x median on the shore-break shelf, measured with
+ * the sea hidden. Here the gaps keep half the light, which is what sand
+ * between real caustic lines gets, and the filaments keep 0.8 of their excess.
+ * That puts the linear mean somewhat above 1, which the tone curve's
+ * compression of the filaments takes back: measured the same way, the shelf
+ * now displays at 0.98x of its uncausticked brightness, with the gaps at
+ * 0.79x and the filaments at 1.56x (p90).
+ */
+function applyWeb(w: any, c: any): any {
+  const d = float(w).sub(1);
+  return d.mul(c).mul(d.greaterThan(0).select(float(SURFACE_BRIGHT_SHARE), float(SURFACE_DARK_SHARE))).add(1);
+}
+
+/**
+ * Distance to the nearest Voronoi edge (F2 - F1 of the cell distances) on a
+ * lattice of `cells` that wraps, with every feature point orbiting its cell so
+ * the web boils instead of sliding. `p` is in cell units.
+ *
+ * Periodic so the tile repeats seamlessly; nine cells because the orbit keeps
+ * each point inside its own cell, which is what the 3x3 neighbourhood assumes.
+ */
+function periodicVoronoiEdge(p: any, cells: number, time: any, seed: number): any {
+  const i = p.floor().toVar();
+  const f = p.fract().toVar();
+  const f1 = float(8).toVar();
+  const f2 = float(8).toVar();
+  for (let y = -1; y <= 1; y++) {
+    for (let x = -1; x <= 1; x++) {
+      const o = vec2(x, y);
+      const c = i.add(o).add(cells).mod(cells).add(seed);
+      const h = vec2(c.dot(vec2(127.1, 311.7)), c.dot(vec2(269.5, 183.3))).sin().mul(43758.5453).fract();
+      const orbit = time.mul(h.yx.mul(0.8).add(0.6)).add(h.mul(6.2831853)).sin().mul(0.38);
+      const d = o.add(0.5).add(orbit).sub(f);
+      const dd = d.dot(d);
+      f2.assign(f2.min(f1.max(dd)));
+      f1.assign(f1.min(dd));
+    }
+  }
+  return f2.sqrt().sub(f1.sqrt());
+}
+
 function normalizeResolution(size: number): number {
-  return Number.isFinite(size) ? Math.max(1, Math.round(size)) : 768;
+  // Capped: past 8 mm a texel the filaments gain nothing, and the bake is the
+  // one per-frame cost this module has above water.
+  return Number.isFinite(size) ? Math.min(512, Math.max(16, Math.round(size))) : 512;
 }
 
 function clampNumber(v: number, lo: number, hi: number): number {

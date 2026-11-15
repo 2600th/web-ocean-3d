@@ -215,7 +215,7 @@ const DAYLIGHT_K = 2.2;
  * its foreground. 1.0 keeps the shallows' cyan in the `underwater` shot and
  * gives the reef back roughly half its contrast.
  */
-const INSCATTER_GAIN = 1.0;
+const INSCATTER_GAIN = 0.75;
 
 /**
  * Daylight loss applied to the *surfaces* a ray finds, as a multiple of `sigma`.
@@ -227,7 +227,7 @@ const INSCATTER_GAIN = 1.0;
  * there, so the corals still read as coloured against water that has the full
  * depth gradient.
  */
-const SURFACE_K = 1.4;
+const SURFACE_K = 0.9;
 
 /**
  * Fraction of light per metre that a shaft scatters toward the eye — the
@@ -236,13 +236,40 @@ const SURFACE_K = 1.4;
  * about the brightness of the in-scatter around it, which is the contrast in
  * the reference frames.
  */
-const SHAFT_DENSITY = 0.04;
+const SHAFT_DENSITY = 0.03;
 
 /** Ambient kept by a face pointing straight down, near the surface. */
-const UNDERSIDE_AMBIENT = 0.42;
+const UNDERSIDE_AMBIENT = 0.3;
 
 /** Darkening at the frame corners when submerged. */
-const VIGNETTE = 0.22;
+const VIGNETTE = 0.3;
+
+/**
+ * Strength of the fluorescence term on saturated surfaces; see the composite.
+ * abyssal-garden uses 0.35 (algae) to 0.75 (corals) of the blue-green light.
+ */
+const FLUORESCENCE = 0.6;
+
+/** Water-scattered light on faces turned sideways; abyssal's `side` at 0.7 of its medium. */
+const SIDE_LIGHT = 0.35;
+
+/** Exponent of the grade's luminance curve about the medium. 1 is identity. */
+const GRADE_CONTRAST = 1.25;
+/** The same curve's exponent above the pivot. */
+const GRADE_CONTRAST_HIGH = 1.04;
+
+/**
+ * Saturation of the in-scatter relative to the preset's water colour.
+ *
+ * `skyPro`'s 0x2f8fb5 has a red-to-green ratio of 0.10 in linear, against
+ * abyssal-garden's `WCOL` at 0.28. A medium that saturated drives every pixel
+ * into a cyan the output transform cannot represent, and ACES's gamut matrix
+ * clips the red channel to zero across the whole submerged frame (measured:
+ * foreground sand three metres off came out at red 0). Pulling the scatter a
+ * fifth of the way toward its own luminance puts it at abyssal's ratio and
+ * keeps the preset's hue.
+ */
+const MEDIUM_SATURATION = 0.8;
 
 export class UnderwaterPass {
   private readonly params: UnderwaterParams;
@@ -307,10 +334,10 @@ export class UnderwaterPass {
   // --- surface relight ------------------------------------------------------
   /** Ambient a down-facing surface keeps near the surface. See `UNDERSIDE_AMBIENT`. */
   private readonly uUnderside = uniform(UNDERSIDE_AMBIENT);
+  /** See `FLUORESCENCE`. */
+  private readonly uFluorescence = uniform(FLUORESCENCE);
   /** Strength of the chromatic caustic recolour on lit submerged surfaces. */
   private readonly uCausticRelight = uniform(0.55);
-  /** Mip level of the caustics field read as the local mean for that ratio. */
-  private readonly uRelightMeanLod = uniform(5);
   private normalNode: unknown = null;
   private chromaticCaustics: ((worldPosition: unknown) => unknown) | null = null;
 
@@ -328,15 +355,14 @@ export class UnderwaterPass {
    * makes a shadow *volume* visible where the surface above is not focusing.
    */
   private readonly uShaftBase = uniform(0.05);
-  /** Local-to-mean caustic ratio below which no shaft forms, and the gain on the rest. */
-  private readonly uShaftFloor = uniform(1.0);
-  private readonly uShaftGain = uniform(5);
-  /** Ratio range over which a beam ramps from nothing to full. */
-  private readonly uShaftWidth = uniform(0.6);
-  /** Mip of the caustics field the beam pattern is read at (0.42 m x 2^lod texels). */
+  /** Gain on the 0..1 beam pattern. abyssal-garden's `pat * 6`. */
+  private readonly uShaftGain = uniform(6);
+  /**
+   * Extra mips of blur on the beam pattern. The caustics module reads the
+   * tile eight and three times larger for the shafts, so level 0 there is
+   * already 7 cm and 2.7 cm a texel; abyssal uses levels 2.5 and 2.
+   */
   private readonly uShaftBlurLod = uniform(1.5);
-  /** Mips coarser again at which the field's local mean is read. */
-  private readonly uShaftMeanLod = uniform(3);
   /** How far along the view ray shafts are integrated, metres. abyssal-garden: 120. */
   private readonly uShaftRange = uniform(90);
   /** `K / cos` of the refracted sun: attenuation down the light's own path. */
@@ -387,7 +413,8 @@ export class UnderwaterPass {
   // --- grade ---------------------------------------------------------------
   private readonly uTint = uniform(new THREE.Vector3(0.84, 0.99, 1.08));
   private readonly uDesaturate = uniform(0.2);
-  private readonly uContrastLoss = uniform(0.12);
+  /** Exponent of the luminance curve about the medium; see the grade. */
+  private readonly uContrast = uniform(GRADE_CONTRAST);
 
   // --- refractive distortion -----------------------------------------------
   /**
@@ -681,6 +708,12 @@ export class UnderwaterPass {
           .toVar('uwPull');
         warp.addAssign(pullDir.mul(meniscus.mul(this.uMeniscusPull)));
 
+        // Faded out over the outermost 3% of the frame. The warp is clamped to
+        // the frame, and wherever it pointed outward the clamp repeated the
+        // edge row of pixels: the stripe glitch along the top and right edges
+        // of `refraction-3` and `underwater-1`.
+        const edgeDist = suv.min(suv.oneMinus()).toVar('uwEdgeDist');
+        warp.mulAssign(edgeDist.x.smoothstep(0, 0.03).mul(edgeDist.y.smoothstep(0, 0.03)));
         const warpedUv = suv
           .add(warp)
           .clamp(vec2(0.001, 0.001), vec2(0.999, 0.999))
@@ -786,6 +819,25 @@ export class UnderwaterPass {
 
         const surfaceRgb: any = vec3(warped.rgb).mul(downwell).toVar('uwSurface');
 
+        // Colour that survives depth. abyssal-garden's corals, sponges and
+        // magenta algae carry a fluorescence term (`alb * flu * dot(light,
+        // vec3(.1, .5, .5))`): they re-emit the blue-green light that reaches
+        // them in their own hue, which is why its reef stays pink and orange
+        // at 40 m while the sand beside it goes blue. Our materials are lit
+        // as though at the surface and the column is applied here, so the
+        // same idea is a term on the *saturated* pixels only: the pixel's own
+        // colour, scaled by the blue-green share of the downwelling. Sand,
+        // rock and the water itself are unsaturated and take none of it.
+        const srcMax = warped.r.max(warped.g).max(warped.b).toVar('uwSrcMax');
+        const srcSat = srcMax.sub(warped.r.min(warped.g).min(warped.b)).div(srcMax.max(1e-4)).toVar('uwSrcSat');
+        const fluor = srcSat
+          .smoothstep(0.3, 0.75)
+          .mul(hitDepth.smoothstep(0.5, 3))
+          .mul(downwell.dot(vec3(0.1, 0.5, 0.4)))
+          .mul(this.uFluorescence)
+          .toVar('uwFluor');
+        surfaceRgb.addAssign(vec3(warped.rgb).mul(fluor));
+
         // --- 2d. the surface's own lighting under water ----------------------
         //
         // Only with real normals (the TRAA path's MRT), and only on surfaces:
@@ -811,7 +863,11 @@ export class UnderwaterPass {
           // as the downwelling narrows into a cone.
           const up = nWorld.y.mul(0.5).add(0.5).toVar('uwUp');
           const undersideFloor: any = this.uUnderside.mul(exp(hitDepth.mul(-0.02))).toVar('uwUnderFloor');
-          const hemi = mix(undersideFloor, float(1), up.mul(up)).toVar('uwHemi');
+          // Plus abyssal's `side`: light the surrounding water scatters onto
+          // faces turned toward it, `(1 - |n.y|)`. Without it a hull seen from
+          // below was one flat value, its bilge as dark as its keel.
+          const side = float(1).sub(nWorld.y.abs()).mul(SIDE_LIGHT).toVar('uwSide');
+          const hemi = mix(undersideFloor, float(1), up.mul(up)).add(side).toVar('uwHemi');
           surfaceRgb.mulAssign(mix(float(1), hemi, submergedHit) as any);
 
           // Chromatic caustics. The materials already carry the web in
@@ -820,8 +876,12 @@ export class UnderwaterPass {
           // only where the sun can reach: facing it, and out of its shadow.
           if (chromaticCaustics !== null) {
             const nDotL = nWorld.dot(this.uSunUnder).smoothstep(0.05, 0.45).toVar('uwNdotL');
+            // Hue only. The field is centred on 1 and the materials already
+            // took its luminance through their key light (`groundShading`), so
+            // dividing by the channel mean leaves just the dispersion: red on
+            // one side of a filament, blue on the other, no extra light.
             const chroma = vec3(chromaticCaustics(hitP)).toVar('uwChroma');
-            const mono = caustics(hitP, this.uRelightMeanLod).toVar('uwChromaMean');
+            const mono = chroma.dot(vec3(1 / 3, 1 / 3, 1 / 3)).toVar('uwChromaMean');
             const ratio = chroma.div(mono.max(0.02)).toVar('uwChromaRatio');
             const vis = this.shadowVisibility(hitP, hitDepth).toVar('uwRelightVis');
             const reach = float(1).sub(hitDepth.smoothstep(8, 45)).toVar('uwRelightReach');
@@ -882,8 +942,24 @@ export class UnderwaterPass {
         // Depth robs the image of saturation first and of contrast second; both
         // are driven from `cameraDepth` on the CPU side.
         const grey = vec3(luminance(lit));
-        const flat = mix(lit, grey, this.uDesaturate);
-        const lifted = mix(flat, medium.mul(1.2), this.uContrastLoss);
+        const flat = mix(lit, grey, this.uDesaturate).toVar('uwFlat');
+        // Contrast about the water, abyssal-garden's luminance S-curve (`mix(l,
+        // smoothstep(l), .55)` after its tone map) done in linear before ours:
+        // a power on luminance pivoted at the medium's own level, so whatever
+        // is darker than the water goes darker and whatever is brighter — lit
+        // sand, a caustic, a shaft — goes brighter, and the water itself does
+        // not move. The old grade lifted everything *toward* the medium,
+        // which is the flat cyan the critic named.
+        const pivot = luminance(medium).max(1e-4).toVar('uwPivot');
+        const lumFlat = luminance(flat).max(1e-5).toVar('uwLumFlat');
+        // Steep below the pivot, gentle above it: the darks are where the
+        // depth went missing, and pushing the highlights by the same power
+        // blew the shafts looking up-sun into flat white.
+        const ratio = lumFlat.div(pivot).toVar('uwCurveRatio');
+        const curved = pivot
+          .mul(ratio.lessThan(1).select(ratio.pow(this.uContrast), ratio.pow(GRADE_CONTRAST_HIGH)))
+          .toVar('uwCurved');
+        const lifted = flat.mul(curved.div(lumFlat).min(2));
         // A mask's worth of vignette, only while the eye itself is under: the
         // frame edge darkening is what a lens behind a port or a mask does, and
         // it pulls the eye to the lit middle of the frame where the reef is.
@@ -1015,16 +1091,11 @@ export class UnderwaterPass {
           // crossing a passing crest does not flicker.
           const submerged = depthBelow.smoothstep(0, 0.6);
 
-          const local = caustics(p, lod);
-          const mean = caustics(p, lod.add(this.uShaftMeanLod));
-          // Where the surface is focusing light, as a ratio over its own
-          // neighbourhood — independent of the field's depth fade, which the
-          // irradiance term below now owns. abyssal-garden thresholds its
-          // pattern with a smoothstep; the floor here does the same job.
-          const pattern = local
-            .div(mean.max(1e-3))
-            .smoothstep(this.uShaftFloor, this.uShaftFloor.add(this.uShaftWidth))
-            .mul(this.uShaftGain);
+          // The beam pattern, 0..1, already thresholded by the caustics
+          // module the way abyssal-garden's `W_RAYS` thresholds its own: the
+          // shared caustic tile read at shaft scale. Thin sheets of light, not
+          // the broad local-over-mean blobs the old world field gave.
+          const pattern = float(caustics(p, lod) as any).mul(this.uShaftGain);
 
           const vis = this.shadowVisibility(p, depthBelow);
           // In: down the refracted path from the surface. Out: back along the
@@ -1147,6 +1218,15 @@ export class UnderwaterPass {
   setSurfaceInputs(normal: unknown, chromaticCaustics: ((worldPosition: unknown) => unknown) | null): void {
     this.normalNode = normal;
     this.chromaticCaustics = chromaticCaustics;
+  }
+
+  /**
+   * The medium's in-scatter colour at the top of the column: what a level
+   * ray just under the surface converges on, before phase. The ocean's
+   * underside shows it as total internal reflection.
+   */
+  mediumColor(target: THREE.Vector3): THREE.Vector3 {
+    return target.copy(this.uScatterColor.value as THREE.Vector3);
   }
 
   /** World metres per texel of the caustics field. See `uCausticsTexel`. */
@@ -1276,7 +1356,14 @@ export class UnderwaterPass {
     // Gone when the sun is: the same horizon ramp the sky uses for its disc.
     const sunUp = smoothstepNumber(ay, -0.02, 0.15);
     const scatter = this.uScatterColor.value as THREE.Vector3;
-    scatter.set(p.waterColor.r, p.waterColor.g, p.waterColor.b).multiplyScalar(INSCATTER_GAIN * (0.35 + 0.65 * sunUp));
+    const wl = 0.2126 * p.waterColor.r + 0.7152 * p.waterColor.g + 0.0722 * p.waterColor.b;
+    scatter
+      .set(
+        wl + (p.waterColor.r - wl) * MEDIUM_SATURATION,
+        wl + (p.waterColor.g - wl) * MEDIUM_SATURATION,
+        wl + (p.waterColor.b - wl) * MEDIUM_SATURATION,
+      )
+      .multiplyScalar(INSCATTER_GAIN * (0.35 + 0.65 * sunUp));
 
     const depth = Math.max(0, p.cameraDepth);
     this.uCameraDepth.value = depth;
@@ -1289,11 +1376,6 @@ export class UnderwaterPass {
     // the reef's colour away exactly where a diver is closest to it.
     const descent = Math.min(1, depth / 40);
     this.uDesaturate.value = 0.04 + 0.2 * descent;
-    // The lift toward the medium is now mostly the in-scatter's own job, and
-    // applying it again here was what left the frame without a black in it:
-    // the references' kelp and rock silhouettes sit near black against bright
-    // water, and that range is the look.
-    this.uContrastLoss.value = 0.1 * descent;
 
     const steps = Math.max(0, Math.min(MAX_GODRAY_STEPS, Math.round(p.godRaySteps)));
     // steps === 0 is the Low tier: the march must cost nothing at all.
