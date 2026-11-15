@@ -73,7 +73,10 @@ https://github.com/Noniv/web-ocean
 
 The physical sky (transmittance and sky-view atmosphere model, limb-darkened sun
 disc) is ported from `js/wgsl/sky.js` and `common.js`, and the high cloud layer
-from its cloud shader, to three.js TSL:
+from its cloud shader, to three.js TSL. The volumetric cumulus take three more
+pieces of that cloud shader: the rotated fBm with a 2.03 lacunarity and
+per-octave offset (`cloudFbm`, used for the 3D shape field and the 2D weather
+map), and the clear far band where the low layer thins out before the horizon:
 
 - `src/sky/PhysicalAtmosphere.ts`
 - `src/sky/Atmosphere.ts`
