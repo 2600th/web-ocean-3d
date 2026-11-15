@@ -128,7 +128,11 @@ export const DEFAULT_LENS_RAIN_PARAMS: LensRainParams = {
   // this file had the taps to fill.
   fogRadius: 0.005,
   backdropBlur: 0.7,
-  dispersion: 0.05,
+  // Water's own dispersion, not a look. n runs 1.331 (700 nm) to 1.339
+  // (400 nm), so (n − 1) spreads about ±1.2% about its mean, and the split
+  // here is ± this fraction of the displacement. It was 0.05, four times
+  // that, and the drops carried the rainbow rims the A/B critic called out.
+  dispersion: 0.012,
   glint: 0.55,
   glintPower: 26,
   glintColor: new THREE.Color(0xffffff),
@@ -319,6 +323,30 @@ const FILM_COVERAGE = 0.7;
  * brief because the film is.
  */
 const FILM_GLASS = 0.3;
+
+/**
+ * Droplet coverage at full rain, as a fraction of what the lattices are tuned
+ * to carry.
+ *
+ * The lattices were tuned for a lens that is the subject of the shot. In play
+ * it is not — the sea and the ship are — and at full coverage the A/B critic
+ * read the storm frame (waves-5) as "lens droplets with rainbow fringes
+ * dominate the frame" and asked for about 80% fewer. Population rather than
+ * opacity, so it is the same scaling a lighter shower already gets: fewer
+ * drops, each one still a whole lens.
+ */
+const RAIN_DROP_SHARE = 0.2;
+
+/**
+ * How much of the glass treatment — misting and backdrop defocus — rain asks
+ * for, as a fraction of the authored weights. The same reasoning as
+ * `FILM_GLASS`, and the same value: attributed by capture on the storm shot,
+ * the softness the critic took for depth of field was this defocus (turning
+ * the depth of field off moved the frame by 0.14 levels on average; turning
+ * the lens rain off moved it by 4.4), and at full weight it took the swell out
+ * of the sea.
+ */
+const RAIN_GLASS = 0.3;
 
 export class LensRain {
   private readonly params: LensRainParams;
@@ -1052,8 +1080,8 @@ export class LensRain {
     // a squall past the coverage the lattices are tuned for. Each is gated by its
     // own emergence before the comparison, not after — they are different
     // quantities and the looser gate must not carry the stricter one.
-    this.uAmount.value = Math.max(rain * emerged, this.film * FILM_COVERAGE * clear);
-    this.uGlass.value = Math.max(rain * emerged, this.film * FILM_GLASS * clear);
+    this.uAmount.value = Math.max(rain * emerged * RAIN_DROP_SHARE, this.film * FILM_COVERAGE * clear);
+    this.uGlass.value = Math.max(rain * emerged * RAIN_GLASS, this.film * FILM_GLASS * clear);
   }
 
   private applyParams(): void {

@@ -52,11 +52,20 @@ export class SceneBloom {
   /**
    * Where the high-pass sits relative to white.
    *
-   * Slightly *above* it: a highlight has to be genuinely clipping, not merely
+   * Two stops *above* it: a highlight has to be far past clipping, not merely
    * bright, before it spills. Below 1.0 this stops being veiling glare and
    * becomes a soft-focus filter over the whole image.
+   *
+   * It was 2.2, and a sea of sun glitter is mostly between two and four times
+   * white: on Clear Day's canonical shot (A/B critic, reflections-3, "a bloom
+   * veil washes the ship milky grey") the pyramid lifted the backlit hull by 9
+   * output levels on average and the whole frame by 1.6. At 4 those are 5 and
+   * 0.6, and the sun's own glow at sunset keeps its core — halving `strength`
+   * instead took the same off the ship but dimmed the sun's glow everywhere.
+   * Measured on corrected captures; the radius barely mattered (0.35 → 0, 9 →
+   * 7 levels on the hull).
    */
-  private static readonly THRESHOLD_OVER_WHITE = 2.2;
+  private static readonly THRESHOLD_OVER_WHITE = 4;
   /**
    * Ceiling on what the pyramid may see, in multiples of white.
    *

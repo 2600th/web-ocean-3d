@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn,
+  If,
   dot,
   float,
   floor,
@@ -41,7 +42,11 @@ export interface PostTierSettings {
   motionBlurSamples: number;
   /** RCAS lobe scale, 0..1. */
   sharpen: number;
-  /** Film-grain amplitude in display units; 0 is off. */
+  /**
+   * Film-grain amplitude in display units; 0 is off. Off at every tier — see
+   * `PostChain.applyGrain` — and kept as a field so `setOverride('grain', true)`
+   * (which restores the old 0.012) still has something to A/B against.
+   */
   grain: number;
   /** Lateral CA at the frame corner, UV units; 0 is off. */
   aberration: number;
@@ -72,7 +77,7 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
     ao: { enabled: true, resolutionScale: 0.5, samples: 12 },
     motionBlurSamples: 10,
     sharpen: 0.3,
-    grain: 0.012,
+    grain: 0,
     aberration: 0.001,
     autoExposure: true,
   },
@@ -81,7 +86,7 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
     ao: { enabled: true, resolutionScale: 0.75, samples: 16 },
     motionBlurSamples: 12,
     sharpen: 0.3,
-    grain: 0.012,
+    grain: 0,
     aberration: 0.001,
     autoExposure: true,
   },
@@ -90,7 +95,7 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
     ao: { enabled: true, resolutionScale: 1, samples: 16 },
     motionBlurSamples: 14,
     sharpen: 0.3,
-    grain: 0.012,
+    grain: 0,
     aberration: 0.001,
     autoExposure: true,
   },
@@ -401,25 +406,37 @@ export class PostChain {
    *
    * Static in captures and under reduced motion; otherwise the seed advances
    * every frame, which is what makes grain read as grain and not as dirt.
+   *
+   * **Off at every tier.** At 0.012 it moved a mid-tone pixel by up to three
+   * output levels (corrected capture, `hull-refraction`: 47% of pixels moved,
+   * 9% by two or more), three times the dither, and it was what the A/B critic
+   * called "grain over the whole image" on almost every shot. Nothing in this
+   * frame needs it: the only noise the 8-bit output needs is the dither in
+   * `OutputTransform`, which removes banding on its own. The node stays, behind
+   * a uniform-coherent branch so it costs one compare, for `setOverride`.
    */
   applyGrain(display: any): any {
     if (this.legacy) return display;
     const src: any = display;
     return Fn(() => {
       const c = vec4(src).toVar('grainIn');
-      const p = screenCoordinate.xy.div(1.5).add(vec2(this.uGrainSeed.mul(17.0), this.uGrainSeed.mul(31.0)));
-      const i = floor(p);
-      const f = fract(p);
-      const s = f.mul(f).mul(float(3).sub(f.mul(2)));
-      const n00 = hash21(i);
-      const n10 = hash21(i.add(vec2(1, 0)));
-      const n01 = hash21(i.add(vec2(0, 1)));
-      const n11 = hash21(i.add(vec2(1, 1)));
-      const n = mix(mix(n00, n10, s.x), mix(n01, n11, s.x), s.y).sub(0.5).mul(2);
-      const luma = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)).saturate();
-      // Mid-tone weighted, with a floor so shadows keep a trace of texture.
-      const response = luma.mul(float(1).sub(luma)).mul(4).mul(0.8).add(0.2);
-      return vec4(c.rgb.add(n.mul(this.uGrain).mul(response)), c.a);
+      const out = vec3(c.rgb).toVar('grainOut');
+      If(this.uGrain.greaterThan(0), () => {
+        const p = screenCoordinate.xy.div(1.5).add(vec2(this.uGrainSeed.mul(17.0), this.uGrainSeed.mul(31.0)));
+        const i = floor(p);
+        const f = fract(p);
+        const s = f.mul(f).mul(float(3).sub(f.mul(2)));
+        const n00 = hash21(i);
+        const n10 = hash21(i.add(vec2(1, 0)));
+        const n01 = hash21(i.add(vec2(0, 1)));
+        const n11 = hash21(i.add(vec2(1, 1)));
+        const n = mix(mix(n00, n10, s.x), mix(n01, n11, s.x), s.y).sub(0.5).mul(2);
+        const luma = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)).saturate();
+        // Mid-tone weighted, with a floor so shadows keep a trace of texture.
+        const response = luma.mul(float(1).sub(luma)).mul(4).mul(0.8).add(0.2);
+        out.addAssign(n.mul(this.uGrain).mul(response));
+      });
+      return vec4(out, c.a);
     })();
   }
 
