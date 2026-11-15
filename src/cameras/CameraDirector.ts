@@ -38,12 +38,10 @@ export interface CameraDirectorOptions {
 /**
  * Fly speed, and the range the wheel moves it over.
  *
- * 22 m/s is a reasonable default for looking at the ship and useless for
- * anything else in this world: the island is 1.4 km away, so crossing to it at
- * the default takes over a minute, and once there the same speed is far too
- * quick to look at a tree with. A fixed speed plus a boost key cannot serve both
- * — which is why every editor fly camera in the industry puts the speed on the
- * wheel.
+ * No one speed serves this world: the island is 1.4 km from the ship, and a
+ * speed that crosses that in reasonable time is far too quick to look at a tree
+ * with. So the cruise speed is on the wheel, as in every editor fly camera,
+ * and Shift multiplies whatever it is set to.
  *
  * Geometric steps, not linear ones. The useful range spans two and a half
  * orders of magnitude, and a linear step that is sensible at 200 m/s is
@@ -86,12 +84,25 @@ const CHASE_PITCH_MIN = -0.5;
 const CHASE_PITCH_MAX = 1.15;
 const CHASE_RECENTRE_TAU = 2.2;
 
-const FLY_SPEED = 22;
+/**
+ * Cruise speed, m/s: what the camera settles at with a key held, and what the
+ * wheel scales. 12 is slow enough to frame the hull with and crosses the
+ * island's 1.4 km in two minutes, which is what the boost is for.
+ */
+const FLY_SPEED = 12;
 const FLY_SPEED_MIN = 1.5;
 const FLY_SPEED_MAX = 600;
 const FLY_SPEED_STEP = 1.18;
-const FLY_BOOST = 5;
-const FLY_DAMPING = 6;
+/**
+ * Shift multiplies the cruise speed: 96 m/s at the default, the island in
+ * fifteen seconds. Editor cameras run 4x to 10x here.
+ */
+const FLY_BOOST = 8;
+/**
+ * How quickly the velocity closes on the requested one, per second. 6 is 95% in
+ * half a second: a body with some mass, not a cursor.
+ */
+const FLY_RESPONSE = 6;
 const MOUSE_SENSITIVITY = 0.0022;
 
 /**
@@ -186,6 +197,7 @@ export class CameraDirector {
   // Scratch — the update path must not allocate.
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpVec2 = new THREE.Vector3();
+  private readonly tmpVec3 = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
   private readonly desiredPosition = new THREE.Vector3();
@@ -586,16 +598,23 @@ export class CameraDirector {
     const boost = this.keys.has('shiftleft') || this.keys.has('shiftright') ? FLY_BOOST : 1;
     const speed = this.flySpeed * boost;
 
-    // Accelerate toward the requested direction, then damp — instant velocity
-    // changes make a flying camera feel like a cursor rather than a body.
-    if (this.keys.has('keyw')) this.flyVelocity.addScaledVector(forward, speed * dt);
-    if (this.keys.has('keys')) this.flyVelocity.addScaledVector(forward, -speed * dt);
-    if (this.keys.has('keyd')) this.flyVelocity.addScaledVector(right, speed * dt);
-    if (this.keys.has('keya')) this.flyVelocity.addScaledVector(right, -speed * dt);
-    if (this.keys.has('space')) this.flyVelocity.y += speed * dt;
-    if (this.keys.has('controlleft')) this.flyVelocity.y -= speed * dt;
-
-    this.flyVelocity.multiplyScalar(Math.max(0, 1 - FLY_DAMPING * dt));
+    // Ease the velocity toward the one the keys ask for. This used to add
+    // `speed * dt` a frame and then damp by `6 * dt`, which settles at a sixth
+    // of `speed`: the 22 m/s default flew at 3.7, and the boost at 18. It was
+    // also two frame-rate-dependent terms. An exponential toward a target
+    // velocity is neither: held, the camera cruises at exactly `speed`, at any
+    // frame rate, and released it coasts to a stop over the same half second.
+    const wish = this.tmpVec3.set(0, 0, 0);
+    if (this.keys.has('keyw')) wish.add(forward);
+    if (this.keys.has('keys')) wish.sub(forward);
+    if (this.keys.has('keyd')) wish.add(right);
+    if (this.keys.has('keya')) wish.sub(right);
+    if (this.keys.has('space')) wish.y += 1;
+    if (this.keys.has('controlleft')) wish.y -= 1;
+    // Diagonals are not faster than straight lines.
+    if (wish.lengthSq() > 1) wish.normalize();
+    wish.multiplyScalar(speed);
+    this.flyVelocity.lerp(wish, 1 - Math.exp(-FLY_RESPONSE * dt));
 
     this.desiredPosition.copy(this.camera.position).addScaledVector(this.flyVelocity, dt);
 
