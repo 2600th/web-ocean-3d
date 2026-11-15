@@ -128,9 +128,10 @@ interface ImpactAudio {
   hullImpact?(strength: number): void;
   waveSlap?(strength: number, pan: number): void;
 }
-/** Scratch for the hull occluder pushed to the underwater pass each frame. */
-const _hullCenter = new THREE.Vector3();
-const _hullRadius = new THREE.Vector3(1, 1, 1);
+/**
+ * Cloud march steps while the eye is deep under water; see the underwater state in `update`.
+ */
+const SUBMERGED_CLOUD_STEPS = 6;
 /** Scratch for the birds' ambient colour, recomputed every frame. */
 const _birdShade = new THREE.Color();
 const _meadowAmbient = new THREE.Color();
@@ -1028,6 +1029,15 @@ class App {
     // fog is faded out anyway, since there is no atmosphere down there.
     this.lensRain = new LensRain();
 
+    // The sun's cascade for the shafts, and the inputs for lighting submerged
+    // surfaces: real normals where the scene pass writes them (the TRAA path),
+    // and the dispersed caustics field.
+    this.underwater.setSunShadow(this.lighting.shadows.volumeSource());
+    this.underwater.setSurfaceInputs(
+      this.taaEnabled ? scenePass.getTextureNode('normal') : null,
+      (worldPosition) => this.caustics.chromaticNode(worldPosition),
+    );
+
     const graded = this.fog.build(
       this.underwater.build(
         sceneBeauty,
@@ -1035,7 +1045,10 @@ class App {
         // The shafts are an integral of this field along the view ray, so
         // passing it here is what makes them and the seafloor pattern the same
         // light.
-        (worldPosition) => this.caustics.intensityNode(worldPosition),
+        // The level is passed through: the march reads the field at an explicit
+        // mip, and dropping it here silently made every read the implicit one,
+        // so the beam pattern and its local mean were the same sample.
+        (worldPosition, lod) => this.caustics.intensityNode(worldPosition, lod ?? null),
         // And this is what makes the waterline per-pixel: the pass can ask where
         // the surface actually is along each eye ray instead of assuming a plane.
         this.waveHeightNode,
@@ -3716,22 +3729,32 @@ class App {
       // flat — see `Preset.underwater`.
       distortion: preset.underwater.distortion,
     });
-    // The hull, as the one occluder the shafts need. A diver under a ship
-    // should be in its shadow; the caustics field cannot know that, because it
-    // describes the surface and not what floats on it.
-    if (this.ship) {
-      const hull = this.ship.object;
-      this.underwater.setHullOccluder(
-        _hullCenter.copy(hull.position).setY(hull.position.y + 1),
-        // Beam, draught, length — in the hull's own frame, so the long axis
-        // follows the bow rather than pointing at world Z whatever the heading.
-        _hullRadius.set(this.ship.hullBeam * 1.6, 4, this.ship.hullBeam * 3.4),
-        this.ship.heading,
-        true,
-      );
-    } else {
-      this.underwater.setHullOccluder(_hullCenter, _hullRadius, 0, false);
-    }
+    // The receivers' shadow lookup follows the refracted key light below the
+    // surface (`SunShadows.setLightDirection`), so the hull's shadow on the sand
+    // lands where the shafts' shadow column does. A uniform write.
+    this.lighting.shadows.setLightDirection(_keyDirection);
+
+    // The cloud deck, once the eye is well under. Measured at High on the
+    // `underwater` shot (RTX 5090, median of three interleaved pairs) the cloud
+    // march was the largest single cost of a submerged frame, 4.5 ms of 14.7 —
+    // for a deck that is only ever seen through the Snell window, refracted and
+    // broken up by every wave. It cannot be hidden outright (the window shows
+    // it, and the sky dome, through the surface), but a third of the steps is
+    // indistinguishable through that window. The margin is the sea's
+    // significant height plus a metre, so the change happens well clear of the
+    // crossing and never while the view is half above water. A uniform write
+    // on the frames where the value changes; no recompile.
+    //
+    // Measured and left alone: the sky dome (0.5 ms, but it is what the window
+    // shows), birds, rain, meadow and canopy (each within noise of zero), and
+    // the planar reflector, fog march, SSR and lens rain, which already cost
+    // nothing with the eye below the surface.
+    const deep =
+      submersion >= 0.999 &&
+      this.camera.position.y < surface - 1 - significantWaveHeight(this.simulation.spectrumParams);
+    const tierClouds = QUALITY_TIERS[this.state.quality].cloudSteps;
+    const cloudSteps = deep ? Math.min(tierClouds, SUBMERGED_CLOUD_STEPS) : tierClouds;
+    if (this.clouds.getParams().steps !== cloudSteps) this.clouds.setParams({ steps: cloudSteps });
     this.underwater.update(dt);
 
     // Audio reads the same scene state the renderer does, so the bed tracks the
