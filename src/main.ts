@@ -1806,7 +1806,22 @@ class App {
     return { width, height, data: new Uint8Array(view) };
   }
 
-  /** The RGBA8 target captures render into, sized to the drawing buffer. */
+  /**
+   * The RGBA8 target captures render into, sized to the drawing buffer.
+   *
+   * **Plain `rgba8unorm`, not the sRGB format, and the capture is wrong
+   * otherwise.** `OutputTransform` encodes to sRGB in the shader — it hands
+   * `renderOutput` an explicit colour space, so the encode happens whatever the
+   * target. A target tagged `SRGBColorSpace` is allocated as `rgba8unorm-srgb`
+   * (`WebGPUTextureUtils.getFormat`; `SRGB8_ALPHA8` on WebGL2), and the hardware
+   * encodes *again* on write. Every capture was sRGB-encode(screen): measured on
+   * a paused frame, decoding the capture once reproduced the canvas to within one
+   * level, while the capture itself averaged 58 levels brighter. That is a washed,
+   * milky frame with its shadow noise stretched by the encode's slope — up to
+   * five levels of "grain" from a dither of one. The canvas is `bgra8unorm` and
+   * takes the shader's bytes as they are; this target now does the same, so a
+   * capture is the frame a player sees.
+   */
   private ensureCaptureTarget(): THREE.RenderTarget {
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     const width = Math.max(1, Math.floor(size.x));
@@ -1820,7 +1835,8 @@ class App {
       this.captureTarget = new THREE.RenderTarget(width, height, {
         type: THREE.UnsignedByteType,
         format: THREE.RGBAFormat,
-        colorSpace: THREE.SRGBColorSpace,
+        // Raw bytes: the output node has already encoded. See above.
+        colorSpace: THREE.NoColorSpace,
         depthBuffer: false,
         stencilBuffer: false,
         generateMipmaps: false,
