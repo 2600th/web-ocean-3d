@@ -243,6 +243,34 @@ const FINE_GRAZING_A1 = 3.5;
  */
 const GLITTER_CEILING = 0.8;
 
+/** Upwelling light under a night sky, as a share of full daylight's. */
+const BODY_NIGHT_FLOOR = 0.1;
+
+/**
+ * The body's radiance under full daylight, per unit of the authored
+ * `deepColor`, in display-referred terms (it multiplies the white point).
+ * The body was previously lit in scene units against a 0.42 exposure, so the
+ * clear-day sea measured sRGB (10, 31, 54) beside a reference at
+ * (91, 145, 169): a near-black navy that the camo then dominated. With the
+ * body tied to the white point, `deepColor` reads directly as a display
+ * colour, and 1.8 recovers what the diffuse and cloud-shade terms take off
+ * the mean (they average about 0.55 over a sunlit frame).
+ */
+const BODY_GAIN = 1.8;
+
+/**
+ * How much of the short-wave slope (`fineSlope`) the body's diffuse term
+ * ignores. The body is light scattered back out of the volume, which does not
+ * care which way a centimetre ripple faces; lit with the full shading normal
+ * it carried the detail maps' envelope as a 2x swing in brightness, the
+ * fbm-like mottle on waves-1 and refraction-1. The long waves keep their
+ * troughs and faces; a share of the fine slope is kept for texture.
+ */
+const BODY_FINE_SLOPE_DROP = 0.7;
+
+/** Body brightness swing from trough (1 - x) to crest (1 + x), by height over the sea state. */
+const BODY_TROUGH_CONTRAST = 0.3;
+
 /**
  * Facets per square metre times the sun disc's area in slope space: the
  * expected number of glinting facets in a square metre whose slope density at
@@ -2044,7 +2072,6 @@ export class OceanMaterial {
       const oneMinusVH = float(1).sub(vDotH).toVar();
       const vhPow = oneMinusVH.mul(oneMinusVH).mul(oneMinusVH).mul(oneMinusVH).mul(oneMinusVH).toVar();
       const fresnelSpecular = vhPow.mul(0.98).add(0.02).toVar();
-      const nDotL = n.dot(sunDirEarly).clamp(0, 1).toVar();
 
       const specular = this.uSunColor
         .mul(
@@ -2175,10 +2202,39 @@ export class OceanMaterial {
       // around the submerged hull read as a green lamp. It now falls with the
       // light, to a small floor rather than to zero: a night sea is dark, but it
       // is not black, because the whole sky is still faintly lighting it.
-      const ambientFloor = mix(float(0.1), float(1), this.uLightLevel).toVar();
+      //
+      // The body is display-referred: it scales with the white point
+      // (`1 / exposure`), so a preset's exposure, which is set for its sky, no
+      // longer decides how bright its water is (see BODY_GAIN). The light reaching the column is the sun's, tinted a third
+      // of the way to its colour (the rest is skylight), and falls as the sun
+      // drops, toward the night floor.
+      const sunLift = sunDirEarly.y.mul(2.2).clamp(0, 1).toVar();
+      const upwelling = mix(
+        float(BODY_NIGHT_FLOOR),
+        float(1),
+        this.uLightLevel.mul(sunLift.mul(0.7).add(0.3)),
+      ).toVar();
+      const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
+        .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
+        .toVar();
+      const bodySlope = slope.sub(fineSlope.mul(BODY_FINE_SLOPE_DROP)).toVar();
+      const bodyDotL = normalize(vec3(bodySlope.x.negate(), 1, bodySlope.y.negate()))
+        .dot(sunDirEarly)
+        .clamp(0, 1)
+        .toVar();
+      // Troughs read darker than faces: the eye looks into a trough through
+      // the wave in front of it, and the light that comes back up out of it
+      // has crossed more water. Relative to the sea state, as the crest term
+      // above is, so a chop and a swell shade alike.
+      const troughShade = worldPos.y
+        .div(seaScale)
+        .clamp(-1, 1)
+        .mul(BODY_TROUGH_CONTRAST)
+        .add(1)
+        .toVar();
       const litBody = columnColor
-        .mul(nDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
-        .mul(ambientFloor)
+        .mul(bodyDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
+        .mul(bodyLight.mul(troughShade))
         .add(seenThrough)
         .add(scatter.mul(sunShade))
         .toVar();

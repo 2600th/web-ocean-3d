@@ -188,7 +188,7 @@ export const PRESETS: Record<PresetId, Preset> = {
       windwardFoam: 0.03,
     },
     water: {
-      deepColor: color(0x04283c),
+      deepColor: color(0x4987ad),
       shallowColor: color(0x1fa9a6),
       scatterColor: color(0x36bda8),
       extinction: vec(0.32, 0.1, 0.06),
@@ -664,7 +664,7 @@ export const PRESETS: Record<PresetId, Preset> = {
       // sea reads as ocean and only the island's shallows turn turquoise. At
       // the old (0.22, 0.06, 0.035) thirty metres of water still showed the
       // sand through it, and the whole sea read as a lagoon.
-      deepColor: color(0x022c48),
+      deepColor: color(0x3a87a6),
       shallowColor: color(0x27d0bf),
       scatterColor: color(0x3fe6b4),
       extinction: vec(0.46, 0.12, 0.07),
