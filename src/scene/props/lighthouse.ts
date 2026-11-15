@@ -30,37 +30,45 @@ const v3 = vec3 as unknown as (x: unknown, y?: unknown, z?: unknown) => Node;
  *    iron baskets (Isle of May, 1636) or candles and oil lamps in a glazed
  *    lantern (Winstanley's Eddystone, lit 1698, with candles; Boston Light, 1716,
  *    with oil). This one is the glazed kind: a hoop of tallow candles in an
- *    octagonal lantern, which throws a steady, soft glow and no beam.
- *  - **The tower is rubble masonry, battered and whitewashed.** Thick at the
- *    foot, tapering about one in fifteen — St Agnes (Scilly, 1680) and North
- *    Foreland (1691) are the shape. Lime wash made the tower a day-mark,
- *    which mattered as much as the light did.
- *  - **A gallery on corbels**, railed with wrought iron, so the keeper can
- *    clean the soot off the glass from outside.
+ *    iron-framed octagonal lantern, which throws a steady, soft glow and no beam.
+ *  - **A stout rubble tower.** Coursed rubble, as wide at the foot as it is a
+ *    third of its height and battered about one in fifteen — St Agnes (Scilly,
+ *    1680) is 22 m over a broad base and North Foreland (1691) was a squat
+ *    octagon. Not the slender ashlar column of the nineteenth century. Lime
+ *    washed for a day-mark, the wash worn and streaked, the foot dark with
+ *    splash and damp (see `masonry` in `materials.ts`).
+ *  - **A gallery on stone corbels**, stepped out in three courses under a
+ *    flagged walk and railed with wrought iron, so the keeper can clean the
+ *    soot off the glass from outside.
+ *  - **The lantern is an iron cage**: an iron curb, eight iron posts with
+ *    glazing bars holding small panes of crown glass, a domed lead cap and a
+ *    vent to draw the candle smoke.
  *  - **A keeper's cottage** at its foot, single storey, shingled, with a stack.
  *
  * Built at true size, origin at ground level at the centre of the tower, the
  * door facing local -Z (landward) and the seaward face +Z.
  */
 
+const SHAFT_BASE = 0.9;
+const R_BASE = 3.7;
+const R_TOP = 2.8;
+const GALLERY_Y = 13.6;
+const SLAB = 0.24;
+const SHAFT_TOP = GALLERY_Y - SLAB;
+const GALLERY_R = 3.55;
+const LANTERN_R = 1.75;
+const LANTERN_BASE = GALLERY_Y;
+const CURB = 0.45;
+const GLAZING = 2.0;
+
 /** Height of the lamp hoop above the tower's ground level, metres. */
-export const LIGHTHOUSE_LAMP_Y = 17.85;
+export const LIGHTHOUSE_LAMP_Y = LANTERN_BASE + CURB + 0.85;
 /** Ground radius the lighthouse and its cottage occupy; trees keep clear of it. */
 export const LIGHTHOUSE_CLEARING = 15;
 
-const SHAFT_BASE = 0.9;
-const SHAFT_TOP = 15.7;
-const R_BASE = 3.0;
-const R_TOP = 2.25;
-const GALLERY_Y = 16.2;
-const GALLERY_R = 3.0;
-const LANTERN_R = 1.55;
-const LANTERN_BASE = 16.45;
-const DWARF_WALL = 0.55;
-const GLAZING = 2.3;
-
 const LIME: Tint = [1, 1, 1];
-const BARE: Tint = [0.75, 0.72, 0.66];
+/** Unwashed dressed stone: the plinth, corbels, gallery flags, door and slit dressings. */
+const BARE: Tint = [0.85, 0.82, 0.76];
 const DOOR: Tint = srgb(0.36, 0.24, 0.15);
 const OPENING: Tint = [0.03, 0.028, 0.026];
 
@@ -70,54 +78,92 @@ function shaftRadius(y: number): number {
   return R_TOP + (R_BASE - R_TOP) * Math.pow(1 - t, 1.25);
 }
 
+/**
+ * A hand-built wall is not a lathe: a percent of slow bulge round the shaft
+ * and up it, so the silhouette and the light across it are not machined.
+ * Integer harmonics in angle, so the seam closes.
+ */
+function shaftBulge(a: number, k: number): number {
+  return 1 + 0.009 * Math.sin(3 * a + k * 1.7) + 0.006 * Math.sin(7 * a + k * 0.9 + 1.3);
+}
+
 export function buildLighthouse(pb: PropBuilder, m: THREE.Matrix4, lod: 0 | 1 | 2): void {
   const rng = mulberry32(0x11647);
   const stone = pb.kit('masonry');
   const iron = pb.kit('iron');
   const wood = pb.kit('wood');
-  const seg = lod === 0 ? 40 : lod === 1 ? 24 : 14;
+  const lead = pb.kit('lead');
+  const seg = lod === 0 ? 48 : lod === 1 ? 28 : 16;
 
-  // Plinth: an unwashed footing course, buried below grade.
-  lathe(stone, [[R_BASE + 0.35, -2.0], [R_BASE + 0.35, 0.55], [R_BASE + 0.05, SHAFT_BASE], [0, SHAFT_BASE]], seg, m, BARE, { hard: true });
+  // Plinth: two stepped footing courses of unwashed stone, buried below grade.
+  lathe(
+    stone,
+    [
+      [R_BASE + 0.5, -2.0],
+      [R_BASE + 0.5, 0.42],
+      [R_BASE + 0.28, 0.48],
+      [R_BASE + 0.28, SHAFT_BASE - 0.05],
+      [R_BASE + 0.02, SHAFT_BASE + 0.02],
+      [0, SHAFT_BASE + 0.02],
+    ],
+    seg,
+    m,
+    BARE,
+    { hard: true },
+  );
 
   // Shaft.
   const prof: [number, number][] = [];
-  const rows = lod === 0 ? 10 : 5;
+  const rows = lod === 0 ? 16 : lod === 1 ? 8 : 4;
   for (let i = 0; i <= rows; i++) {
     const y = SHAFT_BASE + ((SHAFT_TOP - SHAFT_BASE) * i) / rows;
     prof.push([shaftRadius(y), y]);
   }
-  lathe(stone, prof, seg, m, LIME);
-  // String course at mid-height: the one horizontal line on the shaft.
-  if (lod < 2) {
-    const y = 8.4;
-    const r = shaftRadius(y);
-    lathe(stone, [[r - 0.02, y - 0.12], [r + 0.08, y - 0.1], [r + 0.08, y + 0.08], [r - 0.02, y + 0.12]], seg, m, LIME, { hard: true });
-  }
-  // Corbelled cornice carrying the gallery.
+  lathe(stone, prof, seg, m, LIME, { radius: lod < 2 ? shaftBulge : undefined });
+
+  // Gallery: a ring of flags on corbels stepped out in three courses.
   lathe(
     stone,
     [
-      [R_TOP, SHAFT_TOP],
-      [R_TOP + 0.15, SHAFT_TOP + 0.15],
-      [GALLERY_R - 0.25, GALLERY_Y - 0.25],
-      [GALLERY_R, GALLERY_Y - 0.05],
-      [GALLERY_R, GALLERY_Y + 0.12],
-      [0, GALLERY_Y + 0.12],
+      [R_TOP - 0.2, SHAFT_TOP],
+      [GALLERY_R, SHAFT_TOP],
+      [GALLERY_R + 0.02, SHAFT_TOP + 0.04],
+      [GALLERY_R + 0.02, GALLERY_Y],
+      [0, GALLERY_Y],
     ],
     seg,
     m,
-    LIME,
+    BARE,
     { hard: true },
   );
-  if (lod === 0) {
-    // Individual corbel blocks under the cornice.
-    const n = 20;
+  if (lod < 2) {
+    const n = lod === 0 ? 24 : 16;
+    // Each corbel: three blocks, each course projecting further than the one
+    // below, the top one carrying the flag's edge.
+    const tiers: [number, number][] = lod === 0
+      ? [
+          [0.72, 0.27],
+          [0.5, 0.27],
+          [0.28, 0.27],
+        ]
+      : [
+          [0.72, 0.36],
+          [0.4, 0.36],
+        ];
     for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const r = R_TOP + 0.22;
-      box(stone, 0.32, 0.36, 0.22, m.clone().multiply(M.at(Math.cos(a) * r, SHAFT_TOP - 0.05, Math.sin(a) * r, 0, -a + Math.PI / 2, 0)), jitter(LIME, rng, 0.04), 'y', 0.02);
+      const a = (i / n) * Math.PI * 2 + Math.PI / n;
+      let y = SHAFT_TOP;
+      for (const [reach, th] of tiers) {
+        y -= th;
+        const r0 = shaftRadius(y);
+        const d = reach + 0.15;
+        const r = r0 - 0.15 + d / 2;
+        box(stone, 0.38, th - 0.015, d, m.clone().multiply(M.at(Math.cos(a) * r, y + th / 2, Math.sin(a) * r, 0, Math.PI / 2 - a, 0)), jitter(BARE, rng, 0.04), 'z', lod === 0 ? 0.02 : 0);
+      }
     }
+  } else {
+    // Far away the corbel table is a dark flared band.
+    lathe(stone, [[shaftRadius(SHAFT_TOP - 0.8), SHAFT_TOP - 0.8], [GALLERY_R - 0.05, SHAFT_TOP]], seg, m, BARE);
   }
 
   // Door (landward) with a dressed-stone surround, and slit windows up the stair.
@@ -130,34 +176,34 @@ export function buildLighthouse(pb: PropBuilder, m: THREE.Matrix4, lod: 0 | 1 | 
       for (const y of [0.35, 1.6]) box(iron, 0.9, 0.05, 0.012, dm.clone().multiply(M.at(0.0, y, -0.04)), [1, 1, 1], 'x', 0);
     }
     // Surround: jambs and a heavy lintel, unwashed.
-    for (const sx of [-1, 1]) box(stone, 0.3, 2.3, 0.4, dm.clone().multiply(M.at(sx * 0.65, 1.15, 0.0)), BARE, 'y', lod === 0 ? 0.03 : 0);
-    box(stone, 1.6, 0.35, 0.42, dm.clone().multiply(M.at(0, 2.45, 0)), BARE, 'x', lod === 0 ? 0.03 : 0);
-    // Step.
-    box(stone, 1.6, 0.25, 0.7, dm.clone().multiply(M.at(0, -0.1, 0.25)), BARE, 'x', 0);
+    for (const sx of [-1, 1]) box(stone, 0.34, 2.3, 0.45, dm.clone().multiply(M.at(sx * 0.67, 1.15, 0.0)), BARE, 'y', lod === 0 ? 0.03 : 0);
+    box(stone, 1.7, 0.4, 0.47, dm.clone().multiply(M.at(0, 2.47, 0)), BARE, 'x', lod === 0 ? 0.03 : 0);
+    box(stone, 1.7, 0.25, 0.75, dm.clone().multiply(M.at(0, -0.1, 0.25)), BARE, 'x', 0);
   }
   if (lod < 2) {
     const slits = [
-      [4.2, 0.5],
-      [7.4, 2.3],
-      [10.6, 4.1],
-      [13.4, 5.6],
+      [3.6, 0.5],
+      [6.2, 2.3],
+      [8.8, 4.1],
+      [11.4, 5.6],
     ];
     for (const [y, a] of slits) {
       const r = shaftRadius(y);
       const wm = m.clone().multiply(M.at(Math.sin(a) * r, y, Math.cos(a) * r, 0, a, 0));
       box(wood, 0.24, 0.8, 0.06, wm, OPENING, 'y', 0);
-      box(stone, 0.5, 0.14, 0.12, wm.clone().multiply(M.at(0, 0.47, 0.02)), BARE, 'x', 0);
-      box(stone, 0.5, 0.12, 0.14, wm.clone().multiply(M.at(0, -0.46, 0.03)), BARE, 'x', 0);
+      box(stone, 0.55, 0.16, 0.14, wm.clone().multiply(M.at(0, 0.48, 0.02)), BARE, 'x', 0);
+      box(stone, 0.55, 0.12, 0.16, wm.clone().multiply(M.at(0, -0.46, 0.03)), BARE, 'x', 0);
+      for (const sx of [-1, 1]) box(stone, 0.14, 0.82, 0.12, wm.clone().multiply(M.at(sx * 0.2, 0, 0.02)), BARE, 'y', 0);
     }
   }
 
-  // Gallery railing.
+  // Gallery railing: wrought-iron standards, a top rail and a middle rail.
   {
-    const posts = lod === 0 ? 28 : lod === 1 ? 14 : 0;
+    const posts = lod === 0 ? 32 : lod === 1 ? 16 : 0;
     const rr = GALLERY_R - 0.12;
     for (let i = 0; i < posts; i++) {
       const a = (i / posts) * Math.PI * 2;
-      cylinder(iron, 0.022, 0.025, 1.0, 5, m.clone().multiply(M.at(Math.cos(a) * rr, GALLERY_Y + 0.62, Math.sin(a) * rr)), [1, 1, 1], false);
+      cylinder(iron, 0.022, 0.026, 1.0, 5, m.clone().multiply(M.at(Math.cos(a) * rr, GALLERY_Y + 0.5, Math.sin(a) * rr)), [1, 1, 1], false);
     }
     const ringPts = (y: number, n: number): [number, number, number][] => {
       const out: [number, number, number][] = [];
@@ -167,63 +213,97 @@ export function buildLighthouse(pb: PropBuilder, m: THREE.Matrix4, lod: 0 | 1 | 
       }
       return out;
     };
-    const ringSeg = lod === 0 ? 48 : lod === 1 ? 24 : 16;
-    tube(iron, ringPts(GALLERY_Y + 1.12, ringSeg), 0.03, lod === 2 ? 4 : 6, m, [1, 1, 1], false);
-    if (lod < 2) tube(iron, ringPts(GALLERY_Y + 0.62, ringSeg), 0.018, 5, m, [1, 1, 1], false);
+    const ringSeg = lod === 0 ? 56 : lod === 1 ? 28 : 16;
+    tube(iron, ringPts(GALLERY_Y + 1.0, ringSeg), 0.03, lod === 2 ? 4 : 6, m, [1, 1, 1], false);
+    if (lod < 2) tube(iron, ringPts(GALLERY_Y + 0.5, ringSeg), 0.018, 5, m, [1, 1, 1], false);
   }
 
-  // Lantern: dwarf wall, glazing, roof.
+  // ---- lantern: an iron cage on an iron curb, glazed, under a lead dome.
   const sides = 8;
   const lm = m.clone().multiply(M.at(0, LANTERN_BASE, 0, 0, Math.PI / 8, 0));
-  lathe(stone, [[LANTERN_R + 0.12, 0], [LANTERN_R + 0.12, DWARF_WALL], [0.0, DWARF_WALL]], sides, lm, LIME, { hard: true });
+  const g0 = CURB;
+  const g1 = CURB + GLAZING;
+  // The curb: plated iron, solid to waist height, on a stone step.
+  lathe(stone, [[LANTERN_R + 0.3, 0], [LANTERN_R + 0.3, 0.12], [0, 0.12]], sides, lm, BARE, { hard: true });
+  lathe(iron, [[LANTERN_R + 0.04, 0.1], [LANTERN_R + 0.04, g0], [LANTERN_R - 0.06, g0], [0, g0]], sides, lm, [1, 1, 1], { hard: true });
   const glass = pb.kit('beaconGlass');
-  const lead = pb.kit('lead');
-  const g0 = DWARF_WALL;
-  const g1 = DWARF_WALL + GLAZING;
+  const apothem = LANTERN_R * Math.cos(Math.PI / sides);
+  const faceW = 2 * LANTERN_R * Math.sin(Math.PI / sides);
   for (let i = 0; i < sides; i++) {
     const a0 = (i / sides) * Math.PI * 2;
     const a1 = ((i + 1) / sides) * Math.PI * 2;
     const am = (a0 + a1) / 2;
-    const apothem = LANTERN_R * Math.cos(Math.PI / sides);
-    const faceW = 2 * LANTERN_R * Math.sin(Math.PI / sides);
-    // Pane, set just inside the mullions.
     const pm = lm.clone().multiply(M.at(Math.cos(am) * (apothem - 0.02), (g0 + g1) / 2, Math.sin(am) * (apothem - 0.02), 0, -am + Math.PI / 2, 0));
-    box(glass, faceW - 0.04, GLAZING, 0.02, pm, [1, 1, 1], 'y', 0);
-    // Mullion at the corner.
-    const cm = lm.clone().multiply(M.at(Math.cos(a0) * LANTERN_R, (g0 + g1) / 2, Math.sin(a0) * LANTERN_R, 0, -a0, 0));
-    box(iron, 0.08, GLAZING, 0.08, cm, [1, 1, 1], 'y', 0);
+    box(glass, faceW - 0.06, GLAZING, 0.02, pm, [1, 1, 1], 'y', 0);
+    // Corner post, standing from the curb foot to the dome's ring.
+    const cm = lm.clone().multiply(M.at(Math.cos(a0) * LANTERN_R, (0.1 + g1 + 0.1) / 2, Math.sin(a0) * LANTERN_R, 0, -a0, 0));
+    box(iron, 0.11, g1, 0.11, cm, [1, 1, 1], 'y', 0);
     if (lod < 2) {
-      // Glazing bars: small panes, as crown glass came.
+      // Glazing bars: small panes, as crown glass came — four tiers by two.
       const bars = lod === 0 ? 3 : 1;
       for (let b = 1; b <= bars; b++) {
         const y = g0 + (GLAZING * b) / (bars + 1);
-        box(iron, faceW, 0.03, 0.035, pm.clone().multiply(M.at(0, y - (g0 + g1) / 2, 0.02)), [1, 1, 1], 'x', 0);
+        box(iron, faceW, 0.035, 0.04, pm.clone().multiply(M.at(0, y - (g0 + g1) / 2, 0.02)), [1, 1, 1], 'x', 0);
       }
-      box(iron, 0.03, GLAZING, 0.035, pm.clone().multiply(M.at(0, 0, 0.02)), [1, 1, 1], 'y', 0);
+      box(iron, 0.035, GLAZING, 0.04, pm.clone().multiply(M.at(0, 0, 0.02)), [1, 1, 1], 'y', 0);
+    }
+    if (lod === 0) {
+      // Rivet heads down the curb plates either side of each post.
+      for (const s of [-1, 1]) {
+        for (let r = 0; r < 3; r++) {
+          const a = a0 + s * 0.05;
+          const y = 0.17 + r * 0.12;
+          cylinder(iron, 0.014, 0.014, 0.02, 5, lm.clone().multiply(M.at(Math.cos(a) * (LANTERN_R + 0.045), y, Math.sin(a) * (LANTERN_R + 0.045), 0, -a, Math.PI / 2)), [1, 1, 1]);
+        }
+      }
     }
   }
   // Sill and head rings.
-  lathe(iron, [[LANTERN_R + 0.06, g0 - 0.02], [LANTERN_R + 0.06, g0 + 0.06], [LANTERN_R - 0.05, g0 + 0.06]], sides, lm, [1, 1, 1], { hard: true });
-  lathe(iron, [[LANTERN_R - 0.05, g1 - 0.08], [LANTERN_R + 0.1, g1 - 0.08], [LANTERN_R + 0.1, g1 + 0.04]], sides, lm, [1, 1, 1], { hard: true });
-  // Roof: an ogee cupola in lead, a ventilator ball and a vane.
-  lathe(
-    lead,
-    [
-      [LANTERN_R + 0.22, g1 + 0.02],
-      [LANTERN_R + 0.1, g1 + 0.22],
-      [LANTERN_R * 0.75, g1 + 0.55],
-      [LANTERN_R * 0.38, g1 + 0.9],
-      [0.16, g1 + 1.12],
-      [0, g1 + 1.16],
-    ],
-    sides,
-    lm,
-    [1, 1, 1],
-    { hard: lod > 0 },
-  );
-  lathe(lead, [[0.0, g1 + 1.1], [0.22, g1 + 1.22], [0.24, g1 + 1.36], [0.18, g1 + 1.5], [0, g1 + 1.56]], lod === 0 ? 12 : 6, lm, [1, 1, 1]);
-  cylinder(iron, 0.025, 0.035, 1.2, 5, lm.clone().multiply(M.at(0, g1 + 2.1, 0)), [1, 1, 1], false);
-  if (lod < 2) box(iron, 0.55, 0.28, 0.012, lm.clone().multiply(M.at(0.3, g1 + 2.45, 0, 0, 0.4, 0)), [1, 1, 1], 'x', 0);
+  lathe(iron, [[LANTERN_R + 0.07, g0 - 0.02], [LANTERN_R + 0.07, g0 + 0.06], [LANTERN_R - 0.05, g0 + 0.06]], sides, lm, [1, 1, 1], { hard: true });
+  lathe(iron, [[LANTERN_R - 0.05, g1 - 0.08], [LANTERN_R + 0.12, g1 - 0.08], [LANTERN_R + 0.12, g1 + 0.06], [LANTERN_R - 0.05, g1 + 0.06]], sides, lm, [1, 1, 1], { hard: true });
+
+  // Domed cap: lead over a timber frame, with iron ribs at the posts.
+  const domeR = LANTERN_R + 0.1;
+  const domeH = 1.15;
+  const ventR = 0.2;
+  const domeBase = g1 + 0.06;
+  const domePts: [number, number][] = [[LANTERN_R + 0.25, domeBase], [LANTERN_R + 0.25, domeBase + 0.08]];
+  const steps = lod === 0 ? 9 : lod === 1 ? 5 : 3;
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 0.5;
+    const r = Math.max(ventR, domeR * Math.cos(t));
+    domePts.push([r, domeBase + 0.08 + domeH * Math.sin(t)]);
+  }
+  const domeSeg = lod === 0 ? 32 : lod === 1 ? 16 : 8;
+  lathe(lead, domePts, domeSeg, lm, [1, 1, 1]);
+  const domeTop = domeBase + 0.08 + domeH;
+  if (lod === 0) {
+    for (let i = 0; i < sides; i++) {
+      const a = (i / sides) * Math.PI * 2;
+      const rib: [number, number, number][] = [];
+      for (let k = 0; k <= 8; k++) {
+        const t = (k / 8) * Math.PI * 0.5;
+        const r = Math.max(ventR, domeR * Math.cos(t)) + 0.02;
+        rib.push([Math.cos(a) * r, domeBase + 0.08 + domeH * Math.sin(t) + 0.01, Math.sin(a) * r]);
+      }
+      tube(iron, rib, 0.022, 4, lm, [1, 1, 1], false);
+    }
+  }
+  // The vent: a short stack under a conical hat, raised clear of it on
+  // four stays so the smoke gets out and the rain does not get in.
+  cylinder(lead, ventR, ventR, 0.42, lod === 0 ? 12 : 8, lm.clone().multiply(M.at(0, domeTop + 0.18, 0)), [1, 1, 1], false);
+  const hatY = domeTop + 0.5;
+  lathe(lead, [[0, hatY], [0.42, hatY], [0.44, hatY + 0.03], [0, hatY + 0.32]], lod === 0 ? 14 : 8, lm, [1, 1, 1], { hard: true });
+  if (lod < 2) {
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      cylinder(iron, 0.012, 0.012, 0.14, 4, lm.clone().multiply(M.at(Math.cos(a) * 0.3, hatY - 0.07, Math.sin(a) * 0.3)), [1, 1, 1], false);
+    }
+  }
+  // Finial ball and the vane.
+  lathe(lead, [[0, hatY + 0.28], [0.08, hatY + 0.33], [0.09, hatY + 0.4], [0.06, hatY + 0.46], [0, hatY + 0.48]], lod === 0 ? 10 : 6, lm, [1, 1, 1]);
+  cylinder(iron, 0.022, 0.03, 1.0, 5, lm.clone().multiply(M.at(0, hatY + 0.95, 0)), [1, 1, 1], false);
+  if (lod < 2) box(iron, 0.55, 0.28, 0.012, lm.clone().multiply(M.at(0.3, hatY + 1.2, 0, 0, 0.4, 0)), [1, 1, 1], 'x', 0);
 
   // The lamp: a hoop of candles hung from the roof, and the soot-black hoop itself.
   const flame = pb.kit('flame');
@@ -252,7 +332,7 @@ export function buildLighthouse(pb: PropBuilder, m: THREE.Matrix4, lod: 0 | 1 | 
 }
 
 /**
- * The keeper's cottage: whitewashed rubble, one room, a shingled gable roof
+ * The keeper's cottage: lime-washed rubble, one room, a shingled gable roof
  * with a stack at the landward end, a plank door and a shuttered window.
  * Origin at the centre of its footprint on the ground; the door faces +Z.
  */

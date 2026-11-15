@@ -40,13 +40,12 @@ const mixN = mix as unknown as (a: unknown, b: unknown, t: unknown) => Node;
  * from its metric UVs, its vertex tint and world position.
  *
  * The approach is mrdoob/slop-newyork's (MIT, Copyright (c) 2026 Mr.doob):
- * procedural meshes shaded by node graphs instead of downloaded maps. Four
+ * procedural meshes shaded by node graphs instead of downloaded maps. Three
  * helpers are ported from its `tsl-materials.js`: `bumpNormal` (Mikkelsen's
  * surface-gradient bump, here on the geometric normal as `islandDetail/rock`
- * does so it can sit in `normalNode`), `hash21`, `gridLine` and the
- * two-nearest-sites Voronoi behind `cells`, which also returns the cell id.
+ * does so it can sit in `normalNode`), `hash21` and `gridLine`.
  *
- * Everything shared by the props lives here, so the whole library is eleven
+ * Everything shared by the props lives here, so the whole library is fifteen
  * materials: the boot compile pays per material, not per prop.
  *
  * Two treatments are written into every lit material rather than applied by a
@@ -85,32 +84,6 @@ const gridLine = Fn(([coord, period, halfWidth]: [Node, Node, Node]) => {
   const hw = float(halfWidth).div(p).toVar();
   const eff = max(hw, aa.mul(0.5)).toVar();
   return smoothstep(eff.add(aa), eff.sub(aa), d).mul(min(float(1), hw.div(eff)));
-});
-
-/**
- * Voronoi in 2D: x = half the F2-F1 gap (0 on a cell border), y = a hash of the
- * nearest site, for per-stone tone. After slop-newyork `voronoiBorder`, with
- * the id added.
- */
-const cells = Fn(([p]: [Node]) => {
-  const pv = v2(p).toVar();
-  const ip = floor(pv).toVar();
-  const fp = fract(pv).toVar();
-  const f1 = float(8).toVar();
-  const f2 = float(8).toVar();
-  const id = float(0).toVar();
-  for (let j = -1; j <= 1; j++) {
-    for (let i = -1; i <= 1; i++) {
-      const cell = ip.add(v2(i, j));
-      const site = v2(i, j).add(v2(hash21(cell), hash21(cell.add(v2(37.1, 11.7)))).mul(0.8).add(0.1));
-      const d = length(fp.sub(site)).toVar();
-      const nearer = d.lessThan(f1);
-      f2.assign(min(f2, max(f1, d)));
-      id.assign(nearer.select(hash21(cell.add(v2(5.3, 9.1))), id));
-      f1.assign(min(f1, d));
-    }
-  }
-  return v2(f2.sub(f1).mul(0.5), id);
 });
 
 /** 0..1 Perlin. */
@@ -217,45 +190,123 @@ function iron(): THREE.MeshStandardNodeMaterial {
 }
 
 /**
- * Rubble masonry: random-coursed stones in metric UV (u along the wall, v up),
- * whitewashed or bare. Whitewash was lime, renewed yearly on a light tower so
- * it read as a day-mark; it flakes off the stone faces first and stays in the
- * mortar, which is the pattern drawn here.
+ * Cast iron as a gun was kept: blacked with lamp-black and oil, the paint worn
+ * through to grey metal on the proud places and rusting where water stands —
+ * the underside, and in patches. Distinct from `iron` (strap and nail iron,
+ * mostly rust), because a blacked gun with a little rust is what the eye
+ * expects of a battery piece and an all-rust one reads as a wreck.
+ */
+function gunIron(): THREE.MeshStandardNodeMaterial {
+  const m = base('prop-gun-iron', 0.45, 0.4);
+  const masks = Fn(() => {
+    const p = positionGeometry;
+    // Worn paint: small sharp patches, 2-4 cm.
+    const wear = n01(p.mul(26)).add(n01(p.mul(70)).mul(0.35)).smoothstep(0.86, 1.02).toVar();
+    // Rust: larger, softer, and favouring the faces that look down.
+    const down = normalWorldGeometry.y.negate().max(0).mul(0.35);
+    const rust = n01(p.mul(5)).add(n01(p.mul(23)).mul(0.4)).add(down).smoothstep(0.82, 1.12).toVar();
+    return vec2(wear, rust);
+  });
+  m.colorNode = Fn(() => {
+    const k = v2(masks()).toVar();
+    const paint: Node = v3(0.032, 0.035, 0.04).mul(n01(positionGeometry.mul(9)).mul(0.3).add(0.85));
+    const metal: Node = v3(0.13, 0.128, 0.125);
+    const oxide: Node = mixN(v3(0.2, 0.085, 0.035), v3(0.11, 0.05, 0.026), n01(positionGeometry.mul(48)));
+    let c: Node = mixN(paint, metal, k.x);
+    c = mixN(c, oxide, k.y.max(submerged().mul(0.35)));
+    return marine(wetAlbedo(c.mul(vertexColor())), 0.45);
+  })();
+  m.metalnessNode = Fn(() => {
+    const k = v2(masks());
+    return mixN(mixN(float(0.25), float(0.85), k.x), float(0.05), k.y);
+  })();
+  m.roughnessNode = Fn(() => {
+    const k = v2(masks());
+    return wetRoughness(mixN(mixN(float(0.42), float(0.32), k.x), float(0.85), k.y));
+  })();
+  m.normalNode = Fn(() => {
+    const k = v2(masks());
+    const pit = n01(positionGeometry.mul(120)).mul(0.0004).add(k.y.mul(0.0008)).sub(k.x.mul(0.0003));
+    return bumpNormal(pit.mul(detailFade(1, 14)));
+  })();
+  return m;
+}
+
+/**
+ * Coursed rubble: rough-dressed stones laid in courses about 0.34 m high and
+ * 0.4-0.9 m long, joints wavering as rubble joints do, in metric UV (u along
+ * the wall, v up the profile). Over it, lime wash — a light tower was a
+ * day-mark and was washed, but a year of Caribbean rain takes most of it off
+ * the stone faces and leaves it in the joints and under the gallery, so the
+ * coursing shows through.
+ *
+ * Vertex tint decides how much lime a part carries: full white (1) is washed,
+ * anything under about 0.95 is bare dressed stone (door surround, plinth, sills),
+ * which is the period habit of leaving the quoins and dressings unwashed.
+ * Height above the prop's own ground (`positionGeometry.y`) darkens the foot:
+ * splash, rising damp and algae over the bottom two metres, under no lime.
  */
 function masonry(name: string, whitewash: number): THREE.MeshStandardNodeMaterial {
   const m = base(name, 0.92);
   const field = Fn(() => {
     const t = uv();
-    // Courses of roughly 0.32 m, stones about half a metre long.
-    const c = v2(cells(v2(t.x.div(0.52), t.y.div(0.3)))).toVar();
-    const mortar = float(1).sub(c.x.smoothstep(0.015, 0.07)).toVar();
-    return vec3(mortar, c.y, n01(v3(t.x.mul(3), t.y.mul(3), 0.5)));
+    const warp = n01(v3(t.x.mul(1.6), t.y.mul(1.6), 3.1)).sub(0.5).mul(0.14).toVar();
+    // Course heights vary 0.27-0.45 m: the index runs faster and slower up the
+    // wall instead of every 0.34 m, which is what made it read as brick.
+    const course = t.y.add(warp).div(0.34).add(sin(t.y.mul(2.1)).mul(0.35)).toVar();
+    const row = floor(course);
+    // Stones of varied length: the course is stretched by a per-course factor
+    // and offset so its joints do not line up with the course below.
+    const stretch = hash21(v2(row, 1.7)).mul(0.5).add(0.45);
+    const along = t.x.add(warp.mul(1.4)).div(stretch).add(hash21(v2(row, 7.3)).mul(5)).toVar();
+    const id = hash21(v2(floor(along), row)).toVar();
+    const fy = fract(course);
+    const fx = fract(along);
+    // Distance to the nearest joint, in metres.
+    const d = min(min(fy, float(1).sub(fy)).mul(0.34), min(fx, float(1).sub(fx)).mul(stretch)).toVar();
+    const mortar = float(1).sub(d.smoothstep(0.006, 0.028)).toVar();
+    // Proud, pillowed face: rough-dressed stones bulge between their joints.
+    const pillow = d.smoothstep(0.0, 0.1);
+    return vec3(mortar, id, pillow);
   });
   m.colorNode = Fn(() => {
     const f = v3(field()).toVar();
     const t = uv();
-    const stone: Node = mixN(v3(0.11, 0.1, 0.085), v3(0.26, 0.23, 0.18), f.y).mul(f.z.mul(0.3).add(0.85));
-    const bare: Node = mixN(stone, v3(0.07, 0.065, 0.06), f.x.mul(0.6));
-    // Lime: thick in the joints, worn off the proud faces in patches.
-    const flake = n01(v3(t.x.mul(0.8), t.y.mul(1.1), 2)).add(n01(v3(t.x.mul(4), t.y.mul(4), 7)).mul(0.4)).toVar();
-    // Mostly sound: at 0.98..0.78 the bare patches covered a third of the shaft
-    // and read as a dappled animal, not a maintained day-mark.
-    const cover = float(whitewash).mul(flake.smoothstep(1.15, 0.97).max(f.x.mul(0.8))).toVar();
-    const lime: Node = v3(0.7, 0.69, 0.64).mul(float(1).sub(f.x.mul(0.12)));
-    let c: Node = mixN(bare, lime, cover);
-    // Rain runs off the gallery and stains the shaft in vertical streaks.
-    const streak = n01(v3(t.x.mul(5), t.y.mul(0.12), 4)).smoothstep(0.58, 0.9).mul(0.28);
+    const h = positionGeometry.y;
+    const grain = n01(v3(t.x.mul(14), t.y.mul(14), 0.5)).toVar();
+    // Limestone and coral rag: grey to warm buff, stone by stone.
+    // Limestone and coral rag, stone by stone: grey, buff, and a few rust-warm.
+    const hue = hash21(v2(f.y.mul(91.7), 3.3));
+    const stoneA: Node = mixN(v3(0.13, 0.125, 0.115), v3(0.33, 0.29, 0.22), f.y);
+    const stone: Node = mixN(stoneA, stoneA.mul(v3(1.12, 0.95, 0.8)), hue.smoothstep(0.7, 0.9)).mul(grain.mul(0.35).add(0.8));
+    const bare: Node = mixN(stone, v3(0.3, 0.29, 0.26), f.x.mul(0.85));
+    // Lime: retained in the joints and the hollows, worn off the proud faces.
+    // About half the stone faces still carry it, so from the sea the tower is
+    // a mottled pale grey — still a day-mark, not a new-painted column.
+    const flake = n01(v3(t.x.mul(0.9), t.y.mul(0.7), 2)).add(n01(v3(t.x.mul(5), t.y.mul(5), 7)).mul(0.45)).toVar();
+    const washed = vertexColor().x.smoothstep(0.93, 0.99);
+    const foot = float(1).sub(h.add(n01(v3(t.x.mul(1.3), 0, 9)).mul(1.2)).smoothstep(0.8, 3.6)).toVar();
+    const sheltered = h.smoothstep(10, 13).mul(0.2);
+    const worn = flake.sub(f.z.mul(0.15)).add(sheltered).toVar();
+    const cover = float(whitewash).mul(washed).mul(worn.smoothstep(0.66, 0.86).max(f.x.mul(0.6))).mul(float(1).sub(foot.mul(0.9))).toVar();
+    const lime: Node = v3(0.64, 0.63, 0.58).mul(grain.mul(0.1).add(0.92));
+    let c: Node = mixN(bare, lime, cover.mul(0.9));
+    // Rain off the gallery and the iron rail runs down the shaft in streaks:
+    // grey-black from soot and algae, rust-brown just under the rail.
+    const streak = n01(v3(t.x.mul(4.5), t.y.mul(0.1), 4)).smoothstep(0.52, 0.82).mul(h.smoothstep(2, 12).mul(0.25).add(0.22));
     c = c.mul(float(1).sub(streak));
-    // Rising damp and lichen at the foot of the wall.
-    const foot = float(1).sub(t.y.smoothstep(0.1, 1.4)).mul(n01(v3(t.x.mul(2), t.y.mul(2), 9)).mul(0.6).add(0.4));
-    c = mixN(c, v3(0.08, 0.09, 0.05), foot.mul(0.55));
-    return c.mul(vertexColor());
+    const rustRun = n01(v3(t.x.mul(9), t.y.mul(0.25), 6)).smoothstep(0.62, 0.9).mul(h.smoothstep(9.5, 12.8));
+    c = mixN(c, c.mul(v3(0.75, 0.55, 0.38)), rustRun.mul(0.6));
+    // Dark, damp foot with green-black algae in the joints.
+    c = mixN(c, c.mul(0.42).add(v3(0.012, 0.02, 0.008)), foot.mul(0.85));
+    return c.mul(mixN(vertexColor(), v3(1, 1, 1), washed));
   })();
   m.roughnessNode = Fn(() => wetRoughness(float(0.9)))();
   m.normalNode = Fn(() => {
     const f = v3(field());
-    const h = f.x.mul(-0.012).add(f.z.mul(0.006)).add(f.y.mul(0.004));
-    return bumpNormal(h.mul(detailFade(2, 60)));
+    const t = uv();
+    const hgt = f.x.mul(-0.018).add(f.z.mul(0.016)).add(n01(v3(t.x.mul(14), t.y.mul(14), 0.5)).mul(0.004));
+    return bumpNormal(hgt.mul(detailFade(3, 90)));
   })();
   return m;
 }
@@ -443,6 +494,9 @@ export class PropMaterials {
         break;
       case 'iron':
         m = iron();
+        break;
+      case 'gunIron':
+        m = gunIron();
         break;
       case 'masonry':
         m = masonry('prop-masonry', 1);

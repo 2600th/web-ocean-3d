@@ -44,11 +44,11 @@ SOFTWARE.
 https://github.com/mrdoob/slop-newyork
 
 Ported from its TSL materials: the surface-gradient `bumpNormal` (Mikkelsen),
-`hash2D`, `gridLine` and `voronoiBorder`, and the general approach of
-procedural TSL surfaces with no texture downloads.
+`hash2D` and `gridLine`, and the general approach of procedural TSL surfaces
+with no texture downloads.
 
-- `src/scene/props/materials.ts`: `bumpNormal`, `hash21`, `gridLine`, `cells`
-  (after `voronoiBorder`, extended to return a cell id).
+- `src/scene/props/materials.ts`: `bumpNormal`, `hash21` (after `hash2D`),
+  `gridLine`.
 - `src/scene/islandDetail/rock.ts`: `bumpNormal`, with the geometric normal in
   place of the shading one.
 

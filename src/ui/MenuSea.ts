@@ -593,12 +593,12 @@ export class MenuSea {
    * A far headland with a lighthouse, its lamp lit for the dusk.
    *
    * Drawn to the in-world tower's proportions (`scene/props/lighthouse`), in
-   * units of its 21 m height: a battered shaft 6 m across at the foot and 4.5 m
-   * under the gallery, a gallery on corbels, a glazed lantern with a lead
-   * cupola, and the keeper's cottage beside it. The light is *fixed* — candles
-   * behind glass — so it glows and gutters and never turns: revolving
-   * apparatus is eighty years after this game's date (Carlsten, 1781). The
-   * sweeping beam and flash this used to paint are gone for that reason.
+   * metres of it, 19 m to the vane: a stout battered rubble shaft 7.4 m across
+   * at the foot and 5.6 m under the gallery, the gallery stepped out on
+   * corbels, an iron-framed glazed lantern under a lead dome and vent, and the
+   * keeper's cottage beside it. The light is *fixed* — candles behind glass —
+   * so it glows and gutters and never turns: revolving apparatus is eighty
+   * years after this game's date (Carlsten, 1781).
    */
   private paintHeadland(): void {
     const { ctx, width: w, height: h, horizon, time } = this;
@@ -615,11 +615,12 @@ export class MenuSea {
 
     const lx = baseX + hw * 0.42;
     const ly = horizon - hh;
-    // One unit is a metre of the 21 m tower.
-    const u = (hh * 1.05) / 21;
+    // One unit is a metre of the tower; it stands as tall on the page as the
+    // old 21 m one did, so the headland keeps its landmark.
+    const u = (hh * 1.05) / 19;
     ctx.fillStyle = '#132a33';
     // Keeper's cottage, landward of the tower: walls and a gable roof.
-    const cx = lx - 9 * u;
+    const cx = lx - 9.5 * u;
     ctx.fillRect(cx - 2.8 * u, ly - 2.6 * u, 5.6 * u, 2.6 * u + 1);
     ctx.beginPath();
     ctx.moveTo(cx - 3.1 * u, ly - 2.5 * u);
@@ -628,36 +629,54 @@ export class MenuSea {
     ctx.closePath();
     ctx.fill();
     ctx.fillRect(cx - 2.6 * u, ly - 5.2 * u, 0.8 * u, 2 * u);
-    // The battered shaft.
+    // Plinth and the battered shaft.
+    ctx.fillRect(lx - 4.2 * u, ly - 0.9 * u, 8.4 * u, 0.9 * u + 1);
     ctx.beginPath();
-    ctx.moveTo(lx - 3.3 * u, ly + 1);
-    ctx.lineTo(lx - 2.25 * u, ly - 15.7 * u);
-    ctx.lineTo(lx + 2.25 * u, ly - 15.7 * u);
-    ctx.lineTo(lx + 3.3 * u, ly + 1);
+    ctx.moveTo(lx - 3.7 * u, ly - 0.8 * u);
+    ctx.quadraticCurveTo(lx - 3.0 * u, ly - 6 * u, lx - 2.8 * u, ly - 13.4 * u);
+    ctx.lineTo(lx + 2.8 * u, ly - 13.4 * u);
+    ctx.quadraticCurveTo(lx + 3.0 * u, ly - 6 * u, lx + 3.7 * u, ly - 0.8 * u);
     ctx.closePath();
     ctx.fill();
-    // Corbelled gallery and its rail.
-    ctx.fillRect(lx - 3.05 * u, ly - 16.4 * u, 6.1 * u, 0.75 * u);
-    ctx.fillRect(lx - 2.95 * u, ly - 17.4 * u, 5.9 * u, Math.max(1, 0.12 * u));
-    // Cupola and vane.
-    const top = ly - 19.15 * u;
+    // Corbel table, gallery flags and rail.
     ctx.beginPath();
-    ctx.moveTo(lx - 1.85 * u, top);
-    ctx.quadraticCurveTo(lx - 1.2 * u, top - 1.2 * u, lx, top - 1.4 * u);
-    ctx.quadraticCurveTo(lx + 1.2 * u, top - 1.2 * u, lx + 1.85 * u, top);
+    ctx.moveTo(lx - 2.85 * u, ly - 12.5 * u);
+    ctx.lineTo(lx - 3.55 * u, ly - 13.36 * u);
+    ctx.lineTo(lx + 3.55 * u, ly - 13.36 * u);
+    ctx.lineTo(lx + 2.85 * u, ly - 12.5 * u);
     ctx.closePath();
     ctx.fill();
-    ctx.fillRect(lx - Math.max(0.5, 0.06 * u), top - 2.6 * u, Math.max(1, 0.12 * u), 1.4 * u);
+    ctx.fillRect(lx - 3.57 * u, ly - 13.6 * u, 7.14 * u, 0.26 * u + 1);
+    ctx.fillRect(lx - 3.43 * u, ly - 14.6 * u, 6.86 * u, Math.max(1, 0.1 * u));
+    // Lantern curb, dome, vent and vane.
+    ctx.fillRect(lx - 1.8 * u, ly - 14.05 * u, 3.6 * u, 0.5 * u);
+    const top = ly - 16.11 * u;
+    ctx.fillRect(lx - 1.95 * u, top - 0.15 * u, 3.9 * u, 0.2 * u);
+    ctx.beginPath();
+    ctx.moveTo(lx - 1.85 * u, top - 0.1 * u);
+    ctx.bezierCurveTo(lx - 1.85 * u, top - 1.0 * u, lx - 1.0 * u, top - 1.25 * u, lx, top - 1.25 * u);
+    ctx.bezierCurveTo(lx + 1.0 * u, top - 1.25 * u, lx + 1.85 * u, top - 1.0 * u, lx + 1.85 * u, top - 0.1 * u);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(lx - 0.2 * u, top - 1.7 * u, 0.4 * u, 0.5 * u);
+    ctx.beginPath();
+    ctx.moveTo(lx - 0.45 * u, top - 1.72 * u);
+    ctx.lineTo(lx, top - 2.05 * u);
+    ctx.lineTo(lx + 0.45 * u, top - 1.72 * u);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(lx - Math.max(0.5, 0.05 * u), top - 3.2 * u, Math.max(1, 0.1 * u), 1.2 * u);
 
     // The lantern: glazing lit from inside, guttering. Three incommensurate
     // sines at candle rates, a few percent deep — no period a viewer can find.
     const flutter = 0.82 + 0.07 * Math.sin(time * 2.3) + 0.05 * Math.sin(time * 5.7 + 1.1) + 0.04 * Math.sin(time * 13.1 + 0.3);
-    const lampY = ly - 17.8 * u;
+    const lampY = ly - 14.9 * u;
     ctx.fillStyle = `rgba(255, 196, 120, ${flutter})`;
-    ctx.fillRect(lx - 1.55 * u, ly - 19.15 * u, 3.1 * u, 2.6 * u);
+    ctx.fillRect(lx - 1.75 * u, ly - 16.05 * u, 3.5 * u, 2.0 * u);
     ctx.fillStyle = '#132a33';
-    // Glazing bars across the light.
-    ctx.fillRect(lx - Math.max(0.5, 0.05 * u), ly - 19.15 * u, Math.max(1, 0.1 * u), 2.6 * u);
+    // The iron cage: corner posts and a glazing bar across the light.
+    for (const px of [-1.75, -0.6, 0.6, 1.75]) ctx.fillRect(lx + px * u - Math.max(0.5, 0.06 * u), ly - 16.05 * u, Math.max(1, 0.12 * u), 2.0 * u);
+    ctx.fillRect(lx - 1.75 * u, ly - 15.05 * u, 3.5 * u, Math.max(1, 0.06 * u));
     ctx.globalCompositeOperation = 'lighter';
     const halo = ctx.createRadialGradient(lx, lampY, 0, lx, lampY, 9 * u);
     halo.addColorStop(0, `rgba(255, 214, 150, ${0.45 * flutter})`);

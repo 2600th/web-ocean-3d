@@ -520,10 +520,10 @@ const FORT_PIECES = [
  */
 const CANNON_LOCAL = { x: 4.4, z: 9.5, yaw: 0.18 } as const;
 /**
- * The procedural nine-pounder is built at true size (2.75 m barrel). The
- * `cannon_01` scan was placed at 1.7x its own scale to read from the water; at
- * 1.15 the new gun matches that footprint (3.2 m over the carriage and barrel)
- * without becoming a siege piece.
+ * The procedural eighteen-pounder is built at true size (2.9 m base ring to
+ * muzzle). The `cannon_01` scan was placed at 1.7x its own scale to read from
+ * the water; at 1.15 the new gun matches that footprint (about 4.2 m over the
+ * cascabel and carriage) without becoming a siege piece.
  */
 const CANNON_SCALE = 1.15;
 
@@ -2170,7 +2170,7 @@ export class Props {
   private placeFort(dressing: Dressing): void {
     const wallLevels = this.assembleLevels(dressing.fort, FORT_PIECES);
     const walls = this.buildStatic(wallLevels.base, 'shore-fort-walls', wallLevels.lods);
-    // A nine-pounder on a truck carriage, built rather than downloaded: the
+    // An eighteen-pounder on a truck carriage, built rather than downloaded: the
     // `cannon_01` scan and its two LODs were 525 KB.
     const cannon = this.library.lod('shore-fort-cannon', (pb, lod) => buildCannon(pb, PM.identity(), lod, 81), [0, 60, 200]);
     if (!walls && !cannon) return;

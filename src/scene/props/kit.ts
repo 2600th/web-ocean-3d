@@ -147,6 +147,7 @@ function projectUv(p: THREE.Vector3, n: THREE.Vector3, grain: 'x' | 'y' | 'z'): 
 export type Slot =
   | 'wood'
   | 'iron'
+  | 'gunIron'
   | 'masonry'
   | 'lead'
   | 'shingle'

@@ -16,7 +16,9 @@ const HEMP: Tint = srgb(0.62, 0.52, 0.36);
 const TARRED: Tint = srgb(0.17, 0.13, 0.1);
 const PINE: Tint = srgb(0.58, 0.45, 0.3);
 const GREY: Tint = srgb(0.4, 0.36, 0.31);
-const ELM: Tint = srgb(0.4, 0.28, 0.18);
+// Gun-carriage elm, weathered grey-brown: a battery carriage stands out in
+// the sun and rain all year, and the fresh-sawn tone read as new furniture.
+const ELM: Tint = srgb(0.35, 0.28, 0.21);
 const BRASS: Tint = [0.78, 0.55, 0.3];
 
 /** Rotation taking a lathe's +Y axis to +Z (for barrels lying along Z). */
@@ -154,125 +156,296 @@ export function buildLantern(pb: PropBuilder, m: THREE.Matrix4, lod: Lod): void 
 // ------------------------------------------------------------------ cannon
 
 /**
- * A nine-pounder on a four-truck carriage: the gun every ship and every small
- * battery of the period mounted. Cast iron barrel with reinforce rings, a
- * cascabel and a muzzle swell; elm cheeks stepped down toward the breech so
- * the handspikes can bite; four solid trucks; iron capsquares over the
- * trunnions; the quoin under the breech that sets the elevation.
+ * An eighteen-pounder on a four-truck carriage, the heavy gun of a small
+ * battery c.1700. Dimensions follow the English "establishment" proportions
+ * as given in calibres in period gunnery texts: 9 ft (2.74 m) from base ring to
+ * muzzle plus the cascabel, 5.3 in bore, trunnions 3/7 of the length from the
+ * base ring and one calibre thick.
+ *
+ * Barrel: a smooth body lathe (cascabel button and neck, rounded breech, the
+ * first reinforce, the second, the chase, the muzzle swell) with the mouldings
+ * laid over it as separate hard-edged bands and half-round astragals, so each
+ * ring has a crisp shoulder instead of the smeared normal one lathe gives a
+ * step. Painted cast iron (`gunIron`): lamp-black paint worn to bare metal and
+ * rusting underneath.
+ *
+ * Carriage: elm cheeks cut as one stepped plank each (extruded outline), a
+ * transom, two axletrees on four solid trucks (the fore pair larger), the bed
+ * and quoin under the breech, iron capsquares strapped over the trunnions,
+ * through-bolts, axletree hoops, linchpins and breeching ring-bolts.
+ *
  * +Z is the muzzle; origin on the ground under the trunnions.
  */
 export function buildCannon(pb: PropBuilder, m: THREE.Matrix4, lod: Lod, seed: number): void {
   const rng = mulberry32(seed);
   const wood = pb.kit('wood');
   const iron = pb.kit('iron');
-  const seg = lod === 0 ? 28 : lod === 1 ? 16 : 10;
+  const gun = pb.kit('gunIron');
+  const seg = lod === 0 ? 32 : lod === 1 ? 18 : 10;
   const bevel = lod === 0 ? 0.012 : 0;
-  const axisY = 0.74;
+  const axisY = 0.82;
   const trunnionZ = 0.15;
   const elevation = 0.05;
+  const L = 2.9;
+  const T = 1.22; // trunnion axis from the base ring
 
-  // Barrel, breech at y = 0 in its own lathe frame, trunnions at 1.15 m.
-  const L = 2.75;
-  const barrelM = m
+  // ---- barrel, in its own lathe frame: base ring face at y = 0, muzzle at L.
+  const bm = m
     .clone()
     .multiply(M.at(0, axisY, trunnionZ, -elevation, 0, 0))
-    .multiply(new THREE.Matrix4().makeTranslation(0, 0, -1.15))
+    .multiply(new THREE.Matrix4().makeTranslation(0, 0, -T))
     .multiply(Y_TO_Z);
-  const prof: [number, number][] = [
-    [0, -0.27],
-    [0.05, -0.25],
-    [0.062, -0.2],
-    [0.04, -0.16],
-    [0.042, -0.1],
-    [0.15, -0.04],
-    [0.205, 0],
-    [0.21, 0.07],
-    [0.195, 0.08],
-    [0.192, 0.92],
-    [0.2, 0.93],
-    [0.2, 0.98],
-    [0.18, 0.99],
-    [0.177, 1.6],
-    [0.185, 1.61],
-    [0.185, 1.65],
-    [0.165, 1.66],
-    [0.135, 2.45],
-    [0.15, 2.46],
-    [0.15, 2.5],
-    [0.128, 2.52],
-    [0.128, 2.58],
-    [0.162, 2.68],
-    [0.158, L],
-    [0.07, L],
-    [0.07, L - 0.25],
+  const body: [number, number][] = [
+    // Button, neck, then a flattish breech: an ogee from the neck to the
+    // base ring, not a hemisphere.
+    [0, -0.355],
+    [0.025, -0.351],
+    [0.045, -0.338],
+    [0.06, -0.315],
+    [0.064, -0.29],
+    [0.058, -0.267],
+    [0.044, -0.25],
+    [0.04, -0.23],
+    [0.048, -0.205],
+    [0.09, -0.18],
+    [0.15, -0.155],
+    [0.2, -0.125],
+    [0.232, -0.09],
+    [0.25, -0.045],
+    [0.258, 0.0],
+    [0.26, 0.04],
+    [0.256, 0.95],
+    [0.242, 1.0],
+    [0.238, 1.05],
+    [0.233, 1.6],
+    [0.222, 1.66],
+    [0.214, 1.72],
+    [0.172, 2.6],
+    [0.165, 2.66],
+    [0.172, 2.71],
+    [0.188, 2.77],
+    [0.2, 2.82],
+    [0.204, 2.86],
+    [0.2, L],
   ];
-  lathe(iron, prof, seg, barrelM, WHITE);
-  // Trunnions.
-  for (const sx of [-1, 1]) {
-    cylinder(iron, 0.068, 0.072, 0.16, lod === 0 ? 12 : 8, m.clone().multiply(M.at(sx * 0.27, axisY, trunnionZ, 0, 0, Math.PI / 2)), WHITE);
+  if (lod === 2) body.splice(1, 6, [0.06, -0.31], [0.04, -0.235]);
+  lathe(gun, body, seg, bm, WHITE);
+  // Muzzle face and the first metres of bore, which is what reads as "a gun".
+  lathe(gun, [[0.2, L], [0.075, L], [0.068, L - 0.04], [0.068, L - 0.5], [0, L - 0.5]], seg, bm, [0.35, 0.35, 0.35], { hard: true });
+
+  const band = (y0: number, y1: number, r: number): void =>
+    lathe(gun, [[r - 0.02, y0], [r, y0], [r, y1], [r - 0.02, y1]], seg, bm, WHITE, { hard: true });
+  const astragal = (yc: number, rb: number, rad: number): void => {
+    const p: [number, number][] = [];
+    const n = lod === 0 ? 6 : 3;
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * Math.PI;
+      p.push([rb + rad * Math.sin(t), yc - rad * Math.cos(t)]);
+    }
+    lathe(gun, p, seg, bm, WHITE);
+  };
+  // Base ring and its ogee: the heaviest moulding, round the breech.
+  band(0.0, 0.075, 0.276);
+  // First reinforce ring, with its fillet.
+  band(0.92, 0.99, 0.272);
+  // Second reinforce ring.
+  band(1.57, 1.635, 0.252);
+  if (lod < 2) {
+    band(0.095, 0.12, 0.268);
+    band(0.99, 1.012, 0.258);
+    band(1.635, 1.655, 0.24);
+    // Chase girdle: fillet, astragal, fillet.
+    band(1.705, 1.718, 0.226);
+    astragal(1.735, 0.214, 0.016);
+    band(1.752, 1.765, 0.226);
+    // Muzzle astragal and fillets, at the neck before the swell.
+    band(2.56, 2.57, 0.184);
+    astragal(2.585, 0.172, 0.014);
+    band(2.6, 2.61, 0.184);
+  }
+  // Muzzle lip.
+  band(2.865, L, 0.21);
+  if (lod === 0) {
+    // Vent field and the vent itself, on top just ahead of the base ring.
+    // In the lathe frame "up" is angle -90 degrees, i.e. local -Z.
+    box(gun, 0.09, 0.12, 0.012, bm.clone().multiply(M.at(0, 0.21, -0.262)), WHITE, 'y', 0.004);
+    cylinder(gun, 0.012, 0.012, 0.02, 6, bm.clone().multiply(M.at(0, 0.21, -0.27, Math.PI / 2, 0, 0)), [0.2, 0.2, 0.2]);
   }
 
-  // Carriage cheeks, stepped toward the rear.
-  const cheekX = 0.27;
-  const steps: [number, number, number, number][] = [
-    // z0, z1, y0, y1
-    [-0.85, 0.75, 0.24, 0.52],
-    [-0.45, 0.75, 0.52, 0.64],
-    [-0.05, 0.75, 0.64, axisY - 0.04],
+  // Trunnions and rimbases, in the carriage frame (the barrel's elevation is
+  // a few degrees about this very axis, so they stay put).
+  for (const sx of [-1, 1]) {
+    cylinder(gun, 0.075, 0.075, 0.2, lod === 0 ? 14 : 8, m.clone().multiply(M.at(sx * 0.335, axisY, trunnionZ, 0, 0, Math.PI / 2)), WHITE);
+    if (lod < 2) cylinder(gun, 0.115, 0.115, 0.03, lod === 0 ? 16 : 10, m.clone().multiply(M.at(sx * 0.243, axisY, trunnionZ, 0, 0, Math.PI / 2)), WHITE);
+  }
+
+  // ---- carriage
+  const cheekX = 0.325;
+  const cheekT = 0.13;
+  const shape = new THREE.Shape();
+  const outline: [number, number][] = [
+    // (z, y), counter-clockwise seen from +x: rear foot, bottom, the rounded
+    // front, the trunnion seat, then the steps down toward the breech.
+    [-1.05, 0.38],
+    [-0.98, 0.32],
+    [0.82, 0.32],
+    [0.9, 0.38],
+    [0.93, 0.5],
+    [0.9, 0.6],
+    [0.8, 0.68],
+    [0.45, axisY - 0.02],
+    [-0.08, axisY - 0.02],
+    [-0.08, 0.71],
+    [-0.42, 0.71],
+    [-0.42, 0.61],
+    [-0.74, 0.61],
+    [-0.74, 0.51],
+    [-1.05, 0.51],
   ];
-  if (lod === 2) steps.splice(1, 2, [-0.45, 0.75, 0.52, axisY - 0.04]);
+  shape.moveTo(outline[0][0], outline[0][1]);
+  for (let i = 1; i < outline.length; i++) shape.lineTo(outline[i][0], outline[i][1]);
+  const cheekGeo = new THREE.ExtrudeGeometry(shape, {
+    depth: cheekT,
+    bevelEnabled: lod < 2,
+    bevelThickness: 0.015,
+    bevelSize: 0.015,
+    bevelSegments: 1,
+  });
   for (const sx of [-1, 1]) {
-    for (const [z0, z1, y0, y1] of steps) {
-      box(wood, 0.11, y1 - y0, z1 - z0, m.clone().multiply(M.at(sx * cheekX, (y0 + y1) / 2, (z0 + z1) / 2)), jitter(ELM, rng, 0.1), 'z', bevel, rng() * 10);
-    }
+    // Shape x -> carriage z, extrusion z -> -x.
+    const cm = m.clone().multiply(M.at(sx * cheekX + cheekT / 2, 0, 0, 0, -Math.PI / 2, 0));
+    wood.add(cheekGeo, cm, jitter(ELM, rng, 0.08), 'x', rng() * 10);
   }
-  // Transom, axletrees, bed.
-  box(wood, cheekX * 2 - 0.1, 0.24, 0.12, m.clone().multiply(M.at(0, 0.42, 0.62)), jitter(ELM, rng, 0.1), 'x', bevel);
+  cheekGeo.dispose();
+
+  // Transom across the front, below the chase.
+  box(wood, cheekX * 2 - cheekT, 0.24, 0.13, m.clone().multiply(M.at(0, 0.5, 0.62)), jitter(ELM, rng, 0.1), 'x', bevel);
+  // Axletrees and trucks: fore trucks 0.25 m, hind 0.22 m.
   for (const [z, r] of [
-    [0.55, 0.2],
-    [-0.62, 0.17],
+    [0.55, 0.25],
+    [-0.72, 0.22],
   ] as const) {
-    box(wood, 0.98, 0.15, 0.17, m.clone().multiply(M.at(0, r + 0.02, z)), jitter(ELM, rng, 0.1), 'x', bevel);
+    box(wood, 0.88, 0.17, 0.18, m.clone().multiply(M.at(0, r + 0.06, z)), jitter(ELM, rng, 0.1), 'x', bevel);
     for (const sx of [-1, 1]) {
-      // Trucks: solid elm wheels, an iron linchpin through the axle end.
-      const tm = m.clone().multiply(M.at(sx * 0.42, r, z, 0, 0, Math.PI / 2));
-      lathe(wood, [[0.03, -0.05], [r, -0.05], [r + 0.004, -0.03], [r + 0.004, 0.03], [r, 0.05], [0.03, 0.05]], lod === 0 ? 22 : 12, tm, jitter(ELM, rng, 0.1), { hard: true });
-      if (lod < 2) cylinder(iron, 0.045, 0.045, 0.13, 8, tm, WHITE);
-    }
-  }
-  box(wood, cheekX * 2 - 0.1, 0.05, 0.75, m.clone().multiply(M.at(0, 0.32, -0.35)), jitter(ELM, rng, 0.1), 'z', 0);
-  // The quoin: a wedge under the breech.
-  if (lod < 2) {
-    box(wood, 0.24, 0.1, 0.42, m.clone().multiply(M.at(0, 0.4, -0.75, 0.12, 0, 0)), jitter(ELM, rng, 0.1), 'z', bevel);
-    cylinder(wood, 0.02, 0.02, 0.18, 6, m.clone().multiply(M.at(0, 0.43, -1.02, Math.PI / 2, 0, 0)), jitter(ELM, rng, 0.1));
-  }
-  // Capsquares and the cheek bolts.
-  for (const sx of [-1, 1]) {
-    const cm = m.clone().multiply(M.at(sx * cheekX, axisY + 0.02, trunnionZ, 0, 0, 0));
-    box(iron, 0.12, 0.03, 0.2, cm.clone().multiply(M.at(0, 0.06, 0)), WHITE, 'z', 0);
-    if (lod === 0) {
-      for (const z of [-0.6, -0.1, 0.5]) cylinder(iron, 0.022, 0.022, 0.14, 6, m.clone().multiply(M.at(sx * cheekX, 0.42, z, 0, 0, Math.PI / 2)), WHITE);
-      // Breeching ring bolt on the outside of each cheek.
-      const ring: P3[] = [];
-      for (let i = 0; i <= 10; i++) {
-        const a = (i / 10) * Math.PI * 2;
-        ring.push([sx * (cheekX + 0.07), 0.45 + Math.sin(a) * 0.04, 0.05 + Math.cos(a) * 0.04]);
+      // Local +y points outboard on both sides, so the hub faces out.
+      const tm = m.clone().multiply(M.at(sx * 0.5, r, z, 0, 0, -sx * Math.PI / 2));
+      // A solid truck turned from elm, with a raised hub.
+      const truck: [number, number][] = [
+        [0.04, -0.055],
+        [r * 0.45, -0.055],
+        [r * 0.5, -0.045],
+        [r, -0.045],
+        [r + 0.004, -0.03],
+        [r + 0.004, 0.03],
+        [r, 0.045],
+        [r * 0.5, 0.045],
+        [r * 0.45, 0.065],
+        [0.04, 0.065],
+      ];
+      lathe(wood, truck, lod === 0 ? 24 : lod === 1 ? 14 : 8, tm, jitter(ELM, rng, 0.1), { hard: true });
+      // Axle arm, washer and linchpin.
+      cylinder(iron, 0.045, 0.045, 0.16, 8, tm.clone().multiply(M.at(0, 0.02, 0)), WHITE);
+      if (lod < 2) {
+        cylinder(iron, 0.07, 0.07, 0.012, 10, tm.clone().multiply(M.at(0, 0.075, 0)), WHITE);
+        box(iron, 0.012, 0.012, 0.09, tm.clone().multiply(M.at(0, 0.09, 0, Math.PI / 2, 0, 0)), WHITE, 'z', 0);
+        // Iron hoop round the axletree where the arm leaves the timber.
+        box(iron, 0.03, 0.185, 0.195, m.clone().multiply(M.at(sx * 0.4, r + 0.06, z)), WHITE, 'x', 0);
       }
-      tube(iron, ring, 0.008, 5, m, WHITE, false);
     }
   }
-  // Ready shot stacked beside the carriage: three 9-pounder balls (105 mm)
-  // with a fourth on top. The old glTF gun read as "a battery" largely through
-  // its loose shot, and four balls at 12 segments cost ~500 triangles.
+  // Bed on the hind axletree, and the quoin on it under the breech.
+  box(wood, cheekX * 2 - cheekT, 0.06, 0.8, m.clone().multiply(M.at(0, 0.37, -0.62)), jitter(ELM, rng, 0.1), 'z', 0);
   if (lod < 2) {
-    const sr = 0.053;
+    box(wood, 0.26, 0.1, 0.46, m.clone().multiply(M.at(0, 0.45, -0.78, 0.1, 0, 0)), jitter(ELM, rng, 0.1), 'z', bevel);
+    cylinder(wood, 0.022, 0.022, 0.2, 6, m.clone().multiply(M.at(0, 0.47, -1.07, Math.PI / 2, 0, 0)), jitter(ELM, rng, 0.1));
+  }
+
+  // Capsquares: an iron strap arched over each trunnion, its tails along the
+  // cheek top, keyed down through the cheek.
+  for (const sx of [-1, 1]) {
+    const x = sx * cheekX;
+    const rr = 0.088;
+    const arc: P3[] = [];
+    const n = lod === 0 ? 10 : lod === 1 ? 6 : 4;
+    arc.push([x, axisY - 0.01, trunnionZ + 0.24]);
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * Math.PI;
+      arc.push([x, axisY - 0.01 + Math.sin(t) * rr, trunnionZ + Math.cos(t) * rr]);
+    }
+    arc.push([x, axisY - 0.01, trunnionZ - 0.24]);
+    sweep(iron, arc, 0.11, 0.018, (p): [number, number, number] => {
+      const dy = p[1] - (axisY - 0.01);
+      const dz = p[2] - trunnionZ;
+      const l = Math.hypot(dy, dz);
+      return l < rr * 0.5 || Math.abs(dz) > rr * 1.01 ? [0, 1, 0] : [0, dy / l, dz / l];
+    }, m, WHITE);
+    if (lod < 2) {
+      // Keys through the capsquare tails, and the through-bolts of the cheek.
+      for (const z of [trunnionZ + 0.19, trunnionZ - 0.19]) cylinder(iron, 0.018, 0.018, 0.04, 6, m.clone().multiply(M.at(x, axisY + 0.01, z)), WHITE);
+      const bolts = lod === 0 ? [0.7, 0.3, -0.25, -0.6, -0.92] : [0.3, -0.6];
+      for (const z of bolts) {
+        const y = z > -0.08 ? 0.42 : 0.4;
+        cylinder(iron, 0.026, 0.026, cheekT + 0.03, 8, m.clone().multiply(M.at(x, y, z, 0, 0, Math.PI / 2)), WHITE);
+      }
+    }
+    if (lod === 0) {
+      // Ring-bolts on the outside of each cheek for the breeching and the tackle.
+      for (const [y, z] of [
+        [0.5, 0.05],
+        [0.45, -0.85],
+      ]) {
+        const ring: P3[] = [];
+        for (let i = 0; i <= 12; i++) {
+          const a = (i / 12) * Math.PI * 2;
+          ring.push([sx * (cheekX + cheekT / 2 + 0.045), y - 0.045 + Math.sin(a) * 0.04, z + Math.cos(a) * 0.04]);
+        }
+        tube(iron, ring, 0.009, 5, m, WHITE, false);
+        cylinder(iron, 0.02, 0.02, 0.05, 6, m.clone().multiply(M.at(sx * (cheekX + cheekT / 2 + 0.02), y, z, 0, 0, Math.PI / 2)), WHITE);
+      }
+    }
+  }
+
+  if (lod < 2) {
+    // Iron plates nailed along the top of each step, where the handspikes bear.
+    for (const sx of [-1, 1]) {
+      for (const [z0, z1, y] of [
+        [-0.42, -0.08, 0.71],
+        [-0.74, -0.42, 0.61],
+        [-1.05, -0.74, 0.51],
+      ]) {
+        box(iron, cheekT + 0.01, 0.012, z1 - z0 - 0.02, m.clone().multiply(M.at(sx * cheekX, y + 0.006, (z0 + z1) / 2)), WHITE, 'z', 0);
+      }
+    }
+    // The breeching: a tarred cable from the rear ring-bolt on one cheek, round
+    // the cascabel neck, to the other. Slack, as a gun at rest leaves it.
+    const neckZ = trunnionZ - (T + 0.24) * Math.cos(elevation);
+    const neckY = axisY - (T + 0.24) * Math.sin(elevation);
+    const ringX = cheekX + cheekT / 2 + 0.045;
+    const cable: P3[] = [
+      [-ringX, 0.37, -0.85],
+      [-ringX - 0.02, 0.33, -1.0],
+      [-0.2, 0.52, -1.24],
+      [-0.06, neckY, neckZ],
+      [0, neckY - 0.045, neckZ - 0.02],
+      [0.06, neckY, neckZ],
+      [0.2, 0.52, -1.24],
+      [ringX + 0.02, 0.33, -1.0],
+      [ringX, 0.37, -0.85],
+    ];
+    tube(pb.kit('rope'), cable, 0.026, lod === 0 ? 7 : 5, m, TARRED, false);
+  }
+
+  // Ready shot stacked beside the carriage: three eighteen-pound balls
+  // (131 mm) with a fourth on top.
+  if (lod < 2) {
+    const sr = 0.0655;
     const n = lod === 0 ? 12 : 8;
     const ball: [number, number][] = [];
     for (let i = 0; i <= n / 2; i++) {
       const a = (i / (n / 2)) * Math.PI;
       ball.push([Math.sin(a) * sr, -Math.cos(a) * sr]);
     }
-    const base = m.clone().multiply(M.at(0.72, 0, -0.55, 0, rng() * Math.PI, 0));
+    const base = m.clone().multiply(M.at(0.95, 0, -0.55, 0, rng() * Math.PI, 0));
     const d = sr * 2;
     const pile: P3[] = [
       [0, sr, 0],
@@ -280,7 +453,7 @@ export function buildCannon(pb: PropBuilder, m: THREE.Matrix4, lod: Lod, seed: n
       [d / 2, sr, d * 0.866],
       [d / 2, sr + d * 0.816, d * 0.289],
     ];
-    for (const [x, y, z] of pile) lathe(iron, ball, n, base.clone().multiply(M.at(x, y, z)), WHITE, { hard: false });
+    for (const [x, y, z] of pile) lathe(gun, ball, n, base.clone().multiply(M.at(x, y, z)), WHITE);
   }
 }
 
