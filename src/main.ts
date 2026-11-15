@@ -3560,7 +3560,11 @@ class App {
     // past nine at night. It also went on taking its direction from a sun that
     // was below the horizon while the moon was the only thing actually casting.
     const key = this.atmosphere.sunLight;
-    _keyDirection.copy(key.position).normalize();
+    // The key body's direction, not `key.position` normalised: the light sits
+    // `SUN_LIGHT_DISTANCE` out from the shadow focus, and with the focus far
+    // from the origin the normalised position was 37.6 degrees off the sun at
+    // the sunset preset, which put a second sun glint on the water.
+    _keyDirection.copy(this.atmosphere.keyDirection);
     // 3.4 is the sun's full-daylight intensity in `Atmosphere`, so this is
     // "how close to full daylight is it" rather than an arbitrary scale.
     // The *direct* glint fades with the overcast on the same curve the sky uses
@@ -3845,7 +3849,7 @@ class App {
     // every hour of the night. So the pair (`sunDirection`, `sunColor`) is the
     // obvious thing to hand over and is wrong after dark twice over: it would
     // anchor the flare where the sun is not, and paint it warm on a blue moon.
-    // `_keyDirection` is already derived from `sunLight.position` further up, so
+    // `_keyDirection` is already `atmosphere.keyDirection` further up, so
     // it follows the retarget; the colour has to come from the same object.
     // A deck thick enough to call an overcast leaves no disc to flare on.
     const flareThrough = 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.97;
