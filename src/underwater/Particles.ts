@@ -55,6 +55,9 @@ const SNOW_HEIGHT = 12;
 const BUBBLE_RADIUS = 12;
 const BUBBLE_HEIGHT = 15;
 
+/** [underwater-look-2] Particles shrink away inside this distance of the eye, metres. */
+const NEAR_FADE = 4;
+
 /** Bubbles are grouped into this many rising trains. */
 const BUBBLE_COLUMNS = 14;
 /** Scatter of a bubble around its column axis, metres. */
@@ -206,6 +209,20 @@ export class UnderwaterParticles {
   }
 
   /**
+   * [underwater-look-2] Scale toward zero inside `NEAR_FADE` of the eye.
+   *
+   * The volume wraps around the camera, so now and then a speck lands a few
+   * centimetres from the lens, where a 5 cm disc fills sixty pixels: the
+   * "ghost double sphere" in `under-hull` was two marine-snow specks 10-20 cm
+   * from the camera (found by hiding the scene's children in halves). Real
+   * particulate that close is out of focus and gone; scaling rather than
+   * fading because the snow is opaque.
+   */
+  private nearFade(position: any): any {
+    return position.sub(this.uCenter).length().smoothstep(NEAR_FADE * 0.4, NEAR_FADE);
+  }
+
+  /**
    * Marine snow is *opaque*, masked to a disc, and writes depth.
    *
    * It was additive and depth-less, and that made it invisible exactly where it
@@ -244,12 +261,10 @@ export class UnderwaterParticles {
       cos(this.uTime.mul(0.17).add(phase.mul(1.6))).mul(0.75),
     );
 
-    material.positionNode = this.wrap(
-      base.add(drift),
-      new THREE.Vector3(SNOW_RADIUS, SNOW_HEIGHT, SNOW_RADIUS),
-    );
+    const position = this.wrap(base.add(drift), new THREE.Vector3(SNOW_RADIUS, SNOW_HEIGHT, SNOW_RADIUS));
+    material.positionNode = position;
 
-    const size = mix(float(0.014), float(0.05), seed.w.mul(seed.w));
+    const size: any = mix(float(0.014), float(0.05), seed.w.mul(seed.w)).mul(this.nearFade(position));
     material.scaleNode = vec2(size, size);
 
     const coord = uv();
@@ -297,12 +312,10 @@ export class UnderwaterParticles {
       column.z.add(seed.z.sub(0.5).mul(COLUMN_JITTER * 2)).add(cos(wobblePhase.mul(0.87)).mul(wobbleAmp)),
     );
 
-    material.positionNode = this.wrap(
-      world,
-      new THREE.Vector3(BUBBLE_RADIUS, BUBBLE_HEIGHT, BUBBLE_RADIUS),
-    );
+    const position = this.wrap(world, new THREE.Vector3(BUBBLE_RADIUS, BUBBLE_HEIGHT, BUBBLE_RADIUS));
+    material.positionNode = position;
 
-    const size = mix(float(0.025), float(0.11), column.w.mul(column.w));
+    const size: any = mix(float(0.025), float(0.11), column.w.mul(column.w)).mul(this.nearFade(position));
     material.scaleNode = vec2(size, size);
 
     const coord = uv();
