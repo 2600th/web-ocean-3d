@@ -1655,11 +1655,12 @@ class App {
     const s = impact.strength;
     const p = impact.position;
     if (!impact.hull) {
-      // A buoy or a barrel: a little foam where it came down. Sized to the
-      // floater (casks and drums are ~0.6 m across; 0.5 m is the splash's own
-      // floor). It was 1.2 m at up to 0.75, which with every bob of a cask
-      // re-depositing kept a white disc twice its width round it.
-      this.wake.splash(p.x, p.z, 0.5, 0.15 + 0.25 * s);
+      // A buoy or a barrel: a little foam the size of what came down. The
+      // radius follows the floater (the spray's impact radius; 0.5 m is the
+      // splash's own floor, 1.2 m the old fixed size that stamped a visibly
+      // square patch on a buoy). The amount is low because every bob of a
+      // cask re-deposits: at up to 0.75 it kept a white disc round it.
+      this.wake.splash(p.x, p.z, Math.min(1.2, Math.max(0.5, impact.radius * 1.1)), 0.15 + 0.25 * s);
       return;
     }
 
@@ -3759,6 +3760,8 @@ class App {
       this.atmosphere.sunLight.intensity / 3.4,
       this.atmosphere.zenithColor,
     );
+    // The lens and the frame height set the one-pixel floor on droplet width.
+    this.spray.setView(this.camera.fov, this.renderer.getDrawingBufferSize(_drawingBuffer).y, this.camera.position, dt);
     this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.
