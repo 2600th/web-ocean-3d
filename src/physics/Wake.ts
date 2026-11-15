@@ -991,10 +991,22 @@ export class Wake {
     if (this.splashQueued >= MAX_SPLASHES) return;
     if (!Number.isFinite(x) || !Number.isFinite(z) || !(amount > 0)) return;
     const base = this.splashQueued * 4;
+    // **Never narrower than the buffer can draw round.** A texel here is
+    // `extent / resolution` across (0.41 m at 1024, 0.82 m at 512), and a
+    // floater's 0.6 m splash covered two or three of them: the surface reads
+    // the buffer bilinearly, so that came out as a square or a diamond (the
+    // VFX pass's report on 000d841). A disc needs about three texels of radius
+    // before its outline is round at this filtering, so a smaller splash is
+    // spread to that radius and its amount scaled by the area ratio: the same
+    // foam, less concentrated, which the foam threshold then draws as a few
+    // flecks rather than a stamp.
+    const minRadius = Math.max(0.5, (3 * this.extent) / this.resolution);
+    const r = Math.max(minRadius, radius);
+    const spread = Math.min(1, (Math.max(0.5, radius) / r) ** 2);
     this.splashQueue[base] = x;
     this.splashQueue[base + 1] = z;
-    this.splashQueue[base + 2] = Math.max(0.5, radius);
-    this.splashQueue[base + 3] = Math.min(1, amount);
+    this.splashQueue[base + 2] = r;
+    this.splashQueue[base + 3] = Math.min(1, amount * spread);
     this.splashQueued++;
   }
 
@@ -1648,8 +1660,13 @@ export class Wake {
         for (let i = 0; i < MAX_SPLASHES; i++) {
           const splash = this.splashes[i];
           const r = world.sub(vec2(splash.x, splash.y)).length().div(splash.z).toVar();
-          const disc = smoothstepDown(r, 0.25, 1).toVar();
-          wakeDeposit.addAssign(disc.mul(boil).mul(splash.w).mul(1.6));
+          // A radial falloff with no plateau, `(1 - r^2)^2`, evaluated per
+          // texel: smooth to zero at the rim and with no flat top for the
+          // bilinear read to square off. It holds half the volume of a flat
+          // disc of the same radius, hence 2x where the plateau had 1.6x.
+          const rr = r.mul(r).oneMinus().max(0);
+          const disc = rr.mul(rr).toVar();
+          wakeDeposit.addAssign(disc.mul(boil).mul(splash.w).mul(2));
         }
       });
 
