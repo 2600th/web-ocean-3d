@@ -7,11 +7,12 @@ import {
   float,
   interleavedGradientNoise,
   luminance,
-  min,
   mix,
   normalize,
   perspectiveDepthToViewZ,
+  rtt,
   screenCoordinate,
+  texture,
   uniform,
   uv,
   vec2,
@@ -19,37 +20,43 @@ import {
   vec4,
 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
+import type { ShadowVolumeSource } from '../lighting/SunShadows';
 
 /**
  * The submerged look, as a post-processing node graph.
  *
- * Three layers, composited in this order:
+ * The medium, lighting and shafts are adapted from abyssal-garden (MIT,
+ * (c) 2026 Maksymilian Dendura; see THIRD_PARTY_NOTICES.md). Composited in
+ * this order:
  *
- *   1. Beer–Lambert extinction along the view ray, per colour channel. Red is
- *      absorbed roughly five times faster than blue in sea water, and that
- *      asymmetry — not the fog colour itself — is what makes an image read as
- *      *underwater* rather than as a scene with blue fog in it.
- *   2. God rays: a screen-space radial accumulation from the projected sun,
- *      masked by the depth buffer so the shafts stop dead against near geometry
- *      (the hull) and only survive where the buffer is far away. The shaft
- *      source is striated with a noise field in polar coordinates around the
- *      sun, which is what gives the fan its individual blades.
- *   3. A blue-shifted grade with a depth-driven loss of saturation and contrast,
- *      standing in for the multiply-scattered light that fills the shadows.
+ *   1. Per-channel Beer-Lambert transmittance along the submerged segment of
+ *      the view ray. Red is absorbed several times faster than blue, and that
+ *      asymmetry is what makes an image read as *underwater* rather than as a
+ *      scene with blue fog in it.
+ *   2. Height-dependent analytic in-scatter (abyssal-garden's `fogIn`): single
+ *      scattering of daylight that itself falls with depth, integrated in
+ *      closed form, so the water is bright overhead and deep blue below.
+ *   3. The surfaces' own submerged lighting: daylight loss with depth, a
+ *      hemisphere ambient that darkens undersides, and chromatic caustics
+ *      (TRAA path only, as they need the MRT normals).
+ *   4. Volumetric shafts: a half-resolution march that samples the sun's
+ *      shadow cascade and the caustics field, blurred and upsampled
+ *      depth-aware (`buildShafts`).
+ *   5. A light grade with a depth-driven loss of saturation and contrast.
  *
  * Everything cross-fades on `submersion`, and at `submersion === 0` the final
  * `mix` returns the input colour bit-for-bit, so a surface crossing is
  * continuous and the pass is free to stay in the chain permanently.
  *
  * The whole graph is built once. Every tunable is a uniform, including the
- * god-ray tap count (a dynamic loop bound, as `QualityManager.godRaySteps`
+ * shaft step count (a dynamic loop bound, as `QualityManager.godRaySteps`
  * changes with the tier), so nothing here ever recompiles.
  *
  * Backend note: a post-processing pass is drawn with an internal fullscreen quad
  * and its own orthographic camera, so the built-in `cameraNear` / `cameraFar` /
  * `cameraProjectionMatrix` nodes would resolve to *that* camera, not the scene's.
  * The scene camera is therefore supplied explicitly via `setCamera`, and its
- * near/far and the projected sun position are pushed into uniforms each frame —
+ * near/far and transforms are pushed into uniforms each frame —
  * the same approach `PassNode` itself takes internally.
  */
 
@@ -161,35 +168,81 @@ const ABSORPTION_REACH = 0.5;
 /** Clock wrap, seconds. */
 const CLOCK_WRAP = 3600;
 
-/**
- * Fraction of the view extinction applied to sunlight on its way *down* to a
- * submerged surface. See `uDownwell`.
- */
-const DOWNWELL_SCALE = 0.55;
-
-/** Fraction of the achromatic (scattering) floor that downwelling still loses. */
-const DOWNWELL_SCATTER = 0.25;
+/** Refractive index of sea water. */
+const WATER_IOR = 1.333;
 
 /**
- * The water column's brightness by view elevation, as multipliers on the medium
- * colour: looking straight down into the deep, horizontally, and straight up at
- * the lit surface. A diver's whole sense of up and down in open water comes from
- * this gradient — the medium was one flat colour in every direction, which is
- * why the empty water read as fog rather than as depth.
+ * Scale on every preset's extinction, applied once the medium became an
+ * in-scatter integral rather than a dark murk.
+ *
+ * With the old dark medium, extinction mostly *darkened* — a hull ten metres
+ * off lost half its value and stayed a silhouette. With a medium that is bright
+ * sunlit water, the same extinction *veils*: the hull is half replaced by
+ * bright cyan and reads as a ghost, and the reef at fifteen metres went milky.
+ * Contrast against the medium is `T` for a dark object, so the only cure is
+ * clearer water. 0.65 puts `skyPro`'s green at 10% contrast at 70 m and blue at
+ * 95 m — abyssal-garden's range (98 m in green) — and keeps every preset's
+ * ordering and hue, since it scales all three channels alike.
  */
-const MEDIUM_BELOW = 0.42;
-const MEDIUM_LEVEL = 0.95;
-const MEDIUM_ABOVE = 1.75;
+const CLARITY = 0.65;
 
-/** Forward-scatter lobe around the refracted sun: asymmetry and strength. */
-const SUN_LOBE_G = 0.72;
-const SUN_LOBE_GAIN = 0.05;
+/**
+ * Vertical attenuation of daylight, `K`, as a multiple of the view extinction.
+ *
+ * abyssal-garden's constants put `K` within a few percent of `sigma` per
+ * channel (KD = 0.056/0.0245/0.017 against SIG = 0.058/0.0235/0.0195), and its
+ * sea floor is 45 m down, so by the reef the daylight is down to a third in
+ * green and a tenth in red. That depth gradient — bright cyan overhead, deep
+ * blue at the floor, silhouettes near black — is the look being ported. Our
+ * reef is at 17 m and our camera usually at 10-15, so a physical `K` near
+ * `sigma` left the whole frame in the bright top third of that range: one
+ * flat cyan, no blacks. 2.2 compresses abyssal-garden's 45 m of falloff into
+ * our 17 m column — a stylisation, stated as one: green at the reef keeps
+ * 0.30 of the surface light, red 0.06, which is where the reference sits at
+ * its own floor.
+ */
+const DAYLIGHT_K = 2.2;
+
+/**
+ * In-scatter brightness, as a multiple of the preset's water colour.
+ *
+ * The integral converges on `colour * sigma / a * phase`, which for a level ray
+ * at the surface is the colour itself times 1.22. Tuned against the reef
+ * rather than the open water: at 1.6 (and 2.6 before it) the medium at the
+ * camera's depth was brighter than the reef it was veiling — green in-scatter
+ * at 15 m out came to 0.086 against 0.09 for the lit sand itself — so a coral
+ * head ten metres off had already converged on the water and the frame lost
+ * its foreground. 1.0 keeps the shallows' cyan in the `underwater` shot and
+ * gives the reef back roughly half its contrast.
+ */
+const INSCATTER_GAIN = 1.0;
+
+/**
+ * Daylight loss applied to the *surfaces* a ray finds, as a multiple of `sigma`.
+ *
+ * Lower than `DAYLIGHT_K`, which the water itself uses, and a stylisation as
+ * well: at 2.2 the reef at 17 m kept 5% of its red and 29% of its green, which
+ * is what a diver without a strobe sees — a blue-grey reef — and threw away
+ * every warm colour the reef artists put in. 1.4 keeps 15% red and 45% green
+ * there, so the corals still read as coloured against water that has the full
+ * depth gradient.
+ */
+const SURFACE_K = 1.4;
+
+/**
+ * Fraction of light per metre that a shaft scatters toward the eye — the
+ * single-scattering coefficient of the march. Small, as sea water is a weak
+ * scatterer; with the pattern gain it puts a sunlit shaft looking up-sun at
+ * about the brightness of the in-scatter around it, which is the contrast in
+ * the reference frames.
+ */
+const SHAFT_DENSITY = 0.04;
+
+/** Ambient kept by a face pointing straight down, near the surface. */
+const UNDERSIDE_AMBIENT = 0.42;
 
 /** Darkening at the frame corners when submerged. */
 const VIGNETTE = 0.22;
-
-/** Chroma boost on the in-scattered medium colour. */
-const MEDIUM_SATURATION = 1.3;
 
 export class UnderwaterPass {
   private readonly params: UnderwaterParams;
@@ -241,26 +294,25 @@ export class UnderwaterPass {
    * deep reef blue and a shallow one gold, independently of where the eye is.
    */
   private readonly uDownwell = uniform(new THREE.Vector3(0.1, 0.05, 0.04));
-  /**
-   * Brightness of light scattered back out of the medium toward the viewer.
-   *
-   * 0.36, down from 0.95 and then from 0.55. The inscatter term replaces the
-   * scene in proportion to how much the water absorbed, so a bright medium does
-   * not just tint the view — it *is* the view at any distance. At 0.95 the
-   * submerged scene was a flat teal wash with the seafloor eleven metres away
-   * completely invisible; 0.55 still left a hull at ten metres reading as a faint
-   * smudge against a milky field, which is what a viewer described as washed out.
-   *
-   * Real water darkens as it thickens. It does not converge on a bright fog: the
-   * limiting colour looking into open water from below is the small fraction of
-   * downwelling light that scatters back, and against a sunlit surface directly
-   * above, that is a *dark* blue-green, not a pale one. What should be bright is
-   * the shafts and the surface itself, both of which are added separately — so
-   * lowering this raises the contrast between them and the medium rather than
-   * darkening the frame as a whole.
-   */
-  private readonly uAmbient = uniform(0.36);
   private readonly uCameraDepth = uniform(4);
+
+  // --- in-scatter --------------------------------------------------------
+  /** Vertical attenuation of daylight per metre of depth, per channel. */
+  private readonly uScatterK = uniform(new THREE.Vector3(0.1, 0.04, 0.03));
+  /** Radiance the medium scatters toward the eye, before depth and distance. */
+  private readonly uScatterColor = uniform(new THREE.Vector3(0.1, 0.5, 0.8));
+  /** Unit vector toward the sun *after* refraction into the water. */
+  private readonly uSunUnder = uniform(new THREE.Vector3(0, 1, 0));
+
+  // --- surface relight ------------------------------------------------------
+  /** Ambient a down-facing surface keeps near the surface. See `UNDERSIDE_AMBIENT`. */
+  private readonly uUnderside = uniform(UNDERSIDE_AMBIENT);
+  /** Strength of the chromatic caustic recolour on lit submerged surfaces. */
+  private readonly uCausticRelight = uniform(0.55);
+  /** Mip level of the caustics field read as the local mean for that ratio. */
+  private readonly uRelightMeanLod = uniform(5);
+  private normalNode: unknown = null;
+  private chromaticCaustics: ((worldPosition: unknown) => unknown) | null = null;
 
   // --- volumetric shafts ---------------------------------------------------
   private readonly uGodRayStrength = uniform(0.9);
@@ -268,63 +320,60 @@ export class UnderwaterPass {
   // the TSL typings.
   private readonly uSteps: any = uniform(24, 'int');
   private readonly uInvSteps = uniform(1 / 24);
-  private readonly uSunColor = uniform(new THREE.Color(DEFAULT_UNDERWATER_PARAMS.sunColor));
-  /** Caustic intensity below which no shaft forms, and the gain on the rest. */
-  private readonly uShaftFloor = uniform(0.9);
-  private readonly uShaftGain = uniform(3);
-  /** Mips coarser than the march's own at which the field's local mean is read. */
-  private readonly uShaftMeanLod = uniform(7);
-  /** How far along the view ray shafts are integrated, metres. */
-  private readonly uShaftRange = uniform(90);
+  /** Sun colour x tint x density x strength: everything per-frame, folded on the CPU. */
+  private readonly uShaftColor = uniform(new THREE.Vector3(1, 1, 1));
   /**
-   * Fraction of the light passing through a metre of water that is scattered
-   * toward the viewer — the single-scattering albedo term of the integral.
-   *
-   * Small, and it has to be. The integral runs over tens of metres and the
-   * caustics field averages a few tenths across the cell interiors, not the near
-   * zero its thin bright filaments suggest, so the accumulated path radiance
-   * lands in the single digits before this term is applied. At 0.55 the whole
-   * frame saturated to white. Sea water is a weak forward scatterer and the
-   * number should look like one.
+   * Unpatterned scatter, relative to the caustic pattern's gain. abyssal-garden
+   * uses 0.012 against a pattern gain of 6: small, but it is the whole of what
+   * makes a shadow *volume* visible where the surface above is not focusing.
    */
-  private readonly uShaftDensity = uniform(0.05);
+  private readonly uShaftBase = uniform(0.05);
+  /** Local-to-mean caustic ratio below which no shaft forms, and the gain on the rest. */
+  private readonly uShaftFloor = uniform(1.0);
+  private readonly uShaftGain = uniform(5);
+  /** Ratio range over which a beam ramps from nothing to full. */
+  private readonly uShaftWidth = uniform(0.6);
+  /** Mip of the caustics field the beam pattern is read at (0.42 m x 2^lod texels). */
+  private readonly uShaftBlurLod = uniform(1.5);
+  /** Mips coarser again at which the field's local mean is read. */
+  private readonly uShaftMeanLod = uniform(3);
+  /** How far along the view ray shafts are integrated, metres. abyssal-garden: 120. */
+  private readonly uShaftRange = uniform(90);
+  /** `K / cos` of the refracted sun: attenuation down the light's own path. */
+  private readonly uShaftK = uniform(new THREE.Vector3(0.1, 0.04, 0.03));
+  /** Texels of the half-resolution march, for the blur and the upsample. */
+  private readonly uShaftSize = uniform(new THREE.Vector2(1, 1));
   /** World Y of the mean water surface the shafts descend from. */
   private readonly uSeaLevel = uniform(0);
   private readonly uCaustics = uniform(DEFAULT_UNDERWATER_PARAMS.causticsStrength);
   /**
-   * An ellipsoid standing in for the hull, so it can shadow the shafts.
-   *
-   * Analytic rather than a shadow map, and the choice is deliberate. Three's
-   * shadow node lives inside the light's material graph; reaching it from a post
-   * pass means either duplicating its matrices or depending on internals that
-   * have already crashed a tier change twice in this project. A ray-ellipsoid
-   * test is four lines, exact for the one occluder that matters, and cannot go
-   * stale.
-   *
-   * What it does not do is shadow anything else — buoys, barrels, the island. A
-   * diver under a barrel gets full shafts. That is a real limitation and a very
-   * cheap one to accept: the hull is the object anyone will ever swim under.
-   */
-  private readonly uHullCenter = uniform(new THREE.Vector3(0, 0, 0));
-  private readonly uHullRadius = uniform(new THREE.Vector3(1, 1, 1));
-  /** Hull heading as a unit XZ vector, so the long axis follows the bow. */
-  private readonly uHullForward = uniform(new THREE.Vector2(1, 0));
-  private readonly uHullPresent = uniform(0);
-  /**
-   * Unit vector toward the sun.
-   *
-   * The pass did not previously need one — the caustics field carries the sun's
-   * refracted direction internally — but the hull occluder traces toward it.
-   */
-  private readonly uSunUp = uniform(new THREE.Vector3(0.35, 0.62, 0.7).normalize());
-  /**
-   * World size of one texel of the caustics field, metres.
-   *
-   * Pushed in rather than assumed, because it is the caustics module that owns
-   * its resolution and extent, and the mip level the march asks for is only
-   * correct relative to the real texel size.
+   * World size of one texel of the caustics field, metres. Pushed in because
+   * the caustics module owns its resolution and extent, and the mip level the
+   * march asks for is only right relative to the real texel.
    */
   private readonly uCausticsTexel = uniform(320 / 768);
+  /** Whether the shaft passes have anything to draw this frame. */
+  private shaftsActive = false;
+  /** See `SHAFT_DENSITY`. A field so a tuning session can move it live. */
+  shaftDensity = SHAFT_DENSITY;
+  /** The march and blur targets, for the test hooks to read back. */
+  shaftTargets: unknown[] = [];
+
+  // --- sun shadow, read from a post pass -----------------------------------
+  private shadowSource: ShadowVolumeSource | null = null;
+  /** True once a build has bound a real shadow map. For the test hooks. */
+  shadowBound = false;
+  /**
+   * The cascade's world-to-shadow-texture matrix, refreshed at render time:
+   * three recomputes it inside the shadow render, which happens during the
+   * scene pass, after this frame's CPU update and before this pass.
+   */
+  private readonly uShadowMatrix = uniform(new THREE.Matrix4()).onRenderUpdate(
+    () => this.shadowSource?.matrix,
+  );
+  private readonly uShadowBias = uniform(0).onRenderUpdate(() => this.shadowSource?.bias() ?? 0);
+  /** Per metre of depth: moves a lookup onto the refracted light path. */
+  private readonly uRefractShift = uniform(new THREE.Vector2(0, 0));
 
   // --- ray reconstruction ---------------------------------------------------
   // A post pass draws with the post-processor's own orthographic quad camera, so
@@ -449,6 +498,12 @@ export class UnderwaterPass {
 
     // PassTextureNode leaves `uvNode` null and falls back to the quad's uv.
     const baseUv: any = colorNode.uvNode ?? uv();
+    const normalNode: any = this.normalNode;
+    const chromaticCaustics = this.chromaticCaustics as ((worldPosition: any) => any) | null;
+
+    // The half-resolution shafts are their own two passes, built here so the
+    // composite below can read them.
+    const shafts: any = this.buildShafts(depthNode, caustics, waveHeight, sunOcclusion);
 
     /** Distance from the camera to the nearest surface at a screen uv, metres. */
     const viewDistance = (p: any): any =>
@@ -636,290 +691,190 @@ export class UnderwaterPass {
         //
         // Along the ray the colour was actually fetched from, not along this
         // pixel's own. Fogging a displaced sample with the *undisplaced* pixel's
-        // water path dissolves anything narrower than the displacement, and it
-        // does it in the most alarming way available: a 0.42 m fish eleven metres
-        // out has a short path and therefore almost no fog, so its silhouette was
-        // filled with distant background colour and then barely attenuated —
-        // arriving as a pale, flat, faintly glowing patch exactly where the fish
-        // was. The fish's own colour landed on background pixels whose path is
-        // fifty metres, where the transmittance term annihilated it. Kelp blades
-        // went the same way, and on a moving camera they shimmered, because the
-        // warp evolves.
-        //
-        // At 0.012 uv and the +-1.5 the crossed sines reach, the displacement is
-        // 0.018 uv — 23 px across a 1280-wide frame, against a body the
-        // `reef-dive` shot sizes at thirty. Anything wider than the displacement
-        // was unharmed, which is why the coral heads and the seafloor looked
-        // right and only the two thin things in the scene did not.
-        //
-        // Only the depth is re-fetched. The ray *geometry* — heading, the
-        // crossing distance, the axial cosine, which side of the surface the eye
-        // is on — is smooth in uv, and 0.018 uv is about a degree of a 55-degree
-        // field, so re-solving it (and the wave-height refinement inside it)
-        // would buy a correction far below the term it corrects. Depth is the one
-        // quantity here with discontinuities in it, so depth is the one worth
-        // sampling twice.
+        // water path dissolves anything narrower than the displacement: a 0.42 m
+        // fish eleven metres out has a short path, so its silhouette filled with
+        // distant background and arrived as a pale, faintly glowing patch, and
+        // the kelp shimmered on a moving camera. Only the depth is re-fetched;
+        // the ray geometry is smooth in uv and the 0.018 uv warp is about a
+        // degree of field, far below the term it would correct.
         const warpedDist = viewDistance(warpedUv).div(axialCos).toVar('uwDistW');
         const warpedStart = mix(warpedDist.min(enters), float(0), eyeUnder).toVar('uwStartW');
         const warpedEnd = mix(warpedDist, warpedDist.min(leaves), eyeUnder).toVar('uwEndW');
         const warpedPath = warpedEnd.sub(warpedStart).max(0).toVar('uwPathW');
         const transmit = exp(this.uSigma.mul(warpedPath.negate())).toVar('uwT');
 
-        // How much daylight is left at the camera's own depth. Drives both the
-        // inscatter brightness and the shaft brightness, so diving gets darker.
-        const daylight = exp(this.uSigma.mul(this.uCameraDepth.mul(-0.55))).toVar('uwDay');
+        // --- 2b. in-scatter, analytically -------------------------------------
+        //
+        // Single scattering of sunlight whose own strength falls with depth.
+        // Adapted from `fogIn` in abyssal-garden (MIT, (c) 2026 Maksymilian
+        // Dendura). Light at a point `y` metres below the surface is
+        // `exp(-K * depth)` per channel; integrating that, times the scattering
+        // and the extinction back to the eye, along `ro + rd t` for `t` in
+        // `[0, d]` is a closed form:
+        //
+        //   a = sigma - K * rd.y
+        //   L = C * sigma * exp(-K * depth(ro)) * (1 - exp(-a d)) / a * phase
+        //
+        // It replaces a flat medium colour shaped by a hand-authored elevation
+        // gradient, and the difference is the whole look. The flat medium was
+        // the same value at two metres and at twenty, so a diver near the
+        // surface and one on the sand saw the same murk, and every distance
+        // converged on one blue. Now the water near the surface is bright cyan
+        // and darkens to deep blue with the eye's depth, a ray looking up
+        // collects more light than one looking down (because `a` shrinks as the
+        // ray climbs toward brighter water), and red, with the largest `K`,
+        // leaves the medium first — so depth reads in hue as well as in value.
+        //
+        // `ro` is where the submerged segment *starts*: the eye when it is under
+        // water, the entry point when it is above. Continuous across the surface
+        // crossing by construction, since both are the same point there.
+        const ro = this.uCameraPos.add(worldRay.mul(warpedStart)).toVar('uwRo');
+        const roDepth = this.uSeaLevel.sub(ro.y).max(0).toVar('uwRoDepth');
+        // `a` goes negative on rays climbing steeply, since `K` exceeds `sigma`
+        // (see `DAYLIGHT_K`): the light gains faster than the path loses it.
+        // The closed form holds either way — it becomes `(e^{|a| d} - 1)/|a|`,
+        // bounded because a climbing ray meets the surface — so the guard keeps
+        // the sign and only moves `a` off zero, and the exponent is clamped for
+        // the warp's rare mismatch between a climbing ray and a far depth.
+        const aRaw = this.uSigma.sub(this.uScatterK.mul(worldRay.y)).toVar('uwARaw');
+        const aCoef = aRaw
+          .abs()
+          .max(1e-4)
+          .mul(aRaw.sign().add(0.5).sign())
+          .toVar('uwA');
+        const integral = float(1)
+          .sub(exp(aCoef.mul(warpedPath).negate().min(30)))
+          .div(aCoef)
+          .toVar('uwI');
+        const muSun = worldRay.dot(this.uSunUnder).max(0).toVar('uwMu');
+        const mu2 = muSun.mul(muSun).toVar('uwMu2');
+        // abyssal-garden's `1.22 + 0.3 mu^4`: mostly isotropic, with a broad
+        // brightening toward the refracted sun. The tight forward peak is the
+        // shafts' business.
+        const fogPhase = float(1.22).add(mu2.mul(mu2).mul(0.3)).toVar('uwFogPhase');
+        const inscatter = this.uScatterColor
+          .mul(this.uSigma)
+          .mul(exp(this.uScatterK.mul(roDepth).negate()))
+          .mul(integral)
+          .mul(fogPhase)
+          .toVar('uwInscatter');
 
-        // The medium by direction. See `MEDIUM_ABOVE`: brighter toward the lit
-        // surface, darker into the deep, and a forward-scatter glow around where
-        // the sun is after refraction — the bright patch a diver sees overhead
-        // and to the sun's side, which is the one thing that tells them which way
-        // is up without looking for the surface.
-        const elevation = worldRay.y.toVar('uwElev');
-        const gradient = mix(
-          mix(float(MEDIUM_BELOW), float(MEDIUM_LEVEL), elevation.smoothstep(-0.85, 0)),
-          float(MEDIUM_ABOVE),
-          elevation.smoothstep(0, 0.95),
-        ).toVar('uwGrad');
-        // Snell's law on the sun's horizontal component, then renormalised.
-        const sunH = this.uSunUp.xz.mul(1 / 1.333).toVar('uwSunH');
-        const sunUnder = vec3(sunH.x, float(1).sub(sunH.dot(sunH)).max(0).sqrt(), sunH.y).toVar('uwSunDir');
-        const cosSun = worldRay.dot(sunUnder).toVar('uwCosSun');
-        const g = SUN_LOBE_G;
-        const lobe = float((1 - g * g) / (4 * Math.PI))
-          .div(float(1 + g * g).sub(cosSun.mul(2 * g)).max(1e-3).pow(1.5))
-          .mul(this.uSunUp.y.smoothstep(-0.02, 0.15))
-          .toVar('uwLobe');
-        const mediumRaw = this.uWaterColor
-          .mul(this.uAmbient)
-          .mul(gradient)
-          .add((this.uSunColor as any).mul(mix(this.uWaterColor.mul(2.2), vec3(1, 1, 1), 0.2)).mul(lobe.mul(SUN_LOBE_GAIN)))
-          .mul(daylight)
-          .toVar('uwMediumRaw');
-        // A little more chroma than the product gives: the medium is the colour
-        // of most of the frame, and the grade downstream desaturates it again.
-        const medium = mix(vec3(luminance(mediumRaw)), mediumRaw, MEDIUM_SATURATION).max(0).toVar('uwMedium');
+        // What a ray running level through the water at the eye's own depth
+        // converges on — the colour the meniscus rim and the grade's lift are
+        // tinted with, so they agree with the medium they sit in.
+        const medium = this.uScatterColor
+          .mul(exp(this.uScatterK.mul(this.uCameraDepth).negate()))
+          .mul(1.22)
+          .toVar('uwMedium');
 
-        // Sunlight that reached the surface this pixel shows came down through
-        // the column above it — see `uDownwell`. Where the view ray found the sky
-        // or anything above the sea, the depth is zero and nothing changes.
-        const hitY = this.uCameraPos.y.add(worldRay.y.mul(warpedDist.min(2000))).toVar('uwHitY');
-        const downwell = exp(this.uDownwell.mul(this.uSeaLevel.sub(hitY).max(0).negate())).toVar('uwDown');
+        // --- 2c. light reaching the surface this pixel shows -----------------
+        //
+        // The scene is lit as though every surface were at the top of the
+        // column, so sunlight reaching the sand at seventeen metres is applied
+        // here: `exp(-K depth)` like the in-scatter, with the gentler
+        // `SURFACE_K`, so the floor and the water around it darken together and
+        // a deep reef is blue while a shallow one stays gold. Where the ray
+        // found the sky, the depth is zero and nothing changes.
+        const hitP = this.uCameraPos.add(worldRay.mul(warpedDist.min(2000))).toVar('uwHitP');
+        // Measured from the local wave, not from sea level: the underside of
+        // the surface itself sits up to a metre and a half below sea level in
+        // a trough, and measured from the mean it was being darkened and given
+        // the hemisphere's dark underside as though it were a submerged rock.
+        const hitSurfaceY = waveHeight !== null ? waveHeight(hitP.xz) : this.uSeaLevel;
+        const hitDepth: any = hitSurfaceY.sub(hitP.y).max(0).toVar('uwHitDepth');
+        const downwell = exp(this.uDownwell.mul(hitDepth.negate())).toVar('uwDown');
 
-        const fogged = warped.rgb
-          .mul(downwell)
-          .mul(transmit)
-          .add(medium.mul(transmit.oneMinus()))
-          .toVar('uwFog');
+        const surfaceRgb: any = vec3(warped.rgb).mul(downwell).toVar('uwSurface');
+
+        // --- 2d. the surface's own lighting under water ----------------------
+        //
+        // Only with real normals (the TRAA path's MRT), and only on surfaces:
+        // sky pixels are an infinite column of water and have no orientation.
+        if (normalNode !== null) {
+          const isSurface = warpedDist.lessThan(this.uFar.mul(0.9)).select(float(1), float(0));
+          // Sky pixels carry a zero normal, and `normalize(0)` is NaN — which a
+          // `mix` weighted by zero does not remove (NaN * 0 is NaN). It drew a
+          // black line along the horizon with bloom blowing up around it. So
+          // the normal is made safe before anything weights it.
+          const nRaw = vec3(normalNode.sample(warpedUv).xyz).toVar('uwNView');
+          const nLen = nRaw.length().toVar('uwNLen');
+          const nView = nLen.greaterThan(0.1).select(nRaw.div(nLen.max(0.1)), vec3(0, 0, 1)).toVar('uwNSafe');
+          const nWorld = this.uCameraWorld.mul(vec4(nView, 0)).xyz.toVar('uwN');
+          const submergedHit = hitDepth.smoothstep(0.2, 1.2).mul(isSurface).toVar('uwHitSub');
+
+          // Lit tops, dark undersides. Every bit of light under water comes
+          // from above — the sun through the surface and the sky through the
+          // Snell window — but the scene's ambient is a sky cube captured in
+          // air, which lights the underside of a coral head as brightly as its
+          // top. Adapted from abyssal-garden's `amb`: up-facing keeps all of
+          // it, down-facing keeps `uUnderside`, and the floor falls with depth
+          // as the downwelling narrows into a cone.
+          const up = nWorld.y.mul(0.5).add(0.5).toVar('uwUp');
+          const undersideFloor: any = this.uUnderside.mul(exp(hitDepth.mul(-0.02))).toVar('uwUnderFloor');
+          const hemi = mix(undersideFloor, float(1), up.mul(up)).toVar('uwHemi');
+          surfaceRgb.mulAssign(mix(float(1), hemi, submergedHit) as any);
+
+          // Chromatic caustics. The materials already carry the web in
+          // luminance; this re-colours it with the dispersed field, as a ratio
+          // around 1 so it adds fringes and contrast without adding light, and
+          // only where the sun can reach: facing it, and out of its shadow.
+          if (chromaticCaustics !== null) {
+            const nDotL = nWorld.dot(this.uSunUnder).smoothstep(0.05, 0.45).toVar('uwNdotL');
+            const chroma = vec3(chromaticCaustics(hitP)).toVar('uwChroma');
+            const mono = caustics(hitP, this.uRelightMeanLod).toVar('uwChromaMean');
+            const ratio = chroma.div(mono.max(0.02)).toVar('uwChromaRatio');
+            const vis = this.shadowVisibility(hitP, hitDepth).toVar('uwRelightVis');
+            const reach = float(1).sub(hitDepth.smoothstep(8, 45)).toVar('uwRelightReach');
+            const amount = this.uCausticRelight.mul(nDotL).mul(vis).mul(reach).mul(submergedHit);
+            surfaceRgb.mulAssign(mix(vec3(1, 1, 1), ratio.clamp(0.25, 3.5), amount as any));
+          }
+        }
+
+        const fogged = surfaceRgb.mul(transmit).add(inscatter).toVar('uwFog');
 
         // The rim. Tinted by the medium rather than added as white, because what
         // is bright at a meniscus is the water itself catching the light above
-        // it — a white line would read as a graphic overlay, which is precisely
-        // the failure this is here to remove. Raised to `uMeniscusSharpness` so
-        // the band has a hard inner edge and a soft outer one, which is the way
-        // round a real film of water sits.
+        // it — a white line would read as a graphic overlay. Raised to
+        // `uMeniscusSharpness` so the band has a hard inner edge and a soft
+        // outer one, which is the way round a real film of water sits.
         const rim = meniscus
           .pow(this.uMeniscusSharpness)
           .mul(this.uMeniscusHighlight)
           .toVar('uwRim');
         fogged.addAssign(medium.add(this.uWaterColor.mul(0.35)).mul(rim));
 
-        // --- 2. volumetric shafts --------------------------------------------
+        // --- 3. volumetric shafts, from the half-resolution march -------------
         //
-        // Marched along the view ray in world space, not smeared radially out
-        // from the projected sun.
-        //
-        // The radial approach is the standard *atmospheric* sun-shaft effect,
-        // and underwater it is wrong in three separate ways. Light refracts
-        // entering the water, so the apparent sun sits far closer to vertical
-        // than the true one and rays that fan from its unrefracted screen
-        // position point the wrong way. Real shafts are not a fan at all: they
-        // are columns descending from the bright filaments of the surface caustic
-        // pattern, so they stay near-vertical however the viewer turns. And a
-        // screen-space effect anchored to the sun has to fade out when the sun
-        // leaves the frame, whereas shafts are all around a diver and are most
-        // visible looking *across* them.
-        //
-        // So each sample walks back up to the patch of surface that lit it and
-        // asks the caustics field how bright that patch is. Shafts and the
-        // pattern they cast on the seafloor are then the same light, evaluated
-        // in the same place, rather than two effects tuned to resemble each
-        // other.
+        // See `buildShafts`. Upsampled with a depth-aware bilinear: of the four
+        // half-res neighbours, the ones whose march ended at a different depth
+        // from this pixel's are down-weighted, so a shaft stops at a fish's
+        // silhouette instead of bleeding a half-res block across it. At the
+        // *warped* coordinate and distance, for the reason the transmission is.
         const rays = vec3(0, 0, 0).toVar('uwRays');
-
-        If(this.uGodRayStrength.greaterThan(0.0001), () => {
-          // Rebuild the world-space view ray for this pixel.
-          //
-          // **NDC y is flipped, and that is not cosmetic.** Screen uv runs
-          // top-down on the WebGPU backend and is explicitly flipped to run
-          // top-down on the WebGL one, while NDC y runs bottom-up on both — the
-          // same asymmetry `clipToScreenUV` in `ScreenSpaceReflection` exists to
-          // absorb. Taking `suv.y * 2 - 1` builds a ray pointing *down* wherever
-          // the pixel looks up, which sent every shaft the wrong way and was the
-          // reason the god rays never converged on the sun.
-          const worldDir = worldRay;
-
-          // Bounded by the **refracted** segment, the same one the transmission
-          // term uses, and for the same reason.
-          //
-          // What ends the march is the geometry the ray runs into, so if the
-          // image of that geometry is displaced by the warp then the end of the
-          // march has to travel with it. Bounding the march at the undisplaced
-          // distance while the image moves leaves the shafts stopping short in a
-          // silhouette that is no longer there — which arrives as a dark, sharp
-          // copy of the fish offset from the fish, and a set of dark stripes
-          // beside the kelp rather than behind it. It is the same defect as the
-          // washed-out silhouette the transmission term had, in the one term that
-          // subtracts light instead of adding it, and it is more legible than the
-          // original because a shadow with nothing casting it reads immediately
-          // as wrong.
-          //
-          // Shafts exist only in the submerged part of the ray, and that segment
-        // does not necessarily start at the eye. From an eye above the surface
-        // looking down, it starts where the ray enters the water — the march used
-        // to begin at t = 0 regardless, so it spent its samples in the air above
-        // the surface and stopped before reaching the water it was supposed to be
-        // integrating.
-        const marchStart = warpedStart.toVar('uwMarchStart');
-        const march = min(warpedPath, this.uShaftRange).toVar('uwMarch');
-          const stepLength = march.mul(this.uInvSteps).toVar('uwStep');
-
-          // Mip level matched to the march's own sampling rate.
-          //
-          // The footprint is the step's **horizontal** extent, not its length.
-          // The caustics field is a 2D map indexed by world XZ, so a vertical
-          // metre of march moves the lookup by nothing at all (bar the sun-shear
-          // term, which is far smaller). Using the full 3D step length asked for
-          // a coarser level than the sampler needed and over-blurred exactly the
-          // near-vertical rays that carry the shafts.
-          //
-          // `log2(footprint / texel)` is then the level at which one texel spans
-          // one step — the Nyquist level for this sampler. Below it the march
-          // point-samples a signal it cannot resolve, and because the start
-          // offset is an interleaved gradient noise the variance arrives as a
-          // stationary screen-space lattice rather than as noise.
-          //
-          // Backed off to 0.75 of the full level: the exact figure is right for a
-          // box filter and this is a trilinear one, which over-blurs slightly.
-          const stepHorizontal = stepLength.mul(worldDir.xz.length()).toVar('uwStepH');
-          const shaftLod = stepHorizontal
-            .div(this.uCausticsTexel)
-            .max(1)
-            .log2()
-            .mul(0.75)
-            .max(0)
-            .toVar('uwShaftLod');
-
-          // Start the march at a per-pixel fraction of a step. Without it every
-          // pixel samples the same set of planes and the shafts show up as
-          // concentric bands; the dither trades that for fine noise, which the
-          // eye reads as suspended particulate.
-          const dither = interleavedGradientNoise(screenCoordinate).toVar('uwDither');
-          // `uwMarchT`, not `uwT` — the transmission term above already claims
-          // that name, and TSL silently renames the collision rather than
-          // failing, which makes the shader harder to read than it needs to be.
-          const t = stepLength.mul(dither).toVar('uwMarchT');
-          const acc = float(0).toVar('uwAcc');
-
-          Loop(this.uSteps, () => {
-            const p = this.uCameraPos.add(worldDir.mul(marchStart.add(t))).toVar('uwP');
-
-            // Above the waterline there is no medium to scatter in. Softened
-            // rather than a hard cut so a sample crossing the surface does not
-            // flicker as the wave moves under it.
-            const submerged = this.uSeaLevel.sub(p.y).smoothstep(-0.4, 0.4).toVar('uwSub');
-
-            // The caustics field already carries its own extinction from the
-            // surface down to the sample, so this is the light *arriving* here.
-            // What it does not know is how much survives the trip back to the
-            // eye, which is the second term.
-            //
-            // Only the field's *excess over its own local mean* scatters into a
-            // shaft. Integrated whole, the mean put a uniform grey veil over
-            // every submerged frame — tens of metres of average brightness,
-            // against which the streaks were a few percent of modulation — and
-            // that veil was most of what made the water read as fog rather than
-            // as blue. The local mean is the same field several mips coarser, so
-            // the term follows the field's own depth fade with no constant to
-            // keep in step with it. The diffuse in-scatter the mean stood for is
-            // the medium's job, and the medium now has a direction-dependent one.
-            const shaftLocal = caustics(p, shaftLod).toVar('uwShaftC');
-            const mean = caustics(p, shaftLod.add(this.uShaftMeanLod)).toVar('uwShaftMean');
-            const arriving = shaftLocal
-              .sub(mean.mul(this.uShaftFloor))
-              .max(0)
-              .mul(this.uShaftGain)
-              .mul(submerged)
-              .toVar('uwArriving');
-
-            // What is between this sample and the sun.
-            //
-            // The caustics field answers "how bright is the surface patch that lit
-            // this point", and stops there. Anything floating on that patch — a
-            // hull, most obviously — is invisible to it, so a diver under a ship
-            // saw full shafts through the one place there should be none.
-            //
-            // This is the cloud deck's density field, *not* the sun's shadow map:
-            // reaching three's shadow node from a post pass means depending on
-            // internals that have already broken a tier change more than once. The
-            // hull is handled separately, analytically, below.
-            if (sunOcclusion !== null) {
-              arriving.mulAssign(sunOcclusion(p));
+        if (shafts !== null) {
+          If(this.uGodRayStrength.greaterThan(0.0001), () => {
+            const halfSize = this.uShaftSize;
+            const hp = warpedUv.mul(halfSize).sub(0.5).toVar('uwHp');
+            const base = hp.floor().toVar('uwHpBase');
+            const f = hp.sub(base).toVar('uwHpF');
+            const acc = vec3(0, 0, 0).toVar('uwUpAcc');
+            const ws = float(0).toVar('uwUpW');
+            for (let k = 0; k < 4; k++) {
+              const ox = k & 1;
+              const oy = k >> 1;
+              const tapUv = base
+                .add(vec2(ox + 0.5, oy + 0.5))
+                .div(halfSize)
+                .clamp(vec2(0, 0), vec2(1, 1));
+              const tap = shafts.sample(tapUv).level(0);
+              const bw = (ox === 1 ? f.x : f.x.oneMinus()).mul(oy === 1 ? f.y : f.y.oneMinus());
+              const w = bw.add(0.02).div(tap.a.sub(warpedDist).abs().div(warpedDist.max(0.1)).add(0.02));
+              acc.addAssign(tap.rgb.mul(w));
+              ws.addAssign(w);
             }
-
-            // The hull, as an ellipsoid **in the hull's own frame**.
-            //
-            // Axis-aligned would be wrong the moment the ship turns: a hull is
-            // three times longer than it is wide, so an ellipsoid that keeps its
-            // long axis on world Z casts a shadow across the beam once the bow
-            // comes round. Rotate into the heading frame first — the radius is
-            // then (beam, draught, length) as it should be.
-            const fwd = this.uHullForward;
-            const rel = p.sub(this.uHullCenter).toVar('uwHullRel');
-            const local = vec3(
-              rel.x.mul(fwd.y).sub(rel.z.mul(fwd.x)),
-              rel.y,
-              rel.x.mul(fwd.x).add(rel.z.mul(fwd.y)),
-            ).toVar('uwHullLocal');
-            const sunLocal = vec3(
-              this.uSunUp.x.mul(fwd.y).sub(this.uSunUp.z.mul(fwd.x)),
-              this.uSunUp.y,
-              this.uSunUp.x.mul(fwd.x).add(this.uSunUp.z.mul(fwd.y)),
-            ).toVar('uwHullSun');
-
-            const toHull = local.negate().div(this.uHullRadius).toVar('uwHullO');
-            const sunUnit = sunLocal.div(this.uHullRadius).toVar('uwHullD');
-            const along = toHull.dot(sunUnit).div(sunUnit.dot(sunUnit)).toVar('uwHullT');
-            const closest = toHull.sub(sunUnit.mul(along.max(0))).length().toVar('uwHullR');
-            // 1 outside, 0 through the middle, with a soft rim so the shadow's
-            // edge is penumbral rather than a hard ellipse.
-            const hullShade = closest.smoothstep(0.75, 1.25).clamp(0, 1).toVar('uwHullShade');
-            arriving.mulAssign(mix(float(1), hullShade, this.uHullPresent));
-            // Attenuation back to the eye is over the *whole* path from the eye,
-            // including the dry part — which contributes nothing, since `t` is
-            // measured from the start of the submerged segment and the air adds no
-            // extinction. `marchStart` is therefore deliberately absent here.
-            const toEye = exp(this.uSigma.mul(t.negate()));
-
-            acc.addAssign(arriving.mul(toEye.g).mul(stepLength));
-            t.addAssign(stepLength);
+            rays.assign(acc.div(ws.max(1e-5)));
           });
-
-          // `acc` is a Riemann sum weighted by `stepLength`, so it is already an
-          // integral over path length and does not get divided by anything —
-          // dividing by the range would turn it back into an average and throw
-          // away the very accumulation that makes a shaft brighter the further
-          // you look along it. What it is missing is the fraction of that light
-          // actually scattered toward the eye per metre, which is what
-          // `uShaftDensity` supplies. Because the sum carries `stepLength`,
-          // changing the tier's step count changes only the sampling noise, not
-          // the brightness.
-          rays.assign(
-            this.uSunColor
-              .mul(acc.mul(this.uShaftDensity))
-              .mul(this.uGodRayStrength)
-              .mul(daylight),
-          );
-        });
+        }
 
         const lit = fogged.add(rays).toVar('uwLit');
 
@@ -943,14 +898,214 @@ export class UnderwaterPass {
     })();
   }
 
+  /**
+   * Fraction of sunlight reaching `p` past everything the sun's shadow map
+   * knows about, 0..1. Evaluated at build time: if the cascade has no depth
+   * texture yet — which only happens if a frame is drawn before any lit
+   * material has compiled — the term is a constant 1 and the shafts are
+   * simply unshadowed.
+   *
+   * The lookup is moved onto the refracted light path the same way
+   * `SunShadows` moves the receivers' (see `refractShadowLookup`), so a shaft
+   * column and the shadow it ends in on the sand line up.
+   */
+  private shadowVisibility(p: any, depthBelow: any): any {
+    const source = this.shadowSource;
+    const depthTexture = source?.depthTexture() ?? null;
+    if (source === null || depthTexture === null) return float(1);
+    this.shadowBound = true;
+    const shift = this.uRefractShift;
+    const q = vec3(p.x.add(shift.x.mul(depthBelow)), p.y, p.z.add(shift.y.mul(depthBelow)));
+    // Orthographic, so w is 1 and the divide three does is a no-op. The y flip
+    // and the additive bias are exactly `ShadowNode.setupShadowCoord`'s.
+    const clip = this.uShadowMatrix.mul(vec4(q, 1)).toVar();
+    const coord = vec3(clip.x, clip.y.oneMinus(), clip.z.add(this.uShadowBias)).toVar();
+    const inBox = coord.x
+      .greaterThanEqual(0)
+      .and(coord.x.lessThanEqual(1))
+      .and(coord.y.greaterThanEqual(0))
+      .and(coord.y.lessThanEqual(1))
+      .and(coord.z.lessThanEqual(1));
+    const lit = (texture(depthTexture, coord.xy) as any).compare(coord.z);
+    return inBox.select(lit, float(1));
+  }
+
+  /**
+   * The volumetric shafts: a half-resolution ray march, then a depth-aware
+   * 3x3 blur, both into their own targets. Returns the blurred texture node.
+   *
+   * Adapted from `W_RAYS` / `W_RBLUR` in abyssal-garden (MIT, (c) 2026
+   * Maksymilian Dendura). Each half-res pixel marches its view ray through the
+   * submerged segment and, at every step, asks two questions: does the sun
+   * reach here (the shadow map, so a hull or a rock casts a dark column through
+   * the water), and how bright is the patch of surface that lit it (the
+   * caustics field, read at a coarse mip so it is broad beams rather than the
+   * fine web the sand shows). Light arriving at the step has come down through
+   * `depth / cos` metres of water and leaves toward the eye through `t`.
+   *
+   * The previous shafts were the same march at full resolution, without the
+   * shadow term, with a cloud-density lookup and an analytic hull ellipsoid
+   * inside the loop. Half resolution is a quarter of the pixels, which pays for
+   * the shadow tap several times over; the cloud term moved out of the loop
+   * (clouds vary over hundreds of metres, the march spans tens) and the hull
+   * ellipsoid is subsumed by the hull's real shadow.
+   */
+  private buildShafts(
+    depthNode: any,
+    caustics: (worldPosition: any, lod?: any) => any,
+    waveHeight: ((worldXZ: any) => any) | null,
+    sunOcclusion: ((worldPosition: any) => any) | null,
+  ): any {
+    const viewDistance = (p: any): any =>
+      perspectiveDepthToViewZ(depthNode.sample(p).r, this.uNear, this.uFar).negate();
+
+    const march = Fn(() => {
+      const suv = vec2(uv()).toVar('usUv');
+      const ndc = vec2(suv.x.mul(2).sub(1), suv.y.mul(-2).add(1)).toVar('usNdc');
+      const viewH = this.uInvProjection.mul(vec4(ndc.x, ndc.y, -1, 1)).toVar('usViewH');
+      const viewDir = normalize(viewH.xyz.div(viewH.w)).toVar('usViewDir');
+      const axialCos = viewDir.z.negate().max(1e-3);
+      const rd = normalize(this.uCameraWorld.mul(vec4(viewDir, 0)).xyz).toVar('usRd');
+      const dist = viewDistance(suv).div(axialCos).toVar('usDist');
+      const out = vec4(0, 0, 0, dist).toVar('usOut');
+
+      If(this.uGodRayStrength.greaterThan(0.0001), () => {
+        // The submerged segment, as the composite computes it (without the
+        // lens warp, which a half-res, blurred term cannot resolve anyway).
+        const rayYRaw = rd.y;
+        const rayY = rayYRaw.abs().max(1e-4).mul(rayYRaw.lessThan(0).select(float(-1), float(1))).toVar('usRayY');
+        const eyeH = float(0).toVar('usEyeH');
+        eyeH.assign(this.uEyeHeight);
+        if (waveHeight !== null) {
+          const guessT = eyeH.negate().div(rayY).clamp(0, 400);
+          const guessP = this.uCameraPos.add(rd.mul(guessT)).toVar('usGuessP');
+          eyeH.assign(this.uCameraPos.y.sub(waveHeight(guessP.xz)));
+        }
+        const crossT = eyeH.negate().div(rayY).toVar('usCrossT');
+        const eyeUnder = smoothstepDown(eyeH, this.uWaterlineBand.negate(), this.uWaterlineBand);
+        const leaves = rayY.greaterThan(0).select(crossT.max(0), float(1e6));
+        const enters = rayY.lessThan(0).select(crossT.max(0), float(1e6));
+        const start = mix(dist.min(enters), float(0), eyeUnder).toVar('usStart');
+        const end = mix(dist, dist.min(leaves), eyeUnder).toVar('usEnd');
+        const span = end.sub(start).max(0).min(this.uShaftRange).toVar('usSpan');
+        const stepLength = span.mul(this.uInvSteps).toVar('usStep');
+
+        // A fixed, coarse mip of the caustics field: shafts are the beams the
+        // surface's *broad* focusing makes, a metre or two across, while the
+        // fine filaments diverge within a few metres of depth and only light
+        // the sand. Fixed rather than matched to the step's footprint (which
+        // the old full-res march did): along a beam the field is constant by
+        // construction, so the march does not alias *along* the shafts, and
+        // the jitter plus the blur pass absorb what it does across them. A
+        // footprint-matched level put the read at 8 m texels at High and left
+        // no beam structure at all.
+        const lod = this.uShaftBlurLod;
+
+        // Interleaved gradient noise, as abyssal-garden's `ign`: a per-pixel
+        // start offset trades the step planes' banding for fine noise, which the
+        // blur below removes. Static in screen space, so nothing crawls under
+        // TRAA — the pass runs after the resolve and could not be smoothed by it.
+        const t = stepLength.mul(interleavedGradientNoise(screenCoordinate)).toVar('usT');
+        const acc = vec3(0, 0, 0).toVar('usAcc');
+
+        Loop(this.uSteps, () => {
+          const p = this.uCameraPos.add(rd.mul(start.add(t))).toVar('usP');
+          const depthBelow = this.uSeaLevel.sub(p.y).max(0).toVar('usDepth');
+          // A sample above the surface scatters nothing; softened so one
+          // crossing a passing crest does not flicker.
+          const submerged = depthBelow.smoothstep(0, 0.6);
+
+          const local = caustics(p, lod);
+          const mean = caustics(p, lod.add(this.uShaftMeanLod));
+          // Where the surface is focusing light, as a ratio over its own
+          // neighbourhood — independent of the field's depth fade, which the
+          // irradiance term below now owns. abyssal-garden thresholds its
+          // pattern with a smoothstep; the floor here does the same job.
+          const pattern = local
+            .div(mean.max(1e-3))
+            .smoothstep(this.uShaftFloor, this.uShaftFloor.add(this.uShaftWidth))
+            .mul(this.uShaftGain);
+
+          const vis = this.shadowVisibility(p, depthBelow);
+          // In: down the refracted path from the surface. Out: back along the
+          // view ray. abyssal-garden's `exp(-sigma t + k p.y / sun.y)`.
+          const arriving = exp(this.uShaftK.mul(depthBelow).add(this.uSigma.mul(t)).negate());
+          acc.addAssign(arriving.mul(vis.mul(this.uShaftBase.add(pattern)).mul(submerged)));
+          t.addAssign(stepLength);
+        });
+
+        // Phase: abyssal-garden's `0.2 + 2 mu^3`, a forward lobe toward the
+        // refracted sun, so the shafts are brightest looking up-sun and still
+        // present looking across them.
+        const mu = rd.dot(this.uSunUnder).max(0);
+        const phase = float(0.2).add(mu.mul(mu).mul(mu).mul(2));
+
+        // Cloud shade, once per pixel at the middle of the march: the deck's
+        // features are hundreds of metres across and the march tens.
+        const cloud = sunOcclusion !== null
+          ? sunOcclusion(this.uCameraPos.add(rd.mul(start.add(span.mul(0.5)))))
+          : float(1);
+
+        out.assign(
+          vec4(acc.mul(stepLength).mul(this.uShaftColor).mul(phase).mul(cloud), dist),
+        );
+      });
+      return out;
+    })();
+
+    const raw: any = rtt(march as THREE.Node, null, null, { type: THREE.HalfFloatType });
+    raw.setResolutionScale(0.5);
+
+    // Depth-aware 3x3 blur, abyssal-garden's `W_RBLUR`: neighbours whose march
+    // ended at a different depth contribute less, so the dither goes and the
+    // silhouettes stay.
+    const blur = Fn(() => {
+      const suv = vec2(uv()).toVar('ubUv');
+      const texel = vec2(1, 1).div(this.uShaftSize).toVar('ubTexel');
+      const centre = raw.sample(suv).level(0).toVar('ubCentre');
+      const acc = vec3(0, 0, 0).toVar('ubAcc');
+      const ws = float(0).toVar('ubW');
+      for (let y = -1; y <= 1; y++) {
+        for (let x = -1; x <= 1; x++) {
+          const tap = raw.sample(suv.add(texel.mul(vec2(x, y)))).level(0);
+          const w = float(1).div(tap.a.sub(centre.a).abs().div(centre.a.max(0.1)).add(0.03));
+          acc.addAssign(tap.rgb.mul(w));
+          ws.addAssign(w);
+        }
+      }
+      return vec4(acc.div(ws), centre.a);
+    })();
+    const blurred: any = rtt(blur as THREE.Node, null, null, { type: THREE.HalfFloatType });
+    blurred.setResolutionScale(0.5);
+
+    // Both targets are skipped outright while the shafts cannot be seen — dry,
+    // or a tier with none. The composite does not read them then, so the stale
+    // contents never show. The first frame is always drawn: the materials
+    // compile on their first render, and a dive should not be what pays for it.
+    this.shaftTargets = [raw, blurred];
+    const primed = new Set<unknown>();
+    for (const target of [raw, blurred]) {
+      const render = target.updateBefore.bind(target);
+      target.updateBefore = (frame: unknown) => {
+        if (!this.shaftsActive && primed.has(target)) return false;
+        primed.add(target);
+        const result = render(frame);
+        // The blur and the composite address the march's texels, so they need
+        // its size as of this frame's resize, which `render` just did.
+        if (target === raw) {
+          (this.uShaftSize.value as THREE.Vector2).set(raw.renderTarget.width, raw.renderTarget.height);
+        }
+        return result;
+      };
+    }
+    return blurred;
+  }
+
   setParams(params: Partial<UnderwaterParams>): void {
     const p = this.params;
     if (params.waterColor !== undefined) p.waterColor.copy(params.waterColor);
     if (params.extinction !== undefined) p.extinction.copy(params.extinction);
-    if (params.sunDirection !== undefined) {
-      p.sunDirection.copy(params.sunDirection);
-      (this.uSunUp.value as THREE.Vector3).copy(p.sunDirection).normalize();
-    }
+    if (params.sunDirection !== undefined) p.sunDirection.copy(params.sunDirection);
     if (params.sunColor !== undefined) p.sunColor.copy(params.sunColor);
     if (params.submersion !== undefined) p.submersion = params.submersion;
     if (params.eyeHeight !== undefined) p.eyeHeight = params.eyeHeight;
@@ -974,26 +1129,24 @@ export class UnderwaterPass {
   }
 
   /**
-   * The scene camera. Required for depth linearisation and for projecting the
-   * sun; see the backend note at the top of this file.
+   * The sun's shadow, for the shafts and the caustic relight. Must be called
+   * before `build`. The hull, the island and anything else that casts into the
+   * cascade then casts a column through the water — which replaces the
+   * analytic hull ellipsoid the shafts used to carry, and which only ever
+   * shadowed the hull.
    */
+  setSunShadow(source: ShadowVolumeSource | null): void {
+    this.shadowSource = source;
+  }
+
   /**
-   * The hull's occluding volume, in world space.
-   *
-   * `radius` is the ellipsoid's semi-axes. Pass `present` false when there is no
-   * ship, which switches the test off for one compare.
+   * Inputs for lighting submerged surfaces in the composite: the scene pass's
+   * view-space normals (null on the WebGL2 path, which has no MRT) and the
+   * dispersed caustics field. Must be called before `build`.
    */
-  setHullOccluder(
-    center: THREE.Vector3,
-    radius: THREE.Vector3,
-    headingRadians: number,
-    present: boolean,
-  ): void {
-    (this.uHullCenter.value as THREE.Vector3).copy(center);
-    (this.uHullRadius.value as THREE.Vector3).copy(radius);
-    const forward = this.uHullForward.value as THREE.Vector2;
-    forward.set(Math.cos(headingRadians), Math.sin(headingRadians));
-    this.uHullPresent.value = present ? 1 : 0;
+  setSurfaceInputs(normal: unknown, chromaticCaustics: ((worldPosition: unknown) => unknown) | null): void {
+    this.normalNode = normal;
+    this.chromaticCaustics = chromaticCaustics;
   }
 
   /** World metres per texel of the caustics field. See `uCausticsTexel`. */
@@ -1001,6 +1154,7 @@ export class UnderwaterPass {
     this.uCausticsTexel.value = Math.max(1e-3, metres);
   }
 
+  /** The scene camera; see the backend note at the top of this file. */
   setCamera(camera: THREE.PerspectiveCamera | THREE.OrthographicCamera): void {
     this.camera = camera;
   }
@@ -1050,7 +1204,6 @@ export class UnderwaterPass {
     this.uSubmersion.value = clampNumber(p.submersion, 0, 1);
     this.uEyeHeight.value = p.eyeHeight;
     this.uWaterColor.value.copy(p.waterColor);
-    this.uSunColor.value.copy(p.sunColor);
 
     // `extinction` is the per-channel colour of the absorption; `visibility` is
     // the achromatic scattering floor that sets the overall range. Adding them
@@ -1087,23 +1240,43 @@ export class UnderwaterPass {
     const ex = p.extinction;
     const clearest = Math.max(0, Math.min(ex.x, ex.y, ex.z));
     this.uSigma.value.set(
-      (Math.max(0, ex.x) - clearest) * ABSORPTION_REACH + floorSigma,
-      (Math.max(0, ex.y) - clearest) * ABSORPTION_REACH + floorSigma,
-      (Math.max(0, ex.z) - clearest) * ABSORPTION_REACH + floorSigma,
+      ((Math.max(0, ex.x) - clearest) * ABSORPTION_REACH + floorSigma) * CLARITY,
+      ((Math.max(0, ex.y) - clearest) * ABSORPTION_REACH + floorSigma) * CLARITY,
+      ((Math.max(0, ex.z) - clearest) * ABSORPTION_REACH + floorSigma) * CLARITY,
     );
-    // Sunlight reaching a submerged surface has come down through the column
-    // above it, so its colour is the colour of that depth. Weaker than the view
-    // path's extinction because the light arriving at a reef is mostly diffuse
-    // downwelling from a wide cone, not one straight ray. And the achromatic
-    // floor is mostly scattering, which turns light aside rather than removing
-    // it: what one ray loses the cone around it largely regains, so the floor
-    // dims downwelling far less than it dims a line of sight.
-    const scatterKept = floorSigma * DOWNWELL_SCATTER;
-    (this.uDownwell.value as THREE.Vector3).set(
-      (this.uSigma.value.x - floorSigma) * DOWNWELL_SCALE + scatterKept,
-      (this.uSigma.value.y - floorSigma) * DOWNWELL_SCALE + scatterKept,
-      (this.uSigma.value.z - floorSigma) * DOWNWELL_SCALE + scatterKept,
-    );
+    // Daylight falls with depth by `K` per metre, per channel, a fixed
+    // fraction of the view extinction — see `DAYLIGHT_K`. The surfaces
+    // (`uDownwell`, vertical, since a reef's light is mostly the diffuse
+    // downwelling cone) take a gentler `SURFACE_K` so the reef keeps some
+    // colour. The old downwelling kept only a quarter of the scattering floor
+    // and half the absorption, so the sand at 17 m kept 75% of its green and
+    // the frame had no depth gradient to speak of.
+    const sigma = this.uSigma.value as THREE.Vector3;
+    (this.uScatterK.value as THREE.Vector3).copy(sigma).multiplyScalar(DAYLIGHT_K);
+    (this.uDownwell.value as THREE.Vector3).copy(sigma).multiplyScalar(SURFACE_K);
+
+    // The sun after refraction: Snell on the horizontal component of the unit
+    // direction. Under a 24-degree sun it stands at 47 degrees in the water.
+    const sd = p.sunDirection;
+    const sLen = Math.hypot(sd.x, sd.y, sd.z) || 1;
+    const ax = sd.x / sLen;
+    const ay = sd.y / sLen;
+    const az = sd.z / sLen;
+    const hx = ax / WATER_IOR;
+    const hz = az / WATER_IOR;
+    const ry = Math.sqrt(Math.max(1e-4, 1 - hx * hx - hz * hz));
+    (this.uSunUnder.value as THREE.Vector3).set(hx, ry, hz);
+    // Down the light's own path the column is `depth / cos` long.
+    (this.uShaftK.value as THREE.Vector3).copy(sigma).multiplyScalar(DAYLIGHT_K / ry);
+    // The shadow lookup's move onto the refracted path; see `SunShadows`.
+    const airY = Math.max(0.05, ay);
+    const shift = (v: number): number => Math.max(-4, Math.min(4, v));
+    (this.uRefractShift.value as THREE.Vector2).set(shift(hx / ry - ax / airY), shift(hz / ry - az / airY));
+
+    // Gone when the sun is: the same horizon ramp the sky uses for its disc.
+    const sunUp = smoothstepNumber(ay, -0.02, 0.15);
+    const scatter = this.uScatterColor.value as THREE.Vector3;
+    scatter.set(p.waterColor.r, p.waterColor.g, p.waterColor.b).multiplyScalar(INSCATTER_GAIN * (0.35 + 0.65 * sunUp));
 
     const depth = Math.max(0, p.cameraDepth);
     this.uCameraDepth.value = depth;
@@ -1115,20 +1288,38 @@ export class UnderwaterPass {
     // also desaturated the shallows was applying the same idea twice and taking
     // the reef's colour away exactly where a diver is closest to it.
     const descent = Math.min(1, depth / 40);
-    this.uDesaturate.value = 0.05 + 0.3 * descent;
-    this.uContrastLoss.value = 0.03 + 0.2 * descent;
+    this.uDesaturate.value = 0.04 + 0.2 * descent;
+    // The lift toward the medium is now mostly the in-scatter's own job, and
+    // applying it again here was what left the frame without a black in it:
+    // the references' kelp and rock silhouettes sit near black against bright
+    // water, and that range is the look.
+    this.uContrastLoss.value = 0.1 * descent;
 
     const steps = Math.max(0, Math.min(MAX_GODRAY_STEPS, Math.round(p.godRaySteps)));
     // steps === 0 is the Low tier: the march must cost nothing at all.
-    this.uGodRayStrength.value = steps > 0 ? Math.max(0, p.godRayStrength) : 0;
+    const strength = steps > 0 ? Math.max(0, p.godRayStrength) : 0;
+    this.uGodRayStrength.value = strength;
     this.uSteps.value = Math.max(1, steps);
     this.uInvSteps.value = 1 / Math.max(1, steps);
+    this.shaftsActive = strength > 0 && this.uSubmersion.value > 0.001 && sunUp > 0;
 
-    // How far the shafts are integrated. Tied to visibility because there is no
-    // point marching through water the medium has already made opaque: past
-    // roughly two visibility lengths the transmittance term has closed the
-    // contribution down to nothing and the samples are pure cost.
-    this.uShaftRange.value = Math.max(12, Math.min(180, p.visibility * 2.2));
+    // Sun colour, tinted toward the water (abyssal-garden's `WCOL + 0.05`: the
+    // light in a shaft has already crossed water and is no longer white),
+    // times the scattering density and the preset's strength. One vector on the
+    // CPU instead of four multiplies per pixel.
+    const wc = p.waterColor;
+    const wMax = Math.max(1e-3, wc.r, wc.g, wc.b);
+    const density = this.shaftDensity * strength * sunUp;
+    (this.uShaftColor.value as THREE.Vector3).set(
+      p.sunColor.r * (0.25 + 0.75 * (wc.r / wMax)) * density,
+      p.sunColor.g * (0.25 + 0.75 * (wc.g / wMax)) * density,
+      p.sunColor.b * (0.25 + 0.75 * (wc.b / wMax)) * density,
+    );
+
+    // How far the shafts are integrated. abyssal-garden stops at 120 m; past
+    // about two visibility lengths the medium has closed the contribution to
+    // nothing, so the steps are better spent closer.
+    this.uShaftRange.value = Math.max(12, Math.min(80, p.visibility * 1.2));
 
     this.uCaustics.value = Math.max(0, p.causticsStrength);
 
@@ -1145,6 +1336,11 @@ export class UnderwaterPass {
     this.uMeniscusSharpness.value = Math.max(0.1, p.meniscusSharpness);
     this.uMeniscusPull.value = p.meniscusPull;
   }
+}
+
+function smoothstepNumber(x: number, lo: number, hi: number): number {
+  const t = clampNumber((x - lo) / (hi - lo), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 function clampNumber(v: number, lo: number, hi: number): number {
