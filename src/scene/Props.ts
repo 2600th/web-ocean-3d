@@ -294,8 +294,8 @@ const JACARANDA_COUNT = 26;
 const TREE_COUNT = 420;
 const TREE_MID_COUNT = 150;
 /**
- * The flame trees, and why there are so few of them: a poinciana in flower is
- * the loudest thing that grows on an island, and at this count it is an accent
+ * The Geiger trees (`treeFlame`), and why there are so few of them: a tree in
+ * full orange-scarlet flower is the loudest thing that grows on an island, and at this count it is an accent
  * the eye finds in the green rather than an orange hill.
  */
 const TREE_FLAME_COUNT = 12;
@@ -1517,11 +1517,12 @@ export class Props {
    *  - **0-2 m** nothing. Bare sand and the swash band, which is what makes the
    *    beach read as a beach rather than as lawn that stops at the water.
    *  - **2-14 m** pachira on the fringe, grass and sorrel, the first ferns.
-   *  - **5-100 m** the closed canopy: the orchid tree over most of the flanks,
-   *    with the jacaranda's broad crown held to sheltered ground below 40 m and
+   *  - **5-100 m** the closed canopy: the broadleaf over most of the flanks,
+   *    with the rain tree's (`jacaranda`) broad crown held to sheltered ground
+   *    below 40 m and
    *    under a fifth grade — a crown that wide on a ridge would be shredded, and
-   *    a scan that big on a slope reads as a mushroom sitting on the hill.
-   *  - **7-78 m** the flame trees, in three clumps on the sheltered mid-slopes.
+   *    one that big on a slope reads as a mushroom sitting on the hill.
+   *  - **7-78 m** the Geiger trees, in three clumps on the sheltered mid-slopes.
    *  - **10-108 m** the second broadleaf carries the upper flanks to the
    *    treeline, which `Seafloor` puts at 0.72 of `ISLAND.peak`.
    *
@@ -1793,7 +1794,7 @@ export class Props {
       clusterRadius: ISLAND.radius * 0.18,
     });
 
-    // Flame trees, held to a couple of sheltered clumps: an accent the eye
+    // Geiger trees, held to a couple of sheltered clumps: an accent the eye
     // finds in the green, not an orange hill.
     this.scatter(island, dressing.treeFlame, TREE_FLAME_COUNT, 'flora-flame', random, {
       inner: 0.25,

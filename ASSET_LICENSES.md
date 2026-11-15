@@ -173,7 +173,7 @@ and fails if either has changed.
 
 | Asset | Path | Source | Author | Licence | Modifications |
 | --- | --- | --- | --- | --- | --- |
-| Soft Coral Set | `public/models/dressing/soft_coral_set.glb` | https://sketchfab.com/3d-models/soft-coral-set-256355f15fcb4095af17b75ae572bff0 | **Kanna-Nakajima** | **CC-BY 4.0** | Decimated, welded and Meshopt-encoded by `scripts/optimize-assets.mjs`; textures resized and re-encoded to WebP. `Props` plants subsets of its 24 forms as separate instanced kinds. |
+| Soft Coral Set | `public/models/dressing/soft_coral_set.glb` | https://sketchfab.com/3d-models/soft-coral-set-256355f15fcb4095af17b75ae572bff0 | **Kanna-Nakajima** | **CC-BY 4.0** | Decimated, welded and Meshopt-encoded by `scripts/optimize-assets.mjs`; textures resized and re-encoded to WebP. `Props` still loads it to keep the dressing sequence stable, but no longer shows it: it is an Indo-Pacific kit, and the Caribbean reef carpet is `ReefLife`'s gorgonians. |
 | Emperor Angelfish (`Pomacanthus imperator`) | `public/models/dressing/emperor_angelfish.glb` | https://sketchfab.com/3d-models/emperor-angelfish-update-v2-3dc2d360d98c485496899121792ebcce | **Mikhail Nesterov** | **CC-BY 4.0** | Skin, skeleton and swim clip stripped by `scripts/optimize-assets.mjs` (`static: true`); geometry re-oriented and normalised to unit length by `src/scene/Fish.ts`, which animates it with the same travelling-wave vertex shader as the procedural fish. Textures resized and re-encoded to WebP. |
 | Rock 17 (layered outcrop) | `public/models/dressing/rock_slab_a.glb` | https://sketchfab.com/3d-models/rock-17-e7778771c06d4705a80cccb23a471d5c | **mohamedhussien** | **CC-BY 4.0** | Decimated 40,000 -> 23,224 triangles; recentred onto its own base; two LOD levels generated; textures resized and re-encoded to WebP. |
 | Rock 6 (layered outcrop) | `public/models/dressing/rock_slab_b.glb` | https://sketchfab.com/3d-models/rock-6-f4f983f89c6f4b10a54ebb0a30787e56 | **mohamedhussien** | **CC-BY 4.0** | Decimated 40,000 -> 7,478 triangles; recentred; two LOD levels generated; textures resized and re-encoded to WebP. |
@@ -185,22 +185,14 @@ and fails if either has changed.
 >   by Kanna-Nakajima, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
 > - "Emperor Angelfish (Update v2)" (https://sketchfab.com/3d-models/emperor-angelfish-update-v2-3dc2d360d98c485496899121792ebcce)
 >   by Mikhail Nesterov, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
-> - "Realistic HD Royal Poinciana (17/40)" (https://sketchfab.com/3d-models/realistic-hd-royal-poinciana-1740-066ca51810ad483aa34ef738c0b7ae6a)
->   by PlantCatalog, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
-> - "Realistic HD Hong Kong Orchid Tree (40/40)" (https://sketchfab.com/3d-models/realistic-hd-hong-kong-orchid-tree-4040-160de59f02b946b0aa51f1c0f34ecbdd)
->   by PlantCatalog, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
 > - "Rock 17" (https://sketchfab.com/3d-models/rock-17-e7778771c06d4705a80cccb23a471d5c)
 >   by mohamedhussien, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
 > - "Rock 6" (https://sketchfab.com/3d-models/rock-6-f4f983f89c6f4b10a54ebb0a30787e56)
 >   by mohamedhussien, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
 > - "Big Boulder" (https://sketchfab.com/3d-models/big-boulder-d25c7784bc68468d88add544db970e3f)
 >   by 3dhdscan, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
-> - "Coconut Palm" (https://sketchfab.com/3d-models/coconut-palm-26e787f2ff2e4c0fb004c3b0210805a3)
->   by evolveduk, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
-> - "Tropical Palm" (https://sketchfab.com/3d-models/tropical-palm-08ccca74a0594fd999acaf4cfbd597e0)
->   by Šimon Ustal, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/).
 >
-> All nine are modified — see the Modifications column.
+> All five are modified — see the Modifications column.
 
 ### Substitutions
 
