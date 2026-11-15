@@ -227,7 +227,16 @@ User direction 2026-11-13: make the language more interesting, engaging and user
 
 ### Q. Head-to-head against the reference projects
 
-Not done yet. The projects in the reference table were mined for techniques, and the looks were judged against game screenshots in `REFERENCE_TARGETS.md`. Our build has never been put side by side with the projects themselves, so nothing here shows ours is better looking or faster than them.
+**Blind rounds so far (ours won / pairs):**
+
+| Round | Build | Pairs | Ours won | Notes |
+|---|---|---|---|---|
+| 1 | aaa-pass before the second wave | 29 | 7 | Losses drove the water, sky, VFX, reef and props work. |
+| 2 | aaa-pass fd497ab (water, sky, VFX, reef, props merged) | 32 (adds 3 underwater vs abyssal-garden) | 7 | Round-one artefacts were fixed, but new ones decide the pairs: camo and near-black reflection blotches (about 10 pairs), hatched, blurry and row-tiled clouds, no whitecaps at 18 m/s, no visible wake, glassy spray, glare clipping, a flat underwater fog, grain everywhere, shore seams and a saw-tooth breaker. All three underwater pairs were lost. |
+
+The round-two critic notes on our side are summarised per pair in the session scratchpad (`lead/ours-notes-r2.md`). Third-wave owners: water reflection and glare, clouds, underwater and caustics, post (grain, bloom, storm lens), shore. Next: foam coverage, wake and bow wave once the shore work lands.
+
+Capture caveat for round three: round two masked abyssal-garden's menu icon with a blurred patch, which the critic read as a hard rectangle artefact on that side. Crop both sides identically instead.
 
 - [ ] **Matched visual comparison.** Capture the same kinds of views at the same resolution (1920x1080, High) from our build and from each live demo. Every pair goes on one sheet.
   - Open ocean by day, sun glitter, whitecaps and sunset: against [web-ocean](https://ocean-noniv.vercel.app/).
