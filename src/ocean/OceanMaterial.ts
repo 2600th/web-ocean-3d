@@ -2807,10 +2807,17 @@ export class OceanMaterial {
       const bubbles = breakup.mul(0.22).add(0.84).toVar();
       const foamSun = foamNDotL.mul(0.55).add(0.3).mul(sunShade.mul(0.7).add(0.3)).toVar();
       const foamSky = (mix(this.uHorizonColor, this.uSkyColor, 0.45) as any).mul(0.42).toVar();
+      // Floored at the light the body is drawn with. The body is display-referred
+      // (it scales with the white point, see BODY_GAIN) while the sun and sky
+      // uniforms are scene-referred, so on a low-exposure preset a whitecap lit
+      // only by them came out darker than the water around it: grey-tan patches
+      // on a turquoise sea. Foam sits in the same light as the column beneath it,
+      // so it takes at least that light, shaded by its own sun term.
       const foamLight = (this.uSunColor as any)
         .mul(foamSun)
         .mul(this.uLightLevel.min(1.25))
         .add(foamSky)
+        .max(bodyLight.mul(foamSun.div(0.85).mul(0.75).add(0.25)))
         .toVar();
       const foamColor = this.uFoamColor.mul(bubbles).mul(foamLight).toVar();
 
