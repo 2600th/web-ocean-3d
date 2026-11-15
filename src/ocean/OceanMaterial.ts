@@ -26,8 +26,15 @@ import {
 import { smoothstepDownClamped } from '../core/tslMath';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import {
+  featherFoam,
+  foamPatchiness,
+  foamPattern,
+  foamUniforms,
+  setFoamDetail,
+  setFoamWind,
+} from './FoamPattern';
+import {
   breaker,
-  foamCells,
   setSurfState,
   surfPhaseGradient,
   surfReachDepth,
@@ -317,6 +324,40 @@ const FOAM_WIND_STRETCH = 2.6;
 const SHORE_GRADIENT_EPSILON = 12;
 
 /**
+ * Which way is up the beach, and how steep the bottom is, at `xz`.
+ *
+ * The gradient of *depth* points out to sea, so its negation points up the
+ * beach. Forward differences over `SHORE_GRADIENT_EPSILON`: wide enough to
+ * average out the heightfield's own metre-scale relief, narrow enough to follow
+ * a coastline that turns. Degenerate on a flat bottom, where `fallback` (the
+ * wind bearing) is the honest answer. Shared by both stages so the vertex
+ * stage's lean and the fragment stage's shading of it agree exactly.
+ *
+ * @returns vec3(shoreward.x, shoreward.z, bottom slope as rise over run)
+ */
+function shoreBearing(floorDepth: (p: any) => any, xz: any, depthHere: any, fallback: any): any {
+  const e = SHORE_GRADIENT_EPSILON;
+  const dDepthX = floorDepth(vec3(xz.x.add(e), 0, xz.y)).sub(depthHere);
+  const dDepthZ = floorDepth(vec3(xz.x, 0, xz.y.add(e))).sub(depthHere);
+  const gradient = vec2(dDepthX, dDepthZ).toVar();
+  const steepness = gradient.length().toVar();
+  const direction = mix(fallback, gradient.negate().div(steepness.max(1e-4)), steepness.smoothstep(0.02, 0.12));
+  return vec3(direction.x, direction.y, steepness.div(e));
+}
+
+/**
+ * How much of the breakers' pitch the mesh can carry at `groundDistance`.
+ *
+ * The lean is a bump about two metres wide, so it needs vertices a fraction of
+ * that apart; past ~150 m the radial grid stops resolving it and the offset
+ * would alias into a sawtooth along the crest. Inside `SURF_VERTEX_REACH` on
+ * purpose, and evaluated from the same distance by both stages.
+ */
+function surfPitchHold(groundDistance: any): any {
+  return smoothstepDownClamped(groundDistance, SURF_VERTEX_REACH * 0.45, SURF_VERTEX_REACH * 0.7);
+}
+
+/**
  * Ground distance from the eye, metres, inside which the vertex stage lifts the
  * water into the breakers and the swash sheet.
  *
@@ -330,12 +371,32 @@ const SHORE_GRADIENT_EPSILON = 12;
 const SURF_VERTEX_REACH = 220;
 
 /**
- * Fraction of the FFT field's displacement and slope left in the shallowest
- * surf. The open-ocean spectrum knows nothing about the bottom; inside the
- * break the sea is the breakers and a chop on top of them, and leaving the
- * full field on puts metre-high swell crests across the beach.
+ * How much of the FFT field survives into the surf, per band, at seabed depth
+ * `depth`: `vec2(swell, chop)`, each 0..1.
+ *
+ * The open-ocean spectrum knows nothing about the bottom. A wave feels it once
+ * the depth falls below about half its wavelength, and Crest attenuates each
+ * band by exactly that, `saturate(2h / lambda)`. The swell cascade's waves are
+ * tens of metres long, so across a surf zone a few metres deep they are the
+ * waves that shoal and break — which is what `Surf` draws — and leaving them on
+ * as well put the open sea's swell straight through the breakers. At 15 m/s
+ * that swell has a significant height of 5.5 m against a 2 m breaker, and with
+ * one uniform cut for every band (the previous form, which kept 60-100% of it
+ * across most of the surf zone) the breakers simply could not be seen. So the
+ * swell is handed over to the surf almost completely, over the surf's own
+ * reach, while the short chop — which does ride over a surf zone — keeps a
+ * third of itself so the shallows are not glass.
+ *
+ * Bounded by `surfReachDepth` rather than by each band's wavelength: past the
+ * reach there is no surf to replace the swell with, and attenuating it there
+ * would flatten the play area's own shallow plateau, which open-sea whitecap
+ * coverage is measured on.
  */
-const SURF_FFT_FLOOR = 0.25;
+function surfFftFade(depth: any): any {
+  const swell = mix(float(0.06), float(1), depth.smoothstep(0.5, surfReachDepth()));
+  const chop = mix(float(0.35), float(1), depth.smoothstep(0.3, surfReachDepth().mul(0.7)));
+  return vec2(swell, chop);
+}
 
 /**
  * Water thickness a backlit crest and a wave body present to the sun, metres.
@@ -518,6 +579,8 @@ export class OceanMaterial {
   private readonly uFoamCenter = uniform(new THREE.Vector2());
   /** How strongly accumulated foam reads against the surface, 0..1. */
   private readonly uFoamStrength = uniform(1);
+  /** Drift of floating foam, metres. See `setFoamDrift`. */
+  private readonly uFoamDrift = uniform(new THREE.Vector2());
   /**
    * Multiplier on the wake's elevation channel, 0..1.
    *
@@ -617,10 +680,13 @@ export class OceanMaterial {
     // peak: the short components are the ones refraction and the reef strip
     // out first. Deep-water dispersion for the peak, plus fifteen percent.
     const period = Math.sqrt((2 * Math.PI * Math.max(4, peakWavelength)) / 9.81) * 1.15;
-    // What breaks on a beach is the swell that reaches it — nearer 1.5 m than
-    // the open sea's significant height. A fraction of the sea state rather
-    // than the sea state, as the previous shore break had it.
-    const height = Math.min(3.2, (this.uWaveScale.value as number) * 0.26 + 0.55);
+    // What breaks on a beach is the swell that reaches it, less than the open
+    // sea's significant height — refraction spreads it and the shelf takes
+    // energy out before the beach. A fraction of the sea state rather than the
+    // sea state: 0.9 m at 6 m/s, 1.2 m at 9, 2.3 m at 15, capped at 3.6 m from
+    // about 20 m/s, which is the most this beach's 1:9 face can break without
+    // the surf zone running out past the shelf it sits on.
+    const height = Math.min(3.6, (this.uWaveScale.value as number) * 0.3 + 0.6);
     setSurfState(phase, period, height, strength, shoreNear);
   }
 
@@ -637,6 +703,30 @@ export class OceanMaterial {
     // fixed scale a calm day would have no crests to glow and a gale would have
     // nothing but. The floor keeps a glassy preset from dividing by nearly zero.
     this.uWaveScale.value = Math.max(0.35, 0.0246 * Math.max(0, speed) ** 2);
+    // The foam pattern's streaks lie along the same axis; it is shared with the
+    // island's ground, which draws the swash foam, so it lives in `FoamPattern`.
+    setFoamWind(bearingRadians);
+  }
+
+  /**
+   * Tier knob for how much of the foam's structure is drawn. See
+   * `FoamPattern.foamUniforms.detail`; the surf's pitch is gated on it too,
+   * because it costs two extra heightfield evaluations per surf vertex.
+   */
+  setFoamDetail(level: number): void {
+    setFoamDetail(level);
+  }
+
+  /**
+   * How far the sea's surface current has carried floating foam, metres, as a
+   * world offset. The foam buffer advects its *amount* by the same current
+   * (`Wake.setDrift`); this moves the *pattern* with it, so a patch's bubbles
+   * travel with the patch instead of the patch sliding through a pattern
+   * nailed to the world. Integrated by the caller from the sea clock, so a
+   * deterministic rewind puts it back.
+   */
+  setFoamDrift(x: number, z: number): void {
+    (this.uFoamDrift.value as THREE.Vector2).set(x, z);
   }
 
   setDisplacementScale(value: number): void {
@@ -825,6 +915,8 @@ export class OceanMaterial {
       const groundDistance = vec2(local.x, local.z).length().toVar();
 
       const displacement = vec3(0).toVar();
+      /** Cascade 0's share of it: the swell, which the surf replaces. */
+      const swellDisplacement = vec3(0).toVar();
 
       // Displace by exactly as much of the field as this mesh can carry, and
       // not one wave more.
@@ -881,9 +973,11 @@ export class OceanMaterial {
           .level(lod)
           .toVar();
         displacement.addAssign(sample.xyz.mul(reach).mul(this.uCascadeWeights[i]));
+        if (i === 0) swellDisplacement.assign(displacement);
       }
 
       displacement.mulAssign(this.uDisplacementScale);
+      swellDisplacement.mulAssign(this.uDisplacementScale);
 
       // Wake displacement, in metres, from the world-anchored buffer.
       //
@@ -925,14 +1019,28 @@ export class OceanMaterial {
           () => {
             const depth = floorDepth(vec3(worldXZ.x, 0, worldXZ.y)).toVar();
             If(depth.lessThan(surfReachDepth()), () => {
-              const fft = mix(
-                float(SURF_FFT_FLOOR),
-                float(1),
-                depth.smoothstep(0.3, surfReachDepth().mul(0.7)),
-              ).toVar();
-              displacement.mulAssign(fft);
-              const wave = breaker(depth, worldXZ);
+              const fade = surfFftFade(depth).toVar();
+              displacement.assign(
+                displacement.sub(swellDisplacement).mul(fade.y).add(swellDisplacement.mul(fade.x)),
+              );
+              // The pitch needs to know which way is up the beach and how steep
+              // the bottom is, which costs two more heightfield evaluations — the
+              // same forward differences the fragment stage takes, at the same
+              // undisplaced point, so the two agree on every lean exactly. Low
+              // skips both and the breakers only rise. See `Surf.breaker`.
+              const shoreward = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
+              const beachSlope = float(0.1).toVar();
+              const pitch = float(0).toVar();
+              If(foamUniforms.detail.greaterThan(0.5), () => {
+                const bearing = shoreBearing(floorDepth, worldXZ, depth, shoreward);
+                shoreward.assign(bearing.xy);
+                beachSlope.assign(bearing.z);
+                pitch.assign(surfPitchHold(groundDistance));
+              });
+              const wave = breaker(depth, worldXZ, beachSlope, pitch);
               displacement.y.addAssign(wave.eta);
+              displacement.x.addAssign(shoreward.x.mul(wave.lean));
+              displacement.z.addAssign(shoreward.y.mul(wave.lean));
               // Faded out toward the edge of the vertex reach, where the mesh can
               // no longer hold a sheet this thin on a slope this shallow.
               const sheet = swashSheetHeight(depth, worldXZ).toVar();
@@ -975,6 +1083,8 @@ export class OceanMaterial {
       // Slope variance lost inside the texture footprint — see the alpha channel
       // of the derivative pass. Bands are independent, so their variances add.
       const lostSlopeVariance = float(0).toVar();
+      /** Cascade 0's share of the slope: the swell, which the surf replaces. */
+      const swellSlope = vec2(0).toVar();
       for (let i = 0; i < cascadeCount; i++) {
         const d = this.derivativeNodes[i].sample(fieldXZ.div(this.uTileSizes[i])).toVar();
         // Weight folds into the fade, so a cascade the tier does not use
@@ -983,6 +1093,7 @@ export class OceanMaterial {
           this.uCascadeWeights[i],
         );
         slope.addAssign(vec2(d.x, d.y).mul(fade));
+        if (i === 0) swellSlope.assign(slope);
         fold.assign(fold.min(mix(float(1), d.z, fade)));
         // E[s^2] - |E[s]|^2, both from the same mip level, so this is exactly the
         // detail this pixel's footprint averaged away — zero where the footprint
@@ -1063,42 +1174,71 @@ export class OceanMaterial {
       const surfBreakLast = float(0).toVar();
       const surfBreakPrevious = float(0).toVar();
       const inSurf = float(0).toVar();
+      /** How much of the open-sea swell is left here, 0..1. See `surfFftFade`. */
+      const surfSwellLeft = float(1).toVar();
+      /** `Surf.BreakerSample.compression`: 1 on still water, toward 0.15 on a pitching face. */
+      const surfCompression = float(1).toVar();
+      /** How close the nearest crest is to breaking, 0..1. */
+      const surfSteep = float(0).toVar();
+      /** Surf similarity number of the nearest crest; spilling below ~0.4. */
+      const surfXi = float(1).toVar();
+      /** Thin, steep, unbroken water near a breaker's crest: it glows. */
+      const surfThin = float(0).toVar();
       if (floorDepth !== null) {
         If(seabedSigned.lessThan(surfReachDepth()), () => {
           inSurf.assign(1);
-          // The gradient of *depth* points out to sea, so its negation points up
-          // the beach. Forward differences over twelve metres: wide enough to
-          // average out the heightfield's own metre-scale relief, narrow enough
-          // to follow a coastline that turns. Degenerate on a flat bottom, where
-          // the wind bearing is the honest answer.
-          const e = SHORE_GRADIENT_EPSILON;
-          const dDepthX = floorDepth(vec3(fieldXZ.x.add(e), 0, fieldXZ.y)).sub(seabedSigned).toVar();
-          const dDepthZ = floorDepth(vec3(fieldXZ.x, 0, fieldXZ.y.add(e))).sub(seabedSigned).toVar();
-          const gradient = vec2(dDepthX, dDepthZ).toVar();
-          const steepness = gradient.length().toVar();
-          shoreward.assign(
-            mix(shoreward, gradient.negate().div(steepness.max(1e-4)), steepness.smoothstep(0.02, 0.12)),
-          );
+          const bearing = shoreBearing(floorDepth, fieldXZ, seabedSigned, shoreward).toVar();
+          shoreward.assign(bearing.xy);
 
-          const wave = breaker(seabedDepth, fieldXZ);
+          // The same pitch the vertex stage displaced by: same tier gate, same
+          // distance hold (the mesh is centred on the eye, so ground distance is
+          // the horizontal distance to it), same slope.
+          const groundDistance = fieldXZ.sub(vec2(cameraPosition.x, cameraPosition.z)).length();
+          const pitch = foamUniforms.detail
+            .greaterThan(0.5)
+            .select(surfPitchHold(groundDistance), float(0));
+          const wave = breaker(seabedDepth, fieldXZ, bearing.z, pitch);
           surfPhaseValue.assign(wave.phase);
           surfS.assign(wave.s);
           surfBreak.assign(wave.breakDepth);
           surfBreakLast.assign(wave.breakDepthLast);
           surfBreakPrevious.assign(wave.breakDepthPrevious);
-
-          const fft = mix(
-            float(SURF_FFT_FLOOR),
-            float(1),
-            seabedDepth.smoothstep(0.3, surfReachDepth().mul(0.7)),
+          surfCompression.assign(wave.compression);
+          surfSteep.assign(wave.steep);
+          surfXi.assign(wave.xi);
+          // A face about to go is a thin sheet of water stood up against the
+          // light: the crest and the upper front face of an unbroken, steep
+          // wave. It is what makes a breaker read as water rather than as a
+          // white line, and the crest-glow term below already knows what to do
+          // with thin water; it only had no way to know a breaker is thin.
+          const faceLine = wave.s.add(0.03).div(0.06);
+          surfThin.assign(
+            faceLine
+              .mul(faceLine)
+              .negate()
+              .exp()
+              .mul(wave.steep)
+              .mul(seabedDepth.smoothstep(wave.breakDepth.mul(0.85), wave.breakDepth))
+              .mul(surfUniforms.strength.min(1)),
           );
-          slope.mulAssign(fft);
+
+          const fade = surfFftFade(seabedDepth).toVar();
+          slope.assign(slope.sub(swellSlope).mul(fade.y).add(swellSlope.mul(fade.x)));
+          surfSwellLeft.assign(fade.x);
           // d(eta)/dx along the beach = d(eta)/d(phase) * d(phase)/dx. Faded with
           // distance like the finer cascades: a breaker face is a few metres
           // across, so past a few hundred metres it is shading noise.
+          //
+          // Divided by the pitch's compression: the vertex stage moved the crest
+          // shoreward over the face, so a metre of undisplaced surface became
+          // `compression` metres of displaced surface and the face rose over
+          // that much less run. This is what stands the face up in the shading;
+          // the displacement alone only moves where it is.
           const reach = smoothstepDownClamped(viewDistance, 260, 700);
           slope.addAssign(
-            shoreward.mul(wave.etaPerPhase.mul(surfPhaseGradient(seabedDepth))).mul(reach),
+            shoreward
+              .mul(wave.etaPerPhase.mul(surfPhaseGradient(seabedDepth)).div(wave.compression))
+              .mul(reach),
           );
         });
       }
@@ -1300,7 +1440,7 @@ export class OceanMaterial {
       // face. Normalising by the sea state matters — a 0.4 m chop and a 6 m swell
       // have different crests, and a fixed metre scale makes one of them wrong.
       const seaScale = this.uWaveScale.max(0.35).toVar();
-      const heightAboveMean = worldPos.y.div(seaScale).clamp(0, 1).toVar();
+      const heightAboveMean = worldPos.y.div(seaScale).clamp(0, 1).max(surfThin).toVar();
       const thickness = mix(
         float(THICK_BODY_METRES),
         float(THIN_CREST_METRES),
@@ -1374,7 +1514,11 @@ export class OceanMaterial {
       // more so when backlit. This is the term stylised-real game oceans lean on
       // for their emerald crests; here it is driven by the same crest height and
       // thinness the physical term uses, so it scales with the sea state.
-      const crest = heightAboveMean.mul(heightAboveMean).toVar();
+      //
+      // A breaker's face counts as crest: it is thin water standing up, and on
+      // a 15 m/s sea its metre of height is a fifth of the sea scale, so the
+      // height ratio alone never lit it. See `surfThin`.
+      const crest = heightAboveMean.mul(heightAboveMean).max(surfThin.mul(0.85)).toVar();
       const across = float(1).sub(viewDir.y.abs()).clamp(0, 1).toVar();
       scatter.addAssign(
         (this.uScatterColor as any)
@@ -1730,6 +1874,15 @@ export class OceanMaterial {
         .toVar();
 
       // --- foam --------------------------------------------------------------------
+      //
+      // Every source below produces an *amount*, 0..1, and none of them draws
+      // anything: the amounts are combined and pushed through one foam pattern
+      // and one feather at the end (`ocean/FoamPattern`). That is the whole of
+      // the change from drawing each source's contour — which is what made the
+      // open sea a field of flat white ovals and the surf a set of paper bands —
+      // and it is why the sources below can stay as smooth as the physics that
+      // drives them.
+      //
       // The Jacobian is 1 on unstretched water and drops below 0 where the surface
       // folds onto itself; that fold region is physically where whitecaps break.
       const coverage = smoothstepDownClamped(
@@ -1741,24 +1894,19 @@ export class OceanMaterial {
       // Whitecaps break at crests, not in troughs. The Jacobian alone is a
       // low-frequency field and marks broad patches, so bias it by local
       // elevation: the same amount of folding produces foam on a crest and
-      // almost none a metre lower down. This is what turns smooth blobs into
-      // streaks that follow the wave tops.
-      //
-      // The bias now runs to zero rather than bottoming out at a quarter. That
-      // floor was there to keep the instantaneous mask looking continuous, and
-      // it is exactly what put a wash of foam into every trough; with the
-      // accumulation buffer carrying persistence, this term no longer has to
-      // pretend to be continuous and can be as selective as real whitecaps are.
+      // almost none a metre lower down. The bias runs to zero rather than to a
+      // floor: with the accumulation buffer carrying persistence this term no
+      // longer has to pretend to be continuous, and a floor put a wash of foam
+      // into every trough.
       const crestBias = worldPos.y.smoothstep(-0.2, 2.2).clamp(0, 1).toVar();
       const biased = coverage.mul(crestBias).toVar();
 
-      // Break the mask up with world-space noise at roughly the scale of real
-      // foam clumps (sub-metre), so the edge dissolves into bubbles rather than
-      // ending on a clean contour.
-      // Sampled in the wind's own frame, stretched along it — see
-      // `FOAM_WIND_STRETCH`. The rotation is the wind axis and its perpendicular
-      // used as basis vectors, which is a pair of dot products; building a
-      // matrix for a 2-D rotation would cost more and say less.
+      // World-space breakup at the scale of foam clumps (sub-metre), sampled in
+      // the wind's own frame and stretched along it (`FOAM_WIND_STRETCH`).
+      // It no longer shapes the foam — the pattern does — but it still varies
+      // the brightness of the bubbles and perturbs the instantaneous crest mask,
+      // and it is faded out with distance because its finest octave is a
+      // sub-metre feature that past a few hundred metres is noise with no scale.
       const windAlong = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
       const windAcross = vec2(this.uWindAxis.y.negate(), this.uWindAxis.x).toVar();
       const foamUv = vec2(
@@ -1777,73 +1925,32 @@ export class OceanMaterial {
         amplitude *= 0.5;
         frequency *= 2.07;
       }
-      // Centre the noise on zero so it perturbs the mask both ways instead of
-      // only ever eating into it.
-      //
-      // Faded out with distance, which *is* band-limiting the field rather than
-      // the edge. Its finest octave is a sub-metre feature; past a few hundred
-      // metres that is well under a pixel, so what it contributes there is not
-      // texture, it is noise with no scale — the same argument the wave cascades'
-      // shading fade and the rain rings both make. Up close nothing changes.
       const perturb = breakup
         .sub(0.5)
         .mul(smoothstepDownClamped(viewDistance, FOAM_BREAKUP_NEAR, FOAM_BREAKUP_FAR))
         .toVar();
 
-      // A wide smoothstep keeps the boundary soft; the noise decides *where* that
-      // boundary falls, which reads as texture rather than as a fading blob.
+      // Instantaneous crest foam, for the water past the accumulation buffer.
       //
-      // Widened by the mask's own screen-space footprint, and this is the second
-      // half of the aliasing fix. The specular filter above was not the whole
-      // story: the frames show the *foam* aliasing too, and it is what makes the
-      // blobs hard-edged rather than merely bright. At mid distance the Jacobian
-      // fold field is undersampled, so a threshold on it flips fully on and fully
-      // off between neighbouring pixels — there is no gradient at the boundary
-      // because the boundary is narrower than a pixel.
-      //
-      // `fwidth` of the thresholded quantity is the textbook band-limit for
-      // exactly this: it measures how much the argument moves across one pixel,
-      // so widening the ramp by it makes the transition take at least a pixel
-      // wherever the field stops being resolved, and changes nothing up close
-      // where it is. Same argument the specular filter makes, one term along.
-      const foamArg = biased.add(perturb.mul(0.45)).toVar();
-      // **The ramp is not widened at all, and that is a result rather than an
-      // omission.**
-      //
-      // Widening a threshold by the footprint of its own argument is the textbook
-      // band-limit, it is what the specular filter above legitimately does, and it
-      // was implemented here twice — once driven by `lostSlopeVariance` and once
-      // by `fwidth`. Both were rejected on measurement. `gallery-jitter` puts
-      // far-field high-frequency energy at Medium at 2.09 for the mask as it
-      // stands, 2.56 with the `fwidth` widening and 2.94 with the variance one,
-      // against a 2.33 ceiling.
-      //
-      // The mechanism is worth recording because it is counter-intuitive and the
-      // next reader will have the same idea. A steep threshold on a noisy
-      // argument produces a **binary** field: its Laplacian is large, but only on
-      // sparse edges, and saturation hides everything either side of them. A ramp
-      // wide enough to cover the sub-footprint spread maps that noise
-      // *continuously*, so every pixel in the band carries a share of it. The
-      // blobs soften and the noise floor rises. Widening band-limits the *edge*;
-      // it does not band-limit the *field*, and the field is what the mip chain
-      // lost. `fwidth` is no better than the variance here for the same reason it
-      // is no help to the specular: it is the derivative of a quantity that is
-      // itself undersampled, so in the far field it reports a large number
-      // because the wave, not the noise, moved.
-      //
-      // What *is* correct is fading the field itself where it stops being
-      // resolvable, which is what the breakup noise above now does, and what the
-      // refracted backdrop and the specular's slope-space filter do in their own
-      // terms. The mask's remaining hard edges at mid distance are a real and
-      // acknowledged limit, and the honest fix for them is a temporal resolve
-      // this renderer deliberately does not have.
-      const crestFoam = foamArg.smoothstep(0.12, 0.78).clamp(0, 1).toVar();
+      // **The ramp is not widened by the footprint, and that is a result rather
+      // than an omission.** Widening a threshold by the footprint of its own
+      // argument (`fwidth`, or the lost slope variance) was implemented twice and
+      // rejected on measurement: `gallery-jitter` put far-field high-frequency
+      // energy at Medium at 2.09 for the mask as it stands, 2.56 with `fwidth`
+      // and 2.94 with the variance, against a 2.33 ceiling. A steep threshold on
+      // a noisy argument gives a binary field whose energy sits on sparse edges;
+      // a wide ramp maps the sub-footprint noise continuously into every pixel of
+      // the band. Widening band-limits the edge, not the field. What does
+      // band-limit the field is fading each scale where it stops being resolved,
+      // which `perturb` above and the foam pattern's own scales do.
+      const crestAmount = biased.add(perturb.mul(0.45)).smoothstep(0.12, 0.78).clamp(0, 1).toVar();
 
       // --- accumulated foam ---------------------------------------------------
-      // Wake and any other persistent deposit, read from the world-anchored
-      // buffer. Unlike the crest mask above this is *history*: it was laid down
-      // on earlier frames and has been decaying since, which is what lets a wake
-      // trail behind a moving hull instead of being a decal under it.
+      // Wake, whitecaps and the shore's standing foam, read from the
+      // world-anchored buffer. Unlike the crest mask above this is *history*: it
+      // was laid down on earlier frames and has been decaying since, which is
+      // what lets a wake trail behind a moving hull and a whitecap leave a patch
+      // behind the crest that made it.
       const accumulated = float(0).toVar();
       /** How completely the accumulation buffer covers this fragment, 0..1. */
       const buffered = float(0).toVar();
@@ -1857,120 +1964,92 @@ export class OceanMaterial {
         const inside = edge.x.min(edge.y).smoothstep(0, 0.02).clamp(0, 1).toVar();
         buffered.assign(inside);
 
-        accumulated.assign(
-          this.wakeNode.sample(foamUvw).r.clamp(0, 1).mul(inside).mul(this.uFoamStrength),
-        );
-
-        // Broken up by the same noise as the crest foam so the two read as one
-        // material. Without this the wake is a smooth airbrushed streak against
-        // bubbly whitecaps and the eye separates them immediately.
-        //
-        // The breakup is *gated on there being foam here at all*. Added
-        // unconditionally it is a signed term, so on empty water the positive
-        // half of the noise alone clears the threshold and sprays foam across an
-        // ocean that has none — the mask has to be able to return exactly zero.
-        // The breakup is deliberately strong. At 0.22 it was a faint dither on a
-        // smooth field: the buffer is 0.41 m per texel and bilinearly filtered,
-        // so what it hands over is inherently soft, and a weak perturbation
-        // leaves it looking airbrushed rather than bubbly. At 0.5 the noise is
-        // what decides the foam's edge, and the buffer only decides where the
-        // foam *region* is — which is the right division of labour, because the
-        // buffer cannot resolve a bubble and the noise is scale-free.
-        //
-        // The remap is also much wider than it was. `smoothstep(0.16, 0.72)`
-        // drove a half-strength deposit to four-fifths white, so foam that should
-        // have been thinning as it aged stayed opaque until it vanished.
-        const present = accumulated.smoothstep(0.02, 0.2).toVar();
-        const density = accumulated
-          .add(perturb.mul(0.5).mul(present))
-          .smoothstep(0.06, 0.68)
-          .clamp(0, 1)
-          .mul(present)
-          .toVar();
-        accumulated.assign(density);
-
-        // Bubble structure, so density reads as foam rather than as paint.
-        //
-        // The breakup above decides where a patch's edge falls and nothing
-        // inside it: a saturated deposit came out as an even, untextured
-        // white disc tens of metres across. Real whitecap foam is a network of
-        // bubble rafts with water showing through the cells, and only the
-        // freshest is solid. So density sets a threshold on a cell field —
-        // the same one the surf's lace is drawn from — instead of an opacity.
-        // Thin foam is the cell boundaries; denser foam fills the cells from
-        // the boundaries inward; a fully saturated texel still shows its
-        // centres at half strength.
-        //
-        // Faded to the cells' average with the breakup noise, for the same
-        // reason: past a few hundred metres the cells are under a pixel and
-        // would be shimmer, not texture. Evaluated only where there is foam,
-        // since nine cells per fragment of open sea buy nothing.
-        If(present.greaterThan(0.001), () => {
-          // Two scales, the finer one at less than half the size, so the
-          // network is not one regular net: a single cell size at this range
-          // read as a white fishnet laid on the water.
-          const cellUv = foamUv.mul(0.8).add(vec2(breakup.mul(1.1), breakup.mul(-0.8))).toVar();
-          const cellsA = foamCells(cellUv).toVar();
-          const cellsB = foamCells(cellUv.mul(2.3).add(vec2(5.3, 1.7))).toVar();
-          // 1 on the boundaries, 0 at the cell centres.
-          const rim = cellsA.y
-            .smoothstep(0.02, 0.45)
-            .oneMinus()
-            .max(cellsB.y.smoothstep(0.02, 0.35).oneMinus().mul(0.75))
-            .toVar();
-          // Saturated foam still leaves the cell centres open: a 0.85 reach
-          // rather than 1, so even a fresh patch reads as a raft, not a sheet.
-          const edge0 = density.mul(0.85).oneMinus().sub(0.15).toVar();
-          const textured = rim.smoothstep(edge0, edge0.add(0.3)).mul(density.mul(2).min(1));
-          // What the cells average to where they are too small to draw, so a
-          // patch keeps its brightness as it recedes: about 0.7 of the density
-          // once the cells have filled, less while it is only their rims.
-          const averaged = density.mul(density.mul(2).min(1)).mul(0.7);
-          const near = smoothstepDownClamped(viewDistance, FOAM_BREAKUP_NEAR, FOAM_BREAKUP_FAR);
-          accumulated.assign(mix(averaged, textured, near));
-        });
+        accumulated.assign(this.wakeNode.sample(foamUvw).r.clamp(0, 1).mul(inside).mul(this.uFoamStrength));
       }
 
       // Where the buffer reaches, the buffer *is* the whitecaps.
       //
       // These two are not two kinds of foam, they are two implementations of one
-      // kind, and for a long time both ran everywhere. That is why the near field
-      // was a sheet of white: every breaking crest was painted twice, once as a
-      // persistent deposit and once as an instantaneous mask over the top of it,
-      // and `max` of the two can only ever be the more generous.
-      //
+      // kind, and for a long time both ran everywhere: every breaking crest was
+      // painted twice and `max` of the two can only ever be the more generous.
       // The buffer is the better answer wherever it has data — it carries
-      // persistence, so foam is left behind by a wave instead of travelling with
-      // it — but it only covers a 420 m square around the camera. Past that the
-      // instantaneous mask is all there is, so it is faded in exactly as the
-      // buffer's own edge fades out and the two never overlap.
+      // persistence — but it only covers a 420 m square around the camera. Past
+      // that the instantaneous mask is all there is, so it is faded in exactly
+      // as the buffer's own edge fades out and the two never overlap.
+      //
+      // **Stage A and stage B.** Inside the buffer the instantaneous mask comes
+      // back, but not as a second coat of the same paint: it marks where the
+      // crest is breaking *now*, which is the only part of a whitecap that is
+      // solid white (Monahan's stage A — about a tenth of the area of the
+      // decaying stage-B patch behind it). The buffer is the stage-B patch, and
+      // it saturates: where a fold region keeps depositing it sits at 1 over
+      // the whole footprint, and read straight that footprint is a flat white
+      // oval. So the patch is capped short of solid and broken by the
+      // patchiness field into denser rafts and thinner lanes, and only the
+      // actively breaking crest inside it reaches solid. Gated on there being a
+      // patch at all, so the crest mask never paints where the buffer has none.
+      const openSea = float(0).toVar();
+      const openRaw = accumulated.max(crestAmount.mul(buffered.oneMinus())).toVar();
+      If(openRaw.greaterThan(0.001), () => {
+        const patch = foamPatchiness(fieldXZ.sub(this.uFoamDrift)).toVar();
+        // Up close the lanes between rafts are drawn by the pattern, so the
+        // patchiness only needs to thin them (floor 0.32). Far off it has to do
+        // that work alone, so its floor drops and a saturated plate splits into
+        // denser and sparser parts.
+        const lanes = mix(float(0.1), float(0.32), smoothstepDownClamped(viewDistance, 120, 360));
+        const stageB = accumulated.mul(mix(lanes, float(0.86), patch));
+        // Stage A is a strip along the breaking crest a metre or two wide. The
+        // crest mask is not that strip in a strong sea. At 18 m/s it was measured
+        // saturated at 1 across whole fold regions, many metres wide. Taken
+        // straight, every buffered patch became one flat white oval, and the
+        // patchiness and the stage-B cap above changed nothing, because stage A
+        // won the max everywhere. So stage A takes the patchiness too. Its
+        // densest cores stay solid and the rest falls to lace the pattern can
+        // tear. Its amount also falls with distance. Past ~200 m the pattern has
+        // only its streaks left, and an amount near 1 clears every one of them.
+        const stageAReach = mix(float(0.6), float(0.95), smoothstepDownClamped(viewDistance, 70, 240));
+        const stageA = crestAmount
+          .mul(accumulated.smoothstep(0.05, 0.3))
+          .mul(stageAReach)
+          .mul(mix(float(0.45), float(1), patch));
+        const beyond = crestAmount.mul(buffered.oneMinus()).mul(mix(float(0.2), float(0.9), patch));
+        // In the surf the swell that folded to make these whitecaps has been
+        // handed over to the breakers (`surfFftFade`), so its whitecaps go with
+        // it; the buffer deposited them from the full open-sea field.
+        openSea.assign(stageB.max(stageA).max(beyond).mul(mix(float(0.25), float(1), surfSwellLeft)));
+      });
+
       // --- surf ----------------------------------------------------------------
       //
       // White water driven by the *seabed*, because every foam term above is
       // driven by the surface and neither knows the bottom is there. A wave
       // does not break because it steepened; it breaks because it ran out of
       // water. The breakers themselves — where each crest is, how big, where it
-      // breaks — come from `ocean/Surf`, shared with the vertex stage (which
-      // shaped them) and the ground (which the swash wets), so the foam drawn
-      // here sits exactly on the crest the geometry raised.
+      // breaks, how hard it pitches — come from `ocean/Surf`, shared with the
+      // vertex stage (which shaped them) and the ground (which the swash wets),
+      // so the foam here sits exactly on the crest the geometry raised.
       //
-      // Four kinds of white, in the order a viewer on the beach sees them:
+      // In the order a viewer on the beach sees them:
       //
-      //  - **the lip**: as a crest reaches its break depth it pitches over, and
-      //    for a moment there is a bright line along the top of it;
-      //  - **the bore**: from there in, the wave is a roller of white water
-      //    riding its own front, travelling shoreward with the crest;
-      //  - **the lace**: what the roller leaves behind it. Foam on a surf zone
-      //    is not a sheet that fades; it tears into a network of bubble lines
-      //    that thin and part over several seconds. A ridged noise thresholded
-      //    higher as the foam ages does that — fat and continuous right behind
-      //    the bore, a net of threads a wave later;
-      //  - **the swash edge**: where the water is centimetres thick, at the
-      //    waterline and at the front of the sheet running up the sand.
+      //  - **spilling**: on a gentle beach (low Iribarren number) the crest goes
+      //    white *before* the break and the foam pours down the face;
+      //  - **the lip**: where a plunging face pitches — the compression the
+      //    vertex stage's lean causes, Tessendorf's fold criterion applied to
+      //    the breaker — and along the crest at the break line;
+      //  - **the bore**: from there in, a roller of white water riding its own
+      //    front, whose leading edge is ragged rather than ruled;
+      //  - **the whitewater it leaves**: dense right behind the roller and
+      //    thinning with age — stage A to stage B — which the feather turns into
+      //    lace and then threads over about a period;
+      //  - **the swash edge**: centimetres of water at the waterline.
       //
       // The persistent buffer adds the foam the surf leaves standing and
       // drifting between sets. See the shore term in `Wake`.
       const surf = float(0).toVar();
+      /** Milky, bubble-laden water under and behind the white water, 0..1. */
+      const surfAerated = float(0).toVar();
+      /** Where the surf's foam has been carried since it was made, metres. */
+      const surfAdvect = vec2(0, 0).toVar();
       if (floorDepth !== null) {
         If(inSurf.greaterThan(0.5), () => {
           const d = seabedDepth;
@@ -1981,12 +2060,16 @@ export class OceanMaterial {
           // depth so the break line is not a contour.
           const brokenNear = smoothstepDownClamped(d, surfBreak.mul(0.86), surfBreak.mul(1.04)).toVar();
 
-          const bubbles = breakup.mul(0.7).add(0.55).clamp(0, 1).toVar();
-          const roller = s
-            .smoothstep(-0.07, -0.015)
-            .mul(smoothstepDownClamped(s, 0.12, 0.34))
+          // The bore's front advances and lags along its length by a few
+          // percent of a period: a broken crest is a row of tumbling sections,
+          // not a ruled line. Five-metre noise, so the sections are a few
+          // metres long.
+          const ragged = valueNoise(fieldXZ.mul(0.18).add(vec2(4.1, 2.7))).sub(0.5).mul(0.035);
+          const sr = s.add(ragged).toVar();
+          const roller = sr
+            .smoothstep(-0.055, -0.012)
+            .mul(smoothstepDownClamped(sr, 0.03, 0.12))
             .mul(brokenNear)
-            .mul(bubbles)
             .toVar();
 
           const lipBand = d.sub(surfBreak).div(surfBreak.mul(0.22).add(0.12)).toVar();
@@ -1997,70 +2080,59 @@ export class OceanMaterial {
             .exp()
             .mul(lipLine.mul(lipLine).negate().exp())
             .toVar();
+          // Where the pitch is folding the face over.
+          const pitchLine = s.div(0.05);
+          const pitching = smoothstepDownClamped(surfCompression, 0.3, 0.62)
+            .mul(pitchLine.mul(pitchLine).negate().exp())
+            .toVar();
 
-          // The crest whitening along its top just before it goes.
-          const featherLine = s.div(0.02).toVar();
-          const feather = smoothstepDownClamped(d, surfBreak.mul(1.05), surfBreak.mul(1.7))
+          // The crest whitening along its top just before it goes — and, on a
+          // spilling beach, the foam pouring down the face ahead of the break.
+          const spilling = smoothstepDownClamped(surfXi, 0.35, 0.7).toVar();
+          const featherLine = s.add(spilling.mul(0.012)).div(mix(float(0.02), float(0.035), spilling)).toVar();
+          const crestWhite = smoothstepDownClamped(d, surfBreak.mul(1.05), surfBreak.mul(1.7))
             .mul(brokenNear.oneMinus())
             .mul(featherLine.mul(featherLine).negate().exp())
-            .mul(0.45)
+            .mul(mix(float(0.45), float(0.85), spilling))
             .toVar();
 
+          // Whether the last two crests broke here, softly: a set's waves break
+          // over a band of depths, not on one contour, and a hard test drew the
+          // seaward edge of every foam band as a ruled line along the bottom.
+          const lastBroke = smoothstepDownClamped(d, surfBreakLast.mul(0.82), surfBreakLast.mul(1.06)).toVar();
+          const previousBroke = smoothstepDownClamped(d, surfBreakPrevious.mul(0.82), surfBreakPrevious.mul(1.06)).toVar();
           // Age, in periods, of the youngest broken water at this point: the
           // last crest if it broke here, the one before it otherwise.
-          const lastBroke = d.lessThan(surfBreakLast);
-          const previousBroke = d.lessThan(surfBreakPrevious);
           const laceAge = lastBroke
-            .select(age, previousBroke.select(age.add(1), float(9)))
+            .greaterThan(0.5)
+            .select(age, previousBroke.greaterThan(0.5).select(age.add(1), float(9)))
             .toVar();
-          // Drifts shoreward a little as it ages: what is left of a bore is still
-          // being carried up the beach by the next.
-          const laceUv = worldPos.xz
-            .add(shoreward.mul(laceAge.mul(surfUniforms.period).mul(0.35)))
-            .mul(0.62)
+          // Not every section of a crest breaks equally hard. Horizon Forbidden
+          // West fades its breakers along the wavefront with a strength texture
+          // so the break has gaps; this is that in closed form, at about twenty
+          // metres, so each wave leaves a run of dense patches and thin ones
+          // rather than one even band.
+          const sections = valueNoise(fieldXZ.mul(1 / 21).add(vec2(surfPhaseValue.floor().mul(3.7), 1.9)))
+            .smoothstep(0.15, 0.85)
+            .mul(0.5)
+            .add(0.6)
             .toVar();
-          // The network: cell boundaries, whose lines thin as the foam ages.
-          // Two scales so it is not a regular honeycomb; a slow patch field so
-          // the network tears into rafts and streaks rather than covering the
-          // surf zone evenly, and tears further as it ages.
-          // Warped, so the cells are stretched and bent like bubble rafts being
-          // pulled about by the backwash rather than tiled.
-          const warp = vec2(
-            valueNoise(laceUv.mul(0.45)),
-            valueNoise(laceUv.mul(0.45).add(vec2(5.2, 1.3))),
-          )
-            .sub(0.5)
-            .mul(1.6);
-          const warped = laceUv.add(warp).toVar();
-          const cellsA = foamCells(warped).toVar();
-          const cellsB = foamCells(warped.mul(2.1).add(vec2(7.1, 3.3))).toVar();
-          const lineWidth = mix(float(0.3), float(0.05), laceAge.smoothstep(0.03, 1.3)).toVar();
-          // Older threads also break: a second noise snips them into segments.
-          const snip = valueNoise(warped.mul(1.7).add(vec2(2.2, 9.4)))
-            .smoothstep(mix(float(0.0), float(0.45), laceAge.smoothstep(0.3, 1.5)), 0.75)
+          // Dense right behind the roller, then thinning: 0.82 at a twentieth
+          // of a period, under half by a third of one, a tenth after a period —
+          // and gone before the one after.
+          const whitewaterAt = (a: any) => a.mul(-2.3).exp().mul(0.92).mul(smoothstepDownClamped(a, 1.3, 1.9));
+          const whitewater = whitewaterAt(age)
+            .mul(lastBroke)
+            .max(whitewaterAt(age.add(1)).mul(previousBroke))
+            .mul(sections)
+            .min(1)
             .toVar();
-          const lines = smoothstepDownClamped(cellsA.y, lineWidth.mul(0.4), lineWidth)
-            .max(smoothstepDownClamped(cellsB.y, lineWidth.mul(0.3), lineWidth.mul(0.75)).mul(0.6))
-            .mul(snip)
-            .toVar();
-          const rafts = valueNoise(laceUv.mul(0.22).add(vec2(3.1, 8.7)))
-            .smoothstep(mix(float(0.0), float(0.6), laceAge.smoothstep(0.2, 1.6)), 0.85)
-            .toVar();
-          // Right behind the roller the foam has not torn yet: a sheet, holed by
-          // the cells as it starts to part.
-          const sheet = smoothstepDownClamped(laceAge, 0.1, 0.42)
-            .mul(cellsA.y.smoothstep(0.02, 0.25).mul(0.35).add(0.65))
-            .toVar();
-          const laceNear = lines
-            .mul(rafts)
-            .max(sheet)
-            .mul(smoothstepDownClamped(laceAge, 1.1, 1.9))
-            .mul(bubbles)
-            .toVar();
-          // Past a few hundred metres the threads are below a pixel; what they
-          // average to is a coverage that falls with age.
-          const laceFar = smoothstepDownClamped(laceAge, 0.1, 1.4).mul(0.4);
-          const lace = mix(laceNear, laceFar, viewDistance.smoothstep(240, 620)).toVar();
+          // What is left of a bore is still being carried up the beach by the
+          // next, so the pattern drifts shoreward as it ages — and stops doing so
+          // at the waterline, where the ground draws the same pattern unmoved.
+          surfAdvect.assign(
+            shoreward.mul(laceAge.min(2).mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
+          );
 
           // Centimetres of water: the waterline and the front of the swash. The
           // depth buffer knows how thin the water in front of the sand is,
@@ -2069,39 +2141,42 @@ export class OceanMaterial {
             .smoothstep(0.004, 0.025)
             .mul(smoothstepDownClamped(straightThickness, 0.03, 0.1))
             .mul(smoothstepDownClamped(seabedSigned, 0.5, 1.4))
-            .mul(breakup.mul(0.8).add(0.45).clamp(0, 1))
+            .mul(0.75)
             .toVar();
 
           // Seen from far off, a surf zone is a band of white whose individual
           // breakers are a pixel wide. The time-averaged coverage stands in for
           // them there: most of the inner surf zone white most of the time,
           // thinning out to the break line.
-          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3))
-            .mul(breakup.mul(0.4).add(0.6))
-            .mul(0.9)
-            .toVar();
-          const far = viewDistance.smoothstep(160, 520).toVar();
+          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3)).mul(0.8).toVar();
+          const far = viewDistance.smoothstep(90, 320).toVar();
           // And the line of white at the water's edge, which from more than a
           // few tens of metres is all the swash amounts to: a beach without it
-          // reads as a texture boundary. Up close the swash itself is visible
-          // and this hands over to it.
+          // reads as a texture boundary.
           const edgeLine = smoothstepDownClamped(straightThickness, 0.02, 0.3)
             .mul(smoothstepDownClamped(seabedSigned, 0.6, 1.4))
             .mul(viewDistance.smoothstep(25, 110))
-            .mul(bubbles)
-            .mul(0.75)
+            .mul(0.7)
             .toVar();
+
+          const strength = surfUniforms.strength.min(1);
           surf.assign(
             roller
               .max(lip)
-              .max(feather)
-              .max(lace.mul(0.8))
+              .max(pitching)
+              .max(crestWhite)
+              .max(whitewater)
               .max(thin)
               .max(band.mul(far))
               .max(edgeLine)
               .clamp(0, 1)
-              .mul(surfUniforms.strength.min(1)),
+              .mul(strength),
           );
+          // Behind a bore the water is full of bubbles for seconds after the
+          // white has torn: the milky turquoise of every surf photograph, and
+          // what the lace sits *on*. Without it the lace sat on glass-clear
+          // shallows and read as a decal.
+          surfAerated.assign(roller.max(whitewater.mul(1.15)).max(lip).clamp(0, 1).mul(strength));
         });
       }
 
@@ -2112,6 +2187,8 @@ export class OceanMaterial {
       // moves past, so every real object at sea wears a ring of white. Measured
       // from the depth buffer — the water column directly behind this pixel —
       // rather than from any list of objects, so every prop gets it for free.
+      // Dense against the object and thinning outward, which the feather turns
+      // into a solid collar tearing into lace — not an outline.
       //
       // Seabed contact is excluded where the heightfield explains the depth:
       // that is the shore break's job, and treating a whole shallow lagoon as an
@@ -2125,23 +2202,77 @@ export class OceanMaterial {
           : seabedDepth.sub(straightThickness).smoothstep(0.35, 1.2)
       ).toVar();
       const contactReach = smoothstepDownClamped(viewDistance, 120, 260).toVar();
-      const contactFoam = contactBand
-        .mul(notSeabed)
-        .mul(contactReach)
-        // Lace, not an outline: the noise is biased low enough that the ring
-        // breaks into patches and gaps, and it is capped short of the crest
-        // foam's white. With the bias at +0.25 the ring was solid all the way
-        // round and drew the hull's waterline like a cartoon stroke.
-        .mul(breakup.mul(1.4).add(perturb.mul(0.9)).sub(0.12).clamp(0, 1))
-        .smoothstep(0.24, 0.72)
-        .mul(0.85)
+      const contactAmount = contactBand.mul(contactBand).mul(notSeabed).mul(contactReach).mul(0.8).toVar();
+
+      // --- the feather ----------------------------------------------------------
+      //
+      // One pattern, one threshold, for every source. The pattern is read at the
+      // *undisplaced* point, as Crest reads its foam texture: the choppy
+      // displacement swings the surface back and forth under a fixed world
+      // position, and a pattern read there swims across every crest. Moved by
+      // the current with the foam it belongs to, and in the surf by the
+      // shoreward carry, faded out at the waterline where the ground draws the
+      // same pattern in place.
+      const foamAmount = openSea.max(surf).max(contactAmount).toVar();
+      const foamMask = float(0).toVar();
+      If(foamAmount.greaterThan(0.002), () => {
+        const carried = mix(this.uFoamDrift, surfAdvect, inSurf).mul(seabedSigned.smoothstep(0.3, 1.5));
+        const pattern = foamPattern(fieldXZ.sub(carried), viewDistance);
+        // As the pattern's fine scales fade to their means, from ~50 m out, its
+        // spread collapses. A threshold on a nearly constant pattern is a step:
+        // every amount over about one half clears it everywhere. Measured at
+        // 150 m in a strong sea, the buffered patches drew as flat white plates
+        // with hard rims, and no change to the amount moved them. So the
+        // feather hands over to plain coverage as the detail goes. That is the
+        // amount itself, since the feather's white fraction tracks it, scaled
+        // by the surviving streaks so a patch keeps its lanes as brightness.
+        // Its mean is the feather's, and its edge is as soft as the field.
+        const resolved = smoothstepDownClamped(viewDistance, 60, 260);
+        const coverage = foamAmount.clamp(0, 1).mul(mix(float(0.5), float(1.15), pattern.clamp(0, 1))).clamp(0, 1);
+        foamMask.assign(mix(coverage, featherFoam(foamAmount, pattern), resolved));
+      });
+
+      // Aerated water: the bubble cloud a few centimetres to a metre under the
+      // white, which scatters light back up milky and pale. Crest draws it as a
+      // second, blurred foam layer under the first; the amount *before* the
+      // feather is exactly that layer — smooth, wider than the white, and gone
+      // where the foam is.
+      const aeration = surfAerated
+        .max(openSea.mul(0.3))
+        .max(contactAmount.mul(0.45))
+        .clamp(0, 1)
+        .mul(0.5)
         .toVar();
 
-      const foamMask = accumulated
-        .max(crestFoam.mul(buffered.oneMinus()))
-        .max(surf)
-        .max(contactFoam)
+      // The foam's own relief. A raft of bubbles stands a few centimetres proud
+      // of the water, so its edges catch the sun on one side and shade on the
+      // other; flat-lit, the lace reads as printed on the surface. The gradient
+      // of the coverage in world metres, from its screen derivatives — taken
+      // here, outside every branch, because derivatives are only defined in
+      // uniform control flow — times a nominal raft height. Near only (the
+      // derivatives of a sub-pixel pattern are noise) and High and up.
+      const relief = foamUniforms.detail
+        .greaterThan(1.5)
+        .select(smoothstepDownClamped(viewDistance, 25, 70), float(0))
         .toVar();
+      const dMaskX = dFdx(foamMask);
+      const dMaskY = dFdy(foamMask);
+      const dXZx = dFdx(fieldXZ);
+      const dXZy = dFdy(fieldXZ);
+      const footprintDet = dXZx.x.mul(dXZy.y).sub(dXZx.y.mul(dXZy.x)).toVar();
+      const safeDet = footprintDet.abs().max(1e-6).mul(footprintDet.greaterThanEqual(0).select(float(1), float(-1)));
+      const maskGradient = vec2(
+        dMaskX.mul(dXZy.y).sub(dMaskY.mul(dXZx.y)),
+        dXZx.x.mul(dMaskY).sub(dXZy.x.mul(dMaskX)),
+      )
+        .div(safeDet)
+        .toVar();
+      // Clamped to a slope of 0.8: at grazing angles the footprint determinant
+      // is nearly singular and the solve can return anything.
+      const rawRelief = maskGradient.mul(0.035).toVar();
+      const reliefSlope = rawRelief.mul(float(0.8).div(rawRelief.length().max(0.8))).mul(relief).toVar();
+      const foamNormal = normalize(n.sub(vec3(reliefSlope.x, 0, reliefSlope.y))).toVar();
+      const foamNDotL = foamNormal.dot(sunDir).clamp(0, 1).toVar();
 
       // Foam is lit, not painted.
       //
@@ -2151,33 +2282,38 @@ export class OceanMaterial {
       // scattering medium, so almost Lambertian, bright but still lit by the same
       // sun as everything else, and shadowed on the side away from it.
       //
-      // Lit by the same sun *and sky* as the water around it. The previous form
-      // was `foamColor * bubbles * (0.6..1)` with no light term at all, which put
-      // a whitecap at roughly 40 % of its albedo — darker than the sky the water
-      // beside it was reflecting. At grazing angles, where the surface reflects a
-      // bright horizon, every whitecap therefore read as a grey or (at sunset)
-      // brown hole in the sea: the hard-edged blotches in every gallery frame.
-      // Foam is a near-Lambertian scatterer, so its radiance is albedo times the
-      // irradiance arriving on it: a wrapped sun term (bubbles scatter light in
-      // from the side) under the cloud shadow, plus the sky dome's ambient.
+      // Lit by the same sun *and sky* as the water around it. Without the light
+      // term a whitecap sat at roughly 40% of its albedo — darker than the sky
+      // the water beside it reflected, so at grazing angles every whitecap read
+      // as a grey or (at sunset) brown hole in the sea. Foam is a near-Lambertian
+      // scatterer, so its radiance is albedo times the irradiance arriving on
+      // it: a wrapped sun term (bubbles scatter light in from the side) under the
+      // cloud shadow, plus the sky dome's ambient.
       const bubbles = breakup.mul(0.22).add(0.84).toVar();
-      const foamSun = nDotL.mul(0.55).add(0.3).mul(sunShade.mul(0.7).add(0.3)).toVar();
+      const foamSun = foamNDotL.mul(0.55).add(0.3).mul(sunShade.mul(0.7).add(0.3)).toVar();
       const foamSky = (mix(this.uHorizonColor, this.uSkyColor, 0.45) as any).mul(0.42).toVar();
-      const foamColor = this.uFoamColor
-        .mul(bubbles)
-        .mul(
-          (this.uSunColor as any)
-            .mul(foamSun)
-            .mul(this.uLightLevel.min(1.25))
-            .add(foamSky),
-        )
+      const foamLight = (this.uSunColor as any)
+        .mul(foamSun)
+        .mul(this.uLightLevel.min(1.25))
+        .add(foamSky)
         .toVar();
+      const foamColor = this.uFoamColor.mul(bubbles).mul(foamLight).toVar();
+
+      // The aerated layer: the same light on a pale turquoise — water seen
+      // through bubbles, Crest's bubble colour (0.64, 0.83, 0.82) — at a
+      // fraction of the foam's albedo. It replaces part of the transmitted body,
+      // never the reflection, so it shows most looking down into the surf.
+      //
+      // Added rather than mixed in. Replacing the body with a fixed pale colour
+      // turned the bubble cloud under every deep-water whitecap into a grey disc:
+      // the bubbles brighten the water they are in, they do not repaint it.
+      const aeratedLift = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(0.34);
+      litBody.addAssign(aeratedLift.mul(aeration));
 
       // Foam kills the specular under it. Bubbles are a diffuse rough medium, so a
       // mirror highlight sitting on top of a whitecap is the single most obvious
-      // tell that the foam is a decal — and at 15 m/s it happens across half the
-      // frame. Not driven fully to zero: the wet film between bubbles does still
-      // glint.
+      // tell that the foam is a decal. Not driven fully to zero: the wet film
+      // between bubbles does still glint.
       // Where water meets sand it does so at a few centimetres' thickness, and
       // the mesh carrying it cannot follow sand that closely: the edge where the
       // two triangulations cross is a staircase. Fading the reflection and the

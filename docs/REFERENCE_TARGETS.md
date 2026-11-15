@@ -49,6 +49,43 @@ can be judged against a concrete picture rather than taste.
 | Vegetation edge is ragged scrub and plants, not a lawn | Improved this pass, still a uniform band from the sea |
 | Strong sunny contrast, soft blue aerial haze on far islands | Good |
 
+## Shore break and sea foam (Sea of Thieves, with real surf as the ground truth)
+
+| Reference does | We do (2026-11-15) |
+|---|---|
+| Foam is never one flat white. Each patch has a dense core, raft rims, and lace and threads at its edges, stretched along the wind | One feathered pattern (wind streaks, raft rims, bubbles) under every foam source, where the amount sets the white fraction. Near and mid field good |
+| A whitecap is a small solid crest (stage A) inside a larger patch that thins as it decays (stage B) | Stage A from the crest fold, stage B from the buffer, capped and broken by a patchiness field. Strong seas at 150–300 m still show some smooth plates |
+| A breaker shoals and steepens, its face goes thin and glows green, the lip pitches forward, then a white bore runs in | Swell faded per band in the surf so the sets read. The face leans with the Iribarren number, the thin face glows, and the lip and roller go white |
+| The bore runs up the sand as a thin sheet. The uprush is fast and the backwash slow, and both leave a lacy edge | Hunt run-up with a skewed swash front, lace that thins with age, and a foam line at the front |
+| Behind the swash the sand stays dark and glossy, then dries back to matte over seconds; a foam line is stranded at the top of the run-up | A glossy film (1.6 s) over a damp darkening (12 s), with a swash mark at maximum run-up |
+
+Sources, and what each one gave:
+
+- **Crest (Wave Harmonic, MIT-licensed source).** The feathered foam threshold:
+  white = smoothstep(t, t + feather, pattern), so an amount reads as a
+  fraction of white. Also per-band wave attenuation in shallow water,
+  saturate(2h/λ).
+- **Monahan and O'Muircheartaigh (1980), and Monahan (1971).** Whitecap stages
+  A and B. Coverage against wind speed is the law the buffer's deposit rate is
+  calibrated to.
+- **Battjes (1974), the surf-similarity (Iribarren) number.**
+  ξ = tan β / √(H/L₀) separates spilling breakers (ξ < 0.5) from plunging
+  ones, and drives how far the face leans.
+- **Hunt (1959) and Stockdon et al. (2006).** Run-up R ≈ ξ·H, written here as
+  0.75·tan β·√(H·L₀). Stockdon's swash statistics set the skew between the
+  fast uprush and the slow backwash.
+- **Horizon Forbidden West (Malan, SIGGRAPH 2022 Advances course).** A breaker
+  is one cross-section animated in XYZ and slid along the wavefront, so the
+  crest runs ahead of the face beneath it. Here it is done in closed form, as
+  a shoreward lean whose compression steepens the face.
+- **Wet-sand reflectance studies (e.g. Nolet et al. 2014).** Darkening is
+  steep at low moisture and saturates. A thin water film adds gloss, not
+  darkness.
+- **Sea of Thieves (Rare's talks and screenshots).** The art target:
+  painterly foam with readable shapes, a translucent breaker face, and a
+  bright cream beach under white surf. The talks say what it does, but give
+  no formulas.
+
 ## Using this
 
 - An agent changing a look attaches a frame of ours beside the row it is aiming
