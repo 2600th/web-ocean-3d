@@ -301,6 +301,12 @@ const surfaceUv = /*@__PURE__*/ varyingProperty('vec2', 'oceanSurfaceUv');
 const WATER_IOR = 1.333;
 
 /**
+ * [underwater-look-2] Share of the wave cascades' deviation the projected
+ * refraction follows to the bed; the rest is the flat surface's. See `bent`.
+ */
+const WAVE_REFRACT_SHARE = 0.35;
+
+/**
  * cos(48.6 degrees) — the edge of Snell's window.
  *
  * Kept for reference. The window's sky lookup no longer uses it: the air-side
@@ -1615,7 +1621,15 @@ export class OceanMaterial {
       // refracting by them scrambled the lagoon floor (and its caustic web) into
       // speckle. The detail bands still shade, glint and foam.
       const refractNormal = normalize(vec3(refractSlope.x.negate(), 1, refractSlope.y.negate())).toVar();
-      const bent: any = refract(viewDir.negate(), refractNormal, 1 / WATER_IOR).toVar();
+      // [underwater-look-2] The flat surface's refraction carries the parallax;
+      // only part of the waves' deviation is added to it. Followed metres down
+      // to the bed, the full deviation moves the landing point faster than the
+      // pixel moves wherever a wave face tilts toward the camera, so the
+      // lookup folds back on itself and whole rows of the floor collapse into
+      // horizontal streaks (lagoon-caustics at wind 15, after the merge).
+      const flatBent = refract(viewDir.negate(), vec3(0, 1, 0), 1 / WATER_IOR);
+      const waveBent = refract(viewDir.negate(), refractNormal, 1 / WATER_IOR);
+      const bent: any = normalize(mix(flatBent, waveBent, WAVE_REFRACT_SHARE)).toVar();
       // NeuralSpecOcean's travel: to the bed along the bent ray, floored at a
       // 0.28 vertical component so a grazing ray does not run to infinity, and
       // never past what the depth buffer says is straight behind (a hull, a
