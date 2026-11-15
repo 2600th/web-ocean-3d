@@ -5,6 +5,7 @@ import {
   exp,
   float,
   int,
+  mix,
   mx_worley_noise_float,
   pow,
   texture,
@@ -69,8 +70,11 @@ export const DEFAULT_CAUSTICS_PARAMS: CausticsParams = {
 /** Clock wrap, seconds — long enough to be invisible, short enough for float32. */
 const CLOCK_WRAP = 3600;
 
-/** The sun tilt is clamped so a sun near the horizon cannot shear to infinity. */
+/** Sanity bound on the shear; the refracted sun cannot exceed ~1.13. */
 const MAX_TILT = 3;
+
+/** Refractive index of sea water, as everywhere else in the project. */
+const WATER_IOR = 1.333;
 
 export class Caustics {
   private readonly params: CausticsParams;
@@ -85,6 +89,11 @@ export class Caustics {
   private readonly uSurfaceY = uniform(DEFAULT_CAUSTICS_PARAMS.surfaceLevel);
   /** Metres of horizontal shear per metre of depth, from the sun's elevation. */
   private readonly uSunTilt = uniform(new THREE.Vector2(0, 0));
+  /**
+   * Red-to-blue separation of the chromatic taps, metres: a constant part plus
+   * a part per metre of depth. See `chromaticNode`.
+   */
+  private readonly uDispersion = uniform(new THREE.Vector2(0.09, 0.008));
 
   /**
    * The node graph, built exactly once. TSL functions are lazily compiled at
@@ -93,6 +102,7 @@ export class Caustics {
    */
   private readonly fn: any;
   private readonly fnLod: any;
+  private readonly fnChroma: any;
   /** The web as a function of surface xz, before depth shear and extinction. */
   private readonly surfaceFn: any;
 
@@ -229,6 +239,7 @@ export class Caustics {
     // meaningless; it has to state the level its own step length implies.
     this.fn = Fn(([worldPosition]: any) => this.field(worldPosition, null));
     this.fnLod = Fn(([worldPosition, lod]: any) => this.field(worldPosition, lod));
+    this.fnChroma = Fn(([worldPosition]: any) => this.chromaticField(worldPosition));
 
     this.setSunDirection(new THREE.Vector3(0.35, 0.62, 0.7));
   }
@@ -273,6 +284,47 @@ export class Caustics {
       const fade = exp(below.mul(this.uDepthFade).negate());
 
       return web.mul(this.uStrength).mul(fade);
+    })();
+  }
+
+  /**
+   * The same field read three times, once per colour channel, a few centimetres
+   * apart along the refracted sun's horizontal direction.
+   *
+   * Water is dispersive: blue refracts about 1.3% more than red (n = 1.343 at
+   * 450 nm against 1.331 at 650 nm), so the focus each filament forms lands at
+   * a slightly different place per wavelength and the bright lines carry a red
+   * fringe on one side and a blue one on the other. Adapted from the three-tap
+   * `caus` in abyssal-garden (MIT, (c) 2026 Maksymilian Dendura), with the
+   * separation in metres and growing with depth instead of a fixed uv offset —
+   * the spread is a property of the refracted ray's length, so a reef at 17 m
+   * fringes more than sand at 3 m.
+   *
+   * The physical spread at 17 m is ~4 cm, a tenth of a texel of the 0.42 m bake,
+   * and would be invisible; `uDispersion` exaggerates it to ~0.2 m there, which
+   * is what reads as colour at the distances the reef is seen from.
+   */
+  private chromaticField(worldPosition: any): any {
+    return (() => {
+      const p = vec3(worldPosition).toVar('causticsCP');
+      const below = this.uSurfaceY.sub(p.y).max(0.0).toVar('causticsCDepth');
+      const surfaceXZ = vec2(p.x, p.z).add(this.uSunTilt.mul(below)).toVar('causticsCXZ');
+      const coord = surfaceXZ.sub(this.uCenter).div(this.extent).add(0.5).toVar('causticsCUv');
+      const edge = coord.min(coord.oneMinus()).toVar();
+      const inside = edge.x.min(edge.y).smoothstep(0, 0.03).clamp(0, 1).toVar();
+
+      // Along the tilt where there is one; a fixed diagonal under a vertical sun,
+      // where the refracted ray has no horizontal direction to spread along.
+      const tiltLen = this.uSunTilt.length().toVar();
+      const axis = mix(vec2(0.7071, 0.7071), this.uSunTilt.div(tiltLen.max(1e-4)), tiltLen.smoothstep(0.02, 0.2));
+      const spread = this.uDispersion.x.add(this.uDispersion.y.mul(below));
+      const offset = axis.mul(spread.div(this.extent)).toVar('causticsCOff');
+
+      const r = texture(this.texture, coord.add(offset)).r;
+      const g = texture(this.texture, coord).r;
+      const b = texture(this.texture, coord.sub(offset)).r;
+      const fade = exp(below.mul(this.uDepthFade).negate());
+      return vec3(r, g, b).mul(inside).mul(this.uStrength).mul(fade);
     })();
   }
 
@@ -322,6 +374,14 @@ export class Caustics {
     return lod === null ? this.fn(worldPosition) : this.fnLod(worldPosition, lod);
   }
 
+  /**
+   * The field as an RGB triple with per-channel dispersion; see
+   * `chromaticField`. Implicit LOD, so for a surface being shaded.
+   */
+  chromaticNode(worldPosition: unknown): unknown {
+    return this.fnChroma(worldPosition);
+  }
+
   setParams(p: Partial<CausticsParams>): void {
     if (p.strength !== undefined) this.params.strength = p.strength;
     if (p.scale !== undefined) this.params.scale = p.scale;
@@ -342,16 +402,26 @@ export class Caustics {
     return this.params;
   }
 
-  /** `dir` points *toward* the sun and need not be normalised. */
+  /**
+   * `dir` points *toward* the sun (in air) and need not be normalised.
+   *
+   * The shear follows the **refracted** ray, not the one in air. Snell's law
+   * divides the horizontal component of the unit direction by 1.333, so
+   * `skyPro`'s 24-degree sun, which sheared the pattern by 2.2 m per metre of
+   * depth (the ray in air), arrives under water at 47 degrees and shears by 0.93.
+   * The difference was invisible while the field only lit the floor, and
+   * decisive once the volumetric shafts began following it: shafts slanting at
+   * the air angle lay nearly flat across the frame, where every reference shows
+   * them standing steep. The refracted elevation also never falls below
+   * 41 degrees, so the old low-sun clamp is no longer needed.
+   */
   setSunDirection(dir: THREE.Vector3): void {
-    // A sun below ~9 degrees would shear the projection arbitrarily far; clamp
-    // the elevation rather than the result so the tilt stays continuous.
-    const y = Math.max(0.15, Math.abs(dir.y));
+    const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
+    const hx = dir.x / len / WATER_IOR;
+    const hz = dir.z / len / WATER_IOR;
+    const y = Math.sqrt(Math.max(1e-4, 1 - hx * hx - hz * hz));
     const tilt = this.uSunTilt.value;
-    tilt.set(
-      clampNumber(dir.x / y, -MAX_TILT, MAX_TILT),
-      clampNumber(dir.z / y, -MAX_TILT, MAX_TILT),
-    );
+    tilt.set(clampNumber(hx / y, -MAX_TILT, MAX_TILT), clampNumber(hz / y, -MAX_TILT, MAX_TILT));
   }
 
   update(dt: number): void {
