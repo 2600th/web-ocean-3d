@@ -8,6 +8,7 @@ import {
   log2,
   mix,
   normalize,
+  pmremTexture,
   positionLocal,
   positionWorld,
   dFdx,
@@ -28,7 +29,9 @@ import { FOOTPRINT_SPACINGS } from './meshSampling';
 import {
   featherFoam,
   foamPatchiness,
+  foamCrestPatches,
   foamPattern,
+  foamStreaks,
   foamUniforms,
   setFoamDetail,
   setFoamWind,
@@ -101,6 +104,13 @@ export interface CascadeFields {
    * stage needs to turn a vertex spacing into a mip level.
    */
   resolution: number;
+  /**
+   * Shading-only slope fields below the ripple cascade's resolution. See
+   * `Spectrum.detailCascades`. Optional so a caller without them gets the old
+   * three-band surface, weighted rather than rebuilt.
+   */
+  detailDerivativeTextures?: THREE.Texture[];
+  detailTileSizes?: number[];
 }
 
 export interface OceanMaterialInputs extends CascadeFields {
@@ -182,27 +192,21 @@ export interface OceanMaterialInputs extends CascadeFields {
  */
 const MAX_CASCADES = 3;
 
+/** Detail slots the shader is built with. Matches `Spectrum.detailCascades`. */
+const MAX_DETAIL = 1;
+
 /**
- * Slope scale for the grazing-angle reflection fade, dimensionless.
+ * Rotation of the detail band's second read, radians.
  *
- * Motivated by Cox & Munk's sun-glitter measurements, which give a wind-driven
- * RMS surface slope near 0.28 at 15 m/s — but **this is not a Smith masking
- * term** and should not be read as one. A real Smith function goes to zero at
- * grazing incidence and depends on the chosen NDF; the fade below bottoms out at
- * 0.45, and it multiplies the Fresnel *blend* rather than acting as the geometry
- * factor of the microfacet BRDF. It is an art-directed approximation of what
- * masking would do, with the right shape and the wrong limit.
- *
- * The value is not Cox & Munk's either. At 0.28 the fade removes nearly the
- * whole horizon reflection, which overshoots: the derivative fields still carry
- * real slope at mid distances, so the correction would be applied twice there.
- * 0.16 leaves the far field about half its reflection, which stops it reading as
- * a white sheet, and barely touches the near field where the normals are genuine.
- *
- * Doing this properly means a slope-variance-driven roughness feeding a
- * prefiltered reflection probe, which this renderer does not have.
+ * The band's tile is half a metre at High, short enough that its repeat could be
+ * seen in the glitter at a few metres. Summing it with a copy of itself rotated
+ * by an angle that is not a rational fraction of a turn makes the sum aperiodic:
+ * the two lattices never come back into register. The band is near-isotropic
+ * (Hasselmann's spreading exponent is below 0.01 at these wavelengths), so the
+ * rotated copy is statistically the same sea. Each read is scaled by 1/sqrt(2)
+ * so the pair carries the band's slope variance once, not twice.
  */
-const GRAZING_SLOPE_SIGMA = 0.16;
+const DETAIL_ROTATION = 1.1071487; // atan(2)
 
 /**
  * The undisplaced world XZ a fragment's surface point was generated from.
@@ -229,36 +233,6 @@ const WATER_IOR = 1.333;
  * angle comes from Snell directly, which is not linear in the incidence cosine.
  */
 export const COS_CRITICAL_ANGLE = Math.sqrt(1 - 1 / (WATER_IOR * WATER_IOR));
-
-/**
- * Screen-space variance scale for specular antialiasing.
- *
- * Kaplanyan's paper derives 0.5 for a box filter over the pixel; a real
- * rasteriser's derivatives are finite differences between neighbouring pixels,
- * which already spans that footprint, so the published value is used as-is.
- */
-const SPECULAR_AA_SCREEN_SPACE_VARIANCE = 0.5;
-
-/**
- * Ceiling on how much the filter may widen `alpha^2`.
- *
- * The usual published figure is 0.18, and it is wildly wrong for the *geometric*
- * variant on this material. Water's base `alpha^2` is 3.2e-5, so 0.18 is five
- * thousand times it — that does not filter the lobe, it replaces it, and the
- * whole up-sun half of the frame turns into one white sheet.
- *
- * 0.004 caps the filtered roughness near 0.08, about ten times the base: enough
- * to integrate away the single-pixel spikes on a wave face, nowhere near enough
- * to lose the glitter's structure.
- *
- * It is now a per-axis ceiling. The distribution being filtered is genuinely
- * anisotropic — the sea varies about `uSlopeAnisotropy` times as much along the
- * wind as across it — and the filter resolves the screen-space covariance onto
- * the tangent frame before applying this, so each axis is capped against its own
- * measurement rather than both against a shared scalar. See the filtering block
- * in the fragment stage.
- */
-const SPECULAR_AA_VARIANCE_CEIL = 0.004;
 
 /**
  * Where the refracted backdrop starts and finishes yielding to the body colour,
@@ -320,6 +294,33 @@ const FOAM_BREAKUP_FAR = 520;
  * this cannot cost the far-field jitter budget the surrounding comments defend.
  */
 const FOAM_WIND_STRETCH = 2.6;
+
+/**
+ * How dense *aged* open-sea foam is drawn, as a fraction of its buffer amount.
+ *
+ * The foam buffer's sea channel is calibrated on its *mean* against Monahan's
+ * whitecap coverage (`tests/foam.spec.ts`), and it gets there by saturating:
+ * the fold regions of a 47 m swell are tens of metres wide and the deposit
+ * fills them to 1 within a few frames. Drawn at face value, every one of those
+ * patches was a flat white sheet (the critic's waves-4 and foam-3) or, far off,
+ * an opaque oval (foam-2) for as long as the 1.5 s decay held it near 1.
+ *
+ * Monahan's own distinction is the way out: the actively breaking crest (stage
+ * A) is dense, the decaying patch behind it (stage B) covers about ten times the
+ * area at a fraction of the density. The buffer's freshness channel
+ * (`Wake`, `FRESH_TAU`) says which is which, so fresh foam is drawn at full
+ * density and aged foam at this fraction, torn into web-ocean's wind streaks.
+ * 0.45 puts a saturated stage-B patch at a little under half white once the
+ * streaks have pulled it into lanes: lace with clear water through it, which is
+ * what the references show (0.55 still read as sheets in waves-4).
+ *
+ * The cost is honest and stated: at saturation the *rendered* white fraction is
+ * under half the buffer's, and the wash below 0.3 is not drawn as white at all
+ * (see `agedCover`), so the frame shows less whitecap than the coverage test
+ * measures in the buffer. The test still guards the physics (deposit and decay
+ * are unchanged); this is how the coverage is drawn.
+ */
+const AGED_FOAM_DENSITY = 0.45;
 
 const SHORE_GRADIENT_EPSILON = 12;
 
@@ -463,6 +464,20 @@ export class OceanMaterial {
    * where the cascade stops displacing geometry. See `cascadeReach`.
    */
   private readonly uMaxWavelengths: any[] = [];
+  // Detail bands, re-pointed by `setCascades` like the cascades above.
+  private readonly detailNodes: any[] = [];
+  private readonly uDetailTiles: any[] = [];
+  private readonly uDetailWeights: any[] = [];
+  /**
+   * The sky environment, prefiltered (PMREM). See `setEnvironment`.
+   *
+   * Built on a placeholder: the atmosphere creates its cube after this graph,
+   * and a PMREM node re-points by `.value` without recompiling.
+   */
+  private envNode: any = null;
+  private envPlaceholder: THREE.Texture | null = null;
+  /** 0 until a real environment is bound; the analytic gradient stands in. */
+  private readonly uEnvReady = uniform(0);
   /**
    * Metres of vertex spacing per metre of ground distance, from the mesh.
    *
@@ -782,6 +797,23 @@ export class OceanMaterial {
     this.uReflectionDistortion.value = Math.max(0, distortion);
   }
 
+  /**
+   * The sky the water reflects: the atmosphere's environment cube, which
+   * `Atmosphere.updateEnvironment` assigns to `scene.environment`.
+   *
+   * Call whenever that may have changed; it is a no-op for the same texture.
+   * The cube is prefiltered by three's PMREM chain (shared with every PBR
+   * material through PMREMNode's per-texture cache), so a rough patch of sea
+   * reflects a blurred sky and a calm one a sharp sky, as web-ocean's
+   * roughness-filtered `envCube` mips do.
+   */
+  setEnvironment(environment: THREE.Texture | null): void {
+    if (environment === null || this.envNode === null) return;
+    if (this.envNode.value === environment) return;
+    this.envNode.value = environment;
+    this.uEnvReady.value = 1;
+  }
+
   /** Must be called with the ocean mesh's world translation every frame. */
   setWorldOffset(x: number, z: number): void {
     this.uOffsetX.value = x;
@@ -837,6 +869,14 @@ export class OceanMaterial {
    */
   setCascades(fields: CascadeFields): void {
     const { displacementTextures, derivativeTextures, tileSizes, maxWavelengths } = fields;
+    const details = fields.detailDerivativeTextures ?? [];
+    const detailTiles = fields.detailTileSizes ?? [];
+    for (let i = 0; i < MAX_DETAIL; i++) {
+      const has = i < details.length;
+      this.detailNodes[i].value = has ? details[i] : derivativeTextures[derivativeTextures.length - 1];
+      this.uDetailTiles[i].value = has ? detailTiles[i] : 1;
+      this.uDetailWeights[i].value = has ? 1 : 0;
+    }
     const active = Math.min(displacementTextures.length, MAX_CASCADES);
     for (let i = 0; i < MAX_CASCADES; i++) {
       const source = Math.min(i, active - 1);
@@ -882,6 +922,18 @@ export class OceanMaterial {
       this.uMaxWavelengths.push(uniform(inputs.maxWavelengths[source]));
       this.uCascadeWeights.push(uniform(i < displacementTextures.length ? 1 : 0));
     }
+    const details = inputs.detailDerivativeTextures ?? [];
+    const detailTiles = inputs.detailTileSizes ?? [];
+    for (let i = 0; i < MAX_DETAIL; i++) {
+      const has = i < details.length;
+      this.detailNodes.push(texture(has ? details[i] : derivativeTextures[derivativeTextures.length - 1]) as any);
+      this.uDetailTiles.push(uniform(has ? detailTiles[i] : 1));
+      this.uDetailWeights.push(uniform(has ? 1 : 0));
+    }
+    // A cube that PMREMNode accepts at compile time (six faces present), so the
+    // graph compiles with the render-target sampling convention the real
+    // environment, also a cube render target, will have. See `setEnvironment`.
+    this.envPlaceholder = new THREE.CubeRenderTarget(4).texture;
 
     // ------------------------------------------------------------- vertex stage
     this.material.positionNode = Fn(() => {
@@ -1106,6 +1158,42 @@ export class OceanMaterial {
         );
       }
 
+      // The detail bands (`Spectrum.detailCascades`): centimetre and millimetre
+      // ripples, shading only. Their mean slope adds to the normal and their
+      // sub-footprint variance to the glitter's roughness, exactly as the
+      // cascades above, so far away they become sheen and up close glints.
+      // Kept apart from `lostSlopeVariance` because these short waves are
+      // spread almost evenly over every heading (Hasselmann's s falls below
+      // 0.01 under a metre), so their variance splits evenly between the axes
+      // rather than by the wind's anisotropy.
+      const lostDetailVariance = float(0).toVar();
+      const cosR = Math.cos(DETAIL_ROTATION);
+      const sinR = Math.sin(DETAIL_ROTATION);
+      for (let i = 0; i < MAX_DETAIL; i++) {
+        const weight = this.uDetailWeights[i].mul(Math.SQRT1_2);
+        const uvA = fieldXZ.div(this.uDetailTiles[i]);
+        const a = this.detailNodes[i].sample(uvA).toVar();
+        // Rotated read: sample at R^T x, and rotate the slope it returns by R.
+        const uvB = vec2(
+          fieldXZ.x.mul(cosR).add(fieldXZ.y.mul(sinR)),
+          fieldXZ.y.mul(cosR).sub(fieldXZ.x.mul(sinR)),
+        )
+          .div(this.uDetailTiles[i])
+          .add(vec2(0.37, 0.71));
+        const b = this.detailNodes[i].sample(uvB).toVar();
+        const bSlope = vec2(b.x.mul(cosR).sub(b.y.mul(sinR)), b.x.mul(sinR).add(b.y.mul(cosR)));
+        slope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
+        // Variance scales with the square of the 1/sqrt(2) weight.
+        lostDetailVariance.addAssign(
+          a.w
+            .sub(a.x.mul(a.x).add(a.y.mul(a.y)))
+            .max(0)
+            .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
+            .mul(this.uDetailWeights[i])
+            .mul(0.5),
+        );
+      }
+
       // Rain impacts, added to the wave slope before the normal is built so they
       // ride the surface rather than sitting on a plane over it.
       //
@@ -1269,33 +1357,71 @@ export class OceanMaterial {
 
       const nDotV = n.dot(viewDir).clamp(1e-3, 1).toVar();
 
-      // --- Fresnel (Schlick), F0 for an air/water interface ------------------
-      const f0 = float(0.02);
-      const oneMinus = float(1).sub(nDotV).toVar();
-      const fresnelPow = oneMinus.mul(oneMinus).mul(oneMinus).mul(oneMinus).mul(oneMinus).toVar();
-      const fresnel = f0.add(float(1).sub(f0).mul(fresnelPow)).clamp(0, 1).toVar();
-
-      // Grazing fade, standing in for the slope the normal no longer carries.
+      // --- slope statistics: LEAN, after Noniv/web-ocean (MIT, ocean.js) -------
       //
-      // Schlick's Fresnel describes one flat interface, and at a grazing angle it
-      // is very close to 1 — from 5 m up, water 400 m away is seen at under a
-      // degree, so a flat sea reflects 94% of the sky there. That is correct for
-      // a flat sea and wrong for this one. The surface has a slope distribution,
-      // and the mipmapped derivative fields plus the explicit distance flattening
-      // deliberately average it away — so the normal a distant pixel gets is the
-      // *mean* normal, which has none of the masking and shadowing the real
-      // facets do.
+      // Everything that reflects (the sun, the sky, the hull) is decided by the
+      // distribution of facet slopes inside the pixel, not by one normal. That
+      // distribution is a mean (`slope`, from the mipmapped fields) and a 2x2
+      // covariance built from three parts, exactly as web-ocean builds `cov`:
       //
-      // The consequence was that everything past the near field went to a sheet
-      // of white sky, and it read as foam even though the foam mask there is
-      // empty. See `GRAZING_SLOPE_SIGMA` for why this is not the Smith term it
-      // resembles.
-      const maskedGrazing = nDotV
-        .div(nDotV.add(GRAZING_SLOPE_SIGMA))
-        .mul(0.55)
-        .add(0.45)
+      //  - **unresolved**: roughness below the finest band, 0.0024 per axis at
+      //    this material's default roughness (web-ocean `waterCol.w`), plus the
+      //    0.0035 it ramps in from 30 to 500 m "to reach Cox-Munk-like totals in
+      //    the far sheen";
+      //  - **lost to filtering**: E[s^2] - E[s]^2 from the mip chains (LEAN). The
+      //    geometric cascades split theirs along/across the wind by the Cox-Munk
+      //    ratio, because only the isotropic second moment is stored; the
+      //    near-isotropic detail bands split theirs evenly;
+      //  - **screen-space**: the change of mean slope across the pixel, from its
+      //    derivatives (web-ocean's specular anti-aliasing), capped at 0.03 as
+      //    web-ocean caps it.
+      //
+      // Built in the wind frame, where a wind sea's slope distribution is
+      // diagonal by symmetry, and rotated to world xz.
+      const windU = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
+      const shareU = this.uSlopeAnisotropy.div(this.uSlopeAnisotropy.add(1)).toVar();
+      const roughScale = this.uRoughness.div(0.075).pow(2).toVar();
+      const unresolved = float(0.0024)
+        .mul(roughScale)
+        .add(viewDistance.smoothstep(30, 500).mul(0.0035))
         .toVar();
-      fresnel.mulAssign(maskedGrazing);
+      const varU = unresolved.add(lostSlopeVariance.mul(shareU)).add(lostDetailVariance.mul(0.5)).toVar();
+      const varC = unresolved
+        .add(lostSlopeVariance.mul(shareU.oneMinus()))
+        .add(lostDetailVariance.mul(0.5))
+        .toVar();
+      const slopeCov = vec3(
+        varU.mul(windU.x.mul(windU.x)).add(varC.mul(windU.y.mul(windU.y))),
+        varU.mul(windU.y.mul(windU.y)).add(varC.mul(windU.x.mul(windU.x))),
+        varU.sub(varC).mul(windU.x.mul(windU.y)),
+      ).toVar();
+      const dSlopeX = dFdx(slope).toVar();
+      const dSlopeY = dFdy(slope).toVar();
+      const screenCov = vec3(
+        dSlopeX.x.mul(dSlopeX.x).add(dSlopeY.x.mul(dSlopeY.x)),
+        dSlopeX.y.mul(dSlopeX.y).add(dSlopeY.y.mul(dSlopeY.y)),
+        dSlopeX.x.mul(dSlopeX.y).add(dSlopeY.x.mul(dSlopeY.y)),
+      )
+        .mul(0.5)
+        .toVar();
+      slopeCov.addAssign(screenCov.mul(float(0.03).div(screenCov.x.max(screenCov.y).max(1e-8)).min(1)));
+
+      // --- Fresnel ---------------------------------------------------------------
+      //
+      // web-ocean's: Schlick (F0 0.02, n = 1.333) on a normal flattened 45% toward
+      // vertical, "the long-wave facet plus the grazing-angle statistics of
+      // everything finer (visible facets at grazing incidence stay highly
+      // reflective)". It replaces the `GRAZING_SLOPE_SIGMA` fade that stood here,
+      // which existed because the reflection used to be a fixed horizon colour:
+      // at a grazing view that colour is the brightest in the sky, so the far sea
+      // went white and had to be held down by hand. The reflection below follows
+      // the real reflected ray into the environment, tilted toward the facets a
+      // grazing eye actually sees, so the far sea reflects the greyer sky above
+      // the horizon by itself and the fade has nothing left to correct.
+      const nFresnel = normalize(mix(n, vec3(0, 1, 0), 0.45)).toVar();
+      const oneMinus = float(1).sub(nFresnel.dot(viewDir).clamp(0, 1)).toVar();
+      const fresnelPow = oneMinus.mul(oneMinus).mul(oneMinus).mul(oneMinus).mul(oneMinus).toVar();
+      const fresnel = fresnelPow.mul(0.98).add(0.02).clamp(0, 1).toVar();
 
       // --- transmitted colour -------------------------------------------------
       //
@@ -1530,319 +1656,166 @@ export class OceanMaterial {
       );
 
       // --- reflection ----------------------------------------------------------
-      // The analytic sky gradient is kept as the base layer, not replaced. It is
-      // what fills the horizon, where a planar reflection has nothing to offer
-      // and where its texture runs out anyway; the mirrored scene is composited
-      // over it wherever it actually contains something.
-      const reflectDir = viewDir.negate().reflect(n).toVar();
+      //
+      // **The sky comes from the environment, along the true reflected ray.**
+      // Ported from web-ocean (ocean.js, "sky reflection"). The surface used to
+      // take its sky from the planar mirror: a flat plane at y = 0, sampled at a
+      // screen offset of `n.xz * 0.09`. A facet tilted by a slope of 0.2 turns the
+      // reflected ray through 23 degrees; that offset moved the lookup by a few
+      // dozen pixels. So every ripple reflected nearly the same patch of sky, and
+      // the near water read as a mirror with a wobble: the "paint-blob" sky and
+      // "jelly-like mottling" of waves-1 and reflections-1.
+      //
+      // Following web-ocean exactly:
+      //  - at grazing angles the *visible* facets are biased toward the viewer
+      //    (projected area and masking), so the effective normal tilts toward the
+      //    eye by `0.32 sigma_v` as the view drops below about 2.5 sigma_v, and
+      //    sees higher, greyer sky;
+      //  - a ray that still points into the sea is folded back up, keeping 40%
+      //    of its depth, rather than sampling the ground half of the cube;
+      //  - the lookup is blurred by the sub-pixel slope spread `sig`: here the
+      //    PMREM roughness whose GGX lobe matches a slope RMS of `sig`
+      //    (alpha = sqrt(2) sig, roughness = sqrt(alpha)).
+      const sig = slopeCov.x.add(slopeCov.y).mul(0.5).max(1e-6).sqrt().toVar();
+      const viewFlat = normalize(vec3(viewDir.x, 0, viewDir.z).add(vec3(1e-5, 0, 0))).toVar();
+      const sigV = viewFlat.x
+        .mul(viewFlat.x)
+        .mul(slopeCov.x)
+        .add(viewFlat.z.mul(viewFlat.z).mul(slopeCov.y))
+        .add(viewFlat.x.mul(viewFlat.z).mul(slopeCov.z).mul(2))
+        .max(1e-6)
+        .sqrt()
+        .toVar();
+      const grazingA = viewDir.y
+        .max(1e-3)
+        .div(float(1).sub(viewDir.y.mul(viewDir.y)).max(1e-6).sqrt().max(1e-3))
+        .div(sigV.mul(1.4142))
+        .toVar();
+      const tilt = sigV.mul(0.32).mul(float(1).sub(grazingA.smoothstep(0, 2.5))).toVar();
+      const nReflect = normalize(n.add(viewFlat.mul(tilt))).toVar();
+      const rRaw = viewDir.negate().reflect(nReflect).toVar();
+      const reflectDir = normalize(
+        vec3(rRaw.x, rRaw.y.abs().mul(0.4).add(rRaw.y.max(0).mul(0.6)), rRaw.z),
+      ).toVar();
+      const envRoughness = sig.mul(1.4142).clamp(0.0, 1).sqrt().toVar();
+      this.envNode = pmremTexture(this.envPlaceholder!, reflectDir, envRoughness) as any;
       const skyBlend = reflectDir.y.clamp(0, 1).sqrt().toVar();
-      const reflection = mix(this.uHorizonColor, this.uSkyColor, skyBlend).toVar();
+      const analyticSky = mix(this.uHorizonColor, this.uSkyColor, skyBlend);
+      const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady).toVar();
 
       if (planar !== null) {
-        // The mirror is a flat plane; the water is not. Offsetting the lookup by
-        // the surface normal is what makes the reflection ripple with the waves
-        // rather than sitting on them like a decal. Scaled down with distance for
-        // the same reason the refraction offset is: a fixed screen-space offset
-        // is metres at the horizon and millimetres underfoot.
+        // **Objects only from the planar mirror.** The hull, the island and the
+        // floats are what a planar reflector is for (see `Reflections`): it has
+        // the whole scene, including what is above the frame. Its sky would be
+        // the flat-mirror sky the environment lookup above replaces, so the dome
+        // is kept out of it and its alpha is object coverage, premultiplied
+        // into the colour by the transparent clear.
+        //
+        // Offset by the normal so an object's reflection ripples with the waves.
+        // Scaled down with distance because a fixed screen offset is metres at
+        // the horizon and millimetres underfoot.
         const offset = n.xz
           .mul(this.uReflectionDistortion)
           .div(viewDistance.mul(0.05).add(1))
           .toVar();
         const rawUv = screenUV.add(offset).toVar();
+        const safeUv: any = (viewportSafeUV(rawUv) as any).toVar();
+        // Softer with sub-pixel roughness and with distance; capped because the
+        // target is already at reduced resolution.
+        const reflectionLod = sig.mul(6).add(viewDistance.mul(0.004)).clamp(0, 1.25).toVar();
+        const mirrored = planar.sample(safeUv).level(reflectionLod).toVar();
+        const objectMask: any = mirrored.a.clamp(0, 1).toVar();
 
-        // Sampled at a roughness-driven mip level, not as a sharp mirror.
-        //
-        // A mirror is what a *flat* interface does. This surface has a slope
-        // distribution the shading normal has already averaged over — a pixel a
-        // few hundred metres out covers many wavelengths — so the reflection it
-        // should show is the average over that cone of directions, which is a
-        // blurred reflection. Taking level 0 everywhere is what makes a rough sea
-        // reflect like polished metal, and it is one of the clearest tells that
-        // water is being rendered by a mirror plane.
-        //
-        // Level from the base roughness and from distance, since both widen the
-        // cone: a metre of surface at 400 m subtends far less than a pixel.
-        // Capped low on purpose. The reflection target is already at half
-        // resolution, so level 3 is sampling an 80x45 image — and averaging a
-        // bright sky into that produces visible blobs where a blurred reflection
-        // should be. Two levels is enough to take the mirror off it.
-        const reflectionLod = this.uRoughness
-          .mul(12)
-          .add(viewDistance.mul(0.004))
-          .clamp(0, 1.25)
-          .toVar();
-        const mirrored = planar.sample(viewportSafeUV(rawUv)).level(reflectionLod).toVar();
-
-        // Faded out where the lookup leaves the reflection, rather than clamped
-        // into it. A mirrored camera only covers what is in front of it, so near
-        // the horizon the offset walks the lookup off the edge — and clamping
-        // there streaks the last row of texels sideways, which showed up as a
-        // dark band lying along the horizon.
         const rEdge = rawUv.min(rawUv.oneMinus()).toVar();
         const inFrame = rEdge.x.min(rEdge.y).smoothstep(0, 0.05).clamp(0, 1).toVar();
-
-        // Also faded as the view flattens. At a grazing angle the reflected ray
-        // leaves the plane almost immediately and the planar approximation stops
-        // describing anything; the analytic sky is the better answer there, and
-        // it is also what the eye expects, since distant water reads as sky.
         const facing = nDotV.smoothstep(0.02, 0.22).toVar();
 
         reflection.assign(
-          mix(reflection, mirrored.rgb, inFrame.mul(facing).mul(this.uReflectionAmount)),
+          mix(
+            reflection,
+            mirrored.rgb.div(objectMask.max(1e-3)),
+            inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount) as any,
+          ),
         );
       }
 
       if (ssr !== null) {
-        // Layered *over* the planar reflection, not instead of it.
-        //
-        // The two fail in opposite places, which is exactly why engines composite
-        // rather than choose. A screen-space trace has the real displaced surface
-        // and gets the hull's reflection attached to the wave under it — the case
-        // planar cannot serve, since one mirror plane at y = 0 misplaces
-        // everything coming off a wave face. But it can only reflect what is
-        // already on screen, so it loses the moment the reflected object leaves
-        // the frame, and there the planar view still has it.
-        //
-        // The distance-flattened `n` is passed rather than the raw normal: the
-        // trace is far more sensitive to normal roughness than the shading is,
-        // because adjacent pixels fire rays metres apart at grazing incidence.
+        // Layered over both: a screen-space trace attaches the hull's reflection
+        // to the displaced wave it lands on, which one mirror plane at y = 0
+        // cannot. The distance-flattened normal is passed, as before.
         reflection.assign(ssr(worldPos, n, reflection));
       }
 
-      // --- sun specular: the whole microfacet BRDF, not just its NDF -----------
+      // --- sun glitter: anisotropic Gaussian slope distribution ----------------
       //
-      // This was `D * N.L * intensity` and nothing else — no Fresnel, no
-      // masking-shadowing, and no `1 / (4 (N.L)(N.V))` denominator. The NDF is
-      // normalised over the *microfacet distribution*, not over outgoing
-      // radiance, so on its own it is not a reflectance and its peak scales as
-      // `1 / (pi * a2)`. At the surface's 0.075 roughness that is a2 = 3.2e-5,
-      // so the term peaked near 10,000 before the sun's intensity multiplied it
-      // — four to five orders of magnitude of specular energy that does not
-      // exist, dumped straight into the tone mapper wherever the half-vector
-      // lined up. That is most of why the water read as white foil.
+      // web-ocean's glitter (ocean.js, "sun glitter"), replacing the anisotropic
+      // GGX that stood here. Two things change and both matter on water:
       //
-      // The three missing factors are not refinements; each removes a specific
-      // error. The visibility term is Heitz's height-correlated Smith form,
-      // which already folds in the `4 (N.L)(N.V)` denominator. Fresnel is
-      // evaluated on the *half-vector*, not the macro normal, because that is
-      // the facet actually doing the reflecting.
-      const halfVector = normalize(viewDir.add(sunDir)).toVar();
-      const nDotH = n.dot(halfVector).clamp(0, 1).toVar();
-      const nDotL = n.dot(sunDir).clamp(0, 1).toVar();
+      //  - **The distribution is the slope statistics themselves.** A Gaussian in
+      //    slope space with mean `slope` and covariance `slopeCov` (the LEAN
+      //    form), so the lobe is exactly as wide, as elongated and along the same
+      //    axis as the facets inside the pixel. GGX's long tail is right for a
+      //    rough solid and wrong for a sea, whose slopes are close to Gaussian
+      //    (Cox & Munk); the tail is what spread the glitter into a white sheet.
+      //  - **The covariance carries the screen-space term in full**, cross term
+      //    included, instead of a per-axis approximation on a tangent frame. That
+      //    is the specular anti-aliasing that removes the stair-stepped squares:
+      //    a pixel whose slope changes across it gets a lobe covering the change.
+      //
+      // `D = pdf(h - s) / h_y^4` turns the slope pdf into a normal distribution
+      // over the flat macro-surface; Smith masking for a Gaussian slope
+      // distribution (Beckmann's rational fit) per direction; Fresnel on the
+      // half-vector. Against the macro-surface the cosines are `V.y` and `L.y`,
+      // and the sun's `N.L` cancels against the BRDF's.
+      const sunDirEarly = normalize(this.uSunDirection).toVar();
+      const halfVector = normalize(viewDir.add(sunDirEarly)).toVar();
+      const hSlope = vec2(halfVector.x, halfVector.z).negate().div(halfVector.y.max(1e-3)).toVar();
+      const dSlope = hSlope.sub(slope).toVar();
+      const covDet = slopeCov.x.mul(slopeCov.y).sub(slopeCov.z.mul(slopeCov.z)).max(1e-10).toVar();
+      const mahalanobis = dSlope.x
+        .mul(dSlope.x)
+        .mul(slopeCov.y)
+        .add(dSlope.y.mul(dSlope.y).mul(slopeCov.x))
+        .sub(dSlope.x.mul(dSlope.y).mul(slopeCov.z).mul(2))
+        .div(covDet)
+        .toVar();
+      const slopePdf = mahalanobis.mul(-0.5).exp().div(covDet.sqrt().mul(2 * Math.PI)).toVar();
+      const hy2 = halfVector.y.mul(halfVector.y).toVar();
+      const distribution = slopePdf.div(hy2.mul(hy2).max(1e-6)).toVar();
+      const smithLambda = (w: any): any => {
+        const xz2 = w.x.mul(w.x).add(w.z.mul(w.z)).max(1e-8);
+        const il = xz2.inverseSqrt();
+        const ax = w.x.mul(il);
+        const az = w.z.mul(il);
+        const sig2 = ax
+          .mul(ax)
+          .mul(slopeCov.x)
+          .add(az.mul(az).mul(slopeCov.y))
+          .add(ax.mul(az).mul(slopeCov.z).mul(2));
+        const a = w.y.mul(il).max(1e-3).div(sig2.mul(2).max(1e-7).sqrt()).toVar();
+        const lambda = float(1)
+          .sub(a.mul(1.259))
+          .add(a.mul(a).mul(0.396))
+          .div(a.mul(3.535).add(a.mul(a).mul(2.181)));
+        return a.greaterThanEqual(1.6).select(float(0), lambda);
+      };
+      const shadowing = float(1)
+        .div(float(1).add(smithLambda(viewDir)).add(smithLambda(sunDirEarly)))
+        .toVar();
       const vDotH = viewDir.dot(halfVector).clamp(0, 1).toVar();
-
-      // Geometric specular antialiasing.
-      //
-      // **Not** Kaplanyan et al.'s NDF filtering, which an earlier version of
-      // this comment claimed. That method filters the distribution in half-vector
-      // slope space and carries the full anisotropic covariance; this takes
-      // derivatives of the final shading normal and adds their scalar magnitude
-      // to `alpha^2`, which is the cheaper geometric variant that shipped in
-      // Frostbite and Unity's HDRP. It is a real technique with a real
-      // derivation, it is just a different one, and it throws away the covariance
-      // — so it cannot know that a pixel's normal varies more along the wind than
-      // across it, which for this surface is precisely the interesting part.
-      //
-      // Sun glitter on water is the hardest case there is for a narrow specular
-      // lobe. The surface carries metre-scale slope detail, a pixel a hundred
-      // metres out covers many wavelengths of it, and the shading normal is an
-      // average — so wherever a wave face happens to line the half-vector up
-      // exactly, one pixel gets the full peak of a lobe that should have been
-      // integrated over the whole footprint. That is what the two blown-out
-      // hotspots were, and no amount of tuning the roughness fixes it: raising it
-      // kills the glitter everywhere, lowering it makes the spikes worse.
-      //
-      // The fix is to widen the lobe by the *variance of the normal across the
-      // pixel*, which the screen-space derivatives measure directly. Where the
-      // normal is smooth this adds nothing; where a pixel spans a lot of slope it
-      // broadens the lobe to cover what it is actually looking at, which is the
-      // definition of correct filtering rather than a hack.
-      // Resolved onto the tangent frame further down, once that frame exists —
-      // see the filtering block below `aspect`. These two are the raw material.
-      const dNdx = dFdx(n).toVar();
-      const dNdy = dFdy(n).toVar();
-
-      const alphaBase = this.uRoughness.mul(this.uRoughness).toVar();
-
-      // D — anisotropic Trowbridge-Reitz.
-      //
-      // The isotropic form gives a round highlight, and sun glitter on water is
-      // not round: it is a track drawn *toward the viewer*, perpendicular to the
-      // crests. That shape comes straight out of the slope distribution being
-      // wider along the wind than across it — see `uSlopeAnisotropy` — so the NDF
-      // has to carry two roughnesses rather than one. No amount of tuning a
-      // single roughness produces it.
-      //
-      // Burley's form: with the half-vector resolved onto the tangent frame, the
-      // denominator is `(Ht/at)^2 + (Hb/ab)^2 + Hn^2`, and the isotropic GGX falls
-      // out when at == ab.
-      // The tangent frame has to be orthonormal *to the shading normal*, not to
-      // world up.
-      //
-      // Taking the wind axis and its horizontal perpendicular directly gives a
-      // basis that is orthonormal only where the surface happens to be flat. On
-      // any tilted wave — which is the entire subject here — `H.T`, `H.B` and
-      // `H.N` are then coordinates in a non-orthogonal basis, the sum of squares
-      // in the denominator is not the squared length of anything, and the NDF
-      // stops being normalised. It over-reports on wave faces, which is where a
-      // sun track lives.
-      //
-      // Gram-Schmidt: project the wind onto the tangent plane and re-normalise.
-      // The fallback matters at the poles of that projection — a wave face
-      // perpendicular to the wind — where the projection length goes to zero.
-      const windWorld = vec3(this.uWindAxis.x, 0, this.uWindAxis.y).toVar();
-      const projected = windWorld.sub(n.mul(n.dot(windWorld))).toVar();
-
-      // The fallback has to be an axis the normal cannot be parallel to, and it
-      // has to be chosen *before* projecting rather than blended after.
-      //
-      // Blending two unnormalised projections is not a fallback: near the
-      // degenerate direction both are short and they can cancel, which leaves a
-      // zero tangent and a NaN frame on a thin ring of wave faces. Picking world
-      // X or Z by whichever the normal is less aligned with guarantees a
-      // projection of at least 1/sqrt(2) before normalisation.
-      const fallbackAxis = n.x
-        .abs()
-        .lessThan(n.z.abs())
-        .select(vec3(1, 0, 0), vec3(0, 0, 1))
-        .toVar();
-      const fallback = fallbackAxis.sub(n.mul(n.dot(fallbackAxis))).toVar();
-      const tangent = normalize(
-        projected.length().greaterThan(0.05).select(projected, fallback),
-      ).toVar();
-      const bitangent = normalize(n.cross(tangent)).toVar();
-      // Fourth root, not square root.
-      //
-      // `uSlopeAnisotropy` is a ratio of slope *variances*, and variance goes as
-      // alpha squared — so scaling alpha by sqrt(R) one way and 1/sqrt(R) the
-      // other makes the variance ratio R^2, not R. At the measured 1.5 that is
-      // 2.25: the track came out half again as stretched as the sea it is
-      // supposed to be describing. R^(1/4) gives alphaT/alphaB = sqrt(R) and a
-      // variance ratio of exactly R, with the geometric mean of the two
-      // roughnesses preserved at the isotropic value.
-      const aspect = this.uSlopeAnisotropy.pow(0.25).toVar();
-
-      // Specular antialiasing, resolved on the *anisotropic* frame.
-      //
-      // This is the fix for the single most visible defect in the gallery: hard
-      // white blobs across the mid-field of `clear-day.png`, scratchy stripes in
-      // `island.png`, dark speckle holes in `sunset.png`. One cause, three
-      // appearances.
-      //
-      // What stood here added a **scalar** to `alpha^2` and only then split the
-      // result into `alphaT` and `alphaB`, which is the geometric variant
-      // Frostbite and HDRP ship and is honest about what it discards: the
-      // covariance. That matters more on this surface than on almost any other,
-      // because a pixel of wind-driven sea does not vary equally in every
-      // direction — it varies about `uSlopeAnisotropy` times as much along the
-      // wind as across it. Filtering it isotropically and *then* stretching the
-      // result by the aspect ratio widens the lobe in proportion to the
-      // roughness rather than in proportion to the measured variance, so it
-      // over-filters across the wind and under-filters along it. Under-filtering
-      // along the wind is what leaves the blobs.
-      //
-      // Kaplanyan et al. (2016) filter the distribution in slope space and carry
-      // the full 2x2 covariance. This carries its diagonal in the tangent frame,
-      // which is where the sea's covariance is very nearly diagonal by
-      // construction — the frame is built on the wind axis, and the wind axis is
-      // the principal axis of the slope distribution. The off-diagonal term the
-      // full method would add is what remains after that alignment, and it is
-      // small.
-      //
-      // `dN` is tangential to `n`, so its components on T and B are exactly the
-      // per-axis slope changes; `varT + varB` recovers the scalar this replaces.
-      const dT = vec2(dNdx.dot(tangent), dNdy.dot(tangent)).toVar();
-      const dB = vec2(dNdx.dot(bitangent), dNdy.dot(bitangent)).toVar();
-      const varT = dT.dot(dT).mul(SPECULAR_AA_SCREEN_SPACE_VARIANCE).toVar();
-      const varB = dB.dot(dB).mul(SPECULAR_AA_SCREEN_SPACE_VARIANCE).toVar();
-
-      // The sub-footprint variance splits along the same axes, because it is the
-      // same distribution seen at a smaller scale. `lostSlopeVariance` is the
-      // total over both axes and the ratio between them is `uSlopeAnisotropy` by
-      // definition, so `R/(1+R)` and `1/(1+R)` divide it exactly. At R = 1 each
-      // axis takes half, which reproduces the isotropic behaviour this replaces.
-      const ratio = this.uSlopeAnisotropy.toVar();
-      const lostShare = ratio.div(ratio.add(1)).toVar();
-      const lostT = lostSlopeVariance.mul(lostShare).toVar();
-      const lostB = lostSlopeVariance.mul(lostShare.oneMinus()).toVar();
-
-      // Widen alpha^2, not alpha: variance is a second moment. For GGX the slope
-      // variance is `alpha^2 / 2`, so a slope variance `v` enters as `2v`.
-      //
-      // The ceiling applies to the screen-space term only, and that asymmetry is
-      // deliberate. It exists because the published screen-space constant is five
-      // thousand times water's own alpha^2 and needed reining in; `lostT`/`lostB`
-      // are measured slope variances already in the right units, and capping them
-      // would throw the correction away exactly where the footprint is widest and
-      // it matters most.
-      const alphaT = alphaBase
-        .mul(aspect)
-        .pow(2)
-        .add(varT.mul(2).min(SPECULAR_AA_VARIANCE_CEIL))
-        .add(lostT.mul(2))
-        .min(1)
-        .sqrt()
-        .toVar();
-      const alphaB = alphaBase
-        .div(aspect)
-        .pow(2)
-        .add(varB.mul(2).min(SPECULAR_AA_VARIANCE_CEIL))
-        .add(lostB.mul(2))
-        .min(1)
-        .sqrt()
-        .toVar();
-
-      const hT = halfVector.dot(tangent).div(alphaT).toVar();
-      const hB = halfVector.dot(bitangent).div(alphaB).toVar();
-      const aniDenom = hT.mul(hT).add(hB.mul(hB)).add(nDotH.mul(nDotH)).toVar();
-      const distribution = float(1)
-        .div(
-          alphaT
-            .mul(alphaB)
-            .mul(aniDenom.mul(aniDenom))
-            .mul(Math.PI)
-            .max(1e-9),
-        )
-        .toVar();
-
-      // V — height-correlated Smith visibility, **anisotropic to match D**.
-      //
-      // Pairing an anisotropic distribution with an isotropic masking term is not
-      // a partial implementation, it is an unmatched BRDF: the two describe
-      // different microsurfaces, and the mismatch shows up as energy at exactly
-      // the grazing angles a stretched glitter track occupies. Heitz's
-      // anisotropic form resolves each direction onto the same tangent frame the
-      // distribution uses.
-      const lengthV = vec3(
-        alphaT.mul(viewDir.dot(tangent)),
-        alphaB.mul(viewDir.dot(bitangent)),
-        nDotV,
-      )
-        .length()
-        .toVar();
-      const lengthL = vec3(
-        alphaT.mul(sunDir.dot(tangent)),
-        alphaB.mul(sunDir.dot(bitangent)),
-        nDotL,
-      )
-        .length()
-        .toVar();
-      const visibility = float(0.5)
-        .div(nDotL.mul(lengthV).add(nDotV.mul(lengthL)).max(1e-6))
-        .toVar();
-
-      // F — Schlick on the half-vector, F0 for an air/water interface.
       const oneMinusVH = float(1).sub(vDotH).toVar();
-      const vhPow = oneMinusVH
-        .mul(oneMinusVH)
-        .mul(oneMinusVH)
-        .mul(oneMinusVH)
-        .mul(oneMinusVH)
-        .toVar();
-      const fresnelSpecular = f0.add(float(1).sub(f0).mul(vhPow)).toVar();
+      const vhPow = oneMinusVH.mul(oneMinusVH).mul(oneMinusVH).mul(oneMinusVH).mul(oneMinusVH).toVar();
+      const fresnelSpecular = vhPow.mul(0.98).add(0.02).toVar();
+      const nDotL = n.dot(sunDirEarly).clamp(0, 1).toVar();
 
       const specular = this.uSunColor
-        .mul(distribution.mul(visibility).mul(fresnelSpecular).mul(nDotL))
+        .mul(
+          distribution
+            .mul(shadowing)
+            .mul(fresnelSpecular)
+            .div(viewDir.y.max(0.02).mul(4))
+            .mul(sunDirEarly.y.greaterThan(0).select(float(1), float(0))),
+        )
         .mul(this.uSunIntensity)
         .toVar();
 
@@ -1954,6 +1927,8 @@ export class OceanMaterial {
       const accumulated = float(0).toVar();
       /** How completely the accumulation buffer covers this fragment, 0..1. */
       const buffered = float(0).toVar();
+      /** How recently the buffered foam was made, 0..1. See `Wake`'s `FRESH_TAU`. */
+      const freshFoam = float(0).toVar();
       if (foam !== null) {
         const foamUvw = worldPos.xz.sub(this.uFoamCenter).div(foam.extent).add(0.5).toVar();
 
@@ -1964,60 +1939,48 @@ export class OceanMaterial {
         const inside = edge.x.min(edge.y).smoothstep(0, 0.02).clamp(0, 1).toVar();
         buffered.assign(inside);
 
-        accumulated.assign(this.wakeNode.sample(foamUvw).r.clamp(0, 1).mul(inside).mul(this.uFoamStrength));
+        const foamTap = this.wakeNode.sample(foamUvw).toVar();
+        accumulated.assign(foamTap.r.clamp(0, 1).mul(inside).mul(this.uFoamStrength));
+        freshFoam.assign(foamTap.b.clamp(0, 1).mul(inside));
       }
 
-      // Where the buffer reaches, the buffer *is* the whitecaps.
+      // Where the buffer reaches, the buffer *is* the whitecaps: it carries the
+      // persistence the instantaneous crest mask cannot. Past its 420 m square
+      // the crest mask is all there is, faded in exactly as the buffer fades out.
       //
-      // These two are not two kinds of foam, they are two implementations of one
-      // kind, and for a long time both ran everywhere: every breaking crest was
-      // painted twice and `max` of the two can only ever be the more generous.
-      // The buffer is the better answer wherever it has data — it carries
-      // persistence — but it only covers a 420 m square around the camera. Past
-      // that the instantaneous mask is all there is, so it is faded in exactly
-      // as the buffer's own edge fades out and the two never overlap.
+      // **web-ocean's cover model** (`js/wgsl/ocean.js`, `---- foam ----`):
       //
-      // **Stage A and stage B.** Inside the buffer the instantaneous mask comes
-      // back, but not as a second coat of the same paint: it marks where the
-      // crest is breaking *now*, which is the only part of a whitecap that is
-      // solid white (Monahan's stage A — about a tenth of the area of the
-      // decaying stage-B patch behind it). The buffer is the stage-B patch, and
-      // it saturates: where a fold region keeps depositing it sits at 1 over
-      // the whole footprint, and read straight that footprint is a flat white
-      // oval. So the patch is capped short of solid and broken by the
-      // patchiness field into denser rafts and thinner lanes, and only the
-      // actively breaking crest inside it reaches solid. Gated on there being a
-      // patch at all, so the crest mask never paints where the buffer has none.
-      const openSea = float(0).toVar();
-      const openRaw = accumulated.max(crestAmount.mul(buffered.oneMinus())).toVar();
-      If(openRaw.greaterThan(0.001), () => {
-        const patch = foamPatchiness(fieldXZ.sub(this.uFoamDrift)).toVar();
-        // Up close the lanes between rafts are drawn by the pattern, so the
-        // patchiness only needs to thin them (floor 0.32). Far off it has to do
-        // that work alone, so its floor drops and a saturated plate splits into
-        // denser and sparser parts.
-        const lanes = mix(float(0.1), float(0.32), smoothstepDownClamped(viewDistance, 120, 360));
-        const stageB = accumulated.mul(mix(lanes, float(0.86), patch));
-        // Stage A is a strip along the breaking crest a metre or two wide. The
-        // crest mask is not that strip in a strong sea. At 18 m/s it was measured
-        // saturated at 1 across whole fold regions, many metres wide. Taken
-        // straight, every buffered patch became one flat white oval, and the
-        // patchiness and the stage-B cap above changed nothing, because stage A
-        // won the max everywhere. So stage A takes the patchiness too. Its
-        // densest cores stay solid and the rest falls to lace the pattern can
-        // tear. Its amount also falls with distance. Past ~200 m the pattern has
-        // only its streaks left, and an amount near 1 clears every one of them.
-        const stageAReach = mix(float(0.6), float(0.95), smoothstepDownClamped(viewDistance, 70, 240));
-        const stageA = crestAmount
-          .mul(accumulated.smoothstep(0.05, 0.3))
-          .mul(stageAReach)
-          .mul(mix(float(0.45), float(1), patch));
-        const beyond = crestAmount.mul(buffered.oneMinus()).mul(mix(float(0.2), float(0.9), patch));
-        // In the surf the swell that folded to make these whitecaps has been
-        // handed over to the breakers (`surfFftFade`), so its whitecaps go with
-        // it; the buffer deposited them from the full open-sea field.
-        openSea.assign(stageB.max(stageA).max(beyond).mul(mix(float(0.25), float(1), surfSwellLeft)));
-      });
+      //   cover  = max(aged, freshNow * (1 - 0.7 w)) + freshHistory * 0.6
+      //   cover *= mix(streaks * 1.5, 1, clamp(freshHistory * 2 + freshNow))
+      //
+      // with `w` its clipmap weight (our `buffered`), `aged` its slow channel
+      // (our buffer R, drawn at `AGED_FOAM_DENSITY`), `freshHistory` its fast
+      // channel (our buffer B, `Wake`'s freshness) and `freshNow` the crest
+      // mask. Fresh foam is dense and stays where it broke; aged foam is torn
+      // into the wind's lanes.
+      //
+      // Kept as two covers rather than web-ocean's one with a mix weight,
+      // because ours needs one more step: fresh foam is broken into
+      // whitecap-sized patches (`foamCrestPatches`), since our fold regions are
+      // tens of metres wide where web-ocean's are a few. Both need the pattern's
+      // branch for that, so they are combined there.
+      //
+      // In the surf the swell that folded to make these whitecaps has been
+      // handed over to the breakers (`surfFftFade`), so its whitecaps go with
+      // it; the buffer deposited them from the full open-sea field.
+      const surfKeep = mix(float(0.25), float(1), surfSwellLeft).toVar();
+      const crestNow = crestAmount.mul(buffered.mul(-0.7).add(1)).toVar();
+      // The bottom of the buffer's range is not foam on the surface. The
+      // windward-face term (`Wake.uWindwardRate`) keeps a wash of 0.2–0.35 over
+      // every wind-facing face (measured in the foam-buffer debug view of
+      // boat-chase and whitecaps-close), and it is in the buffer because it is
+      // in Monahan's total. Drawn as foam, through the pattern, it was the
+      // "snow-like speckle" over the whole sea that hid the wake (boat-sea-1).
+      // It is aeration, not white water, so it lifts the body below
+      // (`aeration`) and the white starts above it.
+      const agedCover = accumulated.sub(0.3).div(0.7).clamp(0, 1).mul(AGED_FOAM_DENSITY).mul(surfKeep).toVar();
+      const freshCover = crestNow.add(freshFoam.mul(0.6)).mul(surfKeep).toVar();
+      const openCover = agedCover.max(freshCover).toVar();
 
       // --- surf ----------------------------------------------------------------
       //
@@ -2182,27 +2145,48 @@ export class OceanMaterial {
 
       // --- contact foam ------------------------------------------------------
       //
-      // Foam where something pierces the surface: the hull's waterline, a buoy,
-      // a pier pile, a rock. Water churns and traps air against anything it
-      // moves past, so every real object at sea wears a ring of white. Measured
-      // from the depth buffer — the water column directly behind this pixel —
-      // rather than from any list of objects, so every prop gets it for free.
-      // Dense against the object and thinning outward, which the feather turns
-      // into a solid collar tearing into lace — not an outline.
+      // Foam where something pierces the surface: a cask, a buoy, the hull, a
+      // pile. Measured from the depth buffer — the water directly behind this
+      // pixel — rather than from any list of objects, so every prop gets it.
+      //
+      // **A ring at the waterline, not a blob over the object.** The column
+      // thickness alone cannot tell "the object comes through the surface just
+      // behind this point" from "the object's submerged side is under this
+      // point", and it was 1.3 m wide: every floater sat in a white blob and the
+      // underwater half of a cask was painted white as a hard band (the
+      // coordinator's new-flotsam0 and sbs-barrel captures). The geometry
+      // separates them. Along this pixel's ray the object is `t` away; the ray
+      // drops `t * V.y` in that distance, so that is how far *below* the
+      // surface the object point is. A waterline ring is where both are small:
+      // the object is within a few decimetres along the surface and within a
+      // few centimetres of the surface itself. Looking down onto a cask the
+      // second test leaves a thin collar round it; at a grazing angle the first
+      // leaves a band a third of a metre deep in front of it.
+      //
+      // A quarter of a metre wide and at 0.38 amount, which the threshold below
+      // draws as lace over about a third of the ring: it tears, as Water Pro's
+      // hull contact foam does, rather than closing into a collar.
+      // That cannot scale with the object's size — the depth buffer does not
+      // know it — so it is set for the smallest floaters; on the hull the bow
+      // and stern foam come from `Wake` and dwarf it.
       //
       // Seabed contact is excluded where the heightfield explains the depth:
-      // that is the shore break's job, and treating a whole shallow lagoon as an
-      // "object" would foam it edge to edge. Faded with distance because depth
-      // precision and the mask's footprint both run out past a couple of
-      // hundred metres.
-      const contactBand = smoothstepDownClamped(straightThickness, 0.02, 1.3).toVar();
+      // that is the shore break's job. Faded with distance because depth
+      // precision and the ring's footprint both run out.
+      const contactAlong = smoothstepDownClamped(straightThickness, 0.03, 0.25);
+      const contactBelow = smoothstepDownClamped(straightThickness.mul(viewDir.y.abs()), 0.03, 0.16);
       const notSeabed: any = (
         floorDepth === null
           ? float(1)
           : seabedDepth.sub(straightThickness).smoothstep(0.35, 1.2)
       ).toVar();
-      const contactReach = smoothstepDownClamped(viewDistance, 120, 260).toVar();
-      const contactAmount = contactBand.mul(contactBand).mul(notSeabed).mul(contactReach).mul(0.8).toVar();
+      const contactReach = smoothstepDownClamped(viewDistance, 80, 180).toVar();
+      const contactAmount = contactAlong
+        .mul(contactBelow)
+        .mul(notSeabed)
+        .mul(contactReach)
+        .mul(0.38)
+        .toVar();
 
       // --- the feather ----------------------------------------------------------
       //
@@ -2213,23 +2197,71 @@ export class OceanMaterial {
       // the current with the foam it belongs to, and in the surf by the
       // shoreward carry, faded out at the waterline where the ground draws the
       // same pattern in place.
-      const foamAmount = openSea.max(surf).max(contactAmount).toVar();
+      const foamAmount = openCover.max(surf).max(contactAmount).toVar();
+      // The pattern's ramp width. web-ocean uses `fwidth(pattern) + 0.03`;
+      // derivatives are undefined inside the non-uniform branch below, so the
+      // footprint is taken here and scaled by the pattern's steepest measured
+      // gradient, about 2.5 per metre at the 0.4 m sheet scale.
+      const foamFootprint = dFdx(fieldXZ).length().max(dFdy(fieldXZ).length()).toVar();
+      const foamRamp = foamFootprint.mul(2.5).min(0.25).add(0.03).toVar();
       const foamMask = float(0).toVar();
       If(foamAmount.greaterThan(0.002), () => {
         const carried = mix(this.uFoamDrift, surfAdvect, inSurf).mul(seabedSigned.smoothstep(0.3, 1.5));
-        const pattern = foamPattern(fieldXZ.sub(carried), viewDistance);
-        // As the pattern's fine scales fade to their means, from ~50 m out, its
-        // spread collapses. A threshold on a nearly constant pattern is a step:
-        // every amount over about one half clears it everywhere. Measured at
-        // 150 m in a strong sea, the buffered patches drew as flat white plates
-        // with hard rims, and no change to the amount moved them. So the
-        // feather hands over to plain coverage as the detail goes. That is the
-        // amount itself, since the feather's white fraction tracks it, scaled
-        // by the surviving streaks so a patch keeps its lanes as brightness.
-        // Its mean is the feather's, and its edge is as soft as the field.
-        const resolved = smoothstepDownClamped(viewDistance, 60, 260);
-        const coverage = foamAmount.clamp(0, 1).mul(mix(float(0.5), float(1.15), pattern.clamp(0, 1))).clamp(0, 1);
-        foamMask.assign(mix(coverage, featherFoam(foamAmount, pattern), resolved));
+        const foamXZ = fieldXZ.sub(carried).toVar();
+        const pattern = foamPattern(foamXZ, viewDistance).toVar();
+
+        // Aged open-sea foam into the wind's lanes (web-ocean's streaks near,
+        // the 5–26 m patchiness far, where 0.6 m lanes are under a pixel).
+        const streakNear = smoothstepDownClamped(viewDistance, 200, 450);
+        const lanes = mix(
+          foamPatchiness(foamXZ),
+          foamStreaks(foamXZ, viewDistance).smoothstep(0.25, 0.75),
+          streakNear,
+        ).mul(1.5);
+        const crestPatch = foamCrestPatches(foamXZ).toVar();
+        const cover = agedCover
+          .mul(lanes)
+          .max(freshCover.mul(mix(float(0.15), float(1.2), crestPatch.mul(crestPatch))))
+          .max(contactAmount)
+          .toVar();
+
+        // web-ocean's soft threshold: thin foam is a translucent film with a
+        // soft margin, dense foam opaque with a crisp edge.
+        const soft = cover.clamp(0, 1).oneMinus().mul(0.14).add(0.04);
+        const edge = cover.oneMinus();
+        const film = pattern.smoothstep(edge.sub(foamRamp).sub(soft), edge.add(foamRamp).add(soft));
+        const open = film
+          .mul(cover.smoothstep(0, 0.5))
+          .clamp(0, 1)
+          .mul(cover.smoothstep(0.3, 0.9).mul(0.32).add(0.68))
+          // Freshly broken water: a dense, almost opaque core.
+          .max(
+            freshFoam
+              .mul(crestPatch.mul(crestPatch))
+              .mul(1.3)
+              .smoothstep(0.35, 0.9)
+              .mul(pattern.add(0.25).smoothstep(0.25, 0.6))
+              .mul(0.95),
+          )
+          .toVar();
+
+        // As the pattern's scales fade to their means, from ~200 m out, its
+        // spread collapses and a threshold on it becomes a step: every patch
+        // over about one half clears it everywhere, as a flat plate with a
+        // hard rim. So the threshold hands over to plain coverage, the amount
+        // itself scaled by what survives of the pattern, with its own soft edge.
+        const resolved = smoothstepDownClamped(viewDistance, 200, 420);
+        const patternN = pattern.sub(0.29).div(0.53).clamp(0, 1);
+        const openFar = cover.clamp(0, 1).mul(mix(float(0.45), float(1.1), patternN)).clamp(0, 1).mul(0.85);
+        const openMask = mix(openFar, open, resolved);
+
+        // The surf keeps the feather: its amounts were tuned as white fractions.
+        const surfMask = mix(
+          surf.clamp(0, 1).mul(mix(float(0.5), float(1.15), patternN)).clamp(0, 1),
+          featherFoam(surf, pattern),
+          smoothstepDownClamped(viewDistance, 60, 260),
+        );
+        foamMask.assign(openMask.max(surfMask));
       });
 
       // Aerated water: the bubble cloud a few centimetres to a metre under the
@@ -2238,8 +2270,9 @@ export class OceanMaterial {
       // feather is exactly that layer — smooth, wider than the white, and gone
       // where the foam is.
       const aeration = surfAerated
-        .max(openSea.mul(0.3))
-        .max(contactAmount.mul(0.45))
+        .max(openCover.mul(0.3))
+        .max(accumulated.mul(0.25))
+        .max(contactAmount.mul(0.3))
         .clamp(0, 1)
         .mul(0.5)
         .toVar();
@@ -2327,7 +2360,9 @@ export class OceanMaterial {
         .add(specular.mul(foamMask.mul(0.88).oneMinus()).mul(edgeVisible))
         .toVar();
 
-      const withFoam = mix(surface, foamColor, foamMask).toVar();
+      // Never quite opaque: web-ocean composites at `foamMask * 0.95`, so the
+      // wave's own shading still shows through the densest foam.
+      const withFoam = mix(surface, foamColor, foamMask.mul(0.95)).toVar();
 
       // --- the surface seen from below: Snell's window and TIR ------------------
       //

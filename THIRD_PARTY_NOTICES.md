@@ -79,6 +79,20 @@ from its cloud shader, to three.js TSL:
 - `src/sky/Atmosphere.ts`
 - `src/sky/Clouds.ts`
 
+The water surface shading (LEAN slope statistics, Gaussian slope-space sun
+glitter with Smith shadowing, Fresnel on a flattened normal, the sky
+reflection's grazing tilt and fold), the capillary detail band (dispersion,
+cut-off and band gains from `js/wgsl/sim.js`), and the foam model (the
+`FOAM_TEX` pattern, the cover and soft-threshold composite, wind streaks and
+the foam-freshness channel) are ported from `js/wgsl/ocean.js` and
+`js/wgsl/sim.js`:
+
+- `src/ocean/OceanMaterial.ts`
+- `src/ocean/FoamPattern.ts`
+- `src/ocean/Spectrum.ts`
+- `src/ocean/OceanSimulation.ts`
+- `src/physics/Wake.ts`
+
 ```
 MIT License
 

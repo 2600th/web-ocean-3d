@@ -191,6 +191,16 @@ const CLOUD_LAYER = 3;
  */
 const UNDERWATER_LAYER = 4;
 
+/**
+ * Render layer for the sky dome, so the planar mirror can skip it.
+ *
+ * The water reflects the sky from the environment cube along each pixel's own
+ * reflected ray (`OceanMaterial`), and takes only *objects* from the mirror,
+ * reading their coverage from the mirror's alpha (`Reflections`). A dome drawn
+ * into the mirror would cover every texel and leave no sky to mask.
+ */
+const SKY_LAYER = 5;
+
 /** Scratch for the sea creatures' key light. */
 const _creatureSun = new THREE.Color();
 
@@ -768,6 +778,9 @@ class App {
     boot.set(0.7, 'Hanging the sky…');
     this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
+    this.atmosphere.mesh.layers.set(SKY_LAYER);
+    this.camera.layers.enable(SKY_LAYER);
+    this.reflections?.excludeLayer(this.camera, SKY_LAYER);
     // Before anything lit compiles: the cascades and the extra lights are part
     // of every lit material's shader. See `lighting/index.ts`.
     this.lighting = new LightingRig(this.scene, this.renderer, this.camera, this.atmosphere.sunLight, quality);
@@ -1642,10 +1655,12 @@ class App {
     const s = impact.strength;
     const p = impact.position;
     if (!impact.hull) {
-      // A buoy or a barrel: a patch of foam the size of what came down — no
-      // wider than the old fixed 1.2 m, which on a buoy already stamped a
-      // visibly square patch at the wake buffer's resolution.
-      this.wake.splash(p.x, p.z, Math.min(1.2, Math.max(0.6, impact.radius * 1.1)), 0.3 + 0.35 * s);
+      // A buoy or a barrel: a little foam the size of what came down. The
+      // radius follows the floater (the spray's impact radius; 0.5 m is the
+      // splash's own floor, 1.2 m the old fixed size that stamped a visibly
+      // square patch on a buoy). The amount is low because every bob of a
+      // cask re-deposits: at up to 0.75 it kept a white disc round it.
+      this.wake.splash(p.x, p.z, Math.min(1.2, Math.max(0.5, impact.radius * 1.1)), 0.15 + 0.25 * s);
       return;
     }
 
@@ -3766,6 +3781,9 @@ class App {
     // Depth-buffer distances are measured along this axis; the surface needs it
     // to convert them into distance along each pixel's own ray.
     this.water.setCameraForward(this.camera.getWorldDirection(_keyDirection2));
+    // The sky the water reflects: the atmosphere's environment cube, once it has
+    // been captured. A no-op after the first frame (same texture object).
+    this.water.setEnvironment(this.scene.environment);
 
     // --- underwater state -----------------------------------------------------
     // `submersion` is a soft band around the surface rather than a boolean, so

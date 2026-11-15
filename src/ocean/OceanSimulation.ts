@@ -4,8 +4,10 @@ import { butterflyPassNode, cMul, createFFTResources, type FFTResources } from '
 import {
   CASCADES,
   createSpectrumTexture,
+  detailCascades,
   generateInitialSpectrum,
   GRAVITY,
+  SURFACE_TENSION,
   type CascadeConfig,
   type SpectrumParams,
 } from './Spectrum';
@@ -48,6 +50,8 @@ interface PingPong {
  */
 interface Cascade {
   config: CascadeConfig;
+  /** True for a shading-only detail band: no displacement output, one atlas slot. */
+  detail: boolean;
   /** RGBA: xyz = displacement, w = foam/folding mask. */
   displacement: THREE.RenderTarget;
   /** RG = surface slope, B = Jacobian, A = |slope|^2 for variance recovery. */
@@ -72,6 +76,15 @@ export class OceanSimulation {
   private readonly renderer: THREE.WebGPURenderer;
   private readonly quad = new THREE.QuadMesh(new THREE.NodeMaterial());
   private readonly cascades: Cascade[] = [];
+  /**
+   * Shading-only bands below the ripple cascade's resolution. See
+   * `Spectrum.detailCascades`. They share the geometric cascades' atlas and
+   * butterfly passes: only the atlas gets wider, and a pass here is
+   * submission-bound (~53 us each regardless of width, see `FFT`), so the
+   * transform's pass count is unchanged. A detail band needs only pair B (the
+   * slopes), so it costs one slot rather than two.
+   */
+  private readonly details: Cascade[] = [];
   private fft: FFTResources;
 
   /**
@@ -212,6 +225,15 @@ export class OceanSimulation {
     return this.cascades.map((c) => c.derivatives.texture);
   }
 
+  /** Slope fields of the shading-only detail bands. See `details`. */
+  get detailDerivativeTextures(): THREE.Texture[] {
+    return this.details.map((c) => c.derivatives.texture);
+  }
+
+  get detailTileSizes(): number[] {
+    return this.details.map((c) => c.config.tileSize);
+  }
+
   /** Render targets themselves, for CPU readback by the buoyancy sampler. */
   get displacementTargets(): THREE.RenderTarget[] {
     return this.cascades.map((c) => c.displacement);
@@ -251,6 +273,8 @@ export class OceanSimulation {
     tileSizes: number[];
     maxWavelengths: number[];
     resolution: number;
+    detailDerivativeTextures: THREE.Texture[];
+    detailTileSizes: number[];
   } {
     return {
       displacementTextures: this.displacementTextures,
@@ -258,6 +282,8 @@ export class OceanSimulation {
       tileSizes: this.tileSizes,
       maxWavelengths: this.maxWavelengths,
       resolution: this.resolution,
+      detailDerivativeTextures: this.detailDerivativeTextures,
+      detailTileSizes: this.detailTileSizes,
     };
   }
 
@@ -315,6 +341,9 @@ export class OceanSimulation {
       this.runPass(cascade.assembleDisplacement, cascade.displacement);
       this.runPass(cascade.assembleDerivatives, cascade.derivatives);
     }
+    for (const cascade of this.details) {
+      this.runPass(cascade.assembleDerivatives, cascade.derivatives);
+    }
 
     this.renderer.setRenderTarget(previousTarget);
   }
@@ -351,22 +380,35 @@ export class OceanSimulation {
     }
   }
 
+  /** Every band in atlas order: the geometric cascades, then the detail bands. */
+  private allConfigs(): CascadeConfig[] {
+    return [...CASCADES.slice(0, this.cascadeCount), ...detailCascades(this.size)];
+  }
+
+  /** Atlas slots: two per geometric cascade (pairs A and B), one per detail band (B only). */
+  private get slotCount(): number {
+    return this.cascadeCount * 2 + detailCascades(this.size).length;
+  }
+
   private build(): void {
     const configs = CASCADES.slice(0, this.cascadeCount);
+    const details = detailCascades(this.size);
+    const bands = configs.length + details.length;
     const size = this.size;
 
     // Shared across every cascade: one spectrum atlas, one ping-pong, one
     // evolution and one transform.
-    this.h0 = createSpectrumTexture(size, this.cascadeCount, new Float32Array(
-      size * size * 4 * this.cascadeCount,
-    ));
+    this.h0 = createSpectrumTexture(size, bands, new Float32Array(size * size * 4 * bands));
     this.writeSpectra();
-    this.pair = makePingPong(size, this.cascadeCount);
-    this.evolve = this.createEvolveMaterial(configs);
+    this.pair = makePingPong(size, this.slotCount);
+    this.evolve = this.createEvolveMaterial(this.allConfigs());
     this.butterfly = this.createButterflyMaterials(this.pair);
 
     for (let i = 0; i < configs.length; i++) {
       this.cascades.push(this.buildCascade(configs[i], i));
+    }
+    for (let d = 0; d < details.length; d++) {
+      this.details.push(this.buildDetail(details[d], d));
     }
   }
 
@@ -381,13 +423,14 @@ export class OceanSimulation {
   private writeSpectra(): void {
     const size = this.size;
     const atlas = this.h0.image.data as Float32Array;
-    const configs = CASCADES.slice(0, this.cascadeCount);
+    const configs = this.allConfigs();
+    const columns = configs.length;
     for (let c = 0; c < configs.length; c++) {
       const data = generateInitialSpectrum(size, configs[c], this.params, 1337 + c * 977);
       for (let y = 0; y < size; y++) {
         atlas.set(
           data.subarray(y * size * 4, (y + 1) * size * 4),
-          (y * size * this.cascadeCount + c * size) * 4,
+          (y * size * columns + c * size) * 4,
         );
       }
     }
@@ -398,11 +441,69 @@ export class OceanSimulation {
     const size = this.size;
     return {
       config,
+      detail: false,
       displacement: makeOutputTarget(size),
       derivatives: makeOutputTarget(size),
       assembleDisplacement: this.createAssembleMaterial(index, config, 'displacement'),
       assembleDerivatives: this.createAssembleMaterial(index, config, 'derivatives'),
     };
+  }
+
+  /**
+   * A detail band: its slope field only. The displacement slot is a 1x1
+   * placeholder so the `Cascade` shape stays uniform; nothing samples it.
+   */
+  private buildDetail(config: CascadeConfig, index: number): Cascade {
+    const derivatives = makeOutputTarget(this.size);
+    // Anisotropic, unlike the geometric fields (see `makeOutputTarget`). Their
+    // argument for anisotropy 1 was that sharper sampling only adds slope
+    // variance the shading turns into noise; that held while the variance the
+    // filter discarded was thrown away. It is not any more: the material folds
+    // every mip's lost variance into the glitter's covariance (LEAN), so a
+    // coarser level does not remove sparkle, it converts it into a uniform wash.
+    // At a 10 degree view the major-axis level of this 2 mm field is ~5 mips
+    // coarser than the minor-axis one, which is exactly the difference between
+    // web-ocean's crisp glints and a white sheet. 16 taps, as web-ocean's
+    // repeat sampler (main.js `sampRepeat`, maxAnisotropy 16).
+    derivatives.texture.anisotropy = 16;
+    return {
+      config,
+      detail: true,
+      displacement: makeOutputTarget(1),
+      derivatives,
+      assembleDisplacement: new THREE.NodeMaterial(),
+      assembleDerivatives: this.createDetailMaterial(index),
+    };
+  }
+
+  /**
+   * Unpacks a detail band's slope pair from its single atlas slot.
+   *
+   * Same layout as the geometric derivative field, (dh/dx, dh/dz, J, |s|^2), so
+   * the surface treats all five fields alike. J is 1: the band displaces
+   * nothing, so it folds nothing. Alpha is the second moment, so the mip chain
+   * hands the material this band's sub-footprint slope variance (LEAN): once a
+   * pixel covers many ripples their sparkle goes into roughness instead of into
+   * aliasing. web-ocean does the same with its moments texture (sim.js `momOut`).
+   */
+  private createDetailMaterial(index: number): THREE.NodeMaterial {
+    const size = this.size;
+    const slot = this.cascadeCount * 2 + index;
+    const material = new THREE.NodeMaterial();
+    material.depthTest = false;
+    material.depthWrite = false;
+    material.fragmentNode = Fn(() => {
+      const coord = ivec2(
+        float(size).mul(uv().x).floor().toInt(),
+        float(size).mul(uv().y).floor().toInt(),
+      ).toVar();
+      const parity = float(coord.x.add(coord.y).mod(2)).mul(-2).add(1).toVar();
+      const b = textureLoad(this.pair.read.texture, ivec2(coord.x.add(int(slot * size)), coord.y))
+        .mul(parity)
+        .toVar();
+      return vec4(b.x, b.y, 1, b.x.mul(b.x).add(b.y.mul(b.y)));
+    })();
+    return material;
   }
 
   /**
@@ -422,7 +523,7 @@ export class OceanSimulation {
         source,
         this.uStage,
         direction,
-        this.cascadeCount * 2,
+        this.slotCount,
       );
       material.depthTest = false;
       material.depthWrite = false;
@@ -448,6 +549,9 @@ export class OceanSimulation {
   private createEvolveMaterial(configs: readonly CascadeConfig[]): THREE.NodeMaterial {
     const size = this.size;
     const count = configs.length;
+    // Geometric cascades own two slots each, detail bands one (pair B only).
+    const geometric = configs.filter((c) => c.detail !== true).length;
+    const slots = geometric * 2 + (count - geometric);
     const time = this.uTime;
     const deltaKs = configs.map((c) => (2 * Math.PI) / c.tileSize);
 
@@ -457,7 +561,7 @@ export class OceanSimulation {
 
     material.fragmentNode = Fn(() => {
       const coord = ivec2(
-        float(size * 2 * count).mul(uv().x).floor().toInt(),
+        float(size * slots).mul(uv().x).floor().toInt(),
         float(size).mul(uv().y).floor().toInt(),
       ).toVar();
 
@@ -466,9 +570,12 @@ export class OceanSimulation {
       // differently on the two backends this has to compile to.
       const slot = float(coord.x).div(float(size)).floor().toVar();
       const localX = coord.x.sub(slot.mul(size).toInt()).toVar();
-      const cascade = slot.div(2).floor().toVar();
+      // Slots below `2 * geometric` alternate pairs A and B; past them each
+      // slot is one detail band's pair B.
+      const isDetail = slot.greaterThan(geometric * 2 - 0.5).toVar();
+      const cascade = select(isDetail, slot.sub(geometric), slot.div(2).floor()).toVar();
       // Odd slots are pair B.
-      const inB = slot.sub(cascade.mul(2)).greaterThan(0.5);
+      const inB = isDetail.or(slot.sub(slot.div(2).floor().mul(2)).greaterThan(0.5));
 
       // The band's wavenumber step. A chain of at most two selects over
       // build-time constants — `cascadeCount` is fixed for the life of the
@@ -498,7 +605,12 @@ export class OceanSimulation {
 
       // Deep-water dispersion. Omega is deliberately not quantised to a common
       // multiple, so the surface never becomes exactly periodic in time.
-      const omega = float(GRAVITY).mul(kLen).sqrt().toVar();
+      //
+      // Detail bands add the capillary term, w^2 = g k + (sigma/rho) k^3, as
+      // web-ocean's `omegaOf` does: at 1 cm it raises the frequency by 70%, and
+      // without it the finest ripples crawl like a slowed-down swell.
+      const capillary = select(isDetail, float(SURFACE_TENSION), float(0));
+      const omega = float(GRAVITY).mul(kLen).add(capillary.mul(kLen).mul(kLen).mul(kLen)).sqrt().toVar();
       const phase = omega.mul(time).toVar();
       const expIwt = vec2(phase.cos(), phase.sin()).toVar();
       const expMinusIwt = vec2(phase.cos(), phase.sin().negate()).toVar();
@@ -645,13 +757,14 @@ export class OceanSimulation {
   }
 
   private releaseCascades(): void {
-    for (const cascade of this.cascades) {
+    for (const cascade of [...this.cascades, ...this.details]) {
       cascade.displacement.dispose();
       cascade.derivatives.dispose();
       cascade.assembleDisplacement.dispose();
       cascade.assembleDerivatives.dispose();
     }
     this.cascades.length = 0;
+    this.details.length = 0;
 
     this.h0?.dispose();
     this.pair?.read.dispose();
@@ -664,11 +777,11 @@ export class OceanSimulation {
 
 function makeTarget(
   size: number,
-  cascadeCount: number,
+  slots: number,
   filter: THREE.MagnificationTextureFilter,
   wrap: THREE.Wrapping,
 ): THREE.RenderTarget {
-  return new THREE.RenderTarget(size * 2 * cascadeCount, size, {
+  return new THREE.RenderTarget(size * slots, size, {
     type: THREE.FloatType,
     format: THREE.RGBAFormat,
     minFilter: filter,
@@ -734,16 +847,14 @@ function makeOutputTarget(size: number): THREE.RenderTarget {
 }
 
 /**
- * A ping-pong of atlas targets, `2 * cascadeCount` slots of `size` across.
- *
- * Slot `2c` is cascade c's spectra pair A and slot `2c + 1` its pair B, so one
- * set of butterfly passes steps every cascade at once. Total memory is
- * unchanged: this is the same texel count the per-cascade pairs occupied.
+ * A ping-pong of atlas targets, `slots` columns of `size` across: two per
+ * geometric cascade (slot `2c` is pair A, `2c + 1` pair B), then one per detail
+ * band (pair B only), so one set of butterfly passes steps every band at once.
  */
-function makePingPong(size: number, cascadeCount: number): PingPong {
+function makePingPong(size: number, slots: number): PingPong {
   return {
-    read: makeTarget(size, cascadeCount, THREE.NearestFilter, THREE.ClampToEdgeWrapping),
-    write: makeTarget(size, cascadeCount, THREE.NearestFilter, THREE.ClampToEdgeWrapping),
+    read: makeTarget(size, slots, THREE.NearestFilter, THREE.ClampToEdgeWrapping),
+    write: makeTarget(size, slots, THREE.NearestFilter, THREE.ClampToEdgeWrapping),
   };
 }
 
