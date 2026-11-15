@@ -230,6 +230,19 @@ export class FoliageWind {
 const CONTACT_HEIGHT = 1.4;
 /** Ambient reaching a surface in contact with the ground. */
 const CONTACT_FLOOR = 0.34;
+/**
+ * [underwater-look-3] Under water, the share of the *key* that reaches a
+ * surface in contact with the ground, and the height over which it recovers.
+ * Above water the key is a beam and a coral's foot is as sunlit as its crown;
+ * below a few metres it is light the column has scattered into a broad cone,
+ * and the foot of a sponge on the sand has lost much of that cone too. With
+ * the contact term on ambient only, the round-3 review saw no contact shadow
+ * at all where reef life met rock and sand: the key filled it back in.
+ */
+const UW_CONTACT_KEY = 0.45;
+/** [underwater-look-3] Share of the caustic web a vertical face loses. */
+const STEEP_CAUSTIC_LOSS = 0.6;
+const UW_CONTACT_KEY_HEIGHT = 0.9;
 
 /** Where caustics stop, in metres of depth, and where they are strongest. */
 const CAUSTIC_SHALLOW = 2;
@@ -285,8 +298,18 @@ export function applyGroundShading(
       .mul(submerged)
       .toVar('gsReach');
 
-    const caustic = mix(float(1), inputs.caustics(wp), reach).toVar('gsCaustic');
-    return inputs.keyShadow(wp).mul(caustic);
+    // [underwater-look-3] Less of the web on steep faces. The field is the
+    // surface's pattern projected down the refracted sun, so on a rock wall it
+    // was drawn stretched into long parallel streaks at full contrast; the
+    // light there arrives spread over more area and from more of the cone.
+    const steep = float(1).sub(normalWorld.y.abs().smoothstep(0.25, 0.75)).mul(STEEP_CAUSTIC_LOSS);
+    const caustic = mix(float(1), inputs.caustics(wp), reach.mul(float(1).sub(steep))).toVar('gsCaustic');
+    // [underwater-look-3] See `UW_CONTACT_KEY`. Faded in over the first few
+    // metres of depth, so nothing at the waterline changes.
+    const aboveK = wp.y.sub(inputs.groundHeight(wp)).max(0);
+    const contactKey = mix(float(UW_CONTACT_KEY), float(1), aboveK.smoothstep(0, UW_CONTACT_KEY_HEIGHT));
+    const contactKeyReach = submerged.mul(depth.smoothstep(1, 4));
+    return inputs.keyShadow(wp).mul(caustic).mul(mix(float(1), contactKey, contactKeyReach));
   })();
 
   occludeLight(material, inputs.light, keyFactor);

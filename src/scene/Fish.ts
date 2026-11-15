@@ -551,6 +551,16 @@ const WEAVE_YAW = 0.2;
 /** Roll the weave induces, radians. In antiphase with the lateral offset. */
 const WEAVE_ROLL = 0.16;
 
+/**
+ * [underwater-look-3] Each fish's own standing yaw and pitch off the school's
+ * heading, radians, full spread. Without them every fish in a school pointed
+ * exactly the same way and the round-3 review read a resident school of
+ * angelfish as one animal cloned five times. A real shoal is polarised, not
+ * aligned: within about fifteen degrees of the mean either way.
+ */
+const HEADING_SPREAD = 0.5;
+const PITCH_SPREAD = 0.22;
+
 // -------------------------------------------------------------------- the body
 
 /**
@@ -1143,10 +1153,13 @@ export class FishSchool {
     // Yaw leads the weave by a quarter cycle because it is the weave's
     // derivative; roll trails it by half, because a fish rolls into the turn
     // and the turn is sharpest where the lateral offset is at its extreme.
-    const yaw = cLat.mul(WEAVE_YAW);
+    // [underwater-look-3] Plus the fish's own standing offset; see
+    // `HEADING_SPREAD`. From the trait slot nothing else reads.
+    const yaw = cLat.mul(WEAVE_YAW).add(trait.z.sub(0.5).mul(HEADING_SPREAD));
+    const pitch = trait.z.mul(7.31).fract().sub(0.5).mul(PITCH_SPREAD);
     const bank = heading.w.sub(sLat.mul(WEAVE_ROLL));
 
-    const axisF = f.add(rh.mul(yaw)).normalize();
+    const axisF = f.add(rh.mul(yaw)).add(vec3n(0, pitch, 0)).normalize();
     const axisR0 = axisF.cross(vec3(0, 1, 0)).normalize();
     const axisU0 = axisR0.cross(axisF);
     const cb = cos(bank);
@@ -1225,7 +1238,7 @@ export class FishSchool {
             // importing it. `texture()` in the colour node rather than
             // `material.map`, because this is a `MeshBasicNodeMaterial` whose
             // colour is entirely replaced below and would otherwise ignore it.
-            frenchAngelfish(texture(map, uv()).rgb)
+            frenchAngelfish(texture(map, uv()).rgb, trait.z)
           : (() => {
               const t = flank.mul(0.5).add(0.5).toVar();
               const back = pickPerSchool(this.uBacks, trait.x);
@@ -1243,6 +1256,9 @@ export class FishSchool {
       const tintLow = map ? vec3(0.97, 0.99, 1.01) : vec3(0.93, 0.99, 1.04);
       const tintHigh = map ? vec3(1.03, 1.0, 0.98) : vec3(1.07, 1.0, 0.93);
       base.mulAssign(mix(tintLow, tintHigh, trait.w));
+      // [underwater-look-3] And a per-fish level, independent of the hue: a
+      // shoal is fish of different ages and condition, a fifth apart in tone.
+      base.mulAssign(trait.z.mul(3.77).fract().mul(0.4).add(0.8));
 
       const light = this.uAmbient
         .mul(sky.mul(0.65).add(0.35))
@@ -1793,7 +1809,9 @@ function attachInstanceAttributes(
     const s1 = centreWeighted(random());
     const s2 = centreWeighted(random());
     const s3 = random();
-    const size = FISH_LENGTH * (0.78 + random() * 0.5) * paths[school].scale;
+    // [underwater-look-3] A wider spread than the 0.78 to 1.28 it was, from
+    // the same draw, so the stream and every other trait are unchanged.
+    const size = FISH_LENGTH * (0.68 + random() * 0.7) * paths[school].scale;
     const t2 = random();
     const t3 = random();
 
@@ -1847,7 +1865,7 @@ const REEF_FISH_URL = '/models/dressing/emperor_angelfish.glb';
  * yellow bars of a juvenile), and the pale mouth stays pale. Luminance from the
  * source is kept, so the scale and fin detail of the texture survives.
  */
-function frenchAngelfish(src: Node): Node {
+function frenchAngelfish(src: Node, vary: Node): Node {
   const c: Node = src.toVar();
   const lum: Node = c.dot(vec3(0.2126, 0.7152, 0.0722)).toVar();
   // Hue by ratio, not by absolute level: the texture is dark (its yellows sit
@@ -1857,7 +1875,10 @@ function frenchAngelfish(src: Node): Node {
   const pale: Node = min(min(c.r, c.g), c.b).div(peak).smoothstep(0.6, 0.85).mul(lum.smoothstep(0.12, 0.3));
   const body: Node = vec3(0.045, 0.047, 0.055).mul(lum.mul(2.0).add(0.7));
   const gold: Node = vec3(0.95, 0.72, 0.12).mul(lum.mul(1.5).add(0.45));
-  const out: Node = mix(body, gold, yellow.mul(0.85)).toVar();
+  // [underwater-look-3] How much gold rims the scales varies from fish to
+  // fish (it does with age): 0.55 to 1 of the texture's own.
+  const goldShare: Node = vary.mul(5.13).fract().mul(0.45).add(0.55);
+  const out: Node = mix(body, gold, yellow.mul(0.85).mul(goldShare)).toVar();
   out.assign(mix(out, vec3(0.7, 0.68, 0.62).mul(lum.mul(1.5)), pale));
   return out;
 }
