@@ -160,27 +160,35 @@ has already been burned once by treating the second as if it were the first.
 
 ## Results
 
-**Re-measured 2026-11-14, on the AAA pass.** Full matrix in
-`bench-results/bench-2026-11-14T08-47-41-374Z.json`. All nine configurations
-pass, both gates and the Low boot budget included. The underwater view and a
-CPU-throttled WebGL Low (`webgl-low-cpu`, 4x) are new rows.
+**Re-measured 2026-11-15, after the canopy rebuild, the foam rebuild and frame
+pacing.** Full matrix in `bench-results/bench-2026-11-15T09-31-29-528Z.json`.
+All nine configurations pass, both gates and the Low boot budget included. Every
+GPU p50 but WebGPU Low's (below) is within 0.2 ms of the 2026-11-14 run (`bench-2026-11-14T08-47-41-374Z.json`),
+so the leaf-shelled canopy and the feathered foam pattern cost nothing this
+harness can resolve; the CPU-throttled WebGL Low is 2.8 ms cheaper.
+
+The page is opened with `?pacing=0`. The flags above unhook rAF from the
+display, so there is no refresh for the app's frame pacer (`core/FramePacer`)
+to divide: run paced, it divided whatever cadence the GPU gave it, and the
+delivered rate at WebGPU Low read 59 against 208 unpaced, with the GPU times
+unchanged. A real browser ties rAF to the display, and there the pacer is on.
 
 | Configuration | GPU p50 (2026-08-05) | now | p99 | delivered | TTFF | peak memory | Verdict |
 |---|---|---|---|---|---|---|---|
-| WebGPU · Low | 0.79 | 2.08 | 2.58 | 208 | 10.2 s | 207 MiB | PASS |
-| WebGPU · Medium | 5.25 | 4.18 | 4.36 | 122 | 10.6 s | 262 MiB | PASS |
-| **WebGPU · High** | **8.07** | **7.11** | **7.17** | **92** | 10.7 s | 402 MiB | **PASS** (16.7) |
-| WebGPU · High, underwater | — | 13.94 | 14.11 | 60 | 10.6 s | 402 MiB | PASS |
-| WebGPU · Ultra | 12.90 | 11.93 | 12.06 | 63 | 11.3 s | 409 MiB | PASS |
-| WebGPU · Max | 13.55 | 12.57 | 12.72 | 60 | 11.5 s | 510 MiB | PASS |
-| **WebGL2 · Low** | **7.59** | **5.14** | **7.00** | **213** | **6.3 s** | **210 MiB** | **PASS** (33.3; 15 s; 256 MiB) |
-| **WebGL2 · Low, CPU 4x** | — | **14.65** | **18.02** | **54** | **9.0 s** | **210 MiB** | **PASS** |
-| WebGL2 · High | 21.85 | 22.43 | 24.86 | 244 | 7.7 s | 354 MiB | PASS |
+| WebGPU · Low | 0.79 | 0.82 | 2.57 | 208 | 9.9 s | 208 MiB | PASS |
+| WebGPU · Medium | 5.25 | 4.24 | 4.30 | 135 | 9.8 s | 264 MiB | PASS |
+| **WebGPU · High** | **8.07** | **7.18** | **7.27** | **96** | 9.7 s | 403 MiB | **PASS** (16.7) |
+| WebGPU · High, underwater | — | 13.88 | 14.05 | 61 | 9.8 s | 403 MiB | PASS |
+| WebGPU · Ultra | 12.90 | 12.10 | 12.30 | 64 | 9.8 s | 410 MiB | PASS |
+| WebGPU · Max | 13.55 | 12.68 | 12.86 | 62 | 10.2 s | 511 MiB | PASS |
+| **WebGL2 · Low** | **7.59** | **5.00** | **5.99** | **213** | **6.5 s** | **211 MiB** | **PASS** (33.3; 15 s; 256 MiB) |
+| **WebGL2 · Low, CPU 4x** | — | **11.84** | **15.74** | **67** | **8.3 s** | **211 MiB** | **PASS** |
+| WebGL2 · High | 21.85 | 22.24 | 25.05 | 42 | 7.0 s | 356 MiB | PASS |
 
-Low WebGPU rose from 0.79 to 2.08 ms. This pass gave Low content it did not
-have, the procedural reef among it (`reefLife: 0.3`), and the rise has not
-been attributed further. It is still the cheapest row by a factor of two, and
-every other WebGPU tier got cheaper.
+Low WebGPU read 2.08 ms on 2026-11-14 and 0.82 ms now; its p95 and p99 are
+still near 2.1–2.6 ms, so the median moved across a bimodal distribution rather
+than the tier getting cheaper; the 2026-11-14 median most likely sat in the upper mode. It
+is the cheapest row by a factor of five either way.
 
 **The WebGL2 boot was the finding of this run.** Its first frame had gone from
 7.9 s on main to 65 s here. Program by program with `KHR_parallel_shader_compile`

@@ -1178,6 +1178,9 @@ class App {
     // identical world disagree.
     this.loop = new Loop((_dt, _elapsed, live) => this.renderFrame(live));
     this.loop.setGpuFence(this.createGpuFence());
+    // `?pacing=0`: draw every animation frame unpaced. For the benchmark; see
+    // `Loop.setPacing`.
+    if (new URLSearchParams(window.location.search).get('pacing') === '0') this.loop.setPacing(false);
     this.installAsyncPipelines();
     this.installStableContexts();
     this.installOrphanedCompileGuard();

@@ -56,6 +56,15 @@ export class Loop {
   /** Which refreshes live frames are drawn on; see `FramePacer`. */
   readonly pacer = new FramePacer();
   private gpuFence: GpuFence | null = null;
+  /**
+   * Off draws on every callback and advances time as measured. For a browser
+   * whose animation frames are not tied to a display — the benchmark runs
+   * Chrome with vsync and the frame-rate limit disabled, to measure what the
+   * renderer can deliver — where there is no refresh for the pacer to divide.
+   * Paced there, it divided whatever cadence the GPU happened to give it, and
+   * the benchmark's delivered rate at Low fell from 208 to 59.
+   */
+  private pacing = true;
 
   /** Exponential moving average keeps the readout stable without lagging real drops. */
   private static readonly FPS_SMOOTHING = 0.1;
@@ -68,6 +77,11 @@ export class Loop {
   /** Supplies the fence the pacer times GPU work with. Optional. */
   setGpuFence(fence: GpuFence | null): void {
     this.gpuFence = fence;
+  }
+
+  /** See `pacing`. */
+  setPacing(enabled: boolean): void {
+    this.pacing = enabled;
   }
 
   add(update: Updatable): void {
@@ -247,11 +261,11 @@ export class Loop {
     if (this.inFlight) return;
 
     // Not this refresh: the pacer is holding a divisor of the display rate.
-    if (!this.pacer.shouldRender(now, this.last)) return;
+    if (this.pacing && !this.pacer.shouldRender(now, this.last)) return;
 
     const rawDelta = (now - this.last) / 1000;
-    this.pacer.rendered(now, this.last);
-    const dt = Math.min(this.pacer.delta(now, this.last), Loop.MAX_DELTA);
+    if (this.pacing) this.pacer.rendered(now, this.last);
+    const dt = Math.min(this.pacing ? this.pacer.delta(now, this.last) : rawDelta, Loop.MAX_DELTA);
     this.last = now;
 
     this.inFlight = true;
