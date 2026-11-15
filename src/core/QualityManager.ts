@@ -339,13 +339,28 @@ export interface QualitySettings {
    */
   propsDetail: number;
   /**
-   * Blades of kelp and seagrass drawn on the shallow bottom.
+   * Fraction of the kelp columns' thinnable leaves drawn, 0..1 (stipes are
+   * always drawn). See `src/scene/Kelp.ts` and `LeafField`.
    *
-   * Instanced, and every transform is derived on the GPU from a seed and the
-   * clock, so this moves `instanceCount` and nothing else. Low draws none for
-   * the same reason it draws no fish: it has no underwater pass worth dressing.
+   * The forests are built once at full density; this moves per-cell instance
+   * counts and a widening uniform (`1/sqrt(f)`, so a thinned column keeps its
+   * coverage), never a rebuild. abyssal-garden's ladder: every second leaf at
+   * Medium, every fourth at Low.
    */
   kelp: number;
+  /** The same fraction for the seabed ground cover (`GroundCover`). */
+  seabedCover: number;
+  /**
+   * Metres from the eye that vegetation is drawn to. Cells beyond it are not
+   * attached at all; leaves collapse over its last fifth so nothing pops. The
+   * ground cover uses 0.65 of it.
+   */
+  vegetationRange: number;
+  /**
+   * Whether the kelp columns cast into the sun's shadow cascades — what lets
+   * the volumetric shafts be cut by them.
+   */
+  vegetationShadows: boolean;
   /**
    * Fraction of the procedural reef drawn — corals, sponges, fans, anemones,
    * seagrass, rocks and shells (see `src/scene/ReefLife.ts`).
@@ -422,7 +437,10 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 0,
     foamDetail: 0,
     propsDetail: 0.3,
-    kelp: 0,
+    kelp: 0.25,
+    seabedCover: 0.25,
+    vegetationRange: 45,
+    vegetationShadows: false,
     reefLife: 0.3,
     seaCreatures: 0,
     meadow: 0,
@@ -462,7 +480,10 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 0.75,
     foamDetail: 1,
     propsDetail: 0.5,
-    kelp: 800,
+    kelp: 0.5,
+    seabedCover: 0.5,
+    vegetationRange: 65,
+    vegetationShadows: false,
     reefLife: 0.5,
     seaCreatures: 0.5,
     meadow: 18000,
@@ -500,7 +521,10 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     foamDetail: 2,
     propsDetail: 0.75,
-    kelp: 1800,
+    kelp: 1,
+    seabedCover: 1,
+    vegetationRange: 95,
+    vegetationShadows: true,
     reefLife: 0.8,
     seaCreatures: 0.8,
     meadow: 38000,
@@ -538,7 +562,10 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     foamDetail: 2,
     propsDetail: 1,
-    kelp: 2900,
+    kelp: 1,
+    seabedCover: 1,
+    vegetationRange: 120,
+    vegetationShadows: true,
     reefLife: 1,
     seaCreatures: 1,
     meadow: 62000,
@@ -578,7 +605,10 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     wakeDisplacement: 1,
     foamDetail: 2,
     propsDetail: 1,
-    kelp: 4000,
+    kelp: 1,
+    seabedCover: 1,
+    vegetationRange: 140,
+    vegetationShadows: true,
     reefLife: 1,
     seaCreatures: 1,
     meadow: 90000,

@@ -21,6 +21,7 @@ import {
   loadReefFish,
   IslandCanopy,
   IslandMeadow,
+  GroundCover,
   KelpForest,
   ReefLife,
   SeaCreatures,
@@ -137,6 +138,9 @@ const _meadowAmbient = new THREE.Color();
 const _meadowWind = new THREE.Vector2();
 /** Scratch for the key light's colour at its strength, for the custom-lit foliage and the smoke. */
 const _keyLight = new THREE.Color();
+/** Scratch for the seabed vegetation's key and ambient. */
+const _vegKey = new THREE.Color();
+const _vegAmbient = new THREE.Color();
 const _smokeLight = new THREE.Color();
 const _smokeSky = new THREE.Color();
 /** How much of a lightning flash still goes to the grade as a frame-wide lift. */
@@ -381,6 +385,8 @@ class App {
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
   private fish!: FishSchool;
   private kelp!: KelpForest;
+  /** Seagrass meadows, gorgonians, Halimeda and sargassum; shares the kelp's water. */
+  private seabedCover!: GroundCover;
   private reefLife!: ReefLife;
   private creatures!: SeaCreatures;
   private meadow!: IslandMeadow;
@@ -811,9 +817,6 @@ class App {
     this.fish = new FishSchool(quality.fish);
     this.scene.add(this.fish.object);
 
-    this.kelp = new KelpForest(quality.kelp);
-    this.scene.add(this.kelp.object);
-
     // Grass, placed on the GPU from the seafloor's own heightfield node rather
     // than scattered as instances — the island is 0.8 km2 and a scatter dense
     // enough to read as a sward is a million draws. See `src/scene/Meadow.ts`.
@@ -924,6 +927,32 @@ class App {
     });
     this.scene.add(this.creatures.object);
 
+    // The vegetation, after the reef so its sites can be kept clear: grass stops
+    // at a reef's edge, the kelp groves stand off it, and the gorgonians gather
+    // on its apron. Lit through the same caustics as the reef.
+    {
+      const sites = this.reefLife.sites;
+      const clearings = [...sites.plateau, ...sites.island, ...sites.meadows];
+      const shading = {
+        caustics: (worldPosition: unknown) => this.caustics.intensityNode(worldPosition),
+        // No cloud shade (`keyShadow`): it is a three-sample march through 3D noise,
+        // and per leaf fragment across a meadow that is the most expensive term
+        // in the shader for a shade the sand under the leaves already shows.
+      };
+      this.kelp = new KelpForest(quality.kelp, { clearings, shading, range: quality.vegetationRange });
+      this.kelp.setCastShadow(quality.vegetationShadows);
+      this.scene.add(this.kelp.object);
+      this.seabedCover = new GroundCover(quality.seabedCover, {
+        uniforms: this.kelp.uniforms,
+        forests: this.kelp.forests,
+        columns: this.kelp.columns,
+        clearings: [...sites.plateau, ...sites.island],
+        shading,
+        range: quality.vegetationRange * 0.65,
+      });
+      this.scene.add(this.seabedCover.object);
+    }
+
     // Everything that lives under the surface goes on its own layer, kept out of
     // the planar mirror — see `UNDERWATER_LAYER`.
     this.camera.layers.enable(UNDERWATER_LAYER);
@@ -932,6 +961,7 @@ class App {
       this.reefLife.object,
       this.creatures.object,
       this.kelp.object,
+      this.seabedCover.object,
       this.fish.object,
       this.particles.object,
     ]) {
@@ -961,6 +991,9 @@ class App {
       // beach came out as a grid of stripes that TRAA could not average away.
       scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
       this.clouds.setPreviousViewProjection(this.prevViewProjection, this.currViewProjection);
+      // Sway-aware motion vectors and shaded normals for the leaves; see `LeafField`.
+      this.kelp.setVelocity(this.prevViewProjection, this.currViewProjection);
+      this.seabedCover.setVelocity(this.prevViewProjection, this.currViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -2762,6 +2795,10 @@ class App {
     this.spray.setStrength(quality.spray);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
+    this.kelp.setRange(quality.vegetationRange);
+    this.kelp.setCastShadow(quality.vegetationShadows);
+    this.seabedCover.setCount(quality.seabedCover);
+    this.seabedCover.setRange(quality.vegetationRange * 0.65);
     this.reefLife.setDetail(quality.reefLife);
     this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
@@ -3367,7 +3404,15 @@ class App {
 
     // The bed follows the same swell the surface does, so the water and the
     // weed under it agree about which way the sea is running.
-    this.kelp.setSunDirection(this.atmosphere.sunDirection);
+    // The key light at its strength, as the meadow and canopy take it, so the
+    // groves go dark under a storm deck and moonlit at night.
+    {
+      const key = this.atmosphere.sunLight;
+      this.kelp.setKeyLight(this.atmosphere.keyDirection, _vegKey.copy(key.color).multiplyScalar(key.intensity / 3.4));
+      this.kelp.setAmbient(_vegAmbient.copy(this.atmosphere.zenithColor).multiplyScalar(0.5));
+    }
+    this.kelp.setCameraPosition(this.camera.position);
+    this.seabedCover.setCameraPosition(this.camera.position);
     this.kelp.setSwell(
       getPreset(this.state.preset).sea.windDirection,
       this.state.windSpeed,
@@ -4065,6 +4110,9 @@ class App {
         water: this.water,
         /** The procedural reef, so a harness can find its sites and count it. */
         reefLife: this.reefLife,
+        /** Kelp groves and seabed cover, so a harness can frame and count them. */
+        kelp: this.kelp,
+        seabedCover: this.seabedCover,
         creatures: this.creatures,
         /**
          * Readiness signals. `sceneContentLoaded` settles whether or not the
@@ -4517,6 +4565,7 @@ class App {
     this.birds?.dispose();
     this.fish?.dispose();
     this.kelp?.dispose();
+    this.seabedCover?.dispose();
     this.meadow?.dispose();
     this.stormQuote?.dispose();
     this.canopy?.dispose();
