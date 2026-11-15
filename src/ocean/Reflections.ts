@@ -21,6 +21,9 @@ import { reflector } from 'three/tsl';
  * The cost is a second view of the scene. It is charged only where it buys
  * something: see `setQuality`.
  */
+/** Scratch for the clear colour the reflection render borrows. */
+const _clearColor = new THREE.Color();
+
 export class Reflections {
   /** Add to the scene; its transform defines the mirror plane. */
   readonly plane: THREE.Object3D;
@@ -48,6 +51,35 @@ export class Reflections {
 
     this.node = node;
     this.base = node.reflector;
+
+    // **Objects only, with coverage in alpha.** The water now takes its *sky*
+    // from the environment cube along the true per-pixel reflected ray (see the
+    // reflection block in `OceanMaterial`), so the mirror is only wanted for
+    // what is *in* the sky: the hull, the island, the floats. The caller keeps
+    // the sky dome out of the mirror by layer (`excludeLayer`), and the mirror is
+    // cleared to transparent black for its own render, so alpha is exactly
+    // object coverage and the mip chain filters it with the colour (the
+    // colour is therefore premultiplied, which the surface undoes).
+    //
+    // Alpha rather than a depth attachment, and that is a measured constraint,
+    // not taste: the water's fragment stage sits at the WebGPU default of 16
+    // sampled textures, and a reflector depth texture made it 17 and failed
+    // pipeline creation outright.
+    //
+    // Wrapped here rather than set on the renderer, because the clear colour is
+    // global state and every other target in the frame still wants opaque.
+    const update = this.base.updateBefore.bind(this.base);
+    this.base.updateBefore = (frame: any) => {
+      const renderer = frame.renderer as THREE.WebGPURenderer;
+      renderer.getClearColor(_clearColor);
+      const alpha = renderer.getClearAlpha();
+      renderer.setClearColor(0x000000, 0);
+      try {
+        return update(frame);
+      } finally {
+        renderer.setClearColor(_clearColor, alpha);
+      }
+    };
     this.plane = node.target;
   }
 
