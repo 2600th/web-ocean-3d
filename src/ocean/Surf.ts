@@ -205,16 +205,16 @@ export function setSurfState(
 /**
  * Highest the swash can climb, metres above still water: the run-up of the
  * largest wave a set can hold (see `waveHeight`, whose factors top out at
- * 1.2 x 1.15 x 1.15 = 1.59).
+ * 1.2 x 1.15 x 1.15 x 1.25 = 1.98), with the 18% lobe `runup` adds.
  */
 function maxRunup(): any {
-  return surfUniforms.runupScale.mul(surfUniforms.height.mul(1.59).sqrt());
+  return surfUniforms.runupScale.mul(surfUniforms.height.mul(1.98).sqrt()).mul(1.18);
 }
 
 /** Deepest water, metres, in which anything here is non-zero. */
 export function surfReachDepth(): any {
-  // The biggest wave of a set is ~1.3 times the average.
-  return surfUniforms.height.mul((1.3 / BREAKER_INDEX) * SURF_REACH);
+  // The biggest wave of a set, on a peak, is ~1.5 times the average.
+  return surfUniforms.height.mul((1.5 / BREAKER_INDEX) * SURF_REACH);
 }
 
 /** Arithmetic value noise in [0,1] — no texture, so it costs nothing to bind. */
@@ -270,10 +270,20 @@ export function waveHeight(n: any, xz: any): any {
   const envelope = sin(n.mul((Math.PI * 2) / SET_LENGTH).add(1.3)).mul(0.5).add(0.5);
   const jitter = hash1(n).mul(0.3).add(0.85);
   const along = surfNoise(xz.div(90).add(vec2(3.7, 9.2))).mul(0.3).add(0.85);
+  // Peaks along the crest, re-drawn for every wave. A wave is never the same
+  // height along its whole length: it has peaks, where it breaks first and
+  // furthest out, and shoulders it peels toward. The 90 m term above is the
+  // bathymetry's steady share; this one is the wave's own, at about the 25 m
+  // a peak spans, so each breaker comes in as sections that go at different
+  // depths instead of the one extruded tube beach-transparency-1 showed.
+  const peaks = surfNoise(xz.div(26).add(vec2(hash1(n.add(11)).mul(53), hash1(n.add(17)).mul(41))))
+    .mul(0.5)
+    .add(0.75);
   return surfUniforms.height
     .mul(envelope.pow(1.5).mul(0.7).add(0.5))
     .mul(jitter)
-    .mul(along);
+    .mul(along)
+    .mul(peaks);
 }
 
 /**
@@ -287,8 +297,11 @@ export function waveHeight(n: any, xz: any): any {
  *
  * @returns vec2(elevation in units of amplitude, d elevation / d phase)
  */
-export function crestProfile(s: any, steep: any): any {
-  const width = s.lessThan(0).select(mix(float(0.15), float(0.055), steep), float(0.24));
+export function crestProfile(s: any, steep: any, minWidth: any = float(0)): any {
+  const width = s
+    .lessThan(0)
+    .select(mix(float(0.15), float(0.055), steep), float(0.24))
+    .max(minWidth);
   const x = s.div(width);
   const bump = x.mul(x).negate().exp();
   const elevation = bump.sub(0.3);
@@ -350,12 +363,19 @@ export interface BreakerSample {
  *                   caller has not measured it. Only the pitch reads it.
  * @param pitch      0..1 master on the horizontal pitch. At 0 the lean is zero
  *                   and the compression exactly 1.
+ * @param footprint  Metres the caller's mesh (or pixel) spans here. The crest
+ *                   is widened to at least this, so a mesh too coarse to carry
+ *                   a 1.5 m front face draws a softer one rather than landing
+ *                   every other vertex on the crest — the periodic saw-tooth
+ *                   along the far breakers in foam-4 and beach-transparency-1.
+ *                   The same band-limit the cascades take (`FOOTPRINT_SPACINGS`).
  */
 export function breaker(
   depth: any,
   xz: any,
   beachSlope: any = float(NOMINAL_SLOPE),
   pitch: any = float(1),
+  footprint: any = float(0),
 ): BreakerSample {
   const phase = surfPhase(depth, xz).toVar('surfPhase');
   const last = phase.floor().toVar('surfLast');
@@ -380,7 +400,9 @@ export function breaker(
     .mul(surfUniforms.strength.min(1))
     .toVar('surfReachFade');
   const amplitude = d.lessThan(breakDepth).select(bore, shoaled).mul(reachFade).toVar('surfAmplitude');
-  const profile = crestProfile(s, steep).toVar('surfProfile');
+  // The footprint in phase: metres times phase per metre.
+  const minWidth = footprint.mul(surfPhaseGradient(d).abs()).mul(0.6).toVar('surfMinWidth');
+  const profile = crestProfile(s, steep, minWidth).toVar('surfProfile');
 
   // --- the pitch ---------------------------------------------------------------
   // Iribarren on the deep-water steepness of this crest. `beachSlope` is floored
@@ -466,9 +488,37 @@ export function swashSheetHeight(depth: any, xz: any): any {
   return front.greaterThan(0.005).select(level, float(-1000));
 }
 
-/** Vertical run-up of breaker `n`, metres above still water. See `RUNUP_HUNT`. */
+/**
+ * Vertical run-up of breaker `n`, metres above still water. See `RUNUP_HUNT`.
+ *
+ * Lobed along the shore: a swash front is never a contour. Real uprush splits
+ * into tongues a few to twenty metres apart (the start of beach cusps; Guza &
+ * Inman 1975 put edge-wave cusp spacing at that scale on reflective beaches),
+ * so each wave's reach varies by about a fifth over ~15 m, re-drawn per wave so
+ * the tongues do not stand still. The ocean's sheet and the ground's wetting
+ * both read this, so the lobes they draw are the same lobes.
+ */
 export function runup(n: any, xz: any): any {
-  return surfUniforms.runupScale.mul(waveHeight(n, xz).sqrt());
+  const lobes = surfNoise(xz.div(14).add(vec2(hash1(n).mul(37), hash1(n.add(5)).mul(23))))
+    .sub(0.5)
+    .mul(0.36)
+    .add(1);
+  return surfUniforms.runupScale.mul(waveHeight(n, xz).sqrt()).mul(lobes);
+}
+
+/**
+ * Centimetres of "seepage" added to the ground height for the drying terms, so
+ * where a past wave's reach and the strand it left end is a fingered edge rather
+ * than the contour of a 15 m triangle — which is a straight line, and was the
+ * hard diagonal seam across the foreground sand of beach-transparency-1.
+ * NeuralSpecOcean (MIT, `ShoreVisual.js`) perturbs its wet/dry test by three
+ * scales of grain noise for the same reason; this is that, in closed form.
+ */
+function seepage(xz: any): any {
+  return surfNoise(xz.mul(0.24).add(vec2(3.1, 0.9)))
+    .sub(0.5)
+    .mul(0.07)
+    .add(surfNoise(xz.mul(1.35).add(vec2(0.4, 2.7))).sub(0.5).mul(0.025));
 }
 
 /**
@@ -528,10 +578,16 @@ export function swashOnSand(h: any, xz: any): any {
   const damp: any = float(0).toVar();
   const film: any = float(0).toVar();
   const mark: any = float(0).toVar();
+  // The drying terms read the ground a few centimetres up or down by the
+  // seepage noise, so the edge of what each wave reached fingers. `under`
+  // above does not: it has to meet the ocean's sheet where the two meshes do.
+  const hSeep = h.add(seepage(xz)).toVar();
   for (let k = 0; k < 3; k++) {
     const reach = k === 0 ? r0 : runup(n0.sub(k), xz).toVar();
-    const crossing = swashCrossings(h, reach);
-    const reached = h.lessThan(reach).select(float(1), float(0));
+    const crossing = swashCrossings(hSeep, reach);
+    // Soft over the last few centimetres: the limit of a swash is a thin
+    // bubble line soaking in, not a ruled edge.
+    const reached = smoothstepDown(hSeep, reach.sub(0.035), reach.add(0.01));
     const arrived: any = k === 0 ? u0.greaterThan(crossing.up).select(float(1), float(0)) : float(1);
     const keep: any = k === 2 ? smoothstepDownClamped(u0, 0.5, 1) : float(1);
     const weight = reached.mul(arrived).mul(keep).toVar();
@@ -545,7 +601,7 @@ export function swashOnSand(h: any, xz: any): any {
     // sits on sand that was wetted, and a few centimetres of height wide —
     // a hand's width to a stride across the sand at this slope.
     const sincePeak = u0.add(k).sub(SWASH_SPAN * SWASH_PEAK_AT).mul(surfUniforms.period).toVar();
-    const line = h.sub(reach.mul(0.965)).div(reach.mul(0.025).add(0.008));
+    const line = hSeep.sub(reach.mul(0.965)).div(reach.mul(0.025).add(0.008));
     mark.assign(
       mark.max(
         line
@@ -581,15 +637,23 @@ export function swashOnSand(h: any, xz: any): any {
   // as it shines.
   const foam = frontFoam.max(sheetFoam).max(mark.mul(0.62)).max(film.mul(0.14).mul(under.oneMinus()));
 
-  return vec4(damp.max(under), film.max(under), under, foam.mul(surfUniforms.strength));
+  // `y` is the film on sand the air can see. Under the sheet the bed is not a
+  // mirror — the water surface above it is, and the ocean draws that — so a
+  // film there painted a second, sky-bright reflection onto the bed that the
+  // water then refracted back up: the glossy grey seabed under the shallows.
+  return vec4(damp.max(under), film.mul(under.oneMinus()), under, foam.mul(surfUniforms.strength));
 }
 
 /**
  * The swash at a ground fragment, behind a real branch: only the strip the
  * swash can reach does any of this work, and the branch is uniform across most
  * of a frame — all of the island above the beach skips it.
+ *
+ * Exported so the ground can build it once and hand the same node to its
+ * colour, roughness and normal graphs; three emits a shared node once per
+ * shader, where three calls would pay for the three-wave loop three times.
  */
-function swashAtGround(position: any): any {
+export function swashAtGround(position: any): any {
   const result = vec4(0, 0, 0, 0).toVar();
   If(position.y.lessThan(maxRunup().add(0.1)), () => {
     result.assign(swashOnSand(position.y, vec2(position.x, position.z)));
@@ -624,8 +688,8 @@ const SWASH_DARKEN = 0.32;
  * @param position World position of the fragment.
  * @returns        The albedo with the swash applied.
  */
-export function applySwashToGround(color: any, position: any): any {
-  const swash = swashAtGround(position).toVar();
+export function applySwashToGround(color: any, position: any, state: any = null): any {
+  const swash = (state ?? swashAtGround(position)).toVar();
   const strength = surfUniforms.strength.min(1);
   // Reflectance falls steeply with the first moisture and then flattens
   // (Nolet et al. 2014), so damp sand is most of the way to wet: a cubic ease
@@ -645,12 +709,32 @@ export function applySwashToGround(color: any, position: any): any {
 }
 
 /**
- * Roughness for the same: the draining film is a mirror, damp sand is merely
- * smoother than dry, and the sheet itself is water.
+ * Roughness for the same: the draining film is a mirror and damp sand is merely
+ * smoother than dry. Under the sheet the bed stays rough — see `swashOnSand`.
+ *
+ * NeuralSpecOcean's sand runs from 0.86 dry to 0.17 under its film
+ * (`ShoreVisual.js`, MIT); these are the same ends.
  */
-export function swashRoughness(base: any, position: any): any {
-  const swash = swashAtGround(position);
+export function swashRoughness(base: any, position: any, state: any = null): any {
+  const swash = state ?? swashAtGround(position);
   const strength = surfUniforms.strength.min(1);
-  const damp = mix(base, float(0.55), swash.x.mul(strength));
+  const exposed = swash.z.oneMinus();
+  const damp = mix(base, float(0.5), swash.x.mul(exposed).mul(strength));
   return mix(damp, float(0.12), swash.y.mul(strength));
+}
+
+/**
+ * How far the ground's relief should be flattened toward its mesh normal, 0..1.
+ *
+ * A film of water a few millimetres deep fills the sand's relief and presents
+ * its own surface, which is the plane of the beach, so the sky it mirrors is a
+ * smooth sheet rather than the bumps of the sand under it. Reflected through the
+ * full relief instead, every metre-scale hollow became a lens and the wet beach
+ * read as melted plastic (beach-transparency-1). NeuralSpecOcean flattens its
+ * film normal 74% toward the beach plane for the same reason (`ShoreVisual.js`,
+ * MIT); damp sand is drained but packed smooth, so it takes a third of that.
+ */
+export function swashFlatten(state: any): any {
+  const strength = surfUniforms.strength.min(1);
+  return state.y.mul(0.78).max(state.x.mul(state.z.oneMinus()).mul(0.3)).mul(strength).clamp(0, 1);
 }
