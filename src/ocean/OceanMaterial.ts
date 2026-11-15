@@ -3,6 +3,10 @@ import {
   Fn,
   If,
   cameraPosition,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
+  refract,
+  smoothstep,
   float,
   linearDepth,
   log2,
@@ -1089,7 +1093,8 @@ export class OceanMaterial {
                 beachSlope.assign(bearing.z);
                 pitch.assign(surfPitchHold(groundDistance));
               });
-              const wave = breaker(depth, worldXZ, beachSlope, pitch);
+              // Band-limited to the mesh: see Surf.breaker's footprint.
+              const wave = breaker(depth, worldXZ, beachSlope, pitch, footprint);
               displacement.y.addAssign(wave.eta);
               displacement.x.addAssign(shoreward.x.mul(wave.lean));
               displacement.z.addAssign(shoreward.y.mul(wave.lean));
@@ -1285,7 +1290,10 @@ export class OceanMaterial {
           const pitch = foamUniforms.detail
             .greaterThan(0.5)
             .select(surfPitchHold(groundDistance), float(0));
-          const wave = breaker(seabedDepth, fieldXZ, bearing.z, pitch);
+          // The same band-limit the vertex stage applied, from the same distance,
+          // so the shading's crest is the crest the mesh drew.
+          const meshFootprint = groundDistance.mul(this.uVertexSpacing).mul(FOOTPRINT_SPACINGS);
+          const wave = breaker(seabedDepth, fieldXZ, bearing.z, pitch, meshFootprint);
           surfPhaseValue.assign(wave.phase);
           surfS.assign(wave.s);
           surfBreak.assign(wave.breakDepth);
@@ -1436,35 +1444,27 @@ export class OceanMaterial {
       // because it genuinely is one. The seafloor heightfield remains the fallback
       // for the WebGL2 path and for anything the depth buffer cannot answer for.
 
-      // Surface normals bend the view ray. Scaled down with distance, because the
-      // same lateral offset at the horizon is a whole screen away, and scaled by
-      // depth so shallow water distorts less than deep — which is what stops the
-      // distortion from tearing at a shoreline.
-      const distortion = n.xz
-        .mul(this.uRefractionStrength)
-        .div(viewDistance.mul(0.06).add(1))
-        .toVar();
-      const refractedUv: any = (viewportSafeUV(screenUV.add(distortion)) as any).toVar();
-
-      // Depth of the scene behind the surface, and of the surface itself.
-      // `linearDepth` is normalised over the near/far range, so the difference is
-      // scaled back into metres by `uDepthRange` before it means anything.
-      const surfaceZ: any = (linearDepth() as any).toVar();
-      const behindZ: any = (linearDepth(viewportDepthTexture(refractedUv)) as any).toVar();
-
-      // A refracted sample can land on something *in front of* the water — the
-      // hull's own topsides, most obviously — and pulling that colour underwater
-      // smears it down the wave face. Where that happens, fall back to the
-      // unrefracted sample, which is behind the surface by construction.
-      const straightZ: any = (linearDepth(viewportDepthTexture(screenUV)) as any).toVar();
-      const valid: any = behindZ.greaterThan(surfaceZ).toVar();
-      const sampleUv: any = valid.select(refractedUv, screenUV).toVar();
-      const backdropZ: any = valid.select(behindZ, straightZ).toVar();
-
-      // Column thickness. Two independent estimates, and the smaller wins: the
-      // depth buffer knows about the hull and the props, the heightfield knows
-      // about seafloor the depth buffer may never have rendered.
+      // **Where the transmitted ray lands, and how much water it crossed.**
+      // Ported from NeuralSpecOcean (MIT, `Offshore.js`, the beach optics): the
+      // view ray is refracted at the surface (Snell, n = 1.333), followed down
+      // to the bed it would reach, and that point is *projected* to find which
+      // pixel of the backdrop to read. The offset that used to stand here was
+      // the normal's xz times a constant, divided by distance: up to a tenth of
+      // the screen a few metres out, with no idea where the bed was, so the near
+      // field smeared and clamped at the frame edges (beach-transparency-2).
       //
+      // The path length changes for the same reason. The straight continuation
+      // of a grazing view ray runs metres through the water to the bed;
+      // the refracted ray bends toward vertical and crosses at most
+      // `depth / cos(refracted)`, about 1.5 depths at grazing incidence. The
+      // old estimate took the smaller of the straight path and the depth
+      // stretched along the *unrefracted* ray, which made 2 m of water an
+      // opaque turquoise sheet from a boat's deck.
+      //
+      // The straight sample is still read: the contact foam wants what is
+      // directly behind the surface, not where refraction moved the lookup.
+      const surfaceZ: any = (linearDepth() as any).toVar();
+      const straightZ: any = (linearDepth(viewportDepthTexture(screenUV)) as any).toVar();
       // The depth difference is measured along the camera's *forward axis*, and
       // light travels along the pixel's own ray — which is longer, by exactly the
       // secant of the angle between them. Without that correction the water
@@ -1472,17 +1472,7 @@ export class OceanMaterial {
       // apparent density of the whole ocean changes with field of view. An
       // independent review caught this; the volumetric fog had it right and this
       // did not.
-      //
-      // `nDotV` is the wrong correction for it, incidentally, and was what the
-      // seafloor estimate used: that is incidence against the *wave* normal, so
-      // it made the water's density flicker with the ripples.
       const axialToRay: any = float(1).div(viewDir.dot(this.uCameraForward).abs().max(0.15));
-      const bufferThickness: any = backdropZ
-        .sub(surfaceZ)
-        .max(0)
-        .mul(this.uDepthRange)
-        .mul(axialToRay)
-        .toVar();
       // Water between the surface and whatever is *directly* behind it, before
       // refraction moved the lookup. Contact foam is about where an object
       // pierces this pixel's surface, so it must not follow the refracted ray.
@@ -1492,19 +1482,93 @@ export class OceanMaterial {
         .mul(this.uDepthRange)
         .mul(axialToRay)
         .toVar();
-      const pathLength: any = (
-        floorDepth === null
-          ? bufferThickness
-          : bufferThickness.min(
-              // Depth below the surface, stretched along the same ray. The ray
-              // bends toward vertical entering water, so this over-estimates a
-              // little at grazing angles; the buffer estimate normally wins there
-              // anyway.
-              seabedDepth.mul(axialToRay),
-            )
+
+      // The water column under this point, from the heightfield: what a ray
+      // can cross before it meets the bed, wherever the depth buffer has not
+      // drawn the bed (or has drawn it too far off to trust).
+      const column: any = (
+        floorDepth === null ? float(1000) : worldPos.y.add(seabedSigned).max(0)
       ).toVar();
+      const bent: any = refract(viewDir.negate(), n, 1 / WATER_IOR).toVar();
+      // NeuralSpecOcean's travel: to the bed along the bent ray, floored at a
+      // 0.28 vertical component so a grazing ray does not run to infinity, and
+      // never past what the depth buffer says is straight behind (a hull, a
+      // rock) or 8 m, past which the offset is clamped away anyway.
+      const travel: any = column
+        .div(bent.y.negate().max(0.28))
+        .min(straightThickness.min(8))
+        .toVar();
+      const toUv = (p: any): any => {
+        const clip = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(p, 1)).toVar();
+        const ndc = clip.xy.div(clip.w.max(1e-4));
+        // NDC y runs up, the viewport buffers' uv down; see
+        // `ScreenSpaceReflection.clipToScreenUV`.
+        return vec2(ndc.x.mul(0.5).add(0.5), ndc.y.mul(-0.5).add(0.5));
+      };
+      // `uRefractionStrength` stays the tier's knob: 0.22 is High's, and 1x.
+      const projected = toUv(worldPos.add(bent.mul(travel)))
+        .sub(toUv(worldPos))
+        .mul(this.uRefractionStrength.div(0.22))
+        .clamp(-0.045, 0.045)
+        .toVar();
+      // Faded out near the frame's edge, so a lookup never clamps to the border
+      // and smears it (NeuralSpecOcean's `edgeWeight`).
+      const edgeDistance = screenUV.min(screenUV.oneMinus()).toVar();
+      const edgeBand = projected.abs().mul(2).max(0.004).toVar();
+      const edgeWeight = smoothstep(float(0), edgeBand.x, edgeDistance.x)
+        .min(smoothstep(float(0), edgeBand.y, edgeDistance.y))
+        .toVar();
+      const refractedUv: any = screenUV.add(projected.mul(edgeWeight)).toVar();
+      const nearerUv: any = screenUV.add(projected.mul(edgeWeight).mul(0.4)).toVar();
+
+      // A refracted sample can land on something *in front of* the water — the
+      // hull's own topsides, most obviously — and pulling that colour underwater
+      // smears it down the wave face. Where that happens, try a shorter offset,
+      // then fall back to the unrefracted sample, which is behind the surface by
+      // construction (NeuralSpecOcean steps back the same way).
+      const behindZ: any = (linearDepth(viewportDepthTexture(refractedUv)) as any).toVar();
+      const nearerZ: any = (linearDepth(viewportDepthTexture(nearerUv)) as any).toVar();
+      const valid: any = behindZ.greaterThan(surfaceZ).toVar();
+      const nearerValid: any = nearerZ.greaterThan(surfaceZ).toVar();
+      const sampleUv: any = valid.select(refractedUv, nearerValid.select(nearerUv, screenUV)).toVar();
+      const backdropZ: any = valid.select(behindZ, nearerValid.select(nearerZ, straightZ)).toVar();
+
+      // Straight-line distance from the surface to what the sample shows, and
+      // how far below the surface that point is: the vertical drop along the
+      // ray. For the seabed that is its depth there; for a rock face, how far
+      // under the surface the face is — which is why the water over a rock's
+      // shoulder is pale and the water off its foot is not.
+      const bufferThickness: any = backdropZ
+        .sub(surfaceZ)
+        .max(0)
+        .mul(this.uDepthRange)
+        .mul(axialToRay)
+        .toVar();
+      const seenDepth: any = bufferThickness.mul(viewDir.y.abs()).min(column).toVar();
+      // Snell: cos of the refracted angle, floored at NeuralSpecOcean's 0.66 so
+      // the path never exceeds 1.5 depths.
+      const cosRefracted: any = float(1)
+        .sub(nDotV.mul(nDotV).oneMinus().div(WATER_IOR * WATER_IOR))
+        .max(0.44)
+        .sqrt()
+        .toVar();
+      const pathLength: any = seenDepth.div(cosRefracted).toVar();
 
       const absorption: any = this.uExtinction.mul(pathLength).negate().exp().toVar();
+      // Daylight reaching the bed was attenuated on the way *down* too, and the
+      // ground shader lights the bed as if it were dry. Diffuse attenuation
+      // after NeuralSpecOcean: K_d from the same extinction plus a little for
+      // scattering, over the depth, divided by the mean cosine of downwelling
+      // light (0.82). This is the shallow-water gradient the reference shows —
+      // pale over a metre of water, green-blue by four, blue past ten — and it
+      // comes from the same coefficients as everything else.
+      const downwelling: any = this.uExtinction
+        .mul(0.58)
+        .add(vec3(0.032, 0.038, 0.016))
+        .mul(seenDepth.div(0.82))
+        .negate()
+        .exp()
+        .toVar();
 
       // Beer–Lambert on the refracted scene colour, plus the light scattered out
       // of the column toward the eye. The two are complementary: whatever the
@@ -1519,10 +1583,13 @@ export class OceanMaterial {
       // brighter than the open sea around it. Over an object, the column
       // scatters like open water: the deep body colour, weighted by how much
       // the column absorbed.
+      //
+      // Measured vertically now, against the column: the old test compared the
+      // bed's depth with the straight distance to the backdrop, which at any
+      // grazing angle is many depths long, so it never fired where it was
+      // meant to; and it paid a second heightfield evaluation to do it.
       const objectBehind: any = (
-        floorDepth === null
-          ? float(0)
-          : floorDepth(worldPos).max(0).sub(bufferThickness).smoothstep(0.35, 1.2)
+        floorDepth === null ? float(0) : column.sub(seenDepth).smoothstep(0.35, 1.2)
       ).toVar();
       const inscatter: any = mix(
         mix(this.uDeepColor, this.uShallowColor, absorption),
@@ -1540,11 +1607,14 @@ export class OceanMaterial {
         REFRACTION_FADE_NEAR,
         REFRACTION_FADE_FAR,
       ).toVar();
-      const bodyColor: any = mix(
-        inscatter,
-        refracted,
-        absorption.mul(this.uRefractionAmount).mul(refractionReach),
-      ).toVar();
+      // Split into the two things it is, because they are lit differently: the
+      // column's own scattered light, which the water's diffuse term below
+      // lights, and the backdrop seen through it, which the scene already lit —
+      // multiplying that by the water's `n . l` a second time darkened the bed
+      // by up to half and printed the wave normals onto it as fake caustics.
+      const sceneWeight: any = absorption.mul(this.uRefractionAmount).mul(refractionReach).toVar();
+      const columnColor: any = inscatter.mul(sceneWeight.oneMinus()).toVar();
+      const seenThrough: any = refracted.mul(downwelling).mul(sceneWeight).toVar();
 
       // --- subsurface scattering ---------------------------------------------
       //
@@ -1840,9 +1910,10 @@ export class OceanMaterial {
       // light, to a small floor rather than to zero: a night sea is dark, but it
       // is not black, because the whole sky is still faintly lighting it.
       const ambientFloor = mix(float(0.1), float(1), this.uLightLevel).toVar();
-      const litBody = bodyColor
+      const litBody = columnColor
         .mul(nDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
         .mul(ambientFloor)
+        .add(seenThrough)
         .add(scatter.mul(sunShade))
         .toVar();
 
@@ -2084,11 +2155,37 @@ export class OceanMaterial {
           // of a period, under half by a third of one, a tenth after a period —
           // and gone before the one after.
           const whitewaterAt = (a: any) => a.mul(-2.3).exp().mul(0.92).mul(smoothstepDownClamped(a, 1.3, 1.9));
+
+          // **Foam lines.** The white a bore leaves is not a sheet: it is torn
+          // into streaks lying *along* the crest that made them, a metre or two
+          // apart, with clear green water between (NeuralSpecOcean's surf
+          // reference, and every photograph of a spilling beach). Drawn as one
+          // smooth amount through the feather it came out as flat white plates
+          // with hard rims floating mid-water (beach-transparency-2, foam-4).
+          //
+          // A crest-parallel coordinate is already to hand: the breaker phase
+          // without its clock, `sqrt(depth) * k` plus the along-shore terms,
+          // which is constant along every depth contour and so along every
+          // crest. Noise read across it at two rates and stretched along it by
+          // a slow world term gives lanes ~2.5 m and ~0.9 m apart and tens of
+          // metres long, which follow the coast round a headland because the
+          // contours do. Static in the world: the lanes are where the foam was
+          // left, and `surfAdvect` already carries the bubbles shoreward.
+          const contourPhase = surfPhaseValue.sub(surfUniforms.time.div(surfUniforms.period)).toVar();
+          const lanes = valueNoise(vec2(contourPhase.mul(13), 0).add(fieldXZ.mul(0.045)).add(vec2(1.7, 3.1)))
+            .mul(0.6)
+            .add(valueNoise(vec2(contourPhase.mul(37), 0).add(fieldXZ.mul(0.13)).add(vec2(8.3, 0.4))).mul(0.4))
+            .smoothstep(0.32, 0.7)
+            .toVar();
+          // Dense where it is fresh, lanes as it ages: a bore's first second is
+          // white all through, and only then tears.
+          const tearing = age.smoothstep(0.03, 0.18).toVar();
           const whitewater = whitewaterAt(age)
             .mul(lastBroke)
             .max(whitewaterAt(age.add(1)).mul(previousBroke))
             .mul(sections)
-            .min(1)
+            .mul(mix(float(1), mix(float(0.18), float(1.15), lanes), tearing))
+            .min(0.9)
             .toVar();
           // What is left of a bore is still being carried up the beach by the
           // next, so the pattern drifts shoreward as it ages — and stops doing so
@@ -2123,14 +2220,33 @@ export class OceanMaterial {
             .toVar();
 
           const strength = surfUniforms.strength.min(1);
+          // The roller is the one part that is white all through, but not
+          // evenly along its length: its sections and lanes thin it to 60%.
+          // The far band keeps the lanes too, which at a few hundred metres are
+          // still several pixels apart, so it reads as foam lines rather than
+          // the flat plate the time-average alone drew.
+          // The residual field: what is left of every bore that has crossed the
+          // inner surf zone, a thin lace of lanes standing between the breakers
+          // that the next one adds to before it has burst. It is what makes a
+          // surf zone a field of foam with lines in it rather than one white
+          // band on clear water (foam-4: "a single thin surf band with no foam
+          // field").
+          const residual = lanes
+            .mul(lanes)
+            .mul(smoothstepDownClamped(d, surfBreak.mul(0.45), surfBreak.mul(1.15)))
+            .mul(d.smoothstep(0.15, 0.6))
+            .mul(0.42)
+            .toVar();
           surf.assign(
             roller
+              .mul(mix(float(0.6), float(1), lanes.max(sections.sub(0.6).mul(2.5))))
+              .max(residual)
               .max(lip)
               .max(pitching)
               .max(crestWhite)
               .max(whitewater)
               .max(thin)
-              .max(band.mul(far))
+              .max(band.mul(far).mul(mix(float(0.35), float(1.1), lanes)))
               .max(edgeLine)
               .clamp(0, 1)
               .mul(strength),
@@ -2173,19 +2289,43 @@ export class OceanMaterial {
       // Seabed contact is excluded where the heightfield explains the depth:
       // that is the shore break's job. Faded with distance because depth
       // precision and the ring's footprint both run out.
-      const contactAlong = smoothstepDownClamped(straightThickness, 0.03, 0.25);
-      const contactBelow = smoothstepDownClamped(straightThickness.mul(viewDir.y.abs()), 0.03, 0.16);
+      //
+      // **In the surf it is surge, not a collar.** A rock standing in a surf
+      // zone has every bore break against it: white water climbs its face,
+      // pours round it and is left in a skirt metres wide that the next wave
+      // renews (NeuralSpecOcean's rock-contact foam; the critic's "rocks enter
+      // the water with no contact foam" in beach-transparency-1 and foam-4).
+      // So inside the surf the ring widens and thickens with how hard the water
+      // there is breaking, and pulses with each bore's arrival.
+      // Outside the break the swell still runs up a rock's face and falls back
+      // white, so anything standing in shoal water (under ~6 m: rocks, piles,
+      // the shallows' boulders) takes most of it. Floating things are in deep
+      // water nearly always — the play area sits on a 17 m plateau — and keep
+      // the narrow collar.
+      const shoal: any = smoothstepDownClamped(seabedDepth, 2.5, 6.5).mul(0.75);
+      const surge: any = inSurf
+        .mul(smoothstepDownClamped(seabedDepth, surfBreak.mul(0.4), surfBreak.mul(1.6)))
+        .max(shoal)
+        .mul(surfUniforms.strength.min(1))
+        .toVar();
+      const surgePulse: any = surfPhaseValue.fract().mul(-2.2).exp().mul(0.45).add(0.55).toVar();
+      const contactAlong = smoothstepDownClamped(straightThickness, 0.03, mix(float(0.25), float(5), surge));
+      const contactBelow = smoothstepDownClamped(
+        straightThickness.mul(viewDir.y.abs()),
+        0.03,
+        mix(float(0.16), float(1.2), surge),
+      );
       const notSeabed: any = (
         floorDepth === null
           ? float(1)
           : seabedDepth.sub(straightThickness).smoothstep(0.35, 1.2)
       ).toVar();
-      const contactReach = smoothstepDownClamped(viewDistance, 80, 180).toVar();
+      const contactReach = smoothstepDownClamped(viewDistance, mix(float(80), float(160), surge), mix(float(180), float(320), surge)).toVar();
       const contactAmount = contactAlong
         .mul(contactBelow)
         .mul(notSeabed)
         .mul(contactReach)
-        .mul(0.38)
+        .mul(mix(float(0.38), float(0.75).mul(surgePulse), surge))
         .toVar();
 
       // --- the feather ----------------------------------------------------------

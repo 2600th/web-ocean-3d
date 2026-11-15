@@ -24,7 +24,7 @@ import {
 import { smoothstepDown as smoothstepDownNode } from '../core/tslMath';
 import { occludeLight } from '../core/lightOcclusion';
 // Shore hook: the swash wetting the sand. Self-contained; see `ocean/Surf`.
-import { applySwashToGround, swashRoughness } from '../ocean/Surf';
+import { applySwashToGround, swashAtGround, swashFlatten, swashRoughness } from '../ocean/Surf';
 import { SEEDS, mulberry32 } from '../core/random';
 // Underwater detail: the shared rock texture, for rubble on the sand.
 import { rockDetailTexture } from './reef/RockKit';
@@ -957,6 +957,37 @@ const SHADOW_OCTAVES = 2;
 // --------------------------------------------------------------- sand detail
 
 /**
+ * Value noise whose lattice wraps every `period` cells, so a map built from it
+ * over exactly `period` cells tiles.
+ *
+ * `valueNoise` wraps at the 256-cell noise texture, not at the map's period: a
+ * map sampling it over 16 cells drew its right edge from lattice 16 and its left
+ * from lattice 0, which are unrelated values. Repeated every 13 m and 47 m over
+ * the beach, that was a grid of hard straight seams in the sand normal (the
+ * critic's "dark straight streaks" in beach-transparency-1, which survived
+ * hiding the sea, the shadows and every mesh but the floor). `offset` shifts the
+ * lattice so two octaves of the same period are not the same values.
+ */
+function periodicValueNoise(px: number, py: number, period: number, offset: number): number {
+  const ix = Math.floor(px);
+  const iy = Math.floor(py);
+  const fx = px - ix;
+  const fy = py - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const wrap = (i: number) => (((i % period) + period) % period) + offset;
+  const x0 = wrap(ix);
+  const x1 = wrap(ix + 1);
+  const y0 = wrap(iy);
+  const y1 = wrap(iy + 1);
+  const a = noiseTexel(x0, y0);
+  const b = noiseTexel(x1, y0);
+  const c = noiseTexel(x0, y1);
+  const d = noiseTexel(x1, y1);
+  return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy;
+}
+
+/**
  * Tiling normal map for the sand, derived from the same noise field so the
  * micro-detail shares a family resemblance with the macro shape.
  */
@@ -965,11 +996,13 @@ function createSandNormalTexture(): THREE.DataTexture {
   const data = new Uint8Array(size * size * 4);
   const height = new Float32Array(size * size);
 
-  // Two octaves at frequencies that divide `size`, so the result tiles exactly.
+  // Two octaves whose lattices wrap at the tile edge, so the result tiles
+  // exactly. See `periodicValueNoise`: the comment here used to claim this and
+  // the noise underneath did not.
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const a = valueNoise((x / size) * 16, (y / size) * 16);
-      const b = valueNoise((x / size) * 48 + 31.7, (y / size) * 48 + 11.3);
+      const a = periodicValueNoise((x / size) * 16, (y / size) * 16, 16, 0);
+      const b = periodicValueNoise((x / size) * 48, (y / size) * 48, 48, 101);
       // Ripple ridges: sand under swell forms parallel bars, not isotropic bumps.
       //
       // The phase is dragged by the low-frequency octave rather than being a
@@ -1051,6 +1084,9 @@ export class Seafloor {
    */
   private readonly detailNode: Node;
 
+  /** `Surf.swashAtGround` at this fragment: vec4(damp, exposed film, under the sheet, foam). */
+  private readonly swashNode: Node;
+
   private readonly uCausticsStrength = uniform(1);
   /** Rain wetting of the island's ground, 0..1. See `setRainWetness`. */
   private readonly uRainWet = uniform(0);
@@ -1111,8 +1147,9 @@ export class Seafloor {
     this.material.name = 'seafloor-sand';
     this.material.roughness = 0.93;
     this.material.metalness = 0;
-    // Shore hook: sand the swash just left is glossy. See `ocean/Surf`.
-    this.material.roughnessNode = Fn(() => swashRoughness(float(0.93), positionWorld))();
+    // Shore hook: the swash state at this fragment, built once and shared by
+    // the colour, roughness and normal graphs. See `ocean/Surf`.
+    this.swashNode = Fn(() => swashAtGround(positionWorld))();
     /**
      * The sky is a source of light on this surface, not a mirror in it.
      *
@@ -1178,7 +1215,10 @@ export class Seafloor {
       // seabed, where the ripple bars belong. Dry sand above the swash is
       // wind-smoothed, and at full strength the ripple map read on the beach as
       // dark swirls rather than as sand.
-      const scale = mix(float(SAND_NORMAL_SCALE), float(0.08), positionWorld.y.smoothstep(0.2, 1.4)).toVar();
+      // The swash face between them is planed by every uprush and backwash;
+      // ripple bars form below the surf, not on it, so it keeps a fraction.
+      const swashFace = mix(float(SAND_NORMAL_SCALE), float(0.24), positionWorld.y.smoothstep(-1.2, -0.3));
+      const scale = mix(swashFace, float(0.08), positionWorld.y.smoothstep(0.2, 1.4)).toVar();
       return vec3(blended.x.mul(scale), blended.y.mul(scale), blended.z);
     };
 
@@ -1238,10 +1278,14 @@ export class Seafloor {
       const geo = normalize(normalWorldGeometry).toVar();
 
       const d = this.detailNode.toVar();
-      // Dry beach, between the swash and the back of the beach, is wind-smoothed:
-      // the relief octaves that give the seabed and the hillside their texture
-      // drew it as dark, melted swirls metres across. Damped there only.
-      const dryBeach = wp.y.smoothstep(-0.3, 0.9).mul(smoothstepDownNode(wp.y, 3.5, 9)).toVar();
+      // The beach, from the swash to the back of the beach, is wind-smoothed
+      // above and wave-planed below: the relief octaves that give the seabed and
+      // the hillside their texture drew it as dark, melted swirls metres across.
+      // Damped there only. The ramp used to start at -0.3 m, which left the
+      // whole swash face — the strip a beach camera looks across — at full
+      // relief under a glossy wet band: the "melted plastic" of
+      // beach-transparency-1.
+      const dryBeach = wp.y.smoothstep(-1.1, -0.2).mul(smoothstepDownNode(wp.y, 3.5, 9)).toVar();
       const bumpWeight = mix(BUMP_FLAT_WEIGHT, 1, geo.y.abs().oneMinus())
         .mul(dryBeach.mul(-0.7).add(1))
         .toVar();
@@ -1272,7 +1316,10 @@ export class Seafloor {
       const cy = vec3(ty.x.add(n.x), ty.z.abs().mul(n.y), ty.y.add(n.z));
       const cz = vec3(tz.x.add(n.x), tz.y.add(n.y), tz.z.abs().mul(n.z));
 
-      const world = normalize(cx.mul(w.x).add(cy.mul(w.y)).add(cz.mul(w.z)));
+      const relieved = normalize(cx.mul(w.x).add(cy.mul(w.y)).add(cz.mul(w.z)));
+      // Under a draining film the visible surface is the water's, which lies
+      // on the plane of the beach. See `Surf.swashFlatten`.
+      const world = normalize(mix(relieved, geo, swashFlatten(this.swashNode)));
       return world.transformNormalByViewMatrix(cameraViewMatrix);
     })();
 
@@ -1453,6 +1500,7 @@ export class Seafloor {
     const caustics = this.causticsNode;
     const strength = this.uCausticsStrength;
     const valueNoise = this.nodes.valueNoise;
+    const swashState = this.swashNode;
 
     this.material.colorNode = Fn(() => {
       const wp = positionWorld.toVar();
@@ -1582,7 +1630,7 @@ export class Seafloor {
 
       // Shore hook: the swash darkens the sand it reaches and it dries over
       // seconds. Scales whatever the palette above produced; see `ocean/Surf`.
-      const swashed = applySwashToGround(mottled, wp).toVar();
+      const swashed = applySwashToGround(mottled, wp, swashState).toVar();
 
       // Rain on the island: the same darkening the ship and the props take
       // (`scene/Wetness`), so a squall does not soak the hull and leave the
@@ -1601,13 +1649,23 @@ export class Seafloor {
     })();
 
     // Wet sand is a mirror for a moment after each wave; dry sand is chalk.
+    //
+    // This graph used to *replace* the one the constructor set from
+    // `Surf.swashRoughness`, so the swash's own drying (the film behind each
+    // backwash) never reached the roughness at all, and the static band carried
+    // the whole wet look at 0.38 — up to 2.3 m above the sea and down under it.
+    // The static band is the damp of the beach face between sets: satin, not
+    // glass (NeuralSpecOcean's damp sand is ~0.45, `ShoreVisual.js`). The film
+    // on top comes from the swash. Under the water the bed is rough again: the
+    // water's surface is the mirror there.
     this.material.roughnessNode = Fn(() => {
       const y = positionWorld.y;
       const wetTop = valueNoise(vec2(positionWorld.x, positionWorld.z).mul(1 / 23).add(vec2(17.1, 3.3)))
         .mul(0.9)
         .add(1.4);
-      const wet = smoothstepDownNode(y, wetTop.mul(0.35), wetTop).mul(y.smoothstep(-1.5, -0.4));
-      const swash = mix(float(0.93), float(0.38), wet);
+      const wet = smoothstepDownNode(y, wetTop.mul(0.35), wetTop).mul(y.smoothstep(-0.6, 0.05));
+      const band = mix(float(0.93), float(0.6), wet);
+      const swash = swashRoughness(band, positionWorld, swashState);
       return mix(swash, float(RAIN_WET_ROUGHNESS), this.rainWetFactor(positionWorld));
     })();
 
