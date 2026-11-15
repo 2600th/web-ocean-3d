@@ -1525,7 +1525,13 @@ export class Seafloor {
       // a noon sun (checked in the noon helm and island captures).
       const sandDry: Node = vec3(0.6, 0.52, 0.37);
       const sandWet: Node = vec3(0.21, 0.155, 0.085);
-      const shallowSand: Node = vec3(0.46, 0.42, 0.3);
+      // The shelf under the shallows: wet carbonate sand. It is the bright
+      // thing the turquoise is made of — the water takes the red out of it on
+      // the way down and back — so a dull bed is dull water. In-water bottom
+      // reflectance of Bahamian carbonate sand runs ~0.4-0.55 across green and
+      // red; this keeps the beach's warm ratio and lifts the blue deficit the
+      // dry sand already lost in the lighting audit.
+      const shallowSand: Node = vec3(0.54, 0.5, 0.38);
       const deepSilt: Node = vec3(0.1, 0.15, 0.17);
       const soil: Node = vec3(0.13, 0.075, 0.04);
       const grass: Node = vec3(0.08, 0.135, 0.03);

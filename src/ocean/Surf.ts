@@ -645,6 +645,13 @@ export function swashOnSand(h: any, xz: any): any {
 }
 
 /**
+ * Lowest ground the swash touches, metres relative to still water: about the
+ * deepest a backwash trough uncovers on these beaches. Below it the bed is
+ * permanently submerged.
+ */
+const SWASH_FLOOR = -0.7;
+
+/**
  * The swash at a ground fragment, behind a real branch: only the strip the
  * swash can reach does any of this work, and the branch is uniform across most
  * of a frame — all of the island above the beach skips it.
@@ -655,11 +662,18 @@ export function swashOnSand(h: any, xz: any): any {
  */
 export function swashAtGround(position: any): any {
   const result = vec4(0, 0, 0, 0).toVar();
-  If(position.y.lessThan(maxRunup().add(0.1)), () => {
-    result.assign(swashOnSand(position.y, vec2(position.x, position.z)));
+  If(position.y.lessThan(maxRunup().add(0.1)).and(position.y.greaterThan(SWASH_FLOOR)), () => {
+    // Faded out under the still-water line. Below it the "sheet" is the sea
+    // itself, and the bed is drawn in its own submerged palette; the swash's
+    // wet-sand darkening on top of that took a sixth off every metre of sand
+    // under the shallows (measured in `shore-break` with the sea hidden), and
+    // its sheet foam was painted on the bed for the water to show through.
+    const fade = position.y.smoothstep(SWASH_FLOOR, SWASH_FLOOR * 0.3);
+    result.assign(swashOnSand(position.y, vec2(position.x, position.z)).mul(fade));
   });
   return result;
 }
+
 
 /** Albedo of foam lying on sand: a little under the open sea's, it is thinner. */
 const SAND_FOAM_ALBEDO = 0.82;
