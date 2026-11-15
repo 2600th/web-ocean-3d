@@ -261,6 +261,27 @@ export function buildCannon(pb: PropBuilder, m: THREE.Matrix4, lod: Lod, seed: n
       tube(iron, ring, 0.008, 5, m, WHITE, false);
     }
   }
+  // Ready shot stacked beside the carriage: three 9-pounder balls (105 mm)
+  // with a fourth on top. The old glTF gun read as "a battery" largely through
+  // its loose shot, and four balls at 12 segments cost ~500 triangles.
+  if (lod < 2) {
+    const sr = 0.053;
+    const n = lod === 0 ? 12 : 8;
+    const ball: [number, number][] = [];
+    for (let i = 0; i <= n / 2; i++) {
+      const a = (i / (n / 2)) * Math.PI;
+      ball.push([Math.sin(a) * sr, -Math.cos(a) * sr]);
+    }
+    const base = m.clone().multiply(M.at(0.72, 0, -0.55, 0, rng() * Math.PI, 0));
+    const d = sr * 2;
+    const pile: P3[] = [
+      [0, sr, 0],
+      [d, sr, 0],
+      [d / 2, sr, d * 0.866],
+      [d / 2, sr + d * 0.816, d * 0.289],
+    ];
+    for (const [x, y, z] of pile) lathe(iron, ball, n, base.clone().multiply(M.at(x, y, z)), WHITE, { hard: false });
+  }
 }
 
 // ----------------------------------------------------------------- cutlass

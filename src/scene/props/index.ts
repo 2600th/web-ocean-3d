@@ -42,8 +42,10 @@ export interface PropPart {
  * never meets a material it has not already built. Repeated props hand their
  * parts to `Props`' instancing instead.
  *
- * Generated on the main thread at load: the whole library measured about
- * 40 ms of geometry building against the 7 MB of glTF it replaces.
+ * Generated on the main thread at load: 46 recipe-levels, 75-89 ms of
+ * geometry building over three boots (headless Chrome, WebGPU, `quality=high`)
+ * against the 5.5 MB of glTF it replaced, whose fetch and Meshopt/KTX2 decode
+ * it no longer waits on.
  */
 export class PropLibrary {
   readonly materials = new PropMaterials();
