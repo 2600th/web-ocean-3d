@@ -119,6 +119,13 @@ export class Caustics {
    * of its 3.3 m tile, which is 1.3 cm.
    */
   private readonly uDispersion = uniform(new THREE.Vector2(0.012, 0.0028));
+  /**
+   * Smoothstep edges of the shafts' two reads; see `shaftField`. Set for the
+   * heavily blurred levels the march reads (`UnderwaterPass.uShaftBlurLod`),
+   * where the web has averaged to within about half of its mean of 1.
+   */
+  readonly uShaftA = uniform(new THREE.Vector2(0.95, 1.35));
+  readonly uShaftB = uniform(new THREE.Vector2(0.85, 1.25));
 
   /**
    * The node graphs, built exactly once. TSL functions are lazily compiled at
@@ -292,14 +299,14 @@ export class Caustics {
    * The beams the shafts are made of, 0..1: abyssal-garden's `W_RAYS`
    * pattern, `ss(.3, .7, A) * ss(.15, .6, B)`, with `A` and `B` the tile read
    * eight and three times larger and blurred by `lod`. The thresholds are set
-   * for this tile's distribution (mean 1, filaments ~9) rather than abyssal's.
+   * for this tile's blurred distribution rather than abyssal's; see `uShaftA`.
    */
   private shaftField(worldPosition: any, lod: any): any {
     const p = vec3(worldPosition).toVar('causticsRP');
     const { xz } = this.surfacePoint(p);
     const a = texture(this.texture, xz.div(this.uTile.mul(SHAFT_SCALE_A))).level(float(lod).add(1)).r;
     const b = texture(this.texture, xz.yx.div(this.uTile.mul(SHAFT_SCALE_B)).add(0.3)).level(float(lod).add(0.5)).r;
-    return a.smoothstep(0.9, 2.6).mul(b.smoothstep(0.5, 1.8));
+    return a.smoothstep(this.uShaftA.x, this.uShaftA.y).mul(b.smoothstep(this.uShaftB.x, this.uShaftB.y));
   }
 
   /** Mip bias for the tile at `below` metres: sharp at the top, softer down. */

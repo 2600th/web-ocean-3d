@@ -3831,6 +3831,11 @@ class App {
     });
     // What the surface shows from below outside Snell's window: the medium.
     this.water.setUnderwaterMedium(this.underwater.mediumColor(_underMedium));
+    // [underwater-look-2] The submerged eye's own exposure target; see
+    // `AutoExposure.setSubmerged`. A uniform write.
+    this.postChain.exposure?.setSubmerged(submersion);
+    // [underwater-look-2] And its tone curve; see `OutputTransform.setSubmerged`.
+    this.outputTransform.setSubmerged(submersion);
     // The receivers' shadow lookup follows the refracted key light below the
     // surface (`SunShadows.setLightDirection`), so the hull's shadow on the sand
     // lands where the shafts' shadow column does. A uniform write.
