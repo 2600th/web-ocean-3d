@@ -120,9 +120,16 @@ class ExposureAdaptNode extends THREE.TempNode {
       // A dead zone first: ordinary reframing inside a preset — a hull filling
       // more of the frame, a little more sky — is part of the authored look and
       // is left alone. Only the excess beyond it is corrected.
-      const deviation = u.anchorLog.sub(avgLog).toVar('aeDev');
-      const excess = deviation.sign().mul(deviation.abs().sub(u.deadZone).max(0));
-      const target = clamp(excess.mul(u.strength), u.minEv, u.maxEv).toVar('aeTarget');
+      // [underwater-look-2] Below the surface the eye adapts around its own
+      // anchor, more fully and further. See `setSubmerged`.
+      const sub = u.submerged;
+      const anchor = mix(u.anchorLog, u.uwAnchorLog, sub);
+      const deadZone = mix(u.deadZone, u.uwDeadZone, sub);
+      const strength = mix(u.strength, u.uwStrength, sub);
+      const maxEv = mix(u.maxEv, u.uwMaxEv, sub);
+      const deviation = anchor.sub(avgLog).toVar('aeDev');
+      const excess = deviation.sign().mul(deviation.abs().sub(deadZone).max(0));
+      const target = clamp(excess.mul(strength), u.minEv, maxEv).toVar('aeTarget');
       const prev = previous.load(ivec2(0, 0)).r.toVar('aePrev');
       // Asymmetric: a scene getting brighter (target below the current
       // correction) is answered quickly, as the eye's pupil does; adapting to
@@ -219,6 +226,24 @@ export class AutoExposure {
     snapHeld: uniform(0),
     snapOnce: uniform(1),
     enabled: uniform(1),
+    // [underwater-look-2] The submerged eye. Under water the meter reads 1.7 to
+    // 2.8 EV below the above-water anchor (skyPro: -3.1 to -4.2 against -1.39,
+    // corrected captures), so the +0.5 EV cap bound on every submerged shot and
+    // the frame sat at a third of abyssal-garden's brightness. Inverting its
+    // tone curve, abyssal's open water sits at linear (0.067, 0.385, 0.584)
+    // before the curve: the same hue as our medium, about 2.3 EV brighter, and
+    // what makes it read cyan rather than navy is where it lands on the
+    // curve's shoulder. Referred back through skyPro's 0.42 exposure that is a
+    // metered level above the open-air anchor, which is why the anchor here is
+    // higher, not lower: skyPro's exposure was cut to keep the *sunlit* frame
+    // off the shoulder, and the water needs it back. A nearly full
+    // correction, a narrow dead zone and a cap of +3 EV.
+    /** 0 above water, 1 with the eye fully submerged. */
+    submerged: uniform(0),
+    uwAnchorLog: uniform(-0.4),
+    uwStrength: uniform(0.9),
+    uwDeadZone: uniform(0.25),
+    uwMaxEv: uniform(3.0),
   };
 
   private readonly meter: any;
@@ -270,6 +295,14 @@ export class AutoExposure {
   setPreset(presetId: string): void {
     this.uniforms.anchorLog.value = EXPOSURE_ANCHORS[presetId] ?? DEFAULT_ANCHOR;
     this.snapOnce();
+  }
+
+  /**
+   * [underwater-look-2] How submerged the eye is, 0..1; blends the submerged
+   * anchor, strength, dead zone and cap in. A uniform write; call per frame.
+   */
+  setSubmerged(amount: number): void {
+    this.uniforms.submerged.value = Math.min(1, Math.max(0, amount));
   }
 
   setEnabled(on: boolean): void {

@@ -200,8 +200,16 @@ const CLARITY = 0.65;
  * our 17 m column — a stylisation, stated as one: green at the reef keeps
  * 0.30 of the surface light, red 0.06, which is where the reference sits at
  * its own floor.
+ *
+ * [underwater-look-2] 1.2. The "one flat cyan" that 2.2 answered was judged
+ * on captures that were sRGB-encoded twice (fixed in aaa-pass fcc27da), which
+ * lifted every underwater frame by about a stop. On true-colour captures 2.2
+ * left kelp-wide at mean luma 38 against abyssal-garden's 140 and turned the
+ * whole column navy: green kept 0.34 at 15 m, red 0.07. At 1.2 green keeps
+ * 0.55 and red 0.23 there, still well under abyssal's own 0.70 and 0.42, so
+ * the frame keeps its depth gradient but stays blue-green.
  */
-const DAYLIGHT_K = 2.2;
+const DAYLIGHT_K = 1.2;
 
 /**
  * In-scatter brightness, as a multiple of the preset's water colour.
@@ -215,7 +223,12 @@ const DAYLIGHT_K = 2.2;
  * its foreground. 1.0 keeps the shallows' cyan in the `underwater` shot and
  * gives the reef back roughly half its contrast.
  */
-const INSCATTER_GAIN = 0.75;
+//
+// [underwater-look-2] 0.5. With the submerged exposure adapting the frame to a
+// target, this no longer sets how bright the water is, only how bright the
+// diffuse veil is against the shafts and the lit surfaces in it; at 0.75 the
+// beams through the kelp were a few percent over the veil and read as haze.
+const INSCATTER_GAIN = 0.5;
 
 /**
  * Daylight loss applied to the *surfaces* a ray finds, as a multiple of `sigma`.
@@ -236,7 +249,11 @@ const SURFACE_K = 0.9;
  * about the brightness of the in-scatter around it, which is the contrast in
  * the reference frames.
  */
-const SHAFT_DENSITY = 0.03;
+//
+// [underwater-look-2] 0.12, with the veil lowered (`INSCATTER_GAIN`) and the
+// beams widened (`uShaftBlurLod`): abyssal-garden's beams stand well clear of
+// the water around them, ours were within a few levels of it.
+const SHAFT_DENSITY = 0.12;
 
 /** Ambient kept by a face pointing straight down, near the surface. */
 const UNDERSIDE_AMBIENT = 0.3;
@@ -252,6 +269,15 @@ const FLUORESCENCE = 0.6;
 
 /** Water-scattered light on faces turned sideways; abyssal's `side` at 0.7 of its medium. */
 const SIDE_LIGHT = 0.35;
+
+/**
+ * [underwater-look-2] Upwelled light on down-facing surfaces, as a multiple of
+ * the in-scatter at their depth; see the composite. About what a mid albedo
+ * returns of the water's own scattered light.
+ */
+const UPWELL = 0.5;
+/** How much of the caustic web the upwelling carries, 0..1. */
+const UPWELL_WEB = 0.7;
 
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
 const GRADE_CONTRAST = 1.25;
@@ -361,8 +387,15 @@ export class UnderwaterPass {
    * Extra mips of blur on the beam pattern. The caustics module reads the
    * tile eight and three times larger for the shafts, so level 0 there is
    * already 7 cm and 2.7 cm a texel; abyssal uses levels 2.5 and 2.
+   *
+   * [underwater-look-2] 5. At 1.5 the reads kept the web's *lines*, which
+   * extruded along the sun into thin curved curtains. Five levels down the
+   * web has averaged into bright patches where its lines crowd together, a
+   * couple of metres across, and those extrude into the straight beams
+   * abyssal-garden's frames show. The thresholds moved with it; see
+   * `Caustics.uShaftA`.
    */
-  private readonly uShaftBlurLod = uniform(1.5);
+  private readonly uShaftBlurLod = uniform(5);
   /** How far along the view ray shafts are integrated, metres. abyssal-garden: 120. */
   private readonly uShaftRange = uniform(90);
   /** `K / cos` of the refracted sun: attenuation down the light's own path. */
@@ -708,12 +741,16 @@ export class UnderwaterPass {
           .toVar('uwPull');
         warp.addAssign(pullDir.mul(meniscus.mul(this.uMeniscusPull)));
 
-        // Faded out over the outermost 3% of the frame. The warp is clamped to
-        // the frame, and wherever it pointed outward the clamp repeated the
-        // edge row of pixels: the stripe glitch along the top and right edges
-        // of `refraction-3` and `underwater-1`.
+        // Faded out per axis over a band as wide as the largest warp can be, so
+        // the read never leaves the frame. The warp is clamped to the frame,
+        // and wherever it pointed outward the clamp repeated the edge row of
+        // pixels: the stripe glitch along the top and right edges of
+        // `refraction-3` and `underwater-1`. A fixed 3% band was narrower than
+        // the distortion plus the meniscus pull, and left the stripes in.
+        // (The post engineer's trace and patch.)
         const edgeDist = suv.min(suv.oneMinus()).toVar('uwEdgeDist');
-        warp.mulAssign(edgeDist.x.smoothstep(0, 0.03).mul(edgeDist.y.smoothstep(0, 0.03)));
+        const edgeBand = this.uDistortion.add(this.uMeniscusPull).add(0.002);
+        warp.mulAssign(vec2(edgeDist.x.smoothstep(0, edgeBand), edgeDist.y.smoothstep(0, edgeBand)));
         const warpedUv = suv
           .add(warp)
           .clamp(vec2(0.001, 0.001), vec2(0.999, 0.999))
@@ -869,6 +906,33 @@ export class UnderwaterPass {
           const side = float(1).sub(nWorld.y.abs()).mul(SIDE_LIGHT).toVar('uwSide');
           const hemi = mix(undersideFloor, float(1), up.mul(up)).add(side).toVar('uwHemi');
           surfaceRgb.mulAssign(mix(float(1), hemi, submergedHit) as any);
+
+          // [underwater-look-2] Upwelling. Light the water and the sunlit sand
+          // send back up, on faces turned down: abyssal-garden's rock
+          // overhangs and the bottom of a hull in clear shallows are lit by
+          // it, and carry the bed's moving caustic web reflected onto them.
+          // Without it a hull seen from below was a flat dark fill
+          // (refraction-3): its own lighting is the sky cube from beneath and
+          // the hemisphere above takes most of that away. Added rather than
+          // multiplied, because what is missing is light the scene never put
+          // on the surface at all; scaled as though by a mid albedo, and taken
+          // at the face's own depth so a deep overhang gets the deep water's
+          // colour.
+          const downFace = nWorld.y.negate().max(0).toVar('uwDownFace');
+          // The web as the bed shows it, read as if from 12 m further down so
+          // the field's own depth blur and contrast loss soften it: reflected
+          // caustics have crossed the column twice and are never crisp.
+          const upwellWeb = mix(float(1), float(caustics(hitP.sub(vec3(0, 12, 0))) as any), UPWELL_WEB).toVar(
+            'uwUpwellWeb',
+          );
+          const upwell = this.uScatterColor
+            .mul(exp(this.uScatterK.mul(hitDepth).negate()))
+            .mul(downFace.mul(0.8).add(side))
+            .mul(upwellWeb)
+            .mul(UPWELL * 1.22)
+            .mul(submergedHit)
+            .toVar('uwUpwell');
+          surfaceRgb.addAssign(upwell);
 
           // Chromatic caustics. The materials already carry the web in
           // luminance; this re-colours it with the dispersed field, as a ratio

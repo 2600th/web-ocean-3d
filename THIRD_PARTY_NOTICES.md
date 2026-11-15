@@ -29,6 +29,12 @@ The underwater look also adapts these parts of abyssal-garden:
   term at the window edge, the ripple brightness, the refracted sun, and total
   internal reflection as the medium's own in-scatter. These are in the fenced
   `[underwater-look]` underside branch of `src/ocean/OceanMaterial.ts`.
+- The shaft pattern's blurred, thresholded pair of reads (`W_RAYS`), now at
+  the heavier blur that turns the web into beams, in
+  `src/underwater/Caustics.ts`.
+- The submerged tone curve: the per-channel ACES fit abyssal-garden's
+  `W_POST` uses (Narkowicz 2015), in the fenced `[underwater-look-2]` branch
+  of `src/post/OutputTransform.ts`.
 
 The instanced leaf renderer for kelp and seabed cover (leaf strips, sway, palette,
 two-sided translucent lighting, glints) is adapted from abyssal-garden's `W_LEAF`

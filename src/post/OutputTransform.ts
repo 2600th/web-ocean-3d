@@ -1,5 +1,20 @@
 import * as THREE from 'three/webgpu';
-import { Fn, dot, floor, fract, renderOutput, screenCoordinate, sin, uniform, vec2, vec4 } from 'three/tsl';
+import {
+  Fn,
+  If,
+  dot,
+  floor,
+  fract,
+  mix,
+  renderOutput,
+  sRGBTransferOETF,
+  screenCoordinate,
+  sin,
+  toneMappingExposure,
+  uniform,
+  vec2,
+  vec4,
+} from 'three/tsl';
 
 /**
  * Tone mapping, the sRGB transfer function, and a dither — done here rather
@@ -69,8 +84,17 @@ function hash21(p: any): any {
   return fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453));
 }
 
+/**
+ * [underwater-look-2] Linear gain ahead of the submerged curve that puts
+ * middle grey (0.18) where three's ACES puts it (0.180), so swapping curves
+ * under water changes how saturated colour rolls off, not the exposure.
+ */
+const UNDERWATER_CURVE_GAIN = 0.723;
+
 export class OutputTransform {
   private readonly uDither = uniform(DITHER_LEVELS / OUTPUT_LEVELS);
+  /** [underwater-look-2] 0 above water, 1 with the eye fully submerged. */
+  private readonly uSubmerged = uniform(0);
 
   /**
    * @param sceneColor The finished linear-HDR frame, after every other stage.
@@ -106,11 +130,42 @@ export class OutputTransform {
     // The renderer's own output node, with the renderer's own settings. This
     // includes `toneMappingExposure` — the tone-mapping node reads it as a
     // uniform — so the per-preset exposure keeps working untouched.
+    // [underwater-look-2] Only for the pairing it was measured against.
+    const submergedCurve = toneMapping === THREE.ACESFilmicToneMapping && colorSpace === THREE.SRGBColorSpace;
     return Fn(() => {
-      const c = vec4(src);
+      const c = vec4(src).toVar('outIn');
       const trimmed = OUTPUT_TONE_TRIM === 1 ? c : vec4(c.rgb.mul(OUTPUT_TONE_TRIM), c.a);
-      return vec4(renderOutput(trimmed, toneMapping, colorSpace));
+      const display = vec4(renderOutput(trimmed, toneMapping, colorSpace)).toVar('outDisplayed');
+      if (submergedCurve) {
+        // [underwater-look-2] Under water, a per-channel ACES fit (Narkowicz
+        // 2015, as abyssal-garden uses) instead of three's fitted RRT+ODT.
+        // Three's output matrix takes red *below zero* on the strongly cyan
+        // colours that fill a submerged frame, and the clamp turns that into
+        // red 0 over the whole picture, so the water reads navy-blue however it
+        // is exposed (true-colour captures: (0, 85, 128) where abyssal's water
+        // sits at (75, 192, 213)). A per-channel curve has no matrix to clip
+        // and rolls bright cyan toward white the way abyssal's does. A branch
+        // on a uniform: above water the frame pays one compare.
+        If(this.uSubmerged.greaterThan(0.001), () => {
+          const x = c.rgb.mul(toneMappingExposure as any).mul(UNDERWATER_CURVE_GAIN).max(0).toVar('outUwX');
+          const mapped = x
+            .mul(x.mul(2.51).add(0.03))
+            .div(x.mul(x.mul(2.43).add(0.59)).add(0.14))
+            .clamp(0, 1);
+          const uw = (sRGBTransferOETF(vec4(mapped, 1)) as any).rgb;
+          display.assign(vec4(mix(display.rgb, uw, this.uSubmerged), display.a));
+        });
+      }
+      return display;
     })();
+  }
+
+  /**
+   * [underwater-look-2] How submerged the eye is, 0..1: blends the submerged
+   * tone curve in. A uniform write; call per frame.
+   */
+  setSubmerged(amount: number): void {
+    this.uSubmerged.value = Math.min(1, Math.max(0, amount));
   }
 
   /** The dither, which must be the last thing that touches the frame. */
