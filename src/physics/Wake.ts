@@ -130,6 +130,48 @@ const DECAY_TAU = 1.5;
 const WAKE_FOAM_TAU = 5;
 
 /**
+ * Decay time constant of foam *freshness*, seconds: how long a texel still
+ * counts as "just broken".
+ *
+ * Ported from Noniv/web-ocean (MIT; `sim.js`, `FOAM_UPDATE`), which keeps a
+ * second foam channel, `fresh = max(prev * exp(-1.6 dt), inject)`, beside the
+ * slow one, and renders the two differently: fresh foam dense and opaque, aged
+ * foam torn into wind streaks and lace. 1 / 1.6 s is its rate.
+ *
+ * **Why we need it.** Every texel this buffer holds at 1 was, until now, drawn as
+ * solid white, and the sea-foam channel saturates (see `uBreakRate`: the rate is
+ * calibrated on the *mean*, Monahan's coverage, and the fold regions of a 47 m
+ * swell are tens of metres wide). So every patch rendered as a flat white sheet
+ * or a paper-cutout oval for as long as the 1.5 s decay held it near 1, which in
+ * the critic's shots (waves-4, foam-2, foam-3) was most of its life. A crest that
+ * broke this instant and one that broke two seconds ago are the same value in
+ * R, and only the first is a whitecap; the second is Monahan's stage-B patch,
+ * which covers about ten times the area at a fraction of the density. Freshness
+ * is what tells them apart. R is unchanged, so the calibration still holds.
+ */
+const FRESH_TAU = 1 / 1.6;
+
+/**
+ * Freshness deposited per second by a crest that is folding *hard*, and how far
+ * past the sea channel's breaking threshold that has to be.
+ *
+ * Not the sea channel's own test, and that was measured: with freshness fed by
+ * the same `breaking` term, whole swell faces read as fresh. The sea channel
+ * trips at a Jacobian just under its threshold and, at `uBreakRate * DECAY_TAU`
+ * of 2.2 for 15 m/s, saturates anything that stays there half a second, so its
+ * footprint is the whole *weakly* folding face, tens of metres wide. That is
+ * Monahan's coverage, and it is calibrated as such; it is not where the water is
+ * white. The surface's own crest mask (`OceanMaterial`) needs the Jacobian well
+ * below zero before it shows anything, and freshness follows it: it starts
+ * 0.15 below the breaking threshold and is full 0.45 below, about -0.37 at the
+ * default threshold, which is where the crest mask is solid. 4 / s saturates a
+ * texel in a quarter of a second under such a crest.
+ */
+const FRESH_RATE = 4;
+const FRESH_ONSET = 0.15;
+const FRESH_FULL = 0.45;
+
+/**
  * Hull foam deposited per second at reference speed.
  *
  * `DEPOSIT_RATE * WAKE_FOAM_TAU` is 5.5, and for the breaking-crest term a
@@ -566,6 +608,8 @@ export class Wake {
   private readonly uElevationDecay = uniform(1);
   /** Per-frame decay multiplier for the hull-foam channel. See `WAKE_FOAM_TAU`. */
   private readonly uWakeFoamDecay = uniform(1);
+  /** Per-frame decay multiplier for foam freshness. See `FRESH_TAU`. */
+  private readonly uFreshDecay = uniform(1);
   private readonly uCenter = uniform(new THREE.Vector2());
   /** Frame step, seconds, so deposits are a rate rather than a per-frame amount. */
   private readonly uStep = uniform(1 / 60);
@@ -947,10 +991,22 @@ export class Wake {
     if (this.splashQueued >= MAX_SPLASHES) return;
     if (!Number.isFinite(x) || !Number.isFinite(z) || !(amount > 0)) return;
     const base = this.splashQueued * 4;
+    // **Never narrower than the buffer can draw round.** A texel here is
+    // `extent / resolution` across (0.41 m at 1024, 0.82 m at 512), and a
+    // floater's 0.6 m splash covered two or three of them: the surface reads
+    // the buffer bilinearly, so that came out as a square or a diamond (the
+    // VFX pass's report on 000d841). A disc needs about three texels of radius
+    // before its outline is round at this filtering, so a smaller splash is
+    // spread to that radius and its amount scaled by the area ratio: the same
+    // foam, less concentrated, which the foam threshold then draws as a few
+    // flecks rather than a stamp.
+    const minRadius = Math.max(0.5, (3 * this.extent) / this.resolution);
+    const r = Math.max(minRadius, radius);
+    const spread = Math.min(1, (Math.max(0.5, radius) / r) ** 2);
     this.splashQueue[base] = x;
     this.splashQueue[base + 1] = z;
-    this.splashQueue[base + 2] = Math.max(0.5, radius);
-    this.splashQueue[base + 3] = Math.min(1, amount);
+    this.splashQueue[base + 2] = r;
+    this.splashQueue[base + 3] = Math.min(1, amount * spread);
     this.splashQueued++;
   }
 
@@ -989,6 +1045,7 @@ export class Wake {
     this.uDecay.value = Math.exp(-step / DECAY_TAU);
     this.uElevationDecay.value = Math.exp(-step / ELEVATION_DECAY_TAU);
     this.uWakeFoamDecay.value = Math.exp(-step / WAKE_FOAM_TAU);
+    this.uFreshDecay.value = Math.exp(-step / FRESH_TAU);
     this.uStep.value = step;
     setVec2(this.uCenter.value as THREE.Vector2, this.centerX_, this.centerZ_);
 
@@ -1093,7 +1150,9 @@ export class Wake {
     const previousClear = renderer.getClearColor(new THREE.Color());
     const previousAlpha = renderer.getClearAlpha();
 
-    renderer.setClearColor(0x000000, 1);
+    // Alpha 0 too: the ping-pong buffers carry foam freshness in alpha, and a
+    // buffer cleared to 1 would read as foam broken this instant everywhere.
+    renderer.setClearColor(0x000000, 0);
     for (const target of [this.buffers[0], this.buffers[1], this.output]) {
       renderer.setRenderTarget(target);
       renderer.clear(true, false, false);
@@ -1176,6 +1235,8 @@ export class Wake {
       // Hull foam rides the same drift — it floats, and it is the same material —
       // but decays on its own, much longer, constant. Same tap, no extra fetch.
       const previousWake = history.b.mul(this.uWakeFoamDecay).mul(inside).toVar();
+      // Freshness rides in alpha, which was a constant 1. Same tap.
+      const previousFresh = history.a.mul(this.uFreshDecay).mul(inside).toVar();
       // Masked by *its own* footprint test, not the drifted one. Sharing `inside`
       // meant the drift decided where the elevation field's border was, which is
       // the coupling this split exists to remove.
@@ -1192,6 +1253,8 @@ export class Wake {
       const deposit = float(0).toVar();
       /** Fresh foam from the hulls, kept apart for its own time constant. */
       const wakeDeposit = float(0).toVar();
+      /** Freshness from hard-breaking crests. See `FRESH_RATE`. */
+      const freshDeposit = float(0).toVar();
       /** Fresh Kelvin elevation, metres, summed over emitters. */
       const stamped = float(0).toVar();
       /** How completely the fresh stamp owns this texel, 0..1. */
@@ -1231,6 +1294,11 @@ export class Wake {
       // tighter than the old per-frame mask could afford to be.
       const breaking = smoothstepDown(fold, this.uBreakThreshold.sub(0.22), this.uBreakThreshold);
       deposit.addAssign(breaking.mul(this.uBreakRate).mul(this.uStep));
+      freshDeposit.addAssign(
+        smoothstepDown(fold, this.uBreakThreshold.sub(FRESH_FULL), this.uBreakThreshold.sub(FRESH_ONSET))
+          .mul(FRESH_RATE)
+          .mul(this.uStep),
+      );
 
       // --- windward faces -----------------------------------------------------
       //
@@ -1592,19 +1660,30 @@ export class Wake {
         for (let i = 0; i < MAX_SPLASHES; i++) {
           const splash = this.splashes[i];
           const r = world.sub(vec2(splash.x, splash.y)).length().div(splash.z).toVar();
-          const disc = smoothstepDown(r, 0.25, 1).toVar();
-          wakeDeposit.addAssign(disc.mul(boil).mul(splash.w).mul(1.6));
+          // A radial falloff with no plateau, `(1 - r^2)^2`, evaluated per
+          // texel: smooth to zero at the rim and with no flat top for the
+          // bilinear read to square off. It holds half the volume of a flat
+          // disc of the same radius, hence 2x where the plateau had 1.6x.
+          const rr = r.mul(r).oneMinus().max(0);
+          const disc = rr.mul(rr).toVar();
+          wakeDeposit.addAssign(disc.mul(boil).mul(splash.w).mul(2));
         }
       });
 
       // Blend, do not sum: see the class comment.
       const elevation = mix(previousElevation, stamped, stampWeight.clamp(0, 1)).toVar();
 
+      // Freshness: hard-breaking crests (`FRESH_RATE`) and everything the hulls
+      // and splashes put down. The churn at the stem and the transom is white
+      // water being made now, and the trail it leaves ages into lace exactly as
+      // a whitecap's does. The windward wash and rain never make it fresh.
+      const fresh = previousFresh.add(freshDeposit).add(wakeDeposit).clamp(0, 1);
+
       return vec4(
         previous.add(deposit).clamp(0, 1),
         elevation,
         previousWake.add(wakeDeposit).clamp(0, 1),
-        1,
+        fresh,
       );
     })();
 
@@ -1673,7 +1752,8 @@ function createCopyMaterial(source: THREE.Texture): THREE.NodeMaterial {
     const s = texture(source, uv()).toVar();
     const sea = s.r.clamp(0, 1).toVar();
     const hull = s.b.clamp(0, 1).toVar();
-    return vec4(sea.oneMinus().mul(hull.oneMinus()).oneMinus(), s.g, 0, 1);
+    // B: freshness, 0..1, how recently this foam was made (see `FRESH_TAU`).
+    return vec4(sea.oneMinus().mul(hull.oneMinus()).oneMinus(), s.g, s.a.clamp(0, 1), 1);
   })();
   return material;
 }

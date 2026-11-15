@@ -71,6 +71,71 @@ export interface CascadeConfig {
   maxWavelength: number;
   /** Per-cascade weighting of horizontal displacement (choppiness). */
   choppiness: number;
+  /**
+   * Detail band: shading only, never displaced geometry. Uses the capillary
+   * dispersion relation and web-ocean's millimetre short-wave cut instead of
+   * the 2 cm-scale `capillaryCutoff` the geometric bands need. See
+   * `detailCascades`.
+   */
+  detail?: boolean;
+  /** Amplitude multiplier for the band. Detail bands are toned down; see `detailCascades`. */
+  gain?: number;
+}
+
+/**
+ * Surface tension over density, m^3/s^2 — the capillary term in
+ * `w^2 = g k + (sigma/rho) k^3`. 7.4e-5 is web-ocean's value (sim.js `SURF`) and
+ * the textbook one for sea water at 20 degrees. It moves a 1 cm ripple's
+ * frequency by 70%, and a 12 cm one by under 2%, so only the detail bands use it.
+ */
+export const SURFACE_TENSION = 7.4e-5;
+
+/**
+ * A shading-only band below the shortest wave the geometric cascades carry.
+ *
+ * **Why it exists.** The critic's main complaint about our near water was
+ * "jelly-like mottling", blurred blobs with no fine detail, and the cause is
+ * spectral, not filtering. The ripple cascade's 16 m tile at N texels cannot hold
+ * anything shorter than `2 * 16 / N` (12.5 cm at High), and the spectrum's own
+ * `capillaryCutoff` had already removed most of the energy below about 8 cm.
+ * Slope variance in a saturated wind sea is roughly constant per octave of
+ * wavenumber (the k^-4 Phillips range), so the missing five octaves, 4 mm to
+ * 12 cm, carry as much *slope* as everything from 12 cm to the swell. That is the
+ * part of the surface that breaks a sun track into glints and a reflected cloud
+ * into fragments. Without it a pixel 5 m away sees one smooth metre-scale facet,
+ * and its bilinearly interpolated slope draws the stair-stepped "blocky glitter"
+ * squares of refraction-1.
+ *
+ * **What is ported.** Noniv/web-ocean (MIT) runs cascades down to a 0.26 m tile
+ * for exactly this ("The smallest cascade produces the sharp sun sparkles near
+ * the camera"), with capillary dispersion, a 1.2 mm Gaussian cut, and its two
+ * finest bands toned to 0.85 and 0.6 because at full amplitude they "read as
+ * crumpled foil" (sim.js `amplitude`). This band spans both of those, so it takes
+ * their mean, 0.72.
+ *
+ * **One band, not web-ocean's two, and that is a measured limit.** The water's
+ * fragment stage sits at the WebGPU default of 16 sampled textures; a second
+ * detail texture made it 17 and the pipeline failed to create. One band can span
+ * the whole range because the well-resolved range of an N-texel tile of size L is
+ * `[2L/N, L/4]`, a factor of N/8 (32 at High): the tile is `4 x` the band's top,
+ * `128 / N` metres (0.5 m at High), and its bottom is then `256 / N^2` (3.9 mm).
+ * The material reads it twice, the second time rotated by an irrational angle,
+ * so the 0.5 m tile never repeats visibly (see the detail loop in
+ * `OceanMaterial`).
+ *
+ * The edges are expressed in `size` so the band starts exactly where the ripple
+ * cascade's resolution ends at every tier: 50 cm down to 6 cm at Low (N = 64),
+ * 12.5 cm to 4 mm at High, 6 cm to 1 mm at Max.
+ *
+ * Fragment-only: the mesh is centimetres apart at best, so displacing it by
+ * millimetre waves would only alias. Buoyancy, foam folding and the wake never
+ * see this band, so the physics is unchanged.
+ */
+export function detailCascades(size: number): CascadeConfig[] {
+  const rippleTile = CASCADES[CASCADES.length - 1].tileSize;
+  const top = (2 * rippleTile) / size;
+  const tile = 4 * top;
+  return [{ tileSize: tile, minWavelength: (2 * tile) / size, maxWavelength: top, choppiness: 0, detail: true, gain: 0.72 }];
 }
 
 /**
@@ -214,7 +279,13 @@ function spectrumAmplitude(
   const wavelength = (2 * Math.PI) / kLength;
   if (wavelength < cascade.minWavelength || wavelength > cascade.maxWavelength) return 0;
 
-  const omega = Math.sqrt(GRAVITY * kLength);
+  // Capillary dispersion on the detail bands only (web-ocean `omegaOf`); the
+  // geometric bands keep pure gravity waves so their phases, and with them the
+  // buoyancy readback and every captured frame, are unchanged.
+  const detail = cascade.detail === true;
+  const omega = detail
+    ? Math.sqrt(GRAVITY * kLength + SURFACE_TENSION * kLength * kLength * kLength)
+    : Math.sqrt(GRAVITY * kLength);
 
   // --- JONSWAP energy density in the frequency domain ---
   const sigma = omega <= peakOmega ? 0.07 : 0.09;
@@ -228,7 +299,10 @@ function spectrumAmplitude(
 
   // --- Map frequency density to wavenumber density ---
   // dw/dk = g / (2w); the extra 1/k converts a 1-D density to a 2-D one.
-  const jacobian = GRAVITY / (2 * omega * kLength);
+  // With the capillary term dw/dk = (g + 3 sigma k^2) / (2w) (web-ocean `dOmegaOf`).
+  const jacobian = detail
+    ? (GRAVITY + 3 * SURFACE_TENSION * kLength * kLength) / (2 * omega * kLength)
+    : GRAVITY / (2 * omega * kLength);
 
   // --- Directional spreading ---
   //
@@ -293,13 +367,15 @@ function spectrumAmplitude(
 
   // Suppress the very shortest waves — beyond this they are normal-map detail,
   // not geometry, and they alias badly.
-  const capillaryCutoff = Math.exp(-kLength * kLength * 0.0004);
+  // The detail bands are exactly that normal-map detail, so they take
+  // web-ocean's 1.2 mm cut (sim.js `misc.y = 0.0012`) instead.
+  const capillaryCutoff = Math.exp(-kLength * kLength * (detail ? 0.0012 * 0.0012 : 0.0004));
 
   const energy = jonswap * jacobian * directional * capillaryCutoff * params.amplitude;
   if (!Number.isFinite(energy) || energy <= 0) return 0;
 
   // sqrt(2 * S(k) * dk^2) / sqrt(2) collapses to sqrt(S) * dk.
-  return Math.sqrt(energy) * deltaK;
+  return Math.sqrt(energy) * deltaK * (cascade.gain ?? 1);
 }
 
 /**
