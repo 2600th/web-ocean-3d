@@ -223,6 +223,7 @@ const _seenHorizon = new THREE.Color();
 const _seenZenith = new THREE.Color();
 const _cloudFog = new THREE.Color();
 const _cloudZenith = new THREE.Color();
+const _cloudEye = new THREE.Vector3();
 
 /**
  * A fill tint dimmed to the dome's own radiance, once the sun is down.
@@ -1004,7 +1005,6 @@ class App {
     // a bandwidth saving that pays for most of the resolve.
     this.taaEnabled =
       this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
-    this.clouds.setTemporalJitter(this.taaEnabled);
     const scenePass = this.taaEnabled
       ? pass(this.scene, this.camera, { samples: 0 })
       : pass(this.scene, this.camera);
@@ -1379,6 +1379,9 @@ class App {
       this.camera.projectionMatrix,
       this.camera.matrixWorldInverse,
     );
+    // The cloud march runs on its own unjittered grid and is looked up from
+    // the dome through the same matrix; see `Clouds.setView`.
+    this.clouds.setView(this.currViewProjection.value, _cloudEye.setFromMatrixPosition(this.camera.matrixWorld));
     this.liveFrame = live;
     try {
       await this.post.renderAsync();
