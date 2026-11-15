@@ -60,8 +60,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * Vite copies the whole of `public/` into `dist/` verbatim, so while the sources
  * sat there this script's entire purpose was being undone one directory up: the
  * build shipped 818 MB, of which 784 MB was raw scan geometry that no frame
- * draws and no URL points at. Only the six directories the runtime actually
- * fetches — the ship, the buoy, the barrel, the two silhouette rocks, and
+ * draws and no URL points at. Only the four directories the runtime actually
+ * fetches — the ship, the two silhouette rocks, and
  * `dressing/` — are left in `public/`.
  */
 const MODELS = join(ROOT, 'assets', 'source', 'models');
@@ -291,27 +291,14 @@ const ASSETS = [
   { slug: 'coast_rocks_03', ratio: 0.06, error: 0.012, texture: 1024 },
 
 
-  // Pirate cove. `ship_pinnace` and `cannon_01` are rigged in the source; the
-  // rig is stripped by `prune` because nothing here animates them, and a boat
-  // hauled up a beach does not need to.
+  // Pirate cove. `ship_pinnace` is rigged in the source; the rig is stripped by
+  // `prune` because nothing here animates it, and a boat hauled up a beach does
+  // not need to. The cove's stores, the fort's gun and the reef find used to be
+  // listed here too; they are procedural now (`src/scene/props/`).
   { slug: 'ship_pinnace', ratio: 0.2, error: 0.008, texture: 1024 },
   { slug: 'modular_wooden_pier', ratio: 0.25, error: 0.008, texture: 1024 },
-  { slug: 'cannon_01', ratio: 0.25, error: 0.006, texture: 512 },
-  { slug: 'wooden_barrels_01', ratio: 0.3, error: 0.008, texture: 512 },
-  { slug: 'wooden_lantern_01', ratio: 0.35, error: 0.006, texture: 512 },
-  { slug: 'wooden_crate_02', ratio: 0.3, error: 0.008, texture: 512 },
-
-  // Pirate remains. Held to a tighter error than the rocks: these are handled
-  // objects seen from a couple of metres, where a collapsed hilt or a faceted
-  // jug is the thing the eye lands on.
-  { slug: 'antique_estoc', ratio: 0.2, error: 0.004, texture: 512 },
-  { slug: 'jug_01', ratio: 0.25, error: 0.005, texture: 512 },
-  { slug: 'wooden_bucket_01', ratio: 0.3, error: 0.006, texture: 512 },
   { slug: 'modular_fort_01', ratio: 0.15, error: 0.01, texture: 1024 },
 
-  { slug: 'treasure_chest', ratio: 0.3, error: 0.006, texture: 1024 },
-  { slug: 'wooden_crate_01', ratio: 0.3, error: 0.008, texture: 512 },
-  { slug: 'lambis_shell', ratio: 0.25, error: 0.008, texture: 512 },
 
   // ---- The reef (Sketchfab; see the SKETCHFAB manifest in fetch-assets.mjs) --
   //
@@ -367,9 +354,6 @@ const LOD_RATIOS = {
   ship_pinnace: [0.3, 0.1],
   modular_wooden_pier: [0.3, 0.1],
   modular_fort_01: [0.35, 0.12],
-  treasure_chest: [0.3, 0.1],
-  cannon_01: [0.35, 0.12],
-  wooden_barrels_01: [0.35, 0.12],
 
   // The reef is the one place the camera gets *close* to a high instance count,
   // so its LOD1 is gentler and there is no LOD2: a coral head is either in the
@@ -431,12 +415,9 @@ const HERO_ASSETS = [
     keep: [{ match: /hull_(diff|nor_gl)/, size: 2048 }],
     ktx2: { uastc: /_(diff|nor_gl)/, supercompress: true, mipFilter: 'box' },
   },
-  // The floaters are a metre or two tall and never fill the frame, so they take
-  // the dressing's trade instead: ETC1S colour, and normals at half size. UASTC
-  // colour would make the barrel's textures three times the JPEGs they replace;
-  // as built it is the same size on the wire and a quarter of the video memory.
-  { slug: 'ocean_buoy', source: 'ocean_buoy_1k.gltf', texture: 1024, normal: 512, ktx2: { supercompress: true, mipFilter: 'box' } },
-  { slug: 'barrel_03', source: 'barrel_03_1k.gltf', texture: 1024, normal: 512, ktx2: { supercompress: true, mipFilter: 'box' } },
+  // The buoy and the barrel used to follow here. Both are procedural now
+  // (`src/scene/props/`), period pieces in place of a steel channel buoy and an
+  // oil drum.
 ];
 const HERO_OUT = join(ROOT, 'public', 'models', 'hero');
 const HERO_MESHOPT = { quantizePosition: 16, quantizeTexcoord: 14, quantizeNormal: 10 };
