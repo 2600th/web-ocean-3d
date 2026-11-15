@@ -298,8 +298,10 @@ export class SeaCreatures {
   // ---------------------------------------------------------------- the fish
 
   /**
-   * Small reef fish milling over the coral: chromis, anthias, tangs, sergeant
-   * majors, butterflyfish. One species per swarm, a few dozen swarms, one draw.
+   * Small reef fish milling over the coral: blue chromis, fairy basslets,
+   * Atlantic blue tangs, sergeant majors, foureye butterflyfish, yellowtail
+   * damsels. All Caribbean species. One species per swarm, a few dozen swarms,
+   * one draw.
    */
   private buildReefFish(random: () => number, sites: readonly CreatureSite[]): void {
     interface FishKind {
@@ -312,20 +314,20 @@ export class SeaCreatures {
       radius: [number, number];
     }
     const KINDS: FishKind[] = [
-      // Blue-green chromis: the clouds over every coral head.
+      // Blue chromis (Chromis cyanea): the clouds over every coral head.
       { a: 0x46b8e8, b: 0x9fe0f0, pattern: 0, size: [0.07, 0.1], depth: 1, count: [14, 26], radius: [0.6, 2.2] },
-      // Anthias: orange-pink, lavender belly.
-      { a: 0xf0743a, b: 0xd890e0, pattern: 0, size: [0.07, 0.1], depth: 1, count: [12, 22], radius: [0.5, 1.8] },
-      // Yellow tang: a deep yellow disc.
+      // Fairy basslet (Gramma loreto): violet front, yellow rear.
+      { a: 0x8a3ad8, b: 0xf2c828, pattern: 2, size: [0.07, 0.1], depth: 1, count: [12, 22], radius: [0.5, 1.8] },
+      // Juvenile Atlantic blue tang (Acanthurus coeruleus): bright yellow.
       { a: 0xf2d42c, b: 0xf6e070, pattern: 0, size: [0.13, 0.18], depth: 1.6, count: [4, 8], radius: [1.2, 3] },
       // Sergeant major: yellow-backed with black bars.
       { a: 0xd8d470, b: 0x1a1a1a, pattern: 1, size: [0.12, 0.16], depth: 1.3, count: [5, 10], radius: [1, 2.5] },
-      // Blue tang: royal blue, yellow tail.
-      { a: 0x2a5ae0, b: 0xf0d030, pattern: 2, size: [0.15, 0.2], depth: 1.4, count: [3, 6], radius: [1.5, 3.5] },
-      // Butterflyfish: white with a yellow rear and a dark band.
+      // Adult Atlantic blue tang: powder blue to violet all over.
+      { a: 0x3448c8, b: 0x6c78e0, pattern: 0, size: [0.15, 0.2], depth: 1.4, count: [3, 6], radius: [1.5, 3.5] },
+      // Foureye butterflyfish (Chaetodon capistratus): pale, yellowish rear.
       { a: 0xf2f0e6, b: 0xf0c020, pattern: 2, size: [0.11, 0.14], depth: 1.7, count: [2, 4], radius: [0.8, 2] },
-      // Clownfish-coloured damsels: orange with white bars.
-      { a: 0xf06818, b: 0xf6f6f0, pattern: 1, size: [0.07, 0.09], depth: 1.2, count: [2, 5], radius: [0.3, 0.8] },
+      // Yellowtail damselfish (Microspathodon chrysurus): dark blue, yellow tail.
+      { a: 0x1a2648, b: 0xf0c828, pattern: 2, size: [0.07, 0.09], depth: 1.2, count: [2, 5], radius: [0.3, 0.8] },
     ];
     // Swarms per site, and the order kinds are dealt in so a tier prefix keeps
     // the common species.
