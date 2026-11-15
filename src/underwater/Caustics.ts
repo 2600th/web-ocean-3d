@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { Fn, exp, float, mix, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { Fn, exp, float, mix, sin, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 /**
  * Procedural light caustics: one small, periodic, animated tile, read at
@@ -89,6 +89,20 @@ const SURFACE_BRIGHT_SHARE = 0.8;
 
 /** The surfaces' second, modulating read, abyssal's `6.9 / 3.3`. */
 const BROAD_SCALE = 2.1;
+
+/**
+ * [underwater-look-3] A slow warp of where the surfaces read the tile, so the
+ * 4.2 m repeat stops showing. On the sand the broad read hid it; on a rock
+ * face five metres across, close to the camera, the round-3 review saw the
+ * same filaments twice and called it a tiled texture. Two sines per axis at
+ * wavelengths of 10 to 15 m that share no period with the tile or each other:
+ * smooth, ALU only, and a displacement of up to about `WARP_METRES * 1.6`,
+ * enough that two neighbouring repeats differ by more than a cell. Kept small
+ * because the warp's gradient stretches the web and raises its mip: the
+ * blurred tile was tried as the warp source first, and its variation is at
+ * the cell scale, which smeared the web to nothing.
+ */
+const WARP_METRES = 0.3;
 
 /** Sanity bound on the shear; the refracted sun cannot exceed ~1.13. */
 const MAX_TILT = 3;
@@ -260,7 +274,7 @@ export class Caustics {
   private surfaceField(worldPosition: any): any {
     const p = vec3(worldPosition).toVar('causticsSP');
     const { below, xz } = this.surfacePoint(p);
-    const web = texture(this.texture, xz.div(this.uTile))
+    const web = texture(this.texture, xz.div(this.uTile).add(this.warp(xz)))
       .bias(this.detailBias(below))
       .r.mul(this.broadPattern(xz));
     return applyWeb(web, this.detailContrast(below));
@@ -280,7 +294,7 @@ export class Caustics {
   private chromaticField(worldPosition: any): any {
     const p = vec3(worldPosition).toVar('causticsCP');
     const { below, xz } = this.surfacePoint(p);
-    const tileUv = xz.div(this.uTile).toVar('causticsCUv');
+    const tileUv = xz.div(this.uTile).add(this.warp(xz)).toVar('causticsCUv');
 
     // Along the tilt where there is one; a fixed diagonal under a vertical sun,
     // where the refracted ray has no horizontal direction to spread along.
@@ -338,6 +352,15 @@ export class Caustics {
    * `.45 + b * 1.3` in abyssal's `caus`. It breaks the repeat and gives the
    * web the larger bright and dim patches real caustics have.
    */
+  /** [underwater-look-3] Tile-space offset breaking the repeat; see `WARP_AMOUNT`. */
+  private warp(xz: any): any {
+    const x = xz.x;
+    const z = xz.y;
+    const u = sin(x.mul(0.57).add(z.mul(0.21))).add(sin(x.mul(-0.23).add(z.mul(0.43)).add(1.3)).mul(0.6));
+    const v = sin(x.mul(0.19).sub(z.mul(0.61)).add(2.1)).add(sin(x.mul(0.47).add(z.mul(0.31)).add(0.4)).mul(0.6));
+    return vec2(u, v).mul(WARP_METRES).div(this.uTile);
+  }
+
   private broadPattern(xz: any): any {
     const b = texture(this.texture, xz.yx.div(this.uTile.mul(BROAD_SCALE)).add(0.37)).bias(float(3)).r;
     return mix(float(1), b, 0.55).clamp(0.4, 2.2);

@@ -279,8 +279,44 @@ const UPWELL = 0.5;
 /** How much of the caustic web the upwelling carries, 0..1. */
 const UPWELL_WEB = 0.7;
 
+/**
+ * [underwater-look-3] Scale on the light submerged surfaces carry, relative to
+ * the water's in-scatter.
+ *
+ * The scene is lit for open air: a key of 3.4, a hemisphere fill of 1 and a
+ * sky-cube IBL. Under water that put a kelp blade or a coral head at roughly
+ * three times the luminance of the water around it, where abyssal-garden's
+ * objects sit at a third to a fifth of theirs (albedo times a light of about
+ * 1, against an in-scatter of `WCOL * 1.22`). The ratio was inverted by an
+ * order of magnitude, and that is the "flat aquarium" of the round-3 review:
+ * everything lit as if in a tank, the water a thin tint over it, near and far
+ * at the same contrast. With the surfaces brought down the exposure lifts the
+ * frame back, and the water does what it does in abyssal-garden's frames:
+ * near things are dark and hold their contrast, far things dissolve into the
+ * bright medium.
+ */
+const SURFACE_LIGHT = 0.35;
+/**
+ * [underwater-look-3] The sun seen from below, as abyssal-garden draws it in
+ * its surface's window: `pow(sd, 60) * 1.3 + pow(sd, 500) * 12` around the
+ * refracted sun, then fogged by the water above. Here it is drawn by the
+ * underwater pass on any ray that reaches the surface unobstructed, so kelp
+ * and fish stand out against it in silhouette. `SUN_GLOW` is the wide glow,
+ * `SUN_CORE` the disc.
+ */
+const SUN_GLOW = 1.3;
+const SUN_CORE = 12;
+/** A broad `mu^16` halo under the glow: the forward scatter of the column above. */
+const SUN_HALO = 0.25;
+/**
+ * [underwater-look-3] A narrow forward lobe added to the shafts' phase, on top
+ * of abyssal-garden's broad `2 mu^3`. Looking up-sun the beams converge on the
+ * burst and brighten into it; across the sun they are unchanged.
+ */
+const SHAFT_LOBE = 1.5;
+
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
-const GRADE_CONTRAST = 1.25;
+const GRADE_CONTRAST = 1.4;
 /** The same curve's exponent above the pivot. */
 const GRADE_CONTRAST_HIGH = 1.04;
 
@@ -448,6 +484,16 @@ export class UnderwaterPass {
   private readonly uDesaturate = uniform(0.2);
   /** Exponent of the luminance curve about the medium; see the grade. */
   private readonly uContrast = uniform(GRADE_CONTRAST);
+  /** [underwater-look-3] See `SURFACE_LIGHT`. A uniform so a tuning session can move it. */
+  private readonly uSurfaceLight = uniform(SURFACE_LIGHT);
+  /** [underwater-look-3] Sun colour x horizon ramp, for the burst. See `SUN_GLOW`. */
+  private readonly uSunBurst = uniform(new THREE.Vector3(1, 1, 1));
+  /** [underwater-look-3] See `SUN_GLOW` and `SUN_CORE`. */
+  private readonly uSunGlow = uniform(SUN_GLOW);
+  private readonly uSunCore = uniform(SUN_CORE);
+  private readonly uSunHalo = uniform(SUN_HALO);
+  /** [underwater-look-3] See `SHAFT_LOBE`. */
+  private readonly uShaftLobe = uniform(SHAFT_LOBE);
 
   // --- refractive distortion -----------------------------------------------
   /**
@@ -855,6 +901,14 @@ export class UnderwaterPass {
         const downwell = exp(this.uDownwell.mul(hitDepth.negate())).toVar('uwDown');
 
         const surfaceRgb: any = vec3(warped.rgb).mul(downwell).toVar('uwSurface');
+        // [underwater-look-3] Light on submerged surfaces relative to the water
+        // itself; see `SURFACE_LIGHT`. Surfaces only: sky and window pixels
+        // are the water's own colour and keep it.
+        const isSubmergedSurface = warpedDist
+          .lessThan(this.uFar.mul(0.9))
+          .select(float(1), float(0))
+          .mul(hitDepth.smoothstep(0.2, 1.2))
+          .toVar('uwSubSurf');
 
         // Colour that survives depth. abyssal-garden's corals, sponges and
         // magenta algae carry a fluorescence term (`alb * flu * dot(light,
@@ -879,6 +933,10 @@ export class UnderwaterPass {
         //
         // Only with real normals (the TRAA path's MRT), and only on surfaces:
         // sky pixels are an infinite column of water and have no orientation.
+        // [underwater-look-3] Light the water itself sends onto a surface, in
+        // the medium's units rather than the air rig's, so it is added after
+        // `SURFACE_LIGHT` and not scaled by it.
+        const waterLight = vec3(0, 0, 0).toVar('uwWaterLight');
         if (normalNode !== null) {
           const isSurface = warpedDist.lessThan(this.uFar.mul(0.9)).select(float(1), float(0));
           // Sky pixels carry a zero normal, and `normalize(0)` is NaN — which a
@@ -932,7 +990,7 @@ export class UnderwaterPass {
             .mul(UPWELL * 1.22)
             .mul(submergedHit)
             .toVar('uwUpwell');
-          surfaceRgb.addAssign(upwell);
+          waterLight.addAssign(upwell);
 
           // Chromatic caustics. The materials already carry the web in
           // luminance; this re-colours it with the dispersed field, as a ratio
@@ -954,7 +1012,35 @@ export class UnderwaterPass {
           }
         }
 
+        // After every term above, fluorescence and upwelling included: those
+        // carried the kelp's yellow-green through at full strength when the
+        // scale was taken before them.
+        surfaceRgb.mulAssign(mix(float(1), this.uSurfaceLight, isSubmergedSurface));
+        surfaceRgb.addAssign(waterLight);
+
         const fogged = surfaceRgb.mul(transmit).add(inscatter).toVar('uwFog');
+
+        // [underwater-look-3] The sun burst; see `SUN_GLOW`. Only where the ray
+        // reaches the surface before anything else, so whatever stands in front
+        // of the sun is a silhouette against it, and only with the eye under.
+        // Faded by the column above, per channel, like everything else.
+        const openToSurface = warpedDist
+          .sub(leaves)
+          .smoothstep(-0.5, 0.5)
+          .mul(eyeUnder)
+          .toVar('uwOpenUp');
+        const mu8 = mu2.mul(mu2).mul(mu2.mul(mu2)).toVar('uwMu8');
+        const mu64 = mu8.mul(mu8).mul(mu8.mul(mu8)).mul(mu8.mul(mu8).mul(mu8.mul(mu8))).toVar('uwMu64');
+        const burst = mu8
+          .mul(mu8)
+          .mul(this.uSunHalo)
+          .add(mu64.mul(this.uSunGlow))
+          .add(mu64.pow(8).mul(this.uSunCore))
+          .mul(openToSurface)
+          .toVar('uwBurst');
+        fogged.addAssign(
+          this.uSunBurst.mul(burst).mul(exp(this.uSigma.mul(leaves.min(200).negate()))),
+        );
 
         // The rim. Tinted by the medium rather than added as white, because what
         // is bright at a meniscus is the water itself catching the light above
@@ -1173,7 +1259,9 @@ export class UnderwaterPass {
         // refracted sun, so the shafts are brightest looking up-sun and still
         // present looking across them.
         const mu = rd.dot(this.uSunUnder).max(0);
-        const phase = float(0.2).add(mu.mul(mu).mul(mu).mul(2));
+        const mu4 = mu.mul(mu).mul(mu.mul(mu));
+        const mu16 = mu4.mul(mu4).mul(mu4.mul(mu4));
+        const phase = float(0.2).add(mu.mul(mu).mul(mu).mul(2)).add(mu16.mul(this.uShaftLobe));
 
         // Cloud shade, once per pixel at the middle of the march: the deck's
         // features are hundreds of metres across and the march tens.
@@ -1456,6 +1544,7 @@ export class UnderwaterPass {
     const wc = p.waterColor;
     const wMax = Math.max(1e-3, wc.r, wc.g, wc.b);
     const density = this.shaftDensity * strength * sunUp;
+    (this.uSunBurst.value as THREE.Vector3).set(p.sunColor.r, p.sunColor.g, p.sunColor.b).multiplyScalar(sunUp);
     (this.uShaftColor.value as THREE.Vector3).set(
       p.sunColor.r * (0.25 + 0.75 * (wc.r / wMax)) * density,
       p.sunColor.g * (0.25 + 0.75 * (wc.g / wMax)) * density,
