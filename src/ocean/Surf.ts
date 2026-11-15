@@ -327,9 +327,10 @@ export interface BreakerSample {
   etaPerPhase: any;
   /** Depth the nearest crest breaks in, metres. */
   breakDepth: any;
-  /** Depth the last crest to pass broke in, and the one before it. */
+  /** Depth the last crest to pass broke in, and the two before it. */
   breakDepthLast: any;
   breakDepthPrevious: any;
+  breakDepthOlder: any;
   /** 0 far out, 1 at the break: how close the nearest crest is to going. */
   steep: any;
   /**
@@ -386,6 +387,9 @@ export function breaker(
   const breakDepth = height.div(BREAKER_INDEX).toVar('surfBreak');
   const breakDepthLast = waveHeight(last, xz).div(BREAKER_INDEX).toVar('surfBreakLast');
   const breakDepthPrevious = waveHeight(last.sub(1), xz).div(BREAKER_INDEX).toVar('surfBreakPrev');
+  // Only the fragment stage's foam field reads this one; a graph that does not
+  // reference it does not emit it.
+  const breakDepthOlder = waveHeight(last.sub(2), xz).div(BREAKER_INDEX).toVar('surfBreakOlder');
 
   const d = depth.max(0).toVar('surfDepth');
   const steep = smoothstepDown(d, breakDepth, breakDepth.mul(1.7)).toVar('surfSteep');
@@ -458,11 +462,85 @@ export function breaker(
     breakDepth,
     breakDepthLast,
     breakDepthPrevious,
+    breakDepthOlder,
     steep,
     xi,
     lean,
     compression,
   };
+}
+
+/**
+ * Period of the wind sea riding in on the swell, as a fraction of the swell's.
+ * NeuralSpecOcean's beach runs a 4.75 s wind-swell train under its 7.1 s and
+ * 6.55 s swells (`CoastalWaves.js`, MIT): 0.67. This is the same ratio,
+ * rounded down a little so the two trains' crests do not lock into step.
+ */
+export const CHOP_PERIOD = 0.62;
+/** Its height as a fraction of the swell's average breaker. */
+const CHOP_HEIGHT = 0.4;
+
+/** What `chopBreaker` returns. */
+export interface ChopSample {
+  /** Signed phase distance to the nearest wind-sea crest, negative in front. */
+  s: any;
+  /** Its phase; crests at integers. */
+  phase: any;
+  /** Depth that crest breaks in, metres. */
+  breakDepth: any;
+  /** d(eta)/dx shoreward, for the normal. The mesh is not displaced. */
+  slope: any;
+}
+
+/**
+ * The wind sea on top of the swell, inside the surf zone only.
+ *
+ * A beach is not hit by one wave train. The local wind sea comes in with the
+ * swell at about two thirds of its period and under half its height, and it
+ * breaks too: in shallower water, as a row of small spilling bores between the
+ * swell's. On this island's 1:9 beach face a 6 s swell holds only two bores at
+ * a time, and the second train is what makes the inner surf zone a series of
+ * lines rather than one or two (foam-4; NeuralSpecOcean superposes three
+ * trains for the same reason).
+ *
+ * Drawn by the fragment stage only, as foam and as slope: these bores are a
+ * few tens of centimetres high, which the mesh's vertex spacing would alias
+ * rather than draw, and their height is small next to the swell's.
+ */
+export function chopBreaker(depth: any, xz: any): ChopSample {
+  const d = depth.max(0).toVar('chopDepth');
+  const k = float(2 / (NOMINAL_SLOPE * Math.sqrt(GRAVITY))).div(surfUniforms.period.mul(CHOP_PERIOD));
+  // Its own along-shore terms: the wind sea comes in at its own angle, so its
+  // crests cross the swell's rather than running parallel to them.
+  const along = surfNoise(xz.div(240).add(vec2(41.7, 13.9)))
+    .mul(4)
+    .add(surfNoise(xz.div(30).add(vec2(7.3, 29.1))).mul(0.5));
+  const phase = surfUniforms.time
+    .div(surfUniforms.period.mul(CHOP_PERIOD))
+    .add(d.sqrt().mul(k))
+    .add(along)
+    .toVar('chopPhase');
+  const s = crestDistance(phase).toVar('chopS');
+  const near = s.lessThan(0).select(phase.floor().add(1), phase.floor());
+  // Its own groups, five waves long, and peaks along the crest.
+  const envelope = sin(near.mul((Math.PI * 2) / 5).add(0.4)).mul(0.5).add(0.5);
+  const peaks = surfNoise(xz.div(17).add(vec2(hash1(near.add(3)).mul(29), hash1(near.add(7)).mul(31))))
+    .mul(0.6)
+    .add(0.7);
+  const height = surfUniforms.height
+    .mul(CHOP_HEIGHT)
+    .mul(envelope.mul(0.7).add(0.55))
+    .mul(peaks)
+    .toVar('chopHeight');
+  const breakDepth = height.div(BREAKER_INDEX).toVar('chopBreak');
+  const amplitude = height
+    .min(d.mul(BREAKER_INDEX))
+    .mul(smoothstepDown(d, breakDepth.mul(1.3), breakDepth.mul(2.2)))
+    .mul(d.smoothstep(0.08, 0.35))
+    .mul(surfUniforms.strength.min(1));
+  const gradient = surfPhaseGradient(d).div(CHOP_PERIOD);
+  const profile = crestProfile(s, smoothstepDown(d, breakDepth, breakDepth.mul(1.7)));
+  return { s, phase, breakDepth, slope: amplitude.mul(profile.y).mul(gradient) };
 }
 
 /**
@@ -645,6 +723,13 @@ export function swashOnSand(h: any, xz: any): any {
 }
 
 /**
+ * Lowest ground the swash touches, metres relative to still water: about the
+ * deepest a backwash trough uncovers on these beaches. Below it the bed is
+ * permanently submerged.
+ */
+const SWASH_FLOOR = -0.7;
+
+/**
  * The swash at a ground fragment, behind a real branch: only the strip the
  * swash can reach does any of this work, and the branch is uniform across most
  * of a frame — all of the island above the beach skips it.
@@ -655,11 +740,18 @@ export function swashOnSand(h: any, xz: any): any {
  */
 export function swashAtGround(position: any): any {
   const result = vec4(0, 0, 0, 0).toVar();
-  If(position.y.lessThan(maxRunup().add(0.1)), () => {
-    result.assign(swashOnSand(position.y, vec2(position.x, position.z)));
+  If(position.y.lessThan(maxRunup().add(0.1)).and(position.y.greaterThan(SWASH_FLOOR)), () => {
+    // Faded out under the still-water line. Below it the "sheet" is the sea
+    // itself, and the bed is drawn in its own submerged palette; the swash's
+    // wet-sand darkening on top of that took a sixth off every metre of sand
+    // under the shallows (measured in `shore-break` with the sea hidden), and
+    // its sheet foam was painted on the bed for the water to show through.
+    const fade = position.y.smoothstep(SWASH_FLOOR, SWASH_FLOOR * 0.3);
+    result.assign(swashOnSand(position.y, vec2(position.x, position.z)).mul(fade));
   });
   return result;
 }
+
 
 /** Albedo of foam lying on sand: a little under the open sea's, it is thinner. */
 const SAND_FOAM_ALBEDO = 0.82;
