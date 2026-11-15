@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
+import { positionWorld, shadowPositionWorld, uniform, vec3 } from 'three/tsl';
 
 /**
  * Cascaded shadow maps for the key light.
@@ -102,8 +103,73 @@ function shareOneGraph(node: CSMShadowNode): void {
   target.setup = (builder) => (graph ??= setup(builder));
 }
 
+/**
+ * What the underwater shafts need to read one cascade from a post pass: its
+ * depth texture (null until the first shadow render has created it), the
+ * world-to-shadow-texture matrix three keeps current on `shadow.matrix`, and
+ * the depth bias that matrix is used with.
+ */
+export interface ShadowVolumeSource {
+  depthTexture(): THREE.DepthTexture | null;
+  readonly matrix: THREE.Matrix4;
+  bias(): number;
+}
+
+/** Refractive index of sea water. */
+const WATER_IOR = 1.333;
+
+/**
+ * The cascade the shafts read is the first whose slice reaches this far.
+ *
+ * Shafts are integrated over at most ~120 m and the medium has taken them to a
+ * few percent by 60, so the cascade that matters is the one covering roughly
+ * the first hundred metres: at High that is cascade 1 (24-90 m slice, box ~220 m
+ * wide, 0.11 m a texel) rather than the far one (734 m, 0.36 m). Points the
+ * chosen box does not contain read as lit.
+ */
+const VOLUME_REACH = 80;
+
+/**
+ * Re-points the shadow lookup of submerged receivers along the refracted sun.
+ *
+ * The map is rendered along the sun's direction *in air*. Under water the light
+ * that reaches a point arrived along the refracted direction, which for
+ * `skyPro`'s 24-degree sun is 47 degrees — so a hull's shadow on sand 17 m down
+ * landed 21 m from where the refracted caustics and shafts put it. The lookup
+ * point is moved to the place at the same depth on the *air* ray through the
+ * refracted ray's surface entry point: everything above the surface (the hull,
+ * the island) is then tested along exactly the right path, and the short
+ * submerged leg of the path is the only part still taken at the air angle.
+ *
+ * `max(0, -y)` is exactly zero above the sea, so every receiver above it keeps
+ * its lookup bit for bit — the topside image does not change.
+ */
+function refractShadowLookup(node: CSMShadowNode, shift: unknown): void {
+  const patch = (target: { setupShadowPosition(builder: any): void }): void => {
+    target.setupShadowPosition = ({ context, material }: any) => {
+      const base: any = material.receivedShadowPositionNode || context.shadowPositionWorld || positionWorld;
+      const depth: any = base.y.negate().max(0);
+      const s: any = shift;
+      (shadowPositionWorld as any).assign(vec3(base.x.add(s.x.mul(depth)), base.y, base.z.add(s.y.mul(depth))));
+    };
+  };
+  patch(node as unknown as { setupShadowPosition(builder: any): void });
+  // Each cascade's own shadow node assigns the position again when the CSM
+  // graph pulls it in, so the override has to be on all of them.
+  for (const cascade of (node as unknown as { _shadowNodes: Array<{ setupShadowPosition(b: any): void }> })._shadowNodes) {
+    patch(cascade);
+  }
+}
+
 export class SunShadows {
   readonly node: CSMShadowNode;
+  /**
+   * Horizontal offset per metre of depth that moves a submerged lookup onto
+   * the refracted light path. See `refractShadowLookup`.
+   */
+  private readonly uRefractShift = uniform(new THREE.Vector2(0, 0));
+  /** Index of the cascade `volumeSource` reads. */
+  private readonly volumeCascade: number;
   private readonly light: THREE.DirectionalLight;
   private readonly camera: THREE.PerspectiveCamera;
   private distance: number;
@@ -154,9 +220,56 @@ export class SunShadows {
       camera,
       renderer,
     });
+    refractShadowLookup(this.node, this.uRefractShift);
     shareOneGraph(this.node);
     light.shadow.shadowNode = this.node;
+    let volume = cascades - 1;
+    for (let i = 0; i < cascades; i++) {
+      if (splits[i] * options.distance >= VOLUME_REACH) {
+        volume = i;
+        break;
+      }
+    }
+    this.volumeCascade = volume;
     this.refit();
+  }
+
+  /**
+   * The direction *toward* the key light, in air. Feeds the refracted lookup;
+   * a uniform write, no rebuild.
+   */
+  setLightDirection(dir: THREE.Vector3): void {
+    const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
+    const ax = dir.x / len;
+    const ay = Math.max(0.05, dir.y / len);
+    const az = dir.z / len;
+    // Refracted: horizontal component over the index, renormalised.
+    const rx = ax / WATER_IOR;
+    const rz = az / WATER_IOR;
+    const ry = Math.sqrt(Math.max(1e-4, 1 - rx * rx - rz * rz));
+    // Clamped so a sun on the horizon cannot throw the lookup out of the box.
+    const clamp = (v: number): number => Math.max(-4, Math.min(4, v));
+    (this.uRefractShift.value as THREE.Vector2).set(clamp(rx / ry - ax / ay), clamp(rz / ry - az / ay));
+  }
+
+  /**
+   * One cascade, for reading from a post pass — the underwater shafts. The
+   * cascade count is fixed at boot, so the choice is too; the texture object
+   * is created by the first shadow render and survives a tier change, which
+   * only resizes it.
+   */
+  volumeSource(): ShadowVolumeSource {
+    const shadow = this.node.lights[this.volumeCascade].shadow!;
+    return {
+      depthTexture: () => (shadow.map?.depthTexture as THREE.DepthTexture | null | undefined) ?? null,
+      matrix: shadow.matrix,
+      bias: () => shadow.bias,
+    };
+  }
+
+  /** Per metre of depth; exposed for the shafts, which apply the same shift. */
+  get refractShift(): THREE.Vector2 {
+    return this.uRefractShift.value as THREE.Vector2;
   }
 
   /** The tier's map size and reach. Map size is read live; no recompile. */
