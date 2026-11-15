@@ -215,33 +215,15 @@ const MAX_DETAIL = 1;
 const DETAIL_ROTATION = 1.1071487; // atan(2)
 
 /**
- * The cascade whose slope the sky reflection treats as statistics at grazing
- * view: the 16 m tile, wavelengths 5 cm to 3 m (`Spectrum.CASCADES[2]`).
- * Together with the detail bands it is the "fine" share of the slope.
+ * The cascade that, with the detail bands, makes the "fine" share of the slope:
+ * the 16 m tile, wavelengths 5 cm to 3 m (`Spectrum.CASCADES[2]`).
  */
 const FINE_CASCADE = 2;
 
 /**
- * Smith's `a` for the fine slopes (cot of the view elevation over sqrt(2)
- * sigma) at which the sky reflection starts, and finishes, handing their mean
- * slope back to the normal. Below the first the fine slopes are pure roughness.
- *
- * Measured on `waves-1` and `reflections-2`, where the grey "camo" and the
- * black sunset blotches were traced to this cascade alone: with it zeroed the
- * frames were clean and wave-shaped, with cascades 0 and 1 zeroed instead they
- * were not. A facet slope comparable to the view elevation swings Schlick
- * from 0.3 to 1 and the reflected ray from the horizon to 25 degrees up, so a
- * per-pixel normal turns the short waves' *envelope* (where their slopes
- * happen to be large) into hard patches. The mean over the facets a grazing
- * eye sees is smooth, and that is what a statistical treatment returns.
- */
-const FINE_GRAZING_A0 = 1.2;
-const FINE_GRAZING_A1 = 3.5;
-
-/**
- * Where the glitter's soft shoulder levels off, as a fraction of the white
- * point (`1 / exposure`). Under ACES that is about 0.9 of display white, so a
- * glint sits just under clip on top of the sky it is reflected beside.
+ * The display level, as a fraction of the white point (`1 / exposure`), that
+ * the low-sun glint count is scaled against (see `glintGain`). Under ACES
+ * that is about 0.9 of display white.
  */
 const GLITTER_CEILING = 0.8;
 
@@ -1253,12 +1235,9 @@ export class OceanMaterial {
       const lostSlopeVariance = float(0).toVar();
       /**
        * The short-wave share of the slope (the finest cascade and the detail
-       * bands), and the part of their tile-wide slope variance this pixel
-       * resolves rather than loses. The sky reflection and the Fresnel turn it
-       * into roughness at grazing view; see the reflection block.
+       * bands), which the body's diffuse term mostly ignores; see BODY_FINE_SLOPE_DROP.
        */
       const fineSlope = vec2(0).toVar();
-      const fineVariance = float(0).toVar();
       /** Cascade 0's share of the slope: the swell, which the surf replaces. */
       const swellSlope = vec2(0).toVar();
       for (let i = 0; i < cascadeCount; i++) {
@@ -1282,21 +1261,7 @@ export class OceanMaterial {
         lostSlopeVariance.addAssign(
           d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
         );
-        if (i === FINE_CASCADE) {
-          // See `fineSlope`. The top of the mip chain is the field's mean |s|^2
-          // over the whole tile: its slope variance, the same everywhere.
-          fineSlope.addAssign(vec2(d.x, d.y).mul(fade));
-          const tileVariance = this.derivativeNodes[i]
-            .sample(fieldXZ.div(this.uTileSizes[i]))
-            .level(16).w;
-          fineVariance.addAssign(
-            tileVariance
-              .sub(d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0))
-              .max(0)
-              .mul(fade)
-              .mul(fade),
-          );
-        }
+        if (i === FINE_CASCADE) fineSlope.addAssign(vec2(d.x, d.y).mul(fade));
       }
 
       // [underwater-look] The swell and wind-wave cascades only, before the
@@ -1339,12 +1304,7 @@ export class OceanMaterial {
           .mul(0.5)
           .toVar();
         lostDetailVariance.addAssign(detailLost);
-        // The rotated copy reads the same texture, so the pair's tile variance
-        // is the texture's: (var(a) + var(b)) / 2 under the 1/sqrt(2) weights.
         fineSlope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
-        fineVariance.addAssign(
-          this.detailNodes[i].sample(uvA).level(16).w.mul(this.uDetailWeights[i]).sub(detailLost).max(0),
-        );
       }
 
       // Rain impacts, added to the wave slope before the normal is built so they
@@ -1587,44 +1547,7 @@ export class OceanMaterial {
       // the real reflected ray into the environment, tilted toward the facets a
       // grazing eye actually sees, so the far sea reflects the greyer sky above
       // the horizon by itself and the fade has nothing left to correct.
-      //
-      // **Evaluated on the sky's normal, `nSky`, not on `n`.** At grazing view
-      // the fine slopes (`FINE_CASCADE` and the detail bands) are as steep as
-      // the view is low, and both this term and the reflected ray are steep
-      // functions there: a per-pixel normal turned the envelope of the short
-      // waves into hard grey patches by day ("camo", waves-1/2, foam-2/3) and
-      // near-black ones at sunset (reflections-2/4, sky-2/4). So as the view
-      // drops below a few sigma of the fine slopes (Smith's `a`, as in
-      // `smithLambda` below), their mean slope leaves the normal and their
-      // tile-wide variance joins the covariance instead — the step LEAN takes
-      // for slopes the footprint averages away, taken here for slopes the
-      // grazing eye averages away. The glitter keeps the full slope: point
-      // glints are exactly what the fine slopes are for.
-      const cotView = viewDir.y
-        .max(1e-3)
-        .div(float(1).sub(viewDir.y.mul(viewDir.y)).max(1e-6).sqrt())
-        .toVar();
-      const fineSigma = fineVariance.mul(0.5).add(unresolved).max(1e-6).sqrt().toVar();
-      const fineStatistical = float(1)
-        .sub(cotView.div(fineSigma.mul(Math.SQRT2)).smoothstep(FINE_GRAZING_A0, FINE_GRAZING_A1))
-        .mul(flatten.oneMinus())
-        .toVar();
-      const skySlope = slope.sub(fineSlope.mul(fineStatistical)).toVar();
-      const nSky = normalize(
-        mix(normalize(vec3(skySlope.x.negate(), 1, skySlope.y.negate())), vec3(0, 1, 0), flatten),
-      ).toVar();
-      // The same "just facing the viewer" bend `n` gets above, branchless.
-      nSky.assign(
-        normalize(
-          nSky.add(
-            viewDir.mul(float(0.06).sub(nSky.dot(viewDir)).max(0).mul(this.uEyeSubmerged.lessThan(0.5).select(1, 0))),
-          ),
-        ),
-      );
-      const skyCov = slopeCov
-        .add(vec3(fineVariance, fineVariance, 0).mul(fineStatistical.mul(0.5)))
-        .toVar();
-      const nFresnel = normalize(mix(nSky, vec3(0, 1, 0), 0.45)).toVar();
+      const nFresnel = normalize(mix(n, vec3(0, 1, 0), 0.45)).toVar();
       const oneMinus = float(1).sub(nFresnel.dot(viewDir).clamp(0, 1)).toVar();
       const fresnelPow = oneMinus.mul(oneMinus).mul(oneMinus).mul(oneMinus).mul(oneMinus).toVar();
       const fresnel = fresnelPow.mul(0.98).add(0.02).clamp(0, 1).toVar();
@@ -1968,13 +1891,13 @@ export class OceanMaterial {
       //  - the lookup is blurred by the sub-pixel slope spread `sig`: here the
       //    PMREM roughness whose GGX lobe matches a slope RMS of `sig`
       //    (alpha = sqrt(2) sig, roughness = sqrt(alpha)).
-      const sig = skyCov.x.add(skyCov.y).mul(0.5).max(1e-6).sqrt().toVar();
+      const sig = slopeCov.x.add(slopeCov.y).mul(0.5).max(1e-6).sqrt().toVar();
       const viewFlat = normalize(vec3(viewDir.x, 0, viewDir.z).add(vec3(1e-5, 0, 0))).toVar();
       const sigV = viewFlat.x
         .mul(viewFlat.x)
-        .mul(skyCov.x)
-        .add(viewFlat.z.mul(viewFlat.z).mul(skyCov.y))
-        .add(viewFlat.x.mul(viewFlat.z).mul(skyCov.z).mul(2))
+        .mul(slopeCov.x)
+        .add(viewFlat.z.mul(viewFlat.z).mul(slopeCov.y))
+        .add(viewFlat.x.mul(viewFlat.z).mul(slopeCov.z).mul(2))
         .max(1e-6)
         .sqrt()
         .toVar();
@@ -1984,7 +1907,7 @@ export class OceanMaterial {
         .div(sigV.mul(1.4142))
         .toVar();
       const tilt = sigV.mul(0.32).mul(float(1).sub(grazingA.smoothstep(0, 2.5))).toVar();
-      const nReflect = normalize(nSky.add(viewFlat.mul(tilt))).toVar();
+      const nReflect = normalize(n.add(viewFlat.mul(tilt))).toVar();
       const rRaw = viewDir.negate().reflect(nReflect).toVar();
       const reflectDir = normalize(
         vec3(rRaw.x, rRaw.y.abs().mul(0.4).add(rRaw.y.max(0).mul(0.6)), rRaw.z),
@@ -2006,7 +1929,7 @@ export class OceanMaterial {
         // Offset by the normal so an object's reflection ripples with the waves.
         // Scaled down with distance because a fixed screen offset is metres at
         // the horizon and millimetres underfoot.
-        const offset = nSky.xz
+        const offset = n.xz
           .mul(this.uReflectionDistortion)
           .div(viewDistance.mul(0.05).add(1))
           .toVar();
@@ -2034,9 +1957,8 @@ export class OceanMaterial {
       if (ssr !== null) {
         // Layered over both: a screen-space trace attaches the hull's reflection
         // to the displaced wave it lands on, which one mirror plane at y = 0
-        // cannot. The sky's normal is passed, so the hull's reflection breaks
-        // up with the same waves the sky's does and not with the fine ones.
-        reflection.assign(ssr(worldPos, nSky, reflection));
+        // cannot. The distance-flattened normal is passed, as before.
+        reflection.assign(ssr(worldPos, n, reflection));
       }
 
       // --- sun glitter: anisotropic Gaussian slope distribution ----------------
@@ -2124,22 +2046,12 @@ export class OceanMaterial {
         specular.mulAssign(sunShade);
       }
 
-      // The glitter's ceiling. The distribution above is radiometrically right
-      // and the sun is ~10^5 times the sky per steradian, so a pixel whose facets
-      // face the half-vector carries tens of times the white point: a third of
-      // reflections-3 and the left half of boat-sea-1 went flat white, and every
-      // stray glint bloomed into a fleck that read as foam. A display cannot show
-      // that energy anyway; what it can show is *where* the glints are. So the
-      // glitter goes through its own soft shoulder (Reinhard on the brightest
-      // channel, hue kept), with its asymptote at GLITTER_CEILING of the white
-      // point: a glint is as bright as the curve can draw without clipping, and
-      // the sun path's sheen keeps its gradient instead of saturating. Applied
-      // after the glint draw below, so it shapes glints rather than the mean.
-      //
-      // A glint is the sun's image and always outshines the sky beside it. At
-      // sunset that sky is itself past the white point, so the ceiling rises to
-      // a multiple of the sky this facet reflects, or the sun path would sink
-      // into its own aureole.
+      // The brightest a glint can be drawn: GLITTER_CEILING of the white point,
+      // or a multiple of the sky this facet reflects where that sky is itself
+      // past white (sunset). Only the low-sun count floor below uses it. A soft
+      // shoulder that compressed the glitter to it was dropped after the
+      // spectrum fix (aaa-pass 0f78f7c): with the slopes right, the sun path is
+      // already tight, and the shoulder only dimmed it.
       const skyReflected = reflection.x.max(reflection.y).max(reflection.z).mul(fresnel);
       const whiteCeiling = this.uWhitePoint.mul(GLITTER_CEILING).toVar();
       const glitterCeiling = whiteCeiling.max(skyReflected.mul(GLINT_OVER_SKY)).toVar();
@@ -2186,9 +2098,8 @@ export class OceanMaterial {
         // Under a low sun, never fewer glints than it takes to carry a share of
         // the mean under the ceiling. The whole path is then seen at grazing
         // incidence beside an aureole already at white, and a sparse draw
-        // clamped to the ceiling threw the column's energy away: the sunset
-        // path all but vanished. By day (`lowSun` 0) the draw is left sparse,
-        // which is the whole point of it.
+        // clips at the display and throws the column's energy away. By day
+        // (`lowSun` 0) the draw is left sparse, which is the whole point of it.
         const expected: any = glintRate
           .mul(side.mul(side))
           .max(glintMean.div(glitterCeiling).mul(lowSun.mul(GLINT_LOW_SUN_FLOOR)))
@@ -2218,9 +2129,6 @@ export class OceanMaterial {
         glintLevel.sub(glintLevel0),
       ).toVar();
       specular.mulAssign(glintDraw);
-      const glitterPeak = specular.x.max(specular.y).max(specular.z).toVar();
-
-      specular.mulAssign(glitterCeiling.div(glitterCeiling.add(glitterPeak)));
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
@@ -2232,9 +2140,10 @@ export class OceanMaterial {
       //
       // The body is display-referred: it scales with the white point
       // (`1 / exposure`), so a preset's exposure, which is set for its sky, no
-      // longer decides how bright its water is (see BODY_GAIN). The light reaching the column is the sun's, tinted a third
-      // of the way to its colour (the rest is skylight), and falls as the sun
-      // drops, toward the night floor.
+      // longer decides how bright its water is (see BODY_GAIN). The light
+      // reaching the column is the sun's, tinted a third of the way to its
+      // colour (the rest is skylight), and falls as the sun drops, toward the
+      // night floor.
       const sunLift = sunDirEarly.y.mul(2.2).clamp(0, 1).toVar();
       const upwelling = mix(
         float(BODY_NIGHT_FLOOR),
