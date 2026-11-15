@@ -420,7 +420,9 @@ export function getLeafAtlas(): THREE.DataTexture {
       blooms.push([rect.x + rect.w / 2 + R(-0.3, 0.3) * rect.w, rect.y + R(0.14, 0.6) * rect.h]);
     }
     for (const [i, P] of blooms.entries()) {
-      const hue = i % 3 === 0 ? [232, 52, 64] : i % 3 === 1 ? [246, 112, 150] : [250, 220, 96];
+      // Scarlet, orange and yellow: the Geiger tree's orange-scarlet clusters
+      // and the red-and-yellow pride of Barbados, both West Indian natives.
+      const hue = i % 3 === 0 ? [228, 50, 36] : i % 3 === 1 ? [244, 112, 34] : [250, 210, 70];
       const r = R(17, 24);
       for (let p = 0; p < 5; p++) {
         const a = (p / 5) * Math.PI * 2 + R(-0.2, 0.2);
