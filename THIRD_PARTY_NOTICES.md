@@ -1,6 +1,5 @@
 # Third-party notices
 
-<<<<<<< HEAD
 This project includes code adapted from the following open-source projects.
 
 ## abyssal-garden
@@ -13,11 +12,15 @@ shaders and ported to three.js TSL. Affected files:
 - `src/underwater/UnderwaterPass.ts`
 - `src/underwater/Caustics.ts`
 
-```
-=======
-## abyssal-garden
+The instanced leaf renderer for kelp and seabed cover (leaf strips, sway, palette,
+two-sided translucent lighting, glints) is adapted from abyssal-garden's `W_LEAF`
+shader and its world layout:
 
->>>>>>> underwater-kelp
+- `src/scene/LeafField.ts`
+- `src/scene/Kelp.ts`
+- `src/scene/GroundCover.ts`
+
+```
 MIT License
 
 Copyright (c) 2026 Maksymilian Dendura
@@ -39,7 +42,4 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-<<<<<<< HEAD
 ```
-=======
->>>>>>> underwater-kelp
