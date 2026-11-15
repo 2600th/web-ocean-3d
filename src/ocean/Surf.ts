@@ -1,5 +1,8 @@
-import { If, float, fract, mix, sin, uniform, vec2, vec3 } from 'three/tsl';
-import { smoothstepDown } from '../core/tslMath';
+import { If, cameraPosition, float, fract, mix, sin, uniform, vec2, vec3, vec4 } from 'three/tsl';
+import { smoothstepDown, smoothstepDownClamped } from '../core/tslMath';
+import { featherFoam, foamCells, foamPattern } from './FoamPattern';
+
+export { foamCells };
 
 /**
  * The surf: breakers that roll in toward a beach in sets, and the swash that
@@ -45,6 +48,30 @@ import { smoothstepDown } from '../core/tslMath';
  * since the sand was last covered is known exactly for the last few waves —
  * which is what lets the ground darken where the swash reached and dry over
  * seconds, without any history buffer.
+ *
+ * **The pitch.** A heightfield cannot overturn, and a breaker that only grows
+ * taller reads as a swell that stopped. Horizon Forbidden West's breakers
+ * (Malan, SIGGRAPH 2022 Advances) are one cross-section animated in XYZ and
+ * slid along the wavefront: the crest runs *ahead* of the face below it. The
+ * same idea in closed form is a Gerstner-style horizontal offset — the crest
+ * is pushed shoreward by a bump centred just behind it, so the water ahead of
+ * the crest is compressed and the face stands up toward vertical. How far it
+ * pitches is the surf similarity (Iribarren) number of the wave on this beach,
+ * `xi = slope / sqrt(H / L0)` (Battjes 1974): below ~0.4 a wave *spills*,
+ * foam tumbling down a face that never overhangs; from ~0.5 it *plunges*,
+ * throwing the lip forward. The compression it causes is returned as a
+ * Jacobian, and the ocean shades and foams the face from it — so the lip goes
+ * white where the water is actually pitching, the way Tessendorf foam goes
+ * white where the open sea folds.
+ *
+ * **Run-up and the marks it leaves.** Vertical run-up scales as
+ * `slope * sqrt(H L0)` (Hunt 1959; the setup and incident-swash terms of
+ * Stockdon et al. 2006 have the same form), so a longer-period swell climbs
+ * further up the same beach than a wind sea of the same height. Each swash
+ * strands a line of foam at its highest point that outlives the water by
+ * seconds — the swash mark — and the sand behind a retreating sheet is a
+ * mirror for a moment and then merely dark: a draining film and a damp bed,
+ * two time constants, not one.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -60,14 +87,68 @@ export const BREAKER_INDEX = 0.78;
 /** Waves in one set: the group envelope's period, in breakers. */
 const SET_LENGTH = 7;
 
-/** Vertical run-up of the swash, as a fraction of the breaker height. */
-const RUNUP_FRACTION = 0.42;
+/**
+ * Vertical run-up as a multiple of Hunt's `slope * sqrt(H L0)`.
+ *
+ * Hunt's form is for regular waves; for an irregular sea Stockdon's fit puts the
+ * 2%-exceedance run-up at about 1.1 times it and the *mean* swash well below.
+ * 0.75 is calibrated to keep the run-up this module drew before the period
+ * term existed: 0.83 m for the average breaker of a 15 m/s sea at the default
+ * 6.3 s period, where the old fixed fraction of breaker height gave 0.84 m.
+ * What changes is the dependence — a long swell now climbs further than a short
+ * sea of the same height, and run-up grows as the square root of height rather
+ * than in proportion to it, so a glassy day still has a swash.
+ */
+const RUNUP_HUNT = 0.75;
 
 /** Fraction of a wave period the swash front spends on the sand. */
 const SWASH_SPAN = 0.82;
 
-/** Seconds for swash-wetted sand to dry back to the damp it started at, e-fold. */
-const DRY_SECONDS = 7;
+/**
+ * Time warp of the swash front, and where its peak falls as a fraction of
+ * `SWASH_SPAN`: `sin(pi v^0.7)` peaks at `v = 0.5^(1/0.7) = 0.3715`. See
+ * `swashFront`.
+ *
+ * It replaces `sin(pi v)(1 - v/4)`, which was meant to climb fast and fall
+ * slowly but peaked at v = 0.47 — barely skewed — and at 0.878 of the run-up,
+ * so the front stopped 12% short of the height the wetness was computed for.
+ */
+const SWASH_SKEW = 0.7;
+const SWASH_PEAK_AT = 0.3715;
+
+/**
+ * Two drying constants, seconds (e-folds).
+ *
+ * The *film* is the water sheet draining into the bed: a mirror for a second or
+ * two, which is the glint on the sand behind every backwash. The *damp* is what
+ * the bed holds after the film has gone. Reflectance falls steeply at the first
+ * moisture and barely moves after (Nolet et al. 2014), so damp sand stays dark
+ * long after it has stopped shining. Twelve seconds is two periods: the sand a
+ * wave reached is still visibly darker when the next-but-one arrives, so the
+ * swash zone reads as a band rather than flickering wave by wave.
+ */
+const FILM_SECONDS = 1.6;
+const DAMP_SECONDS = 12;
+
+/** Seconds a stranded swash mark takes to burst back to nothing, e-fold. */
+const MARK_SECONDS = 4.5;
+
+/**
+ * The pitch: width of the horizontal bump in phase, where its centre sits
+ * relative to the crest, and the deepest compression it may cause.
+ *
+ * `LEAN_WIDTH` 0.07 of a local wavelength is ~2 m at the break of a 15 m/s sea
+ * — about the width of the face — and the offset puts the bump's peak a hair
+ * behind the crest so the crest, not the face, is what runs ahead. The bump is
+ * scaled so its steepest compression is exactly `1 - LEAN_MAX * lean`: never
+ * below 0.15, so the face can approach vertical but the mesh never folds back
+ * through itself, which a heightfield ocean has no way to draw.
+ */
+const LEAN_WIDTH = 0.07;
+const LEAN_OFFSET = 0.02;
+const LEAN_MAX = 0.85;
+/** `2 x exp(-x^2)` peaks at `sqrt(2/e)`; see `breaker`. */
+const BUMP_SLOPE_PEAK = Math.sqrt(2 / Math.E);
 
 /**
  * How far out, in break depths of the largest wave, the surf is computed at
@@ -90,6 +171,10 @@ export const surfUniforms = {
    * look for one; the ocean's vertex stage skips the heightfield otherwise.
    */
   active: uniform(1),
+  /** Deep-water wavelength of the breaker period, `g T^2 / 2 pi`, metres. */
+  deepWavelength: uniform(62),
+  /** `RUNUP_HUNT * slope * sqrt(L0)`: run-up per square-root metre of height. */
+  runupScale: uniform(0.59),
 };
 
 /**
@@ -107,10 +192,23 @@ export function setSurfState(
   active: boolean,
 ): void {
   surfUniforms.time.value = time;
-  surfUniforms.period.value = Math.max(2, period);
+  const T = Math.max(2, period);
+  surfUniforms.period.value = T;
   surfUniforms.height.value = Math.max(0.2, height);
   surfUniforms.strength.value = Math.max(0, strength);
   surfUniforms.active.value = active ? 1 : 0;
+  const deep = (GRAVITY * T * T) / (2 * Math.PI);
+  surfUniforms.deepWavelength.value = deep;
+  surfUniforms.runupScale.value = RUNUP_HUNT * NOMINAL_SLOPE * Math.sqrt(deep);
+}
+
+/**
+ * Highest the swash can climb, metres above still water: the run-up of the
+ * largest wave a set can hold (see `waveHeight`, whose factors top out at
+ * 1.2 x 1.15 x 1.15 = 1.59).
+ */
+function maxRunup(): any {
+  return surfUniforms.runupScale.mul(surfUniforms.height.mul(1.59).sqrt());
 }
 
 /** Deepest water, metres, in which anything here is non-zero. */
@@ -219,6 +317,21 @@ export interface BreakerSample {
   /** Depth the last crest to pass broke in, and the one before it. */
   breakDepthLast: any;
   breakDepthPrevious: any;
+  /** 0 far out, 1 at the break: how close the nearest crest is to going. */
+  steep: any;
+  /**
+   * Surf similarity number of the nearest crest on this beach. Below ~0.4 it
+   * spills, above ~0.5 it plunges. See the header.
+   */
+  xi: any;
+  /** Horizontal offset of the water toward the beach, metres. See the header. */
+  lean: any;
+  /**
+   * `d(x + lean) / dx` along the shoreward direction: 1 on undisturbed water,
+   * falling toward `1 - LEAN_MAX` where the face is pitching. The slope of the
+   * displaced surface is the undisplaced slope divided by this.
+   */
+  compression: any;
 }
 
 /**
@@ -230,8 +343,20 @@ export interface BreakerSample {
  * depth — so it shrinks all the way in, which is the energy going into foam.
  * The amplitude fades out toward `SURF_REACH`, where the FFT field owns the
  * swell again.
+ *
+ * @param depth      Seabed depth, metres, >= 0.
+ * @param xz         World position, for the along-shore terms.
+ * @param beachSlope Local bottom slope, rise over run; the nominal 1:10 where the
+ *                   caller has not measured it. Only the pitch reads it.
+ * @param pitch      0..1 master on the horizontal pitch. At 0 the lean is zero
+ *                   and the compression exactly 1.
  */
-export function breaker(depth: any, xz: any): BreakerSample {
+export function breaker(
+  depth: any,
+  xz: any,
+  beachSlope: any = float(NOMINAL_SLOPE),
+  pitch: any = float(1),
+): BreakerSample {
   const phase = surfPhase(depth, xz).toVar('surfPhase');
   const last = phase.floor().toVar('surfLast');
   const s = crestDistance(phase).toVar('surfS');
@@ -244,18 +369,65 @@ export function breaker(depth: any, xz: any): BreakerSample {
 
   const d = depth.max(0).toVar('surfDepth');
   const steep = smoothstepDown(d, breakDepth, breakDepth.mul(1.7)).toVar('surfSteep');
-  const shoaled = height
-    .mul(0.5)
-    .mul(breakDepth.div(d.max(breakDepth)).pow(0.25))
-    .toVar('surfShoaled');
-  const bore = d.mul(BREAKER_INDEX * 0.5).toVar('surfBore');
-  const amplitude = d
-    .lessThan(breakDepth)
-    .select(bore, shoaled)
-    .mul(smoothstepDown(d, breakDepth.mul(1.5), surfReachDepth()))
+  // `height` is a wave height, crest to trough, and `crestProfile` spans
+  // exactly one unit from trough to crest — so the amplitude is the height. It
+  // used to be half of it, which drew every breaker at half the height its own
+  // break depth was computed from: a 2 m wave tripping in 2.5 m of water and
+  // standing a metre tall while it did.
+  const shoaled = height.mul(breakDepth.div(d.max(breakDepth)).pow(0.25)).toVar('surfShoaled');
+  const bore = d.mul(BREAKER_INDEX).toVar('surfBore');
+  const reachFade = smoothstepDown(d, breakDepth.mul(1.5), surfReachDepth())
     .mul(surfUniforms.strength.min(1))
-    .toVar('surfAmplitude');
+    .toVar('surfReachFade');
+  const amplitude = d.lessThan(breakDepth).select(bore, shoaled).mul(reachFade).toVar('surfAmplitude');
   const profile = crestProfile(s, steep).toVar('surfProfile');
+
+  // --- the pitch ---------------------------------------------------------------
+  // Iribarren on the deep-water steepness of this crest. `beachSlope` is floored
+  // so a flat patch of reef reads as spilling instead of dividing toward zero.
+  const xi = beachSlope
+    .max(0.005)
+    .div(height.div(surfUniforms.deepWavelength).sqrt())
+    .toVar('surfXi');
+  const plunging = xi.smoothstep(0.3, 0.9).toVar('surfPlunging');
+  // Builds as the crest steepens toward its break, peaks at the break, and
+  // relaxes to a bore's lean as the broken wave runs in. A spilling wave
+  // pitches at under half the strength of a plunging one.
+  const leanAmount = d
+    .lessThan(breakDepth)
+    .select(mix(float(0.35), float(1), d.smoothstep(breakDepth.mul(0.6), breakDepth)), steep)
+    .mul(mix(float(0.45), float(1), plunging))
+    .mul(reachFade)
+    // Nothing moves sideways at the waterline: the swash sheet and the sand
+    // meet on a contour, and a lean there would drag it.
+    .mul(d.smoothstep(0.12, 0.6))
+    .mul(pitch)
+    .toVar('surfLeanAmount');
+  // Phase per metre shoreward is negative and its reciprocal is the local
+  // wavelength. The bump is `LEAN_WIDTH` of that wide, so it shoals with the
+  // wave, and its height is chosen so the steepest compression it causes is
+  // exactly `1 - LEAN_MAX * leanAmount`:
+  //   lean = A W exp(-x^2),  x = (s - offset) / w,  W = w / |dphase/dx|
+  //   d(lean)/dx = A * 2x exp(-x^2), whose extreme is A * sqrt(2/e).
+  const gradPhase = surfPhaseGradient(d).toVar('surfGradPhase');
+  const bumpX = s.sub(LEAN_OFFSET).div(LEAN_WIDTH).toVar('surfBumpX');
+  const bump = bumpX.mul(bumpX).negate().exp().toVar('surfBump');
+  const leanScale = leanAmount
+    .mul(LEAN_MAX / BUMP_SLOPE_PEAK)
+    .mul(float(LEAN_WIDTH).div(gradPhase.abs().max(1e-3)))
+    .toVar('surfLeanScale');
+  const lean = leanScale.mul(bump).toVar('surfLean');
+  // d(lean)/dx = d(lean)/ds * ds/dx, with ds/dx = `gradPhase`. Floored at what
+  // the construction already guarantees, against rounding.
+  const compression = bump
+    .mul(bumpX)
+    .mul(-2 / LEAN_WIDTH)
+    .mul(leanScale)
+    .mul(gradPhase)
+    .add(1)
+    .max(1 - LEAN_MAX)
+    .toVar('surfCompression');
+
   return {
     phase,
     s,
@@ -264,6 +436,10 @@ export function breaker(depth: any, xz: any): BreakerSample {
     breakDepth,
     breakDepthLast,
     breakDepthPrevious,
+    steep,
+    xi,
+    lean,
+    compression,
   };
 }
 
@@ -290,94 +466,122 @@ export function swashSheetHeight(depth: any, xz: any): any {
   return front.greaterThan(0.005).select(level, float(-1000));
 }
 
-/**
- * Cellular foam: `vec2(F1, F2 - F1)` of a jittered grid. `F2 - F1` is zero on
- * the boundaries between cells, which is the shape of the bubble network a
- * surf zone is left covered in — polygons of clear water outlined in foam.
- * Nine cells, arithmetic only.
- */
-export function foamCells(p: any): any {
-  const cell = p.floor().toVar('foamCell');
-  const local = fract(p).toVar('foamLocal');
-  const f1 = float(8).toVar('foamF1');
-  const f2 = float(8).toVar('foamF2');
-  for (let j = -1; j <= 1; j++) {
-    for (let i = -1; i <= 1; i++) {
-      const o = vec2(i, j);
-      const c = cell.add(o);
-      const jitter = vec2(
-        fract(sin(c.dot(vec2(127.1, 311.7))).mul(43758.5453)),
-        fract(sin(c.dot(vec2(269.5, 183.3))).mul(43758.5453)),
-      )
-        .mul(0.8)
-        .add(0.1);
-      const dist = o.add(jitter).sub(local).length();
-      f2.assign(dist.max(f1).min(f2));
-      f1.assign(f1.min(dist));
-    }
-  }
-  return vec2(f1, f2.sub(f1));
-}
-
-/** Vertical run-up of breaker `n`, metres above still water. */
+/** Vertical run-up of breaker `n`, metres above still water. See `RUNUP_HUNT`. */
 export function runup(n: any, xz: any): any {
-  return waveHeight(n, xz).mul(RUNUP_FRACTION);
+  return surfUniforms.runupScale.mul(waveHeight(n, xz).sqrt());
 }
 
-/** Height of the swash front, `u` periods after the bore reached the shoreline. */
+/**
+ * Height of the swash front, `u` periods after the bore reached the shoreline.
+ *
+ * `sin(pi v^SWASH_SKEW)`: the uprush takes the first 37% of the swash and the
+ * backwash the remaining 63%. The uprush is a collapsing bore driven up the
+ * sand; the backwash is gravity alone, slowed by the water the bed takes in.
+ * Written as a power warp of time rather than an envelope on the sine so the
+ * front still reaches exactly `reach`, and so the crossing times at any height
+ * invert in closed form — `swashOnSand` needs them to know how long ago sand
+ * was last under water.
+ */
 export function swashFront(u: any, reach: any): any {
   const v = u.div(SWASH_SPAN).clamp(0, 1);
-  // Climbs fast and falls back slowly: the uprush is driven, the backwash is
-  // gravity alone.
-  const climb = v.mul(Math.PI).sin().mul(v.oneMinus().mul(0.25).add(0.75));
+  const climb = v.pow(SWASH_SKEW).mul(Math.PI).sin();
   return reach.mul(climb).mul(u.lessThan(SWASH_SPAN).select(float(1), float(0)));
+}
+
+/**
+ * When, in periods after the bore, the front of a swash reaching `reach` passes
+ * height `h` going up and coming back down. Exact inverses of `swashFront`.
+ */
+function swashCrossings(h: any, reach: any): { up: any; down: any } {
+  const a = h.div(reach.max(1e-3)).clamp(0, 1).asin().div(Math.PI);
+  return {
+    up: a.pow(1 / SWASH_SKEW).mul(SWASH_SPAN),
+    down: a.oneMinus().pow(1 / SWASH_SKEW).mul(SWASH_SPAN),
+  };
 }
 
 /**
  * The swash on a patch of ground at height `h` above still water.
  *
- * @returns vec3(wet 0..1, under the sheet 0..1, foam at the front 0..1)
+ * @returns vec4(damp 0..1, film 0..1, under the sheet 0..1, foam amount 0..1).
+ *          The foam is an amount for `FoamPattern.featherFoam`, not coverage.
  */
 export function swashOnSand(h: any, xz: any): any {
   const phase = surfPhase(float(0), xz);
-  const n0 = phase.floor();
-  const u0 = fract(phase);
+  const n0 = phase.floor().toVar();
+  const u0 = fract(phase).toVar();
 
   // Current wave: under the sheet between the up- and down-crossings.
-  const r0 = runup(n0, xz);
-  const front0 = swashFront(u0, r0);
-  const under = smoothstepDown(h.sub(front0), -0.004, 0.012);
+  const r0 = runup(n0, xz).toVar();
+  const front0 = swashFront(u0, r0).toVar();
+  const under = smoothstepDown(h.sub(front0), -0.004, 0.012).toVar();
 
-  // Wetness from the last three waves. For each, the down-crossing of the
-  // backwash at height `h` is `SWASH_SPAN * (1 - asin(h / R) / pi)`, with the
-  // small skew of `swashFront` ignored — it moves the answer by well under a
-  // second. Sand above a wave's run-up was never reached by it.
-  const wet: any = float(0).toVar();
+  // Drying and stranded foam from the last three waves. Sand above a wave's
+  // run-up was never reached by it; for the current wave, sand the front has
+  // not reached yet is not wet by it either.
+  //
+  // The oldest of the three is faded out over the second half of the current
+  // period. When the next bore arrives it stops being tracked, and without the
+  // fade any sand it alone had reached would snap dry in one frame. At the
+  // same instant the wave that takes its slot arrives at full weight, so the
+  // hand-over is continuous.
+  const damp: any = float(0).toVar();
+  const film: any = float(0).toVar();
+  const mark: any = float(0).toVar();
   for (let k = 0; k < 3; k++) {
-    const n = n0.sub(k);
-    const reach = k === 0 ? r0 : runup(n, xz);
-    const ratio = h.div(reach.max(1e-3)).clamp(0, 1);
-    const down: any = float(SWASH_SPAN).mul(ratio.asin().div(Math.PI).oneMinus());
-    const age = u0.add(k).sub(down).mul(surfUniforms.period);
+    const reach = k === 0 ? r0 : runup(n0.sub(k), xz).toVar();
+    const crossing = swashCrossings(h, reach);
     const reached = h.lessThan(reach).select(float(1), float(0));
-    const dried: any = age.max(0).div(DRY_SECONDS).negate().exp();
-    // For the current wave, sand the front has not reached yet is not wet by it.
-    const up: any = float(SWASH_SPAN).mul(ratio.asin().div(Math.PI));
-    const arrived: any = k === 0 ? u0.greaterThan(up).select(float(1), float(0)) : float(1);
-    wet.assign(wet.max(dried.mul(reached).mul(arrived)));
+    const arrived: any = k === 0 ? u0.greaterThan(crossing.up).select(float(1), float(0)) : float(1);
+    const keep: any = k === 2 ? smoothstepDownClamped(u0, 0.5, 1) : float(1);
+    const weight = reached.mul(arrived).mul(keep).toVar();
+    // Seconds since the backwash uncovered this sand; negative while covered.
+    const age = u0.add(k).sub(crossing.down).mul(surfUniforms.period).max(0).toVar();
+    damp.assign(damp.max(age.div(-DAMP_SECONDS).exp().mul(weight)));
+    film.assign(film.max(age.div(-FILM_SECONDS).exp().mul(weight)));
+
+    // The swash mark: a thin line of foam stranded at this wave's highest
+    // point, from the moment the front turns back. Just inside the run-up so it
+    // sits on sand that was wetted, and a few centimetres of height wide —
+    // a hand's width to a stride across the sand at this slope.
+    const sincePeak = u0.add(k).sub(SWASH_SPAN * SWASH_PEAK_AT).mul(surfUniforms.period).toVar();
+    const line = h.sub(reach.mul(0.965)).div(reach.mul(0.025).add(0.008));
+    mark.assign(
+      mark.max(
+        line
+          .mul(line)
+          .negate()
+          .exp()
+          .mul(sincePeak.max(0).div(-MARK_SECONDS).exp())
+          .mul(sincePeak.greaterThan(0).select(float(1), float(0)))
+          .mul(keep),
+      ),
+    );
   }
 
-  // A line of white at the front while it is moving: bright on the uprush,
-  // thinner and lacier as it slides back.
-  const onSand = u0.lessThan(SWASH_SPAN).select(float(1), float(0));
-  const rising = smoothstepDown(u0, SWASH_SPAN * 0.35, SWASH_SPAN * 0.6).mul(0.5).add(0.5);
-  const edge = h
-    .sub(front0)
-    .div(r0.mul(0.05).add(0.02))
+  // The front while it is moving: a band of foam just behind the leading edge,
+  // dense on the uprush — the remains of the bore that drove it — and thinner
+  // as it slides back. Wider behind the edge than ahead of it, because the
+  // foam rides on the sheet and the dry sand ahead has none.
+  const onSand = u0.lessThan(SWASH_SPAN).and(front0.greaterThan(0.01)).select(float(1), float(0));
+  const rising = smoothstepDown(u0, SWASH_SPAN * 0.3, SWASH_SPAN * 0.55).mul(0.25).add(0.55);
+  const edge = h.sub(front0).toVar();
+  const edgeWidth = edge
+    .lessThan(0)
+    .select(r0.mul(0.12).add(0.03), r0.mul(0.02).add(0.008))
     .toVar();
-  const foam = edge.mul(edge).negate().exp().mul(onSand).mul(rising).mul(front0.greaterThan(0.01).select(float(1), float(0)));
+  const edgeX = edge.div(edgeWidth);
+  const frontFoam = edgeX.mul(edgeX).negate().exp().mul(onSand).mul(rising);
 
-  return vec3(wet.max(under), under, foam.mul(surfUniforms.strength));
+  // Behind the front, the sheet carries what is left of the bore's foam: thick
+  // as it lands, bursting over a second or so, a thin scatter after that.
+  const sheetFoam = under.mul(u0.div(-0.16).exp().mul(0.55).add(0.12));
+
+  // And the wet sand the backwash has just left keeps a few bubbles for as long
+  // as it shines.
+  const foam = frontFoam.max(sheetFoam).max(mark.mul(0.62)).max(film.mul(0.14).mul(under.oneMinus()));
+
+  return vec4(damp.max(under), film.max(under), under, foam.mul(surfUniforms.strength));
 }
 
 /**
@@ -386,36 +590,67 @@ export function swashOnSand(h: any, xz: any): any {
  * of a frame — all of the island above the beach skips it.
  */
 function swashAtGround(position: any): any {
-  const result = vec3(0, 0, 0).toVar();
-  If(position.y.lessThan(surfUniforms.height.mul(RUNUP_FRACTION * 1.6).add(0.1)), () => {
+  const result = vec4(0, 0, 0, 0).toVar();
+  If(position.y.lessThan(maxRunup().add(0.1)), () => {
     result.assign(swashOnSand(position.y, vec2(position.x, position.z)));
   });
   return result;
 }
 
+/** Albedo of foam lying on sand: a little under the open sea's, it is thinner. */
+const SAND_FOAM_ALBEDO = 0.82;
+
+/**
+ * Darkening of fully wetted sand, on top of the ground's own static wet band.
+ *
+ * Wet sand is darker because light scattered by the grains is trapped by total
+ * internal reflection in the water film (Lekner & Dorf 1988); measured drops run
+ * from ~10% for bright translucent grains to a half for dark ones (Zhang & Voss
+ * 2006). The ground already draws a damp band across the whole swash zone, so
+ * this is the *saturated* step on top of it, and a third is what separates
+ * sand the last wave reached from sand it did not without the swash zone going
+ * muddy.
+ */
+const SWASH_DARKEN = 0.32;
+
 /**
  * Hook for the island's ground shader: sand that the swash has just left is
- * dark and glossy, and dries over seconds. Self-contained on purpose — the
- * ground's own palette is not this module's to know, so this only scales it.
- * Must be called inside the colour node's `Fn`.
+ * dark and glossy, and dries over seconds; the front and the marks it strands
+ * are foam. Self-contained on purpose — the ground's own palette is not this
+ * module's to know, so this only scales it. Must be called inside the colour
+ * node's `Fn`.
  *
  * @param color    The ground's albedo, vec3.
  * @param position World position of the fragment.
  * @returns        The albedo with the swash applied.
  */
 export function applySwashToGround(color: any, position: any): any {
-  const swash = swashAtGround(position);
-  const wet = swash.x.mul(surfUniforms.strength);
-  // A water film darkens sand to about half its dry albedo; the sheet itself
-  // adds a little of the sea's colour; the front is foam.
-  const darkened = color.mul(wet.mul(-0.2).add(1));
-  const sheeted = mix(darkened, darkened.mul(vec3(0.8, 0.95, 1.02)), swash.y);
-  return mix(sheeted, vec3(0.62, 0.66, 0.66), swash.z.mul(0.85));
+  const swash = swashAtGround(position).toVar();
+  const strength = surfUniforms.strength.min(1);
+  // Reflectance falls steeply with the first moisture and then flattens
+  // (Nolet et al. 2014), so damp sand is most of the way to wet: a cubic ease
+  // out of the dry end.
+  const dampness = swash.x.mul(strength).oneMinus().pow(3).oneMinus();
+  const darkened = color.mul(dampness.mul(-SWASH_DARKEN).add(1));
+  // The sheet itself adds a little of the sea's colour.
+  const sheeted = mix(darkened, darkened.mul(vec3(0.8, 0.95, 1.02)), swash.z);
+  // Foam, through the same pattern and feather as the sea's, so the swash edge
+  // and the lace on the water beside it are one material.
+  const coverage = float(0).toVar();
+  If(swash.w.greaterThan(0.002), () => {
+    const pattern = foamPattern(vec2(position.x, position.z), cameraPosition.distance(position));
+    coverage.assign(featherFoam(swash.w, pattern));
+  });
+  return mix(sheeted, vec3(SAND_FOAM_ALBEDO), coverage);
 }
 
-/** Roughness for the same: wet sand is glossy and the sheet is a mirror. */
+/**
+ * Roughness for the same: the draining film is a mirror, damp sand is merely
+ * smoother than dry, and the sheet itself is water.
+ */
 export function swashRoughness(base: any, position: any): any {
   const swash = swashAtGround(position);
-  const wet = swash.x.mul(surfUniforms.strength);
-  return mix(mix(base, float(0.5), wet), float(0.18), swash.y.mul(surfUniforms.strength));
+  const strength = surfUniforms.strength.min(1);
+  const damp = mix(base, float(0.55), swash.x.mul(strength));
+  return mix(damp, float(0.12), swash.y.mul(strength));
 }

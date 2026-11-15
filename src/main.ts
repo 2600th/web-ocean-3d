@@ -2806,6 +2806,7 @@ class App {
     this.lensFlare.setEnabled(quality.lensFlare === 1);
     this.postChain.setTier(tier);
     this.water.setWakeDisplacement(quality.wakeDisplacement);
+    this.water.setFoamDetail(quality.foamDetail);
     // Instance counts only, and safe on a live scene: no geometry is rebuilt and
     // nothing allocates, so this is a tier knob rather than a reload. Null until
     // the models arrive — `Props.load` is passed the same number, so a tier
@@ -3647,6 +3648,13 @@ class App {
       Math.cos(driftBearing) * driftSpeed,
       Math.sin(driftBearing) * driftSpeed,
     );
+    // And the foam's pattern rides the same current, integrated from the sea
+    // clock rather than accumulated per frame so a rewind puts it back. Not
+    // wrapped: the pattern's scales have no common period short enough to wrap
+    // at without a visible jump, and at 3% of a gale the offset is still under
+    // 20 km after ten hours, where fp32 keeps millimetres.
+    const carried = elapsed * driftSpeed;
+    this.water.setFoamDrift(Math.cos(driftBearing) * carried, Math.sin(driftBearing) * carried);
     // The axis the windward-face term biases foam along. Same bearing, but it
     // has to be set separately because the drift above goes to zero in a calm
     // and an axis cannot.
