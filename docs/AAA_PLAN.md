@@ -279,6 +279,16 @@ The world is set around 1700 in the Caribbean, in the Golden Age of Piracy. Ever
   Each prop gets LODs and seeded variety, and a side-by-side check against the asset it replaces. The hero ship stays a model unless code can match it.
 - [ ] **Measure the gain.** Record the bytes and time to interactive before and after, and add the numbers to section Q's scoreboard.
 
+### S. Impact particles and water VFX
+
+- [ ] **Redo the impact particles.** Hull slams and floater splashes read as flat white cotton or paper blobs. The target:
+  - **Hull slams:** white-water sheets that tear into ligaments and droplets, then blow off as mist. Droplets stretch along their motion, soft-fade where they meet the water and hull, are lit by sun and sky with forward scatter, and break up through generated flipbooks.
+  - **Floater splashes:** small and scaled to the object.
+  - **Bow spray:** continuous at speed.
+  - **Rain:** rings on the sea where it is cheap enough.
+  
+  Keep `Spray`'s deterministic closed-form design. Budget: 0.8 ms at High in a storm.
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
