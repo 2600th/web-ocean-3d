@@ -161,10 +161,10 @@ const UI_INTERVAL = 0.1;
  */
 const CARGO_NAMES = [
   'a cask of dark rum',
-  'a cask of cloves',
+  'a hogshead of sugar',
   "a merchant's lost cask",
   'a cask sealed in wax',
-  'a cask of good tea',
+  'a cask of molasses',
   'a cask of salt pork',
 ] as const;
 

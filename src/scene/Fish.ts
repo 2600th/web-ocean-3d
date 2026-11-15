@@ -6,6 +6,8 @@ import {
   cos,
   faceDirection,
   float,
+  max,
+  min,
   mix,
   normalGeometry,
   positionGeometry,
@@ -640,14 +642,14 @@ const BELLY_COLOR = new THREE.Color(0.8, 0.83, 0.8);
  * identifies a fish at the distances these are seen at.
  *
  *   silver jack        the original: dark back, silver flank
- *   blue fusilier      cobalt back over a yellow lateral band, pink belly
+ *   bluestriped grunt  blue-grey back over a yellow flank, pale belly
  *   yellowtail snapper slate back, a bright yellow flank stripe
  *   bigeye / soldier   rose-red all over, the reef's night shift
  *   barracuda          steel grey back, pale flank
  */
 const PELAGIC_PALETTES: readonly (readonly [THREE.Color, THREE.Color, THREE.Color])[] = [
   [BACK_COLOR, FLANK_COLOR, BELLY_COLOR],
-  [new THREE.Color(0.03, 0.08, 0.32), new THREE.Color(0.72, 0.6, 0.12), new THREE.Color(0.85, 0.68, 0.72)],
+  [new THREE.Color(0.08, 0.14, 0.34), new THREE.Color(0.8, 0.64, 0.12), new THREE.Color(0.84, 0.82, 0.7)],
   [new THREE.Color(0.14, 0.18, 0.28), new THREE.Color(0.85, 0.68, 0.14), new THREE.Color(0.86, 0.84, 0.78)],
   [new THREE.Color(0.35, 0.06, 0.06), new THREE.Color(0.75, 0.22, 0.2), new THREE.Color(0.85, 0.55, 0.5)],
   [new THREE.Color(0.1, 0.12, 0.14), new THREE.Color(0.55, 0.58, 0.6), new THREE.Color(0.86, 0.87, 0.86)],
@@ -1223,7 +1225,7 @@ export class FishSchool {
             // importing it. `texture()` in the colour node rather than
             // `material.map`, because this is a `MeshBasicNodeMaterial` whose
             // colour is entirely replaced below and would otherwise ignore it.
-            texture(map, uv()).rgb.toVar()
+            frenchAngelfish(texture(map, uv()).rgb)
           : (() => {
               const t = flank.mul(0.5).add(0.5).toVar();
               const back = pickPerSchool(this.uBacks, trait.x);
@@ -1235,7 +1237,7 @@ export class FishSchool {
             })()
       ) as Node;
       // A degree of per-fish tint, so a school is not one repeated animal. Held
-      // much tighter on the textured species: an emperor angelfish is a
+      // much tighter on the textured species: an angelfish is a
       // recognisable animal with recognisable colours, and tinting it by ±7%
       // reads as a rendering fault rather than as variation.
       const tintLow = map ? vec3(0.97, 0.99, 1.01) : vec3(0.93, 0.99, 1.04);
@@ -1831,6 +1833,34 @@ function instancesForSpecies(species: Species): Int32Array {
 
 /** Where the reef species lives, and which way it was authored. */
 const REEF_FISH_URL = '/models/dressing/emperor_angelfish.glb';
+
+/**
+ * Re-pigments the emperor angelfish texture as a French angelfish
+ * (*Pomacanthus paru*), the Caribbean member of the same genus. The emperor
+ * (*P. imperator*) is Indo-Pacific and has no place on a 1700 West Indies reef;
+ * the mesh is the right animal shape, only the colours are wrong.
+ *
+ * The emperor is yellow stripes over blue, a dark eye mask and a pale mouth.
+ * Mapped by hue: the blue ground becomes the French angelfish's near-black, the
+ * yellow becomes the gold that rims its scales (held below full strength, so the
+ * stripes read as rows of rims rather than solid bands, close to the curved
+ * yellow bars of a juvenile), and the pale mouth stays pale. Luminance from the
+ * source is kept, so the scale and fin detail of the texture survives.
+ */
+function frenchAngelfish(src: Node): Node {
+  const c: Node = src.toVar();
+  const lum: Node = c.dot(vec3(0.2126, 0.7152, 0.0722)).toVar();
+  // Hue by ratio, not by absolute level: the texture is dark (its yellows sit
+  // near 0.25 linear), so a fixed threshold on `min(r, g) - b` misses them.
+  const peak: Node = max(max(c.r, c.g), c.b).max(1e-3).toVar();
+  const yellow: Node = min(c.r, c.g).sub(c.b).div(peak).smoothstep(0.12, 0.45).toVar();
+  const pale: Node = min(min(c.r, c.g), c.b).div(peak).smoothstep(0.6, 0.85).mul(lum.smoothstep(0.12, 0.3));
+  const body: Node = vec3(0.045, 0.047, 0.055).mul(lum.mul(2.0).add(0.7));
+  const gold: Node = vec3(0.95, 0.72, 0.12).mul(lum.mul(1.5).add(0.45));
+  const out: Node = mix(body, gold, yellow.mul(0.85)).toVar();
+  out.assign(mix(out, vec3(0.7, 0.68, 0.62).mul(lum.mul(1.5)), pale));
+  return out;
+}
 const REEF_FISH_FORWARD = '+z' as const;
 
 /**

@@ -21,8 +21,10 @@ import {
   loadReefFish,
   IslandCanopy,
   IslandMeadow,
+  GroundCover,
   KelpForest,
   ReefLife,
+  Rocks,
   SeaCreatures,
   Props,
   Remains,
@@ -34,6 +36,7 @@ import {
   SurfaceWetness,
   FoliageWind,
   applyGroundShadingTo,
+  type GroundShadingInputs,
 } from './scene';
 import {
   AudioSystem,
@@ -138,6 +141,9 @@ const _meadowAmbient = new THREE.Color();
 const _meadowWind = new THREE.Vector2();
 /** Scratch for the key light's colour at its strength, for the custom-lit foliage and the smoke. */
 const _keyLight = new THREE.Color();
+/** Scratch for the seabed vegetation's key and ambient. */
+const _vegKey = new THREE.Color();
+const _vegAmbient = new THREE.Color();
 const _smokeLight = new THREE.Color();
 const _smokeSky = new THREE.Color();
 /** How much of a lightning flash still goes to the grade as a frame-wide lift. */
@@ -392,7 +398,10 @@ class App {
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
   private fish!: FishSchool;
   private kelp!: KelpForest;
+  /** Seagrass meadows, gorgonians, Halimeda and sargassum; shares the kelp's water. */
+  private seabedCover!: GroundCover;
   private reefLife!: ReefLife;
+  private rocks!: Rocks;
   private creatures!: SeaCreatures;
   private meadow!: IslandMeadow;
   private canopy!: IslandCanopy;
@@ -825,9 +834,6 @@ class App {
     this.fish = new FishSchool(quality.fish);
     this.scene.add(this.fish.object);
 
-    this.kelp = new KelpForest(quality.kelp);
-    this.scene.add(this.kelp.object);
-
     // Grass, placed on the GPU from the seafloor's own heightfield node rather
     // than scattered as instances — the island is 0.8 km2 and a scatter dense
     // enough to read as a sward is a million draws. See `src/scene/Meadow.ts`.
@@ -921,14 +927,18 @@ class App {
     // The procedural reef. Built after the caustics because it takes the same
     // ground treatment the props do — caustics on every coral, the cloud deck's
     // shade, contact darkening at the base — and that binding is compiled in.
-    this.reefLife = new ReefLife(quality.reefLife, {
-      shading: {
-        light: this.atmosphere.sunLight,
-        keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
-        caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
-        groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
-      },
-    });
+    const seabedShading: Omit<GroundShadingInputs, 'foliage'> = {
+      light: this.atmosphere.sunLight,
+      keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+      caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+      groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
+    };
+    // The geology first: the reef grows on its outcrops, and the sand reads
+    // its map. Same ground treatment as the reef.
+    this.rocks = new Rocks(quality.reefRocks, { shading: seabedShading });
+    this.scene.add(this.rocks.object);
+    this.seafloor.setRockInfluence(this.rocks.influence);
+    this.reefLife = new ReefLife(quality.reefLife, { shading: seabedShading, gardens: this.rocks.gardens });
     this.scene.add(this.reefLife.object);
 
     // The animals that live on it, homed on the same sites.
@@ -938,14 +948,42 @@ class App {
     });
     this.scene.add(this.creatures.object);
 
+    // The vegetation, after the reef so its sites can be kept clear: grass stops
+    // at a reef's edge, the kelp groves stand off it, and the gorgonians gather
+    // on its apron. Lit through the same caustics as the reef.
+    {
+      const sites = this.reefLife.sites;
+      const clearings = [...sites.plateau, ...sites.island, ...sites.meadows];
+      const shading = {
+        caustics: (worldPosition: unknown) => this.caustics.intensityNode(worldPosition),
+        // No cloud shade (`keyShadow`): it is a three-sample march through 3D noise,
+        // and per leaf fragment across a meadow that is the most expensive term
+        // in the shader for a shade the sand under the leaves already shows.
+      };
+      this.kelp = new KelpForest(quality.kelp, { clearings, shading, range: quality.vegetationRange });
+      this.kelp.setCastShadow(quality.vegetationShadows);
+      this.scene.add(this.kelp.object);
+      this.seabedCover = new GroundCover(quality.seabedCover, {
+        uniforms: this.kelp.uniforms,
+        forests: this.kelp.forests,
+        columns: this.kelp.columns,
+        clearings: [...sites.plateau, ...sites.island],
+        shading,
+        range: quality.vegetationRange * 0.65,
+      });
+      this.scene.add(this.seabedCover.object);
+    }
+
     // Everything that lives under the surface goes on its own layer, kept out of
     // the planar mirror — see `UNDERWATER_LAYER`.
     this.camera.layers.enable(UNDERWATER_LAYER);
     this.reflections?.excludeLayer(this.camera, UNDERWATER_LAYER);
     for (const root of [
       this.reefLife.object,
+      this.rocks.object,
       this.creatures.object,
       this.kelp.object,
+      this.seabedCover.object,
       this.fish.object,
       this.particles.object,
     ]) {
@@ -975,6 +1013,9 @@ class App {
       // beach came out as a grid of stripes that TRAA could not average away.
       scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
       this.clouds.setPreviousViewProjection(this.prevViewProjection, this.currViewProjection);
+      // Sway-aware motion vectors and shaded normals for the leaves; see `LeafField`.
+      this.kelp.setVelocity(this.prevViewProjection, this.currViewProjection);
+      this.seabedCover.setVelocity(this.prevViewProjection, this.currViewProjection);
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -2791,7 +2832,12 @@ class App {
     this.spray.setStrength(quality.spray);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
+    this.kelp.setRange(quality.vegetationRange);
+    this.kelp.setCastShadow(quality.vegetationShadows);
+    this.seabedCover.setCount(quality.seabedCover);
+    this.seabedCover.setRange(quality.vegetationRange * 0.65);
     this.reefLife.setDetail(quality.reefLife);
+    this.rocks.setDetail(quality.reefRocks);
     this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
@@ -3396,7 +3442,15 @@ class App {
 
     // The bed follows the same swell the surface does, so the water and the
     // weed under it agree about which way the sea is running.
-    this.kelp.setSunDirection(this.atmosphere.sunDirection);
+    // The key light at its strength, as the meadow and canopy take it, so the
+    // groves go dark under a storm deck and moonlit at night.
+    {
+      const key = this.atmosphere.sunLight;
+      this.kelp.setKeyLight(this.atmosphere.keyDirection, _vegKey.copy(key.color).multiplyScalar(key.intensity / 3.4));
+      this.kelp.setAmbient(_vegAmbient.copy(this.atmosphere.zenithColor).multiplyScalar(0.5));
+    }
+    this.kelp.setCameraPosition(this.camera.position);
+    this.seabedCover.setCameraPosition(this.camera.position);
     this.kelp.setSwell(
       getPreset(this.state.preset).sea.windDirection,
       this.state.windSpeed,
@@ -3413,6 +3467,7 @@ class App {
     );
     this.reefLife.setCameraPosition(this.camera.position);
     this.reefLife.update(dt);
+    this.rocks.setCameraPosition(this.camera.position);
 
     // The animals take the same sun the fish do — its colour, scaled as `Fish`
     // scales its own, and gone when the sun is.
@@ -3511,6 +3566,7 @@ class App {
       .multiplyScalar((this.atmosphere.sunLight.intensity / 3.4) * 0.75)
       .add(_smokeSky.copy(this.atmosphere.zenithColor).multiplyScalar(this.atmosphere.ambientLight.intensity * 0.6));
     this.props?.setDetailLighting(_smokeLight, this.lighting.local.fireLevel);
+    this.props?.setBeaconLevel(this.lighting.local.beaconLevel);
 
     // The key light, whichever body is providing it, at its actual strength.
     //
@@ -3520,7 +3576,11 @@ class App {
     // past nine at night. It also went on taking its direction from a sun that
     // was below the horizon while the moon was the only thing actually casting.
     const key = this.atmosphere.sunLight;
-    _keyDirection.copy(key.position).normalize();
+    // The key body's direction, not `key.position` normalised: the light sits
+    // `SUN_LIGHT_DISTANCE` out from the shadow focus, and with the focus far
+    // from the origin the normalised position was 37.6 degrees off the sun at
+    // the sunset preset, which put a second sun glint on the water.
+    _keyDirection.copy(this.atmosphere.keyDirection);
     // 3.4 is the sun's full-daylight intensity in `Atmosphere`, so this is
     // "how close to full daylight is it" rather than an arbitrary scale.
     // The *direct* glint fades with the overcast on the same curve the sky uses
@@ -3808,7 +3868,7 @@ class App {
     // every hour of the night. So the pair (`sunDirection`, `sunColor`) is the
     // obvious thing to hand over and is wrong after dark twice over: it would
     // anchor the flare where the sun is not, and paint it warm on a blue moon.
-    // `_keyDirection` is already derived from `sunLight.position` further up, so
+    // `_keyDirection` is already `atmosphere.keyDirection` further up, so
     // it follows the retarget; the colour has to come from the same object.
     // A deck thick enough to call an overcast leaves no disc to flare on.
     const flareThrough = 1 - THREE.MathUtils.clamp(this.atmosphere.overcast, 0, 1) * 0.97;
@@ -4107,6 +4167,11 @@ class App {
         water: this.water,
         /** The procedural reef, so a harness can find its sites and count it. */
         reefLife: this.reefLife,
+        /** Kelp groves and seabed cover, so a harness can frame and count them. */
+        kelp: this.kelp,
+        seabedCover: this.seabedCover,
+        /** The seabed geology: outcrop centres, triangle counts. */
+        rocks: this.rocks,
         creatures: this.creatures,
         /**
          * Readiness signals. `sceneContentLoaded` settles whether or not the
@@ -4559,6 +4624,8 @@ class App {
     this.birds?.dispose();
     this.fish?.dispose();
     this.kelp?.dispose();
+    this.seabedCover?.dispose();
+    this.rocks?.dispose();
     this.meadow?.dispose();
     this.stormQuote?.dispose();
     this.canopy?.dispose();

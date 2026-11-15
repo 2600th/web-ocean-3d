@@ -68,8 +68,10 @@ const MANIFEST = [
   },
 
   // ---- Floating props -----------------------------------------------------
-  { kind: 'model', slug: 'ocean_buoy', res: '1k', dir: 'assets/source/models/ocean_buoy', note: 'Floating marine buoy' },
-  { kind: 'model', slug: 'barrel_03', res: '1k', dir: 'assets/source/models/barrel_03', note: 'Floating barrel' },
+  //
+  // None. `ocean_buoy` (a modern steel channel buoy) and `barrel_03` (an oil
+  // drum) were wrong for 1700; the casks and flotsam are built in code now, see
+  // `src/scene/props/`.
 
   // ---- Island silhouette --------------------------------------------------
   { kind: 'model', slug: 'rock_07', res: '1k', dir: 'assets/source/models/rock_07', note: 'Standalone rock' },
@@ -122,27 +124,23 @@ const MANIFEST = [
   // and wear. That coherence is the whole reason to take dressing from one pack.
   { kind: 'model', slug: 'ship_pinnace', res: '1k', dir: 'assets/source/models/ship_pinnace', note: "Ship's boat, beached" },
   { kind: 'model', slug: 'modular_wooden_pier', res: '1k', dir: 'assets/source/models/modular_wooden_pier', note: 'Jetty on the island' },
-  { kind: 'model', slug: 'cannon_01', res: '1k', dir: 'assets/source/models/cannon_01', note: 'Shore battery' },
-  { kind: 'model', slug: 'wooden_barrels_01', res: '1k', dir: 'assets/source/models/wooden_barrels_01', note: 'Barrel stack' },
-  { kind: 'model', slug: 'wooden_lantern_01', res: '1k', dir: 'assets/source/models/wooden_lantern_01', note: 'Lantern on the pier' },
-  { kind: 'model', slug: 'wooden_crate_02', res: '1k', dir: 'assets/source/models/wooden_crate_02', note: 'Cargo crate' },
 
   // ---- Pirate remains ------------------------------------------------------
   //
   // A wreck site tells a story or it is litter, and the story needs objects a
   // person left behind rather than objects that washed up. Poly Haven has no
   // skeleton — that one is built procedurally, see `src/scene/Remains.ts`.
-  { kind: 'model', slug: 'antique_estoc', res: '1k', dir: 'assets/source/models/antique_estoc', note: 'Sword, half-buried' },
-  { kind: 'model', slug: 'jug_01', res: '1k', dir: 'assets/source/models/jug_01', note: 'Bottle / jug' },
-  { kind: 'model', slug: 'wooden_bucket_01', res: '1k', dir: 'assets/source/models/wooden_bucket_01', note: 'Bucket' },
   // A ruin gives the island a landmark and a reason for the cannon to be where
   // it is. Modular in the source; one section is enough.
   { kind: 'model', slug: 'modular_fort_01', res: '1k', dir: 'assets/source/models/modular_fort_01', note: 'Ruined shore fort' },
 
   // ---- Underwater find ----------------------------------------------------
-  { kind: 'model', slug: 'treasure_chest', res: '1k', dir: 'assets/source/models/treasure_chest', note: 'Sunken treasure chest' },
-  { kind: 'model', slug: 'wooden_crate_01', res: '1k', dir: 'assets/source/models/wooden_crate_01', note: 'Sunken crate' },
-  { kind: 'model', slug: 'lambis_shell', res: '1k', dir: 'assets/source/models/lambis_shell', note: 'Shell on the seabed' },
+  //
+  // The cannon, the cask stack, the lantern, the crates, the jug, the sword,
+  // the bucket, the treasure chest and the shell used to be Poly Haven scans
+  // from here and above. They are procedural now (`src/scene/props/`): 5.5 MB
+  // less to download, and period pieces in place of a domed storybook chest,
+  // a 16th-century estoc and an Indo-Pacific shell.
 
   // ---- Ground cover -------------------------------------------------------
   //

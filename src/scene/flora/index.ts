@@ -84,13 +84,23 @@ const UMBRELLA: TreeSpecies = {
   bark: [0.72, 0.68, 0.62],
 };
 
-/** A flame tree: the umbrella again, smaller, with a share of flowering sprays. */
+/**
+ * The flowering accent: a Geiger tree (*Cordia sebestena*), native to the West
+ * Indies and recorded there by the first European herbalists, with clusters of
+ * orange-scarlet flowers over a dense, rounded crown. It replaces the flame
+ * tree (*Delonix regia*), which is Madagascan and not described until 1829, so
+ * it could not stand on a 1700 Caribbean island. The key stays `treeFlame` for
+ * the callers; the species is the Geiger tree.
+ *
+ * Shape: a short trunk and a compact crown, smaller and rounder than the rain
+ * tree's umbrella (Cordia sebestena rarely passes 8 m).
+ */
 const FLAME: TreeSpecies = {
   ...UMBRELLA,
-  trunk: { r: 0.32, top: 3.2, lean: 0.07, segs: 6 },
-  limbs: { ...UMBRELLA.limbs, n: 6, len: [5.4, 4.2] },
+  trunk: { r: 0.26, top: 2.6, lean: 0.08, segs: 6 },
+  limbs: { ...UMBRELLA.limbs, n: 6, tilt: [1.0, 0.6], len: [4.0, 3.2], up: 0.12 },
   cards: { ...UMBRELLA.cards, size: 1.4 },
-  flowers: 0.3,
+  flowers: 0.4,
   vines: 0.1,
   tints: [GREEN, GREEN_WARM],
 };

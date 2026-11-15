@@ -14,6 +14,8 @@ import {
 import { mulberry32 } from '../core/random';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { applyGroundShading, type GroundShadingInputs } from './groundShading';
+import type { GardenTheme, RockGarden } from './Rocks';
+import { InstanceField } from './reef/InstanceField';
 import type { MeshBuilder, RGB } from './reef/MeshBuilder';
 import { bumpedNormal, lifePattern, worldNormalToView } from './reef/LifeShading';
 import {
@@ -22,16 +24,19 @@ import {
   buildBrainCoral,
   buildBommie,
   buildBranchingCoral,
+  buildElkhornCoral,
+  buildEncrustingSponge,
   buildMoundCoral,
   buildRock,
   buildSeaFan,
+  buildSeaPlume,
   buildSeaWhip,
   buildSeagrassClump,
   buildShell,
   buildStarfish,
-  buildTableCoral,
   buildTubeSponge,
   buildUrchin,
+  buildVaseSponge,
 } from './reef/ReefSpecies';
 
 /**
@@ -39,9 +44,9 @@ import {
  * and the small things on the sand, all built in code and instanced.
  *
  * **Why procedural.** The reef used to be four downloaded photogrammetry and kit
- * GLBs (about 2.4 MB with their LODs) scattered by `Props`; the three
- * photogrammetry colonies are now gone and only the kit carpet
- * (`soft_coral_set`) remains there. They are good assets
+ * GLBs (about 2.4 MB with their LODs) scattered by `Props`; all four are now
+ * gone from the picture, the kit carpet (`soft_coral_set`) last because it was
+ * Indo-Pacific soft coral on a Caribbean reef. They are good assets
  * and they are the wrong tool for this job: a reef reads as *alive* through
  * variety — of form, colour and motion — at the scale of hundreds of colonies,
  * and four fixed meshes recoloured by nothing repeat visibly within one patch.
@@ -71,12 +76,18 @@ import {
  * of the template-space position with a screen-derivative bump, so it costs no
  * texture and no UVs and sits still on a swaying instance.
  *
- * **Budget.** One draw per species per region (plateau, island), so the island
- * reef frustum-culls as a unit when it is behind the viewer. Counts scale by the
- * tier's `reefLife` fraction through `InstancedMesh.count`, never a rebuild —
- * instances are shuffled at placement so any prefix is a fair sample of every
- * site. The whole group goes invisible when the viewer is far enough above the
- * sea that none of it can resolve.
+ * **Gardens on the rock.** Besides the reef patches and the island sites, every
+ * outcrop `Rocks` sculpts is a garden — Caribbean coral, sponge or gorgonian,
+ * by depth — and part of each species grows on the rock itself, on the ledges
+ * and tops `Rocks` found facing up or out, the way abyssal-garden clusters its
+ * sponges and corals on rock surfaces (`world.js`, "sponges and coral").
+ *
+ * **Budget.** One `InstanceField` per species template, dealt by distance from
+ * the camera (`reef/InstanceField`), so only the reef within visibility range
+ * is vertex-shaded; the bommie carries a three-level LOD chain. The tier's
+ * `reefLife` fraction is a rank threshold, never a rebuild, so thinning removes
+ * the same colonies everywhere. The whole group goes invisible when the viewer
+ * is far enough above the sea that none of it can resolve.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -96,21 +107,29 @@ const SWAY_LAG = 9;
 /** Above this eye height the reef is hidden outright. */
 const HIDE_ABOVE = 90;
 
-/**
- * Horizontal distance past a region's edge beyond which it is skipped, metres.
- * Even the clearest preset (70 m visibility) leaves well under 1% of the
- * contrast at this range, and from above the water the reef is out of sight
- * long before it.
- */
-const REGION_CULL = 220;
-
 // ----------------------------------------------------------------- the species
 
-type Region = 'plateau' | 'island';
+/**
+ * How much of a species grows in a rock garden of each theme, per garden at
+ * full detail.
+ *
+ * A garden is one outcrop of `Rocks` dressed as a Caribbean reef zone, and the
+ * three themes are the three that zone by depth and exposure there: the
+ * shallow coral garden (staghorn thickets, elkhorn, brain and star coral), the
+ * sponge garden of the deeper slope (tube, vase and giant barrel sponges over
+ * orange encrusting sponge) and the gorgonian forest of walls in the current
+ * (sea fans, rods and plumes). Grouping them is what makes a reef readable;
+ * everything scattered evenly everywhere reads as noise.
+ */
+type GardenCounts = Partial<Record<GardenTheme, number>>;
 
 interface SpeciesDef {
   name: string;
   build: (seed: number) => MeshBuilder;
+  /** Coarser levels of the same template, for species with an LOD chain. */
+  lods?: readonly ((seed: number) => MeshBuilder)[];
+  /** Level switches, in distance over instance radius; see `InstanceField`. */
+  switches?: readonly number[];
   /** Distinct templates, each its own draw. */
   variants: number;
   /** Two-sided material: ribbons and fans. */
@@ -123,6 +142,10 @@ interface SpeciesDef {
   /** Count on the plateau reef and on the island reef, at full detail. */
   plateau: number;
   island: number;
+  /** Count per rock garden of each theme, at full detail. */
+  garden?: GardenCounts;
+  /** Fraction of the garden count grown on the rock rather than on the sand at its foot. */
+  onRock?: number;
   /** Grows in the seagrass meadows rather than on the reef. */
   meadow?: boolean;
   /** Fraction placed on the open sand apron around a reef site. */
@@ -137,15 +160,35 @@ interface SpeciesDef {
   faceCurrent?: boolean;
   /** Colony size; 1 for solitary. */
   colony: readonly [number, number];
+  /** Template radius at scale 1, metres: sets the cull and LOD ranges. */
+  size: number;
 }
 
+/**
+ * The species, Caribbean c. 1700: every form here has a western-Atlantic
+ * analogue, and the Indo-Pacific table coral that used to be on this list has
+ * gone (elkhorn takes its place as the flat, horizontal form).
+ *
+ * The plateau counts of the massive corals and the sponges are raised to
+ * stand in for `Props`' retired soft-coral carpet, which put 586 colonies and
+ * 600k triangles on these same patches: mound forms become brain and star
+ * coral, the upright tubes and barrels become tube, vase and barrel sponges,
+ * the plates elkhorn. These templates are 250-600 triangles and drawn only
+ * inside their cull range, so the stand-in costs a fraction of what it
+ * replaces (reef plus rocks, High, reef-dive: +0.3 ms GPU at p10).
+ */
 const SPECIES: readonly SpeciesDef[] = [
   {
     // The structure the rest of the reef is scattered around — see
     // `buildBommie`. Colours are baked per colony, so the palette is a near
-    // white that only shifts the whole head warm or cool.
+    // white that only shifts the whole head warm or cool. 11-12k triangles at
+    // LOD0; LOD1 keeps the rock and the cheap colonies and lumps the rest
+    // (~3k), LOD2 is the rock and lumps (~0.9k). Before the chain every
+    // bommie drew all 12k at any range, which was the Ultra/Max triangle bill.
     name: 'bommie',
     build: buildBommie,
+    lods: [(s) => buildBommie(s, 1), (s) => buildBommie(s, 2)],
+    switches: [7, 18],
     variants: 2,
     thin: true,
     palette: [0xffffff, 0xf4f0e8, 0xe8eef4, 0xf8ecec],
@@ -153,12 +196,15 @@ const SPECIES: readonly SpeciesDef[] = [
     squash: [0.85, 1.25],
     plateau: 30,
     island: 24,
+    garden: { coral: 1 },
     sink: 0.25,
     followSlope: 0.8,
     lean: 0.05,
     colony: [1, 2],
+    size: 2,
   },
   {
+    // Diploria, Colpophyllia.
     name: 'brain-coral',
     build: buildBrainCoral,
     variants: 2,
@@ -166,103 +212,168 @@ const SPECIES: readonly SpeciesDef[] = [
     palette: [0xb8a36a, 0x8fae6b, 0xc98f7a, 0xa5a25a, 0xd2b68c, 0x9fb88a],
     scale: [0.6, 1.5],
     squash: [0.85, 1.25],
-    plateau: 130,
+    plateau: 300,
     island: 70,
+    garden: { coral: 7, sponge: 2 },
+    onRock: 0.5,
     sink: 0.08,
     followSlope: 0.8,
     lean: 0.08,
     colony: [2, 4],
+    size: 0.7,
   },
   {
-    name: 'mound-coral',
+    // Star coral, Orbicella: the massive boulder colonies.
+    name: 'star-coral',
     build: buildMoundCoral,
     variants: 1,
     thin: false,
     palette: [0xa88f63, 0x8c9a6e, 0xb59a7c, 0x8a947e, 0xc4a160, 0x9a8a70],
     scale: [0.9, 2.2],
     squash: [0.8, 1.3],
-    plateau: 90,
+    plateau: 260,
     island: 50,
+    garden: { coral: 6, sponge: 2, fan: 2 },
+    onRock: 0.5,
     sink: 0.12,
     followSlope: 0.9,
     lean: 0.06,
     colony: [1, 3],
+    size: 0.8,
   },
   {
-    name: 'branching-coral',
+    // Staghorn, Acropora cervicornis: tan thickets with pale growing tips.
+    name: 'staghorn-coral',
     build: buildBranchingCoral,
     variants: 2,
     thin: false,
-    palette: [0xc58fb5, 0x7aa8c9, 0xd6b48b, 0x9cc07a, 0xe08f6a, 0xb7a0d8, 0x8fc4b8],
+    palette: [0xc9a46a, 0xb8925a, 0xd6b48b, 0xa98d5f, 0xc7a07a, 0xb59a6a],
     scale: [0.7, 1.4],
     squash: [0.85, 1.3],
     plateau: 140,
     island: 90,
+    garden: { coral: 16 },
+    onRock: 0.35,
     sink: 0.05,
     followSlope: 0.4,
     lean: 0.12,
     colony: [3, 7],
+    size: 0.9,
   },
   {
-    name: 'table-coral',
-    build: buildTableCoral,
-    variants: 1,
+    // Elkhorn, Acropora palmata: the reef-crest builder.
+    name: 'elkhorn-coral',
+    build: buildElkhornCoral,
+    variants: 2,
     thin: false,
-    palette: [0xb9a17c, 0x8fb0b5, 0xc7a3b8, 0xd0b890, 0xa8a8c8],
-    scale: [0.55, 1.15],
-    squash: [0.9, 1.15],
-    plateau: 50,
+    palette: [0xc9a46a, 0xb8925a, 0xd4b07a, 0xa88a58],
+    scale: [0.8, 1.6],
+    squash: [0.9, 1.2],
+    plateau: 90,
     island: 30,
+    garden: { coral: 7 },
+    onRock: 0.5,
     sink: 0.05,
-    followSlope: 0.2,
+    followSlope: 0.3,
     lean: 0.1,
     colony: [1, 3],
+    size: 1,
   },
   {
+    // Aplysina, Callyspongia: yellow, purple and orange tubes.
     name: 'tube-sponge',
     build: buildTubeSponge,
     variants: 2,
     thin: false,
     palette: [0x9a5bb8, 0xe0a63a, 0xd76a3a, 0x6b8fd6, 0xc4485c, 0xb070c8],
     scale: [0.7, 1.4],
-    plateau: 80,
+    plateau: 220,
     island: 40,
+    garden: { coral: 3, sponge: 14, fan: 4 },
+    onRock: 0.5,
     sink: 0.04,
     followSlope: 0.3,
     lean: 0.12,
     colony: [1, 3],
+    size: 0.7,
   },
   {
+    // Giant barrel sponge, Xestospongia muta.
     name: 'barrel-sponge',
     build: buildBarrelSponge,
     variants: 1,
     thin: false,
     palette: [0x9c5a3e, 0xb8743f, 0x8a4a3a, 0xa86848],
-    scale: [0.7, 1.6],
+    scale: [0.7, 1.9],
     squash: [0.85, 1.15],
-    plateau: 36,
+    plateau: 60,
     island: 16,
+    garden: { sponge: 6, fan: 1 },
+    onRock: 0.3,
     sink: 0.05,
     followSlope: 0.3,
     lean: 0.08,
     colony: [1, 1],
+    size: 0.8,
   },
   {
+    // Azure and lavender vase sponges, Callyspongia plicifera, Niphates.
+    name: 'vase-sponge',
+    build: buildVaseSponge,
+    variants: 2,
+    thin: false,
+    palette: [0xb070c8, 0x8a5bc4, 0xd08ab0, 0x6b8fd6, 0x9a6ad0],
+    scale: [0.7, 1.5],
+    plateau: 100,
+    island: 16,
+    garden: { sponge: 9, fan: 3 },
+    onRock: 0.4,
+    sink: 0.04,
+    followSlope: 0.35,
+    lean: 0.12,
+    colony: [1, 2],
+    size: 0.6,
+  },
+  {
+    // Orange icing and red encrusting sponges: Diplastrella, Monanchora.
+    name: 'encrusting-sponge',
+    build: buildEncrustingSponge,
+    variants: 2,
+    thin: false,
+    palette: [0xe0662e, 0xd8402e, 0xe8a03a, 0xc83a4a, 0xf0b040],
+    scale: [0.6, 1.6],
+    squash: [0.8, 1.4],
+    plateau: 0,
+    island: 0,
+    garden: { coral: 4, sponge: 12, fan: 7 },
+    onRock: 1,
+    sink: 0.03,
+    followSlope: 1,
+    lean: 0.05,
+    colony: [1, 3],
+    size: 0.5,
+  },
+  {
+    // Gorgonia ventalina, the purple common sea fan.
     name: 'sea-fan',
     build: buildSeaFan,
     variants: 2,
     thin: true,
-    palette: [0xb63c7a, 0xd8a03a, 0x8a4ab0, 0xc8542e, 0xc46aa0],
-    scale: [0.7, 1.5],
-    plateau: 70,
+    palette: [0x8a4ab0, 0xb63c7a, 0x9a5ab8, 0xc8a03a, 0x7a4aa0],
+    scale: [0.7, 1.6],
+    plateau: 110,
     island: 40,
+    garden: { coral: 3, sponge: 3, fan: 14 },
+    onRock: 0.6,
     sink: 0.06,
     followSlope: 0.15,
     lean: 0.1,
     faceCurrent: true,
     colony: [1, 3],
+    size: 0.8,
   },
   {
+    // Giant Caribbean anemone, Condylactis gigantea.
     name: 'anemone',
     build: buildAnemone,
     variants: 1,
@@ -271,24 +382,50 @@ const SPECIES: readonly SpeciesDef[] = [
     scale: [0.8, 1.6],
     plateau: 56,
     island: 36,
+    garden: { coral: 3 },
+    onRock: 0.5,
     sink: 0.03,
     followSlope: 0.7,
     lean: 0.1,
     colony: [1, 3],
+    size: 0.4,
   },
   {
-    name: 'sea-whip',
+    // Sea rods: Plexaura, Eunicea — brown, tan, purple.
+    name: 'sea-rod',
     build: buildSeaWhip,
     variants: 1,
     thin: false,
-    palette: [0xe0b23a, 0xd0602e, 0xb84a8a, 0xf0d070, 0xc83a3a],
+    palette: [0x8a6a4a, 0x9a7a5a, 0x7a4a6a, 0xb08a5a, 0x6a4a5a],
     scale: [0.7, 1.4],
-    plateau: 90,
+    plateau: 150,
     island: 50,
+    garden: { coral: 5, sponge: 6, fan: 12 },
+    onRock: 0.5,
     sink: 0.04,
     followSlope: 0.2,
     lean: 0.08,
     colony: [1, 4],
+    size: 0.7,
+  },
+  {
+    // Sea plumes, Antillogorgia: the soft carpet of a Caribbean reef, and
+    // the replacement for `Props`' generic soft-coral kit, which is retired.
+    name: 'sea-plume',
+    build: buildSeaPlume,
+    variants: 2,
+    thin: false,
+    palette: [0x7a5a8a, 0x8a6a5a, 0x6a4a7a, 0x9a7a6a, 0xa07a9a],
+    scale: [0.8, 1.5],
+    plateau: 260,
+    island: 120,
+    garden: { coral: 4, sponge: 3, fan: 10 },
+    onRock: 0.35,
+    sink: 0.04,
+    followSlope: 0.2,
+    lean: 0.1,
+    colony: [2, 5],
+    size: 0.8,
   },
   {
     name: 'reef-rock',
@@ -305,6 +442,7 @@ const SPECIES: readonly SpeciesDef[] = [
     followSlope: 1,
     lean: 0.15,
     colony: [1, 4],
+    size: 0.7,
   },
   {
     name: 'shell',
@@ -320,13 +458,15 @@ const SPECIES: readonly SpeciesDef[] = [
     followSlope: 1,
     lean: 0.2,
     colony: [1, 2],
+    size: 0.15,
   },
   {
+    // Cushion star, Oreaster reticulatus.
     name: 'starfish',
     build: buildStarfish,
     variants: 1,
     thin: false,
-    palette: [0xe0662e, 0xc8323a, 0x3a6fd0, 0x9a4ab0, 0xe8b04a],
+    palette: [0xe0662e, 0xc8323a, 0xe8b04a, 0xd0802e, 0xb8502e],
     scale: [0.8, 1.5],
     plateau: 90,
     island: 70,
@@ -335,8 +475,10 @@ const SPECIES: readonly SpeciesDef[] = [
     followSlope: 1,
     lean: 0.05,
     colony: [1, 2],
+    size: 0.2,
   },
   {
+    // Long-spined urchin, Diadema antillarum.
     name: 'urchin',
     build: buildUrchin,
     variants: 1,
@@ -345,10 +487,13 @@ const SPECIES: readonly SpeciesDef[] = [
     scale: [0.8, 1.4],
     plateau: 70,
     island: 50,
+    garden: { coral: 4, sponge: 2 },
+    onRock: 0.4,
     sink: 0.02,
     followSlope: 0.8,
     lean: 0.1,
     colony: [2, 5],
+    size: 0.25,
   },
   {
     name: 'seagrass',
@@ -364,8 +509,21 @@ const SPECIES: readonly SpeciesDef[] = [
     followSlope: 0.6,
     lean: 0.08,
     colony: [1, 1],
+    size: 0.4,
   },
 ];
+
+/**
+ * How far a reef instance is drawn: `CULL_BASE + radius * CULL_PER_SIZE`,
+ * capped. Visibility under water here runs 45-70 m, so a 2 m bommie draws to
+ * the edge of it and a 15 cm shell stops at about thirty metres, where it is a
+ * pixel or two of something the colour of the sand.
+ */
+const CULL_BASE = 24;
+/** Scales every garden count: the table above is per garden at density 1. */
+const GARDEN_DENSITY = 1.5;
+const CULL_PER_SIZE = 40;
+const CULL_MAX = 130;
 
 // ----------------------------------------------------------------- the sites
 
@@ -436,19 +594,25 @@ function floorNormal(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
 export interface ReefLifeOptions {
   /** Ground shading inputs, for caustics and cloud shade on the reef. */
   shading?: Omit<GroundShadingInputs, 'foliage'>;
+  /** Rock gardens from `Rocks`: outcrops to grow on and around. */
+  gardens?: readonly RockGarden[];
 }
 
-interface Kind {
-  def: SpeciesDef;
-  region: Region;
-  mesh: THREE.InstancedMesh;
-  capacity: number;
+/** One placement: where, and which way is up for it. */
+interface Placement {
+  x: number;
+  y: number;
+  z: number;
+  /** Surface normal it grows from. */
+  nx: number;
+  ny: number;
+  nz: number;
 }
 
 export class ReefLife {
   readonly object = new THREE.Group();
 
-  private readonly kinds: Kind[] = [];
+  private readonly fields: InstanceField[] = [];
   private readonly solid: THREE.MeshStandardNodeMaterial;
   private readonly thin: THREE.MeshStandardNodeMaterial;
   private detail = 1;
@@ -470,9 +634,13 @@ export class ReefLife {
   private readonly fanBearing: number;
 
   /** Sites, published for the creatures and the harness. */
-  readonly sites: { plateau: Site[]; island: Site[]; meadows: Site[] };
+  readonly sites: { plateau: Site[]; island: Site[]; meadows: Site[]; gardens: Site[] };
+
+  /** Milliseconds the constructor took, templates and placement. */
+  readonly buildMs: number;
 
   constructor(detail: number, options: ReefLifeOptions = {}) {
+    const started = performance.now();
     this.object.name = 'reef-life';
     this.solid = this.buildMaterial(THREE.FrontSide);
     this.thin = this.buildMaterial(THREE.DoubleSide);
@@ -481,6 +649,8 @@ export class ReefLife {
       applyGroundShading(this.thin, options.shading);
     }
 
+    // The site draws keep the stream they always had, so the creatures' homes
+    // and the fish stations do not move.
     const random = mulberry32(REEF_LIFE_SEED);
     this.fanBearing = random() * Math.PI;
 
@@ -495,45 +665,43 @@ export class ReefLife {
         plateauMeadows.push({ x: p.x + Math.cos(a) * r, z: p.z + Math.sin(a) * r, radius: PLATEAU_MEADOW_RADIUS });
       }
     }
-    this.sites = { plateau, island, meadows: plateauMeadows.concat(islandMeadows) };
-    this.regionBounds = {
-      plateau: boundingCircle(plateau.concat(plateauMeadows)),
-      island: boundingCircle(island.concat(islandMeadows)),
+    const gardens = options.gardens ?? [];
+    this.sites = {
+      plateau,
+      island,
+      meadows: plateauMeadows.concat(islandMeadows),
+      gardens: gardens.map((g) => ({ x: g.x, z: g.z, radius: g.radius })),
     };
 
     for (const def of SPECIES) {
-      for (const region of ['plateau', 'island'] as const) {
-        const total = def[region];
-        if (total <= 0) continue;
-        const sites = def.meadow
-          ? region === 'plateau'
-            ? plateauMeadows
-            : islandMeadows
-          : region === 'plateau'
-            ? plateau
-            : island;
-        if (sites.length === 0) continue;
-        this.placeKind(def, region, sites, total, random);
+      for (let v = 0; v < def.variants; v++) {
+        const placements: Placement[] = [];
+        for (const region of ['plateau', 'island'] as const) {
+          const total = Math.ceil(def[region] / def.variants);
+          if (total <= 0) continue;
+          const sites = def.meadow
+            ? region === 'plateau'
+              ? plateauMeadows
+              : islandMeadows
+            : region === 'plateau'
+              ? plateau
+              : island;
+          if (sites.length === 0) continue;
+          this.placeOnSites(def, sites, total, random, placements);
+        }
+        if (def.garden) this.placeInGardens(def, v, gardens, placements);
+        this.buildField(def, v, placements, random);
       }
     }
 
     this.setDetail(detail);
+    this.buildMs = performance.now() - started;
   }
 
-  /** Fraction of placed capacity drawn, 0..1. A uniform-free `count` change. */
+  /** Fraction of placed instances drawn, 0..1. A rank threshold, never a rebuild. */
   setDetail(detail: number): void {
     this.detail = Math.max(0, Math.min(1, detail));
-    this.applyCounts();
-  }
-
-  private applyCounts(): void {
-    for (const kind of this.kinds) {
-      // Small populations keep at least a few, so a low tier thins the reef
-      // rather than deleting whole species.
-      const n = this.detail <= 0 ? 0 : Math.max(Math.min(kind.capacity, 3), Math.round(kind.capacity * this.detail));
-      kind.mesh.count = n;
-      kind.mesh.visible = n > 0 && this.regionNear[kind.region];
-    }
+    for (const field of this.fields) field.setDetail(this.detail);
     this.applyVisibility();
   }
 
@@ -557,27 +725,16 @@ export class ReefLife {
   private cameraAllows = true;
 
   /**
-   * Height test plus a per-region distance cull. Each region is one instanced
-   * mesh per species spanning every site in it, so the renderer's frustum test
-   * sees one huge sphere and never culls it; the plateau and the island reef
-   * are about a kilometre apart, and water this murky hides either from the
-   * other completely. Skipping the far region is the largest single saving.
+   * Height test plus the deal: each species field draws only what is within
+   * visibility range of the camera, at the level its apparent size wants.
+   * This replaces the per-region switch, which drew the whole of the island's
+   * reef whenever the camera was anywhere near the island.
    */
   setCameraPosition(position: THREE.Vector3): void {
     this.setCameraHeight(position.y);
-    let changed = false;
-    for (const region of ['plateau', 'island'] as const) {
-      const b = this.regionBounds[region];
-      const near = b === null || Math.hypot(position.x - b.x, position.z - b.z) - b.radius < REGION_CULL;
-      if (near !== this.regionNear[region]) {
-        this.regionNear[region] = near;
-        changed = true;
-      }
-    }
-    if (changed) this.applyCounts();
+    if (!this.object.visible) return;
+    for (const field of this.fields) field.update(position);
   }
-  private readonly regionNear: Record<Region, boolean> = { plateau: true, island: true };
-  private readonly regionBounds: Record<Region, Site | null>;
 
   /** Same three numbers the surface and the kelp take. See `Kelp.setSwell`. */
   setSwell(bearingRadians: number, windSpeed: number, peakWavelength = 47): void {
@@ -609,20 +766,18 @@ export class ReefLife {
 
   /** Total triangles currently drawn, for the harness. */
   triangleCount(): number {
+    if (!this.object.visible) return 0;
     let n = 0;
-    for (const kind of this.kinds) {
-      if (!kind.mesh.visible) continue;
-      n += (kind.mesh.geometry.index!.count / 3) * kind.mesh.count;
-    }
+    for (const field of this.fields) n += field.triangleCount();
     return n;
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const kind of this.kinds) {
-      kind.mesh.geometry.dispose();
-      kind.mesh.dispose();
+    for (const field of this.fields) {
+      for (const mesh of field.meshes) mesh.geometry.dispose();
+      field.dispose();
     }
     this.solid.dispose();
     this.thin.dispose();
@@ -642,8 +797,100 @@ export class ReefLife {
     this.uWigglePhase.value = (this.clock * WIGGLE_OMEGA) % tau;
   }
 
-  private placeKind(def: SpeciesDef, region: Region, sites: Site[], total: number, random: () => number): void {
-    const perVariant = Math.ceil(total / def.variants);
+  /** Sand placements on reef sites and meadows, clustered into colonies. */
+  private placeOnSites(def: SpeciesDef, sites: Site[], total: number, random: () => number, out: Placement[]): void {
+    const normal = new THREE.Vector3();
+    let colonyLeft = 0;
+    let colony = { x: 0, z: 0 };
+    let siteIndex = Math.floor(random() * sites.length);
+    for (let i = 0; i < total; i++) {
+      if (colonyLeft <= 0) {
+        siteIndex = (siteIndex + 1 + Math.floor(random() * 2)) % sites.length;
+        const site = sites[siteIndex];
+        const apron = def.apron !== undefined && random() < def.apron;
+        colony = apron ? apronSample(random, site) : colonySample(random, site);
+        colonyLeft = def.colony[0] + Math.floor(random() * (def.colony[1] - def.colony[0] + 1));
+      }
+      colonyLeft--;
+      const spread = def.colony[1] > 1 ? 1.4 + random() * 1.2 : 0;
+      const a = random() * Math.PI * 2;
+      const r = Math.sqrt(random()) * spread;
+      const x = colony.x + Math.cos(a) * r;
+      const z = colony.z + Math.sin(a) * r;
+      floorNormal(x, z, normal);
+      out.push({ x, y: seafloorHeight(x, z), z, nx: normal.x, ny: normal.y, nz: normal.z });
+    }
+  }
+
+  /**
+   * Garden placements: part on the outcrop itself, on the ledges and tops
+   * `Rocks` found facing up or out, the rest on the sand ring at its foot,
+   * clustered the same way the reef sites are. Its own random stream per
+   * species and variant, so adding a species never moves another.
+   */
+  private placeInGardens(def: SpeciesDef, variant: number, gardens: readonly RockGarden[], out: Placement[]): void {
+    const random = mulberry32(REEF_LIFE_SEED ^ (hashString(def.name) + variant * 7919 + 0x6a5d));
+    const normal = new THREE.Vector3();
+    for (const g of gardens) {
+      const want = def.garden?.[g.theme] ?? 0;
+      // The plateau's gardens are the reef patches the play area is built
+      // around, so they grow twice as thick as the shelf's.
+      const density = GARDEN_DENSITY * (g.region === 'plateau' ? 2 : 1);
+      const n = Math.round((want * density) / def.variants + (random() - 0.5));
+      const anchors = g.anchors.length / 6;
+      let colonyLeft = 0;
+      let cx = 0;
+      let cz = 0;
+      for (let i = 0; i < n; i++) {
+        if (anchors > 0 && random() < (def.onRock ?? 0)) {
+          const k = Math.floor(random() * anchors) * 6;
+          out.push({
+            x: g.anchors[k],
+            y: g.anchors[k + 1],
+            z: g.anchors[k + 2],
+            nx: g.anchors[k + 3],
+            ny: g.anchors[k + 4],
+            nz: g.anchors[k + 5],
+          });
+          continue;
+        }
+        if (colonyLeft <= 0) {
+          const a = random() * Math.PI * 2;
+          const r = g.radius * (0.55 + random() * 0.75);
+          cx = g.x + Math.cos(a) * r;
+          cz = g.z + Math.sin(a) * r;
+          colonyLeft = def.colony[0] + Math.floor(random() * (def.colony[1] - def.colony[0] + 1));
+        }
+        colonyLeft--;
+        const spread = def.colony[1] > 1 ? 1.2 + random() * 1.2 : 0;
+        const a = random() * Math.PI * 2;
+        const r = Math.sqrt(random()) * spread;
+        const x = cx + Math.cos(a) * r;
+        const z = cz + Math.sin(a) * r;
+        const y = seafloorHeight(x, z);
+        if (y > -1.5) continue;
+        floorNormal(x, z, normal);
+        out.push({ x, y, z, nx: normal.x, ny: normal.y, nz: normal.z });
+      }
+    }
+  }
+
+  private buildField(def: SpeciesDef, v: number, placements: Placement[], random: () => number): void {
+    if (placements.length === 0) return;
+    const seed = REEF_LIFE_SEED ^ (hashString(def.name) + v * 977);
+    const levels = [def.build(seed).build(), ...(def.lods ?? []).map((lod) => lod(seed).build())];
+    const field = new InstanceField({
+      name: `reef-${def.name}-${v}`,
+      levels,
+      material: def.thin ? this.thin : this.solid,
+      switches: def.switches ?? [],
+      cullBase: CULL_BASE,
+      cullPerSize: CULL_PER_SIZE,
+      cullMax: CULL_MAX,
+      refresh: 3,
+      cell: 48,
+    });
+
     const position = new THREE.Vector3();
     const quaternion = new THREE.Quaternion();
     const scale = new THREE.Vector3();
@@ -651,75 +898,38 @@ export class ReefLife {
     const normal = new THREE.Vector3();
     const up = new THREE.Vector3(0, 1, 0);
     const tilt = new THREE.Quaternion();
+    const lean = new THREE.Quaternion();
     const yaw = new THREE.Quaternion();
+    const euler = new THREE.Euler();
     const color = new THREE.Color();
 
-    for (let v = 0; v < def.variants; v++) {
-      const geometry = def.build(REEF_LIFE_SEED ^ (hashString(def.name) + v * 977)).build();
-      const mesh = new THREE.InstancedMesh(geometry, def.thin ? this.thin : this.solid, perVariant);
-      mesh.name = `reef-${def.name}-${region}-${v}`;
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-
-      // Placements first, then shuffled so a count prefix samples every site.
-      const placements: { x: number; z: number }[] = [];
-      let colonyLeft = 0;
-      let colony = { x: 0, z: 0 };
-      let siteIndex = Math.floor(random() * sites.length);
-      for (let i = 0; i < perVariant; i++) {
-        if (colonyLeft <= 0) {
-          siteIndex = (siteIndex + 1 + Math.floor(random() * 2)) % sites.length;
-          const site = sites[siteIndex];
-          const apron = def.apron !== undefined && random() < def.apron;
-          colony = apron ? apronSample(random, site) : colonySample(random, site);
-          colonyLeft = def.colony[0] + Math.floor(random() * (def.colony[1] - def.colony[0] + 1));
-        }
-        colonyLeft--;
-        const spread = def.colony[1] > 1 ? 1.4 + random() * 1.2 : 0;
-        const a = random() * Math.PI * 2;
-        const r = Math.sqrt(random()) * spread;
-        placements.push({ x: colony.x + Math.cos(a) * r, z: colony.z + Math.sin(a) * r });
-      }
-      for (let i = placements.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        const t = placements[i];
-        placements[i] = placements[j];
-        placements[j] = t;
-      }
-
-      for (let i = 0; i < placements.length; i++) {
-        const { x, z } = placements[i];
-        const s = def.scale[0] + (def.scale[1] - def.scale[0]) * Math.pow(random(), 1.6);
-        const squash = def.squash ? def.squash[0] + (def.squash[1] - def.squash[0]) * random() : 1;
-        floorNormal(x, z, normal);
-        tilt.setFromUnitVectors(up, normal.clone().lerp(up, 1 - def.followSlope).normalize());
-        const lean = new THREE.Quaternion().setFromEuler(
-          new THREE.Euler((random() - 0.5) * 2 * def.lean, 0, (random() - 0.5) * 2 * def.lean),
-        );
-        const bearing = def.faceCurrent
-          ? this.fanBearing + (random() - 0.5) * 0.7
-          : random() * Math.PI * 2;
-        yaw.setFromAxisAngle(up, bearing);
-        quaternion.copy(tilt).multiply(lean).multiply(yaw);
-        position.set(x, seafloorHeight(x, z) - def.sink * s, z);
-        scale.set(s * squash, s, s * (def.squash ? def.squash[0] + (def.squash[1] - def.squash[0]) * random() : 1));
-        matrix.compose(position, quaternion, scale);
-        mesh.setMatrixAt(i, matrix);
-        const hex = def.palette[Math.floor(random() * def.palette.length)];
-        color.setHex(hex);
-        // Per-instance brightness jitter, so a colony is not one swatch.
-        const k = 0.82 + random() * 0.36;
-        color.multiplyScalar(k);
-        mesh.setColorAt(i, color);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      mesh.computeBoundingSphere();
-      // The sway can carry a tip a few decimetres past the rest pose.
-      if (mesh.boundingSphere) mesh.boundingSphere.radius += 1;
-      this.object.add(mesh);
-      this.kinds.push({ def, region, mesh, capacity: perVariant });
+    for (const p of placements) {
+      const s = def.scale[0] + (def.scale[1] - def.scale[0]) * Math.pow(random(), 1.6);
+      const squash = def.squash ? def.squash[0] + (def.squash[1] - def.squash[0]) * random() : 1;
+      normal.set(p.nx, p.ny, p.nz);
+      // On a rock face nothing grows straight out sideways: life turns toward
+      // the light, the more so the less it follows its substrate.
+      const toward = normal.clone().lerp(up, 1 - def.followSlope).normalize();
+      if (toward.y < 0.35) toward.lerp(up, 0.5).normalize();
+      tilt.setFromUnitVectors(up, toward);
+      lean.setFromEuler(euler.set((random() - 0.5) * 2 * def.lean, 0, (random() - 0.5) * 2 * def.lean));
+      const bearing = def.faceCurrent ? this.fanBearing + (random() - 0.5) * 0.7 : random() * Math.PI * 2;
+      yaw.setFromAxisAngle(up, bearing);
+      quaternion.copy(tilt).multiply(lean).multiply(yaw);
+      position.set(p.x, p.y - def.sink * s, p.z);
+      scale.set(s * squash, s, s * (def.squash ? def.squash[0] + (def.squash[1] - def.squash[0]) * random() : 1));
+      matrix.compose(position, quaternion, scale);
+      color.setHex(def.palette[Math.floor(random() * def.palette.length)]);
+      // Per-instance brightness jitter, so a colony is not one swatch.
+      color.multiplyScalar(0.82 + random() * 0.36);
+      field.add(matrix, color, def.size * s, random());
     }
+    field.seal();
+    for (const mesh of field.meshes) {
+      mesh.receiveShadow = true;
+      this.object.add(mesh);
+    }
+    this.fields.push(field);
   }
 
   private buildMaterial(side: THREE.Side): THREE.MeshStandardNodeMaterial {
@@ -779,24 +989,6 @@ export class ReefLife {
 
     return material;
   }
-}
-
-/** A circle (centre of the extent, conservative radius) around every site. */
-function boundingCircle(sites: Site[]): Site | null {
-  if (sites.length === 0) return null;
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  for (const s of sites) {
-    minX = Math.min(minX, s.x - s.radius);
-    maxX = Math.max(maxX, s.x + s.radius);
-    minZ = Math.min(minZ, s.z - s.radius);
-    maxZ = Math.max(maxZ, s.z + s.radius);
-  }
-  const x = (minX + maxX) / 2;
-  const z = (minZ + maxZ) / 2;
-  return { x, z, radius: Math.hypot(maxX - x, maxZ - z) };
 }
 
 /** A point inside a reef site, centre-weighted. */

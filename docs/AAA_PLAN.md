@@ -218,7 +218,7 @@ User direction 2026-11-13: make the language more interesting, engaging and user
   - The sand has two drying timescales: a glossy film and a damp darkening.
   - A foam mark is left at maximum run-up.
   - Medium has raft rims but no bubble scale, so thin foam there can read as a crack-like net.
-- [ ] **Sky streaks toward the sun.** In `island-approach` and `waterline`, thin radial lines cross the upper-left sky and the cloud edges are hatched. They are likely the fog march's crepuscular shafts sampling a cloud shadow too fine for 24 steps. Not traced.
+- [x] **Sky streaks toward the sun.** In `island-approach` and `waterline`, thin radial lines cross the upper-left sky and the cloud edges are hatched. Traced (branch `sky-exposure`): not the fog march — they vanish with `clouds.setParams({ cirrus: 0 })` and are unchanged with the volumetric fog at 0 steps. The cirrus sheet was 10:1 streak noise (7 km along the wind, 700 m across), whose parallel filaments converge on the wind's vanishing point in perspective. Replaced with web-ocean's high-layer field (rotated 2:1 fBm, octaves faded by pixel footprint, analytic edge AA). The fine hatching along cumulus rims (static IGN march offset in deterministic captures) is not addressed.
 - [x] Failing on `main` as well, now fixed:
   - **Spectrum bound.** The spectrum was right and the bound wrong: on the diagonal wind, a uniform spectrum scores 0.653 on the ripple tile's grid. The test now compares against that.
   - **Bloom on Low and the dither.** Both were capture history (above).
@@ -278,6 +278,16 @@ The world is set around 1700 in the Caribbean, in the Golden Age of Piracy. Ever
   - New props worth adding: a shipwreck on the reef, a careening beach camp, palm-thatch shelters, a beached longboat, a flag on the fort.
   Each prop gets LODs and seeded variety, and a side-by-side check against the asset it replaces. The hero ship stays a model unless code can match it.
 - [ ] **Measure the gain.** Record the bytes and time to interactive before and after, and add the numbers to section Q's scoreboard.
+
+### S. Impact particles and water VFX
+
+- [ ] **Redo the impact particles.** Hull slams and floater splashes read as flat white cotton or paper blobs. The target:
+  - **Hull slams:** white-water sheets that tear into ligaments and droplets, then blow off as mist. Droplets stretch along their motion, soft-fade where they meet the water and hull, are lit by sun and sky with forward scatter, and break up through generated flipbooks.
+  - **Floater splashes:** small and scaled to the object.
+  - **Bow spray:** continuous at speed.
+  - **Rain:** rings on the sea where it is cheap enough.
+  
+  Keep `Spray`'s deterministic closed-form design. Budget: 0.8 ms at High in a storm.
 
 ### F. Verification
 - [ ] Progress screenshots each milestone

@@ -55,8 +55,9 @@ export function buildBrainCoral(seed: number): MeshBuilder {
 }
 
 /**
- * Boulder coral: three or four overlapping lumpy mounds, the massive Porites
- * form that makes up most of a reef's bulk. ~700 triangles.
+ * Star coral (Orbicella / Montastraea): three or four overlapping lumpy mounds,
+ * the massive boulder form that makes up most of a Caribbean reef's bulk. ~700
+ * triangles.
  */
 export function buildMoundCoral(seed: number): MeshBuilder {
   const random = mulberry32(seed);
@@ -125,75 +126,6 @@ export function buildBranchingCoral(seed: number): MeshBuilder {
     (d) => 0.9 + 0.2 * dirNoise(d.x, d.y, d.z, seed),
     -0.2,
   );
-  return b;
-}
-
-/**
- * Table coral: a short stalk carrying a broad, thin, slightly dished plate with
- * an irregular rim — the horizontal counterpoint to everything else on the reef
- * and the shape fish shelter under. ~380 triangles.
- */
-export function buildTableCoral(seed: number): MeshBuilder {
-  const b = new MeshBuilder();
-  const stalk = [new THREE.Vector3(0, -0.05, 0), new THREE.Vector3(0.02, 0.22, 0), new THREE.Vector3(0, 0.4, 0.01)];
-  b.addTube(stalk, [0.11, 0.09, 0.12], 7, { color: (t) => grey(0.35 + 0.3 * t), surf: SURF_PORES });
-  const random = mulberry32(seed);
-  // Two plates, the upper one smaller and off-centre: a tiered table rather
-  // than a disc on a stick. Bottom face outward to the rim, then the top face
-  // back in — the lathe winds both outward. The rim lip turns up, the outline is
-  // lobed, and the top carries radial ridges of fused branches.
-  const tier = (y0: number, size: number, ox: number, oz: number, lobeSeed: number): void => {
-    const mark = b.mark();
-    const profile: [number, number][] = [
-      [0.1, y0 - 0.02],
-      [0.45, y0 + 0.03],
-      [0.8, y0 + 0.1],
-      [0.95, y0 + 0.16],
-      [0.98, y0 + 0.21],
-      [0.9, y0 + 0.2],
-      [0.55, y0 + 0.12],
-      [0.12, y0 + 0.08],
-      [0.0, y0 + 0.08],
-    ];
-    const under = (t: number): number => (t < 0.45 ? 0.32 + 0.3 * t : t < 0.6 ? 1.15 : 0.95);
-    b.addLathe(
-      profile.map(([r, y]) => [r * size, y] as [number, number]),
-      36,
-      {
-        color: (t, a) => grey(under(t) * (t > 0.5 ? 0.85 + 0.15 * Math.cos(a * Math.PI * 2 * 22) : 1)),
-        surf: SURF_PORES,
-      },
-      (a, t) => {
-        const lobes = 0.78 + 0.34 * dirNoise(Math.cos(a * 6.283) * 2.2, 0.3, Math.sin(a * 6.283) * 2.2, lobeSeed);
-        // Ridges only on the top face, where the fused branches show.
-        const ridge = t > 0.55 ? 1 + 0.05 * Math.cos(a * Math.PI * 2 * 22) : 1;
-        return lobes * ridge;
-      },
-    );
-    b.transformFrom(mark, new THREE.Matrix4().makeTranslation(ox, 0, oz));
-    // Upturned branchlets near the rim: the plate's growing edge.
-    const tips = 16;
-    for (let i = 0; i < tips; i++) {
-      const a = (i / tips) * Math.PI * 2 + random() * 0.3;
-      const r = size * (0.55 + random() * 0.3);
-      const base = new THREE.Vector3(ox + Math.cos(a) * r, y0 + 0.12 + r * 0.05, oz + Math.sin(a) * r);
-      const top = base.clone().add(new THREE.Vector3(Math.cos(a) * 0.03, 0.06 + random() * 0.05, Math.sin(a) * 0.03));
-      b.addTube([base, top], [0.022, 0.008], 4, {
-        color: (t) => grey(0.95 + 0.35 * t),
-        surf: SURF_PORES,
-      });
-    }
-  };
-  tier(0.38, 1, 0, 0, seed);
-  const ux = 0.2 + random() * 0.15;
-  const uz = -0.1 + random() * 0.2;
-  b.addTube(
-    [new THREE.Vector3(ux * 0.6, 0.44, uz * 0.6), new THREE.Vector3(ux, 0.68, uz)],
-    [0.07, 0.06],
-    6,
-    { color: () => grey(0.45), surf: SURF_PORES },
-  );
-  tier(0.62, 0.55, ux, uz, seed + 11);
   return b;
 }
 
@@ -356,7 +288,7 @@ export function buildAnemone(seed: number): MeshBuilder {
   return b;
 }
 
-/** Sea whips / soft coral: a few long, thin, curving rods. ~300 triangles. */
+/** Sea rods and sea whips (gorgonians): a few long, thin, curving rods. ~300 triangles. */
 export function buildSeaWhip(seed: number): MeshBuilder {
   const random = mulberry32(seed);
   const b = new MeshBuilder();
@@ -542,7 +474,8 @@ const BOMMIE_PALETTES: Record<string, readonly number[]> = {
   brain: [0xb8a36a, 0x8fae6b, 0xc98f7a, 0xd2b68c],
   mound: [0xa88f63, 0x8c9a6e, 0xc4a160, 0x9a8a70],
   branching: [0xc58fb5, 0x7aa8c9, 0xd6b48b, 0x9cc07a, 0xe08f6a, 0xb7a0d8],
-  table: [0x9eb38a, 0xb9a17c, 0x8fb0b5, 0xc7a3b8],
+  elkhorn: [0xc9a46a, 0xb8925a, 0xd4b07a, 0xa88a58],
+  vase: [0xb070c8, 0x8a5bc4, 0xd08ab0, 0x6b8fd6],
   tube: [0x9a5bb8, 0xe0a63a, 0xd76a3a, 0x6b8fd6, 0xc4485c],
   fan: [0xb63c7a, 0xd8a03a, 0x8a4ab0, 0xc8542e],
   anemone: [0xd59fd8, 0xb6d68a, 0xe3b7a0, 0x9fd4d0],
@@ -562,10 +495,17 @@ const BOMMIE_PALETTES: Record<string, readonly number[]> = {
  * nudge the whole. 11-12k triangles, the reef's most expensive template; the
  * count is in the 15-19 colonies, not the rock.
  */
-export function buildBommie(seed: number): MeshBuilder {
+export function buildBommie(seed: number, lod = 0): MeshBuilder {
   const random = mulberry32(seed);
   const b = new MeshBuilder();
   const radii = new THREE.Vector3(1.7, 1.05, 1.45);
+  // LOD: the same rock at fewer facets, and the colonies on it either kept
+  // (cheap ones) or replaced by a lump of their own size and average colour.
+  // The random stream is consumed identically at every level — the colony
+  // builders take their own seeds — so the levels are one bommie, not three.
+  const rings = lod === 0 ? 9 : lod === 1 ? 6 : 4;
+  const segs = lod === 0 ? 18 : lod === 1 ? 12 : 8;
+  const keepUnder = lod === 0 ? Infinity : lod === 1 ? 400 : 0;
   const shape = (d: THREE.Vector3): number =>
     0.75 +
     0.35 * dirNoise(d.x * 1.2, d.y * 1.2, d.z * 1.2, seed) +
@@ -573,8 +513,8 @@ export function buildBommie(seed: number): MeshBuilder {
   b.addBlob(
     new THREE.Vector3(0, -0.2, 0),
     radii,
-    9,
-    18,
+    rings,
+    segs,
     {
       color: (t) =>
         mixRGB(scaleRGB(hexRGB(0x7a7266), aoRamp(t, 0.35, 0.5)), hexRGB(0x7f8f5a), smoothstep(0.5, 0.95, t)),
@@ -587,7 +527,8 @@ export function buildBommie(seed: number): MeshBuilder {
     { name: 'brain', build: buildBrainCoral, scale: [0.8, 1.3], weight: 3 },
     { name: 'branching', build: buildBranchingCoral, scale: [0.8, 1.25], weight: 3 },
     { name: 'tube', build: buildTubeSponge, scale: [0.8, 1.3], weight: 2 },
-    { name: 'table', build: buildTableCoral, scale: [0.5, 0.85], weight: 1.5 },
+    { name: 'elkhorn', build: buildElkhornCoral, scale: [0.5, 0.8], weight: 1.5 },
+    { name: 'vase', build: buildVaseSponge, scale: [0.6, 0.9], weight: 1 },
     { name: 'fan', build: buildSeaFan, scale: [0.8, 1.2], weight: 1.2 },
     { name: 'anemone', build: buildAnemone, scale: [0.8, 1.2], weight: 1 },
     { name: 'whip', build: buildSeaWhip, scale: [0.6, 1.0], weight: 1.5 },
@@ -624,7 +565,189 @@ export function buildBommie(seed: number): MeshBuilder {
     q.setFromUnitVectors(up, normal.lerp(up, 0.6).normalize());
     yaw.setFromAxisAngle(up, random() * Math.PI * 2);
     m.compose(at, q.multiply(yaw), new THREE.Vector3(s, s, s));
-    b.append(piece, m);
+    if (piece.idx.length / 3 <= keepUnder) b.append(piece, m);
+    else b.append(proxyOf(piece, lod === 1 ? 5 : 3, lod === 1 ? 8 : 5), m);
+  }
+  return b;
+}
+
+/**
+ * A stand-in for a colony at distance: a lumpy blob over the colony's own
+ * bounds, in its mean colour. Past twenty metres in this water a staghorn
+ * thicket is a coloured mass with a ragged top, and that is what this draws,
+ * for 40-80 triangles against 700-900.
+ */
+function proxyOf(piece: MeshBuilder, rings: number, segs: number): MeshBuilder {
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  const col = [0, 0, 0];
+  const n = piece.vertexCount;
+  for (let i = 0; i < n; i++) {
+    min.x = Math.min(min.x, piece.pos[i * 3]);
+    min.y = Math.min(min.y, piece.pos[i * 3 + 1]);
+    min.z = Math.min(min.z, piece.pos[i * 3 + 2]);
+    max.x = Math.max(max.x, piece.pos[i * 3]);
+    max.y = Math.max(max.y, piece.pos[i * 3 + 1]);
+    max.z = Math.max(max.z, piece.pos[i * 3 + 2]);
+    col[0] += piece.col[i * 3];
+    col[1] += piece.col[i * 3 + 1];
+    col[2] += piece.col[i * 3 + 2];
+  }
+  const mean: RGB = [col[0] / n, col[1] / n, col[2] / n];
+  const out = new MeshBuilder();
+  // Open forms (branches, fans) fill only part of their box.
+  const fill = 0.62;
+  out.addBlob(
+    new THREE.Vector3((min.x + max.x) / 2, min.y, (min.z + max.z) / 2),
+    new THREE.Vector3(((max.x - min.x) / 2) * fill, (max.y - min.y) * 0.85, ((max.z - min.z) / 2) * fill),
+    rings,
+    segs,
+    { color: (t) => scaleRGB(mean, 0.7 + 0.4 * t), surf: SURF_PORES },
+    (d) => 0.85 + 0.3 * dirNoise(d.x * 2, d.y * 2, d.z * 2, 3),
+    0,
+  );
+  return out;
+}
+
+// ------------------------------------------------- Caribbean additions
+
+/**
+ * Elkhorn coral (Acropora palmata): the Caribbean reef-crest builder — a stout
+ * trunk throwing broad, flattened, antler-like branches outward and upward,
+ * each forking into palmate tips. Built as round tubes flattened across their
+ * plane of growth. ~700 triangles.
+ */
+export function buildElkhornCoral(seed: number): MeshBuilder {
+  const random = mulberry32(seed);
+  const b = new MeshBuilder();
+  const tip = (t: number): RGB => mixRGB(grey(aoRamp(t, 0.45, 0.6)), [1.3, 1.25, 1.15], smoothstep(0.8, 1, t));
+  const trunk = [new THREE.Vector3(0, -0.06, 0), new THREE.Vector3(0.02, 0.18, 0.01), new THREE.Vector3(0, 0.3, 0)];
+  b.addTube(trunk, [0.13, 0.11, 0.1], 7, { color: (t) => grey(0.4 + 0.3 * t), surf: SURF_PORES });
+  const paddles = 3 + Math.floor(random() * 3);
+  const m = new THREE.Matrix4();
+  const flatten = new THREE.Matrix4();
+  for (let i = 0; i < paddles; i++) {
+    const a = (i / paddles) * Math.PI * 2 + random() * 0.7;
+    const rise = 0.35 + random() * 0.5;
+    const mark = b.mark();
+    // Grown along local +x, rising, then flattened in y and widened in z.
+    const grow = (from: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, depth: number, t0: number): void => {
+      const pts = growBranch(from, dir, len, 3, 0.15, 0.25, random);
+      b.addTube(
+        pts,
+        pts.map((_, k) => (k === pts.length - 1 ? r * 0.55 : r * (1 - 0.3 * (k / (pts.length - 1))))),
+        6,
+        { color: (t) => tip(t0 + t * 0.5), surf: SURF_PORES },
+      );
+      if (depth >= 1) return;
+      const forks = 2 + Math.floor(random() * 2);
+      const end = pts[pts.length - 1];
+      const d = end.clone().sub(pts[pts.length - 2]).normalize();
+      for (let f = 0; f < forks; f++) {
+        const side = (f - (forks - 1) / 2) * 0.55 + (random() - 0.5) * 0.2;
+        const nd = new THREE.Vector3(d.x, d.y + 0.15, d.z + side).normalize();
+        grow(end, nd, len * (0.55 + random() * 0.2), r * 0.8, depth + 1, t0 + 0.5);
+      }
+    };
+    grow(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, rise, 0), 0.45 + random() * 0.2, 0.09, 0, 0);
+    flatten.makeScale(1, 0.45, 1.9);
+    m.makeRotationY(a).multiply(flatten);
+    m.setPosition(0, 0.26, 0);
+    b.transformFrom(mark, m);
+  }
+  return b;
+}
+
+/**
+ * Vase sponge (Callyspongia, Niphates): a flaring, thin-walled cup, open at the
+ * top, often lavender or blue. ~380 triangles.
+ */
+export function buildVaseSponge(seed: number): MeshBuilder {
+  const random = mulberry32(seed);
+  const b = new MeshBuilder();
+  const h = 0.55 + random() * 0.35;
+  const flare = 0.3 + random() * 0.12;
+  b.addLathe(
+    [
+      [0.07, -0.05],
+      [0.1, h * 0.15],
+      [flare * 0.55, h * 0.55],
+      [flare, h],
+      [flare * 0.9, h * 0.99],
+      [flare * 0.48, h * 0.55],
+      [0.05, h * 0.2],
+    ],
+    20,
+    {
+      color: (t) => (t > 0.6 ? grey(0.22 + 0.35 * (1 - t)) : grey(aoRamp(t * 1.5, 0.45, 0.45))),
+      surf: SURF_PORES,
+      sway: (t) => (t > 0.3 && t < 0.6 ? 0.008 : 0),
+    },
+    (a, t) => (t < 0.6 ? 1 + 0.08 * dirNoise(Math.cos(a * 6.283) * 2, t * 3, Math.sin(a * 6.283) * 2, seed) : 1),
+  );
+  return b;
+}
+
+/**
+ * Encrusting sponge: a low, lumpy sheet of colour over rock — orange, red,
+ * yellow, the brightest thing on a Caribbean wall and the reason a rock reads
+ * as reef. ~260 triangles.
+ */
+export function buildEncrustingSponge(seed: number): MeshBuilder {
+  const b = new MeshBuilder();
+  b.addBlob(
+    new THREE.Vector3(0, -0.04, 0),
+    new THREE.Vector3(0.48, 0.13, 0.4),
+    7,
+    18,
+    { color: (t) => grey(aoRamp(t, 0.55, 0.6)), surf: SURF_PORES },
+    (d) => 0.65 + 0.55 * dirNoise(d.x * 2.4, d.y * 2.4, d.z * 2.4, seed),
+    -0.2,
+  );
+  return b;
+}
+
+/**
+ * Sea plume (Antillogorgia / Pseudopterogorgia): the Caribbean's feathery
+ * gorgonian — a few tall stems, each carrying short pinnate branchlets in one
+ * plane, so a colony reads as soft purple-brown feathers that lean with the
+ * surge. The procedural replacement for the generic soft-coral carpet. ~620
+ * triangles.
+ */
+export function buildSeaPlume(seed: number): MeshBuilder {
+  const random = mulberry32(seed);
+  const b = new MeshBuilder();
+  const stems = 3 + Math.floor(random() * 3);
+  for (let i = 0; i < stems; i++) {
+    const a = random() * Math.PI * 2;
+    const len = 0.7 + random() * 0.6;
+    const dir = new THREE.Vector3(Math.cos(a) * 0.25, 1, Math.sin(a) * 0.25);
+    const pts = growBranch(new THREE.Vector3(Math.cos(a) * 0.04, -0.05, Math.sin(a) * 0.04), dir, len, 6, 0.3, 0.2, random);
+    const sway = (t: number): number => 0.14 * t * t * len;
+    b.addTube(
+      pts,
+      pts.map((_, k) => (k === pts.length - 1 ? 0.004 : 0.014 * (1 - 0.5 * (k / (pts.length - 1))))),
+      3,
+      { color: (t) => grey(0.5 + 0.4 * t), sway, surf: SURF_PORES },
+    );
+    // Pinnules: short paired side branchlets in the plume's plane.
+    const side = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+    for (let k = 2; k < pts.length - 1; k++) {
+      const t = k / (pts.length - 1);
+      const along = pts[k + 1].clone().sub(pts[k]).normalize();
+      for (const s of [-1, 1]) {
+        const l = 0.16 * (1 - 0.6 * t) + random() * 0.05;
+        const tip = pts[k]
+          .clone()
+          .addScaledVector(side, s * l)
+          .addScaledVector(along, l * 0.6);
+        b.addTube([pts[k], tip], [0.006, 0.002], 3, {
+          color: () => grey(0.65 + 0.35 * t),
+          sway: () => sway(t) + 0.02,
+          wiggle: 0.1,
+        });
+      }
+    }
   }
   return b;
 }

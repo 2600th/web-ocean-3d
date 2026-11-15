@@ -20,6 +20,7 @@ import {
 } from 'three/tsl';
 import { mulberry32 } from '../core/random';
 import { ISLAND, seafloorHeight } from './Seafloor';
+import { inLighthouseClearing } from './props/site';
 import { TRANSLUCENCY_GAIN, TRANSLUCENCY_POWER } from './groundShading';
 import { TILES, getLeafAtlas, tileUv } from './flora/leafAtlas';
 
@@ -764,6 +765,9 @@ function plantForest(seed: number, sunDir: THREE.Vector3): Forest {
     const holdsSoil = smoothstep(0.8, 0.88, n.y);
     const presence = band * onIsland * holdsSoil;
     if (presence <= 0 || keep > Math.sqrt(presence)) continue;
+    // After every draw, so clearing the site moves no other tree. A crown is
+    // up to ~6 m across, hence the margin past the keep-out.
+    if (inLighthouseClearing(x, z, 4)) continue;
 
     const scale = (1 - SIZE_VARIATION + size * SIZE_VARIATION * 2) * (0.7 + 0.3 * presence);
     const aspect = 1 + (aspectDraw - 0.5) * 2 * ASPECT_VARIATION;
