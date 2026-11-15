@@ -215,7 +215,17 @@ export function foamPattern(p: any, viewDistance: any): any {
     // The cells are drawn in the unstretched-by-warp frame scaled back toward
     // isotropic, so a raft is a polygon and not a sliver: `q` divided the
     // along-wind axis by the stretch, so multiply a little of it back.
-    const cellUv = vec2(w.x.mul(STREAK_STRETCH * 0.55), w.y).toVar('foamCellUv');
+    const isoUv = vec2(w.x.mul(STREAK_STRETCH * 0.55), w.y);
+    // Bent at the cells' own scale. Voronoi seams are straight segments, and a
+    // net of straight segments reads as cracked glass laid on the water; real
+    // bubble rafts are outlined in curves, cells pinched and swollen unevenly.
+    // `w`'s warp is 13 m across and does not bend a 1 m cell. About a third of
+    // a cell over a cell and a half bends every seam without folding any.
+    const curlBase = isoUv.div(1.7);
+    const curl = vec2(foamNoise(curlBase.add(vec2(7.3, 2.9))), foamNoise(curlBase.add(vec2(1.4, 8.8))))
+      .sub(0.5)
+      .mul(0.75);
+    const cellUv = isoUv.add(curl).toVar('foamCellUv');
     // Seams thicken where the streaks are dense and thin out between them, and
     // a second noise snips the thinnest so the net tears instead of closing.
     const seam = mix(float(0.16), float(0.46), streak);
