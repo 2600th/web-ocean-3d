@@ -218,7 +218,7 @@ User direction 2026-11-13: make the language more interesting, engaging and user
   - The sand has two drying timescales: a glossy film and a damp darkening.
   - A foam mark is left at maximum run-up.
   - Medium has raft rims but no bubble scale, so thin foam there can read as a crack-like net.
-- [ ] **Sky streaks toward the sun.** In `island-approach` and `waterline`, thin radial lines cross the upper-left sky and the cloud edges are hatched. They are likely the fog march's crepuscular shafts sampling a cloud shadow too fine for 24 steps. Not traced.
+- [x] **Sky streaks toward the sun.** In `island-approach` and `waterline`, thin radial lines cross the upper-left sky and the cloud edges are hatched. Traced (branch `sky-exposure`): not the fog march — they vanish with `clouds.setParams({ cirrus: 0 })` and are unchanged with the volumetric fog at 0 steps. The cirrus sheet was 10:1 streak noise (7 km along the wind, 700 m across), whose parallel filaments converge on the wind's vanishing point in perspective. Replaced with web-ocean's high-layer field (rotated 2:1 fBm, octaves faded by pixel footprint, analytic edge AA). The fine hatching along cumulus rims (static IGN march offset in deterministic captures) is not addressed.
 - [x] Failing on `main` as well, now fixed:
   - **Spectrum bound.** The spectrum was right and the bound wrong: on the diagonal wind, a uniform spectrum scores 0.653 on the ripple tile's grid. The test now compares against that.
   - **Bloom on Low and the dither.** Both were capture history (above).
