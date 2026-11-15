@@ -383,10 +383,23 @@ export function particleFragment(): any {
   const rim: any = smoothstepDown(inside, 0.02, 0.2).toVar('sprayRim');
   // And inside the inscribed circle whatever the field says: a ligament that
   // reaches the quad's edge is cut by a straight line, which reads as paper.
+  //
+  // **Aerated, not glass.** The membrane was a third as opaque as its rims and
+  // tinted as thin water, and that is exactly how it read in daylight at chase
+  // distance: "a clear, glassy sprite with no whitening" (critic, boat-sea-2).
+  // Spray torn off a bow is not a clean film; it is a sheet full of entrained
+  // air, and air in water scatters white (the same physics as foam: Whitlock,
+  // Bartlett & Gurney, "Sea foam reflectance", Nature 1982, ~0.5 albedo per
+  // layer). So the membrane is mostly opaque and mostly white, the rims still a
+  // little brighter, and as the sheet ages into drops it leaves a soft white
+  // haze behind it — the mist a real sheet sheds as it disintegrates — rather
+  // than vanishing to its ligaments.
+  const shedMist: any = envSheet.mul(envSheet).mul(smoothstep(0.35, 0.9, life)).mul(0.4);
   const aSheet: any = smoothstep(-0.07, 0.04, inside)
-    .mul(rim.mul(0.62).add(0.38))
-    .mul(smoothstepDown(r, 0.62, 0.98));
-  const thickSheet: any = rim.mul(0.7).add(0.3);
+    .mul(rim.mul(0.25).add(0.75))
+    .mul(smoothstepDown(r, 0.62, 0.98))
+    .max(shedMist);
+  const thickSheet: any = rim.mul(0.25).add(0.75);
 
   // Cluster: a handful of drops in one quad; they shrink as they evaporate.
   const envCluster: any = smoothstepDown(r, 0.45, 1.0);
@@ -424,8 +437,8 @@ export function particleFragment(): any {
   const nearFade: any = smoothstep(0.4, 2.0, vMisc.y.negate());
 
   // Thin water transmits: darker and a touch bluer where it is thin.
-  const tint: any = mix(vec3(0.6, 0.72, 0.78), vec3(1, 1, 1), thick);
-  const alpha: any = vShade.w.mul(shape).mul(depthFade).mul(nearFade).mul(thick.mul(0.5).add(0.5)).clamp(0, 1);
+  const tint: any = mix(vec3(0.82, 0.88, 0.9), vec3(1, 1, 1), thick);
+  const alpha: any = vShade.w.mul(shape).mul(depthFade).mul(nearFade).mul(thick.mul(0.25).add(0.75)).clamp(0, 1);
   return vec4((vShade as any).xyz.mul(tint), alpha);
 }
 

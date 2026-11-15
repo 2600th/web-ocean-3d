@@ -100,9 +100,11 @@ The water surface shading (LEAN slope statistics, Gaussian slope-space sun
 glitter with Smith shadowing, Fresnel on a flattened normal, the sky
 reflection's grazing tilt and fold), the capillary detail band (dispersion,
 cut-off and band gains from `js/wgsl/sim.js`), and the foam model (the
-`FOAM_TEX` pattern, the cover and soft-threshold composite, wind streaks and
-the foam-freshness channel) are ported from `js/wgsl/ocean.js` and
-`js/wgsl/sim.js`:
+`FOAM_TEX` pattern, the cover and soft-threshold composite, wind streaks, the
+foam-freshness channel, and the foam buffer's injection: breaking on the
+surface's total Jacobian, `max(previous, inject)` with growth and a 1.6 cap,
+and the 0.22 / s decay, from `FOAM_UPDATE`) are ported from `js/wgsl/ocean.js`
+and `js/wgsl/sim.js`:
 
 - `src/ocean/OceanMaterial.ts`
 - `src/ocean/FoamPattern.ts`
