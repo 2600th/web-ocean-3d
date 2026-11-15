@@ -1,23 +1,17 @@
 import * as THREE from 'three/webgpu';
 import {
-  Fn,
   attribute,
-  cameraPosition,
   exp,
   float,
-  fract,
   mix,
-  positionGeometry,
-  sin,
   smoothstep,
   uniform,
   uniformArray,
-  varyingProperty,
   vec2,
   vec3,
-  vec4,
 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
+import { CLASS_CLUSTER, CLASS_DROP, CLASS_MIST, CLASS_SHEET, particleVertex, sprayMaterial, sprayUniforms } from './sprayLook';
 
 /**
  * Water thrown into the air by things working in a seaway: the hull slamming
@@ -67,6 +61,16 @@ import { smoothstepDown } from '../core/tslMath';
  * forward scatter, and probes placed where a hull meets water rather than on
  * the waterline.
  *
+ * **Why it then read as cotton, and the look it has now.** Once it drew, the
+ * blind review called the result "cotton-ball smoke puffs" and "paper blobs":
+ * noise-cut discs with hard quad edges and 10–30 cm round droplets. The
+ * particle's look now lives in `sprayLook`, shared with the bow spray: four
+ * classes (droplet streaks, droplet clusters, sheets that erode through
+ * ligaments into drops, mist), velocity-stretched relative to the camera, soft
+ * against the water and hull behind them, and lit with a phase function and
+ * the hull's shadow. Floats size their crown from their own radius. The event
+ * table and the closed-form trajectories below are unchanged in kind.
+ *
  * **No compute, no storage, no per-frame upload of positions.** The CPU writes
  * a few events a second into four small uniform arrays. This compiles on the
  * WebGL2 fallback unchanged.
@@ -87,7 +91,7 @@ const EVENTS = 40;
  * Particles per impact at full quality. Lower tiers draw fewer per impact, not
  * fewer impacts: see `setStrength`.
  */
-const PER_EVENT = 48;
+const PER_EVENT = 64;
 
 /** Longest a particle of any class lives, seconds. Mist hangs longest. */
 const MAX_LIFE = 2.6;
@@ -159,6 +163,8 @@ export interface SprayImpact {
   side: number;
   /** True for the ship, false for a floating prop. */
   hull: boolean;
+  /** The source's size: a float's radius, or the hull's half-beam. Metres. */
+  radius: number;
 }
 
 export interface SprayHullOptions {
@@ -199,9 +205,6 @@ function hash2(a: number, b: number): number {
   return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
 }
 
-/** Hands both the radiance and the quad shape from the vertex to the fragment stage. */
-const vShade = /*@__PURE__*/ varyingProperty('vec4', 'sprayShade');
-const vQuad = /*@__PURE__*/ varyingProperty('vec4', 'sprayQuad');
 
 export class Spray {
   readonly mesh: THREE.Mesh;
@@ -223,18 +226,13 @@ export class Spray {
   private readonly uClock = uniform(0);
   /** Master scale on how much is drawn, from the quality tier. */
   private readonly uStrength = uniform(1);
-  /** Near-surface wind velocity the drag relaxes toward, m/s. */
-  private readonly uWind = uniform(new THREE.Vector3());
-  private readonly uSunDirection = uniform(new THREE.Vector3(0, 1, 0));
-  /** Sun colour times how close to full daylight it is. */
-  private readonly uSunColor = uniform(new THREE.Color(1, 1, 1));
-  /** Sky irradiance, for the side away from the sun. */
-  private readonly uSkyColor = uniform(new THREE.Color(0.5, 0.6, 0.7));
 
   private hullSource: Source | null = null;
   private readonly floats: Source[] = [];
   private cursor = 0;
   private clock = 0;
+  private readonly previousEye = new THREE.Vector3();
+  private eyePrimed = false;
   private lastFloat = -1000;
   private eventSerial = 0;
   private disposed = false;
@@ -245,13 +243,12 @@ export class Spray {
     position: new THREE.Vector3(),
     side: 0,
     hull: true,
+    radius: 1,
   };
 
   constructor() {
     this.geometry = buildGeometry();
-    this.material = this.buildMaterial();
-    this.material.transparent = true;
-    this.material.depthWrite = false;
+    this.material = sprayMaterial(() => this.buildVertex(), false);
 
     // The dense part of every particle, again, into the depth buffer only.
     //
@@ -262,16 +259,11 @@ export class Spray {
     // metres off, or the sky at the far plane — and in the storm preset's fog
     // that is total: a sheet of spray twenty metres from the camera came out
     // exactly the colour of the fog bank. Writing the cores' depth lets the fog
-    // see the spray at its own distance. Only the cores, by alpha test, because
-    // a soft fringe written into depth occludes the particles behind it as a
-    // hard-edged square; and in a pass of its own rather than by depth-writing
-    // the colour pass, so the faint mist (which never clears the test) still
-    // draws. Ordered after the ocean so the water's refraction never sees it.
-    this.depthMaterial = this.buildMaterial();
-    this.depthMaterial.transparent = true;
-    this.depthMaterial.depthWrite = true;
-    this.depthMaterial.colorWrite = false;
-    this.depthMaterial.alphaTest = 0.28;
+    // see the spray at its own distance. In a pass of its own rather than by
+    // depth-writing the colour pass, so the faint mist (which never clears the
+    // test) still draws. Ordered after the ocean so the water's refraction
+    // never sees it.
+    this.depthMaterial = sprayMaterial(() => this.buildVertex(), true);
 
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.name = 'spray';
@@ -287,22 +279,6 @@ export class Spray {
     depth.castShadow = false;
     depth.receiveShadow = false;
     this.mesh.add(depth);
-  }
-
-  private buildMaterial(): THREE.MeshBasicNodeMaterial {
-    const material = new THREE.MeshBasicNodeMaterial();
-    material.side = THREE.DoubleSide;
-    // Aerial perspective reaches this through the volumetric pass from scene
-    // depth, like everything else in the scene; vertex fog would double it.
-    material.fog = false;
-    // One flow for the whole vertex stage, writing its varyings as it goes —
-    // the same pattern the ocean surface uses for its undisplaced coordinate.
-    // Building the graph twice (once for position, once for a varying) is what
-    // the first version did, and a TSL variable belongs to the flow that
-    // declared it, so that is a trap with no upside.
-    material.positionNode = Fn(() => this.buildVertex())() as any;
-    material.colorNode = Fn(() => this.buildFragment())() as any;
-    return material;
   }
 
   /** Called once per impact, hull or prop. Replaces any previous listener. */
@@ -345,7 +321,8 @@ export class Spray {
       states: [freshState()],
       velocity,
       hull: false,
-      scale: Math.min(1, Math.max(0.3, radius * 0.7)),
+      // The radius itself: a float's crown is sized from it in the shader.
+      scale: radius,
       railHeight: 0,
       hullLength: radius * 2,
       hullBeam: radius * 2,
@@ -367,7 +344,8 @@ export class Spray {
 
   /** Near-surface wind, as a world velocity in m/s. */
   setWind(x: number, z: number): void {
-    (this.uWind.value as THREE.Vector3).set(x, 0, z);
+    // Shared with the bow spray, which drifts in the same wind.
+    (sprayUniforms.wind.value as THREE.Vector3).set(x, 0, z);
   }
 
   /**
@@ -376,9 +354,30 @@ export class Spray {
    * viewer and the sun is the brightest thing on the sea.
    */
   setLighting(sunDirection: THREE.Vector3, sunColor: THREE.Color, level: number, sky: THREE.Color): void {
-    (this.uSunDirection.value as THREE.Vector3).copy(sunDirection).normalize();
-    (this.uSunColor.value as THREE.Color).copy(sunColor).multiplyScalar(Math.max(0, level));
-    (this.uSkyColor.value as THREE.Color).copy(sky);
+    // Shared with the bow spray (`sprayLook.sprayUniforms`), so both are lit by
+    // the same sun in the same frame.
+    (sprayUniforms.sunDirection.value as THREE.Vector3).copy(sunDirection).normalize();
+    (sprayUniforms.sunColor.value as THREE.Color).copy(sunColor).multiplyScalar(Math.max(0, level));
+    (sprayUniforms.skyColor.value as THREE.Color).copy(sky);
+  }
+
+  /**
+   * The lens, the drawing-buffer height and the eye's motion: the first two set
+   * the one-pixel floor on droplet width, the last makes the streaks motion
+   * blur *relative to the camera*. Shared with the bow spray.
+   */
+  setView(fovDegrees: number, heightPx: number, eye: THREE.Vector3, dt: number): void {
+    sprayUniforms.pixelAngle.value = (2 * Math.tan((fovDegrees * Math.PI) / 360)) / Math.max(1, heightPx);
+    const velocity = sprayUniforms.cameraVelocity.value as THREE.Vector3;
+    if (this.eyePrimed && dt > 0) {
+      velocity.copy(eye).sub(this.previousEye).divideScalar(dt);
+      // Faster than any rig moves is a cut, not a pan: no blur across it.
+      if (velocity.lengthSq() > 60 * 60) velocity.set(0, 0, 0);
+    } else if (!this.eyePrimed) {
+      velocity.set(0, 0, 0);
+    }
+    this.previousEye.copy(eye);
+    this.eyePrimed = true;
   }
 
   /** Impacts with particles still in the air. Exposed for the test. */
@@ -408,6 +407,7 @@ export class Spray {
     if (this.disposed) return;
     this.clock = elapsed;
     this.uClock.value = elapsed;
+    this.updateHullShadow();
     if (dt <= 0 || this.uStrength.value <= 0) return;
 
     if (this.hullSource) this.testSource(this.hullSource, dt, surfaceHeight);
@@ -439,6 +439,7 @@ export class Spray {
     this.cursor = 0;
     this.eventSerial = 0;
     this.lastFloat = -1000;
+    this.eyePrimed = false;
     for (let i = 0; i < EVENTS; i++) {
       (this.uOrigin.array as THREE.Vector4[])[i].set(0, 0, 0, -1000);
       (this.uLaunch.array as THREE.Vector4[])[i].set(0, 0, 0, 0);
@@ -447,6 +448,25 @@ export class Spray {
     for (const source of sources) {
       for (const state of source.states) Object.assign(state, freshState());
     }
+  }
+
+  /**
+   * The box the spray's sun-shadow test runs against: the hull below its rail,
+   * drawn in from the full length and beam because the stem and the quarters,
+   * where most spray is, are where a box overstates a hull most.
+   */
+  private updateHullShadow(): void {
+    const half = sprayUniforms.hullHalf.value as THREE.Vector3;
+    const source = this.hullSource;
+    if (!source) {
+      half.set(0, 0, 0);
+      return;
+    }
+    (sprayUniforms.hullInverse.value as THREE.Matrix4).copy(source.object.matrixWorld).invert();
+    const top = source.railHeight + 0.4;
+    const bottom = -2.5;
+    (sprayUniforms.hullCenter.value as THREE.Vector3).set(0, (top + bottom) / 2, 0);
+    half.set(source.hullLength * 0.45, (top - bottom) / 2, source.hullBeam * 0.42);
   }
 
   dispose(): void {
@@ -524,7 +544,7 @@ export class Spray {
         this.lastFloat = this.clock;
         _out.set(1, 0, 0);
         this.write(_at, carry, _out, _forward, 1, KIND_FLOAT, strength, source.scale);
-        this.report('float', strength, _at, 0, false);
+        this.report('float', strength, _at, 0, false, source.scale);
       } else if (role === 'bow') {
         // A stem throws a V: one sheet off each bow, forward and out.
         for (const s of [-1, 1]) {
@@ -606,8 +626,10 @@ export class Spray {
     at: THREE.Vector3,
     side: number,
     hull: boolean,
+    radius = this.hullSource ? this.hullSource.hullBeam * 0.5 : 1,
   ): void {
     if (!this.listener) return;
+    this.impact.radius = radius;
     this.impact.kind = kind;
     this.impact.strength = strength;
     this.impact.position.copy(at);
@@ -619,8 +641,8 @@ export class Spray {
   // ------------------------------------------------------------------ shading
 
   /**
-   * The whole particle, in the vertex stage. Returns the world position and
-   * writes the radiance, opacity and quad shape to the varyings.
+   * The trajectory, size and opacity of one particle, in the vertex stage; the
+   * rest — camera-facing stretch, lighting, varyings — is `particleVertex`.
    */
   private buildVertex(): any {
     const eventIndex: any = (attribute('sprayEvent', 'float') as any).toInt();
@@ -636,24 +658,32 @@ export class Spray {
     const isSlap: any = smoothstep(0.5, 0.6, kind).mul(smoothstepDown(kind, 1.4, 1.5)).toVar('spraySlap');
     const isWash: any = smoothstep(1.5, 1.6, kind).mul(smoothstepDown(kind, 2.4, 2.5)).toVar('sprayWash');
     const isFloat: any = smoothstep(2.5, 2.6, kind).toVar('sprayFloatK');
+    const isHull: any = isFloat.oneMinus().toVar('sprayHullK');
 
-    // Three classes, interleaved through the instance order by `buildGeometry`:
-    // 0 droplet, 1 torn sheet, 2 mist.
+    // Four classes, interleaved through the instance order by `buildGeometry`.
+    const isDrop: any = smoothstepDown(cls, 0.4, 0.5).toVar('sprayDrop');
     const isSheet: any = smoothstep(0.5, 0.6, cls).mul(smoothstepDown(cls, 1.4, 1.5)).toVar('spraySheet');
-    const isMist: any = smoothstep(1.5, 1.6, cls).toVar('sprayMist');
-    const isDrop: any = float(1).sub(isSheet).sub(isMist).toVar('sprayDrop');
+    const isMist: any = smoothstep(1.5, 1.6, cls).mul(smoothstepDown(cls, 2.4, 2.5)).toVar('sprayMist');
+    const isCluster: any = smoothstep(2.5, 2.6, cls).toVar('sprayCluster');
+    const isBead: any = isDrop.add(isCluster).toVar('sprayBead');
 
     const strength: any = launch.w.toVar('sprayStrength');
+    // Hull events: a size multiplier (1). Floats: the object's radius, metres.
     const scale: any = alongRaw.w.toVar('sprayScale');
     const spreadLen: any = vec2(alongRaw.x, alongRaw.z).length().max(1e-4).toVar('spraySpreadLen');
     const alongDir: any = vec3(alongRaw.x, 0, alongRaw.z).div(spreadLen).toVar('sprayAlongDir');
 
-    // Lifetimes, seconds. Mist hangs; droplets arc and fall; sheets tear apart.
+    // Lifetimes, seconds. Ryerson measured slam spray events on a 115 m cutter
+    // averaging 2.73 s from first water to last (Atmos. Res., 1995); the mist
+    // here hangs for 1.6–2.5 s after a launch that takes the first few tenths.
+    // A floater's splash is a ballistic hop of a few tenths of a second.
     const lifeSpan: any = isDrop
       .mul(seed.w.mul(0.5).add(0.85))
+      .add(isCluster.mul(seed.w.mul(0.5).add(0.9)))
       .add(isSheet.mul(seed.w.mul(0.45).add(0.8)))
       .add(isMist.mul(seed.w.mul(0.9).add(1.6)))
       .mul(isWash.mul(0.35).add(1))
+      .mul(isFloat.mul(-0.55).add(1))
       .toVar('sprayLifeSpan');
     const age: any = this.uClock.sub(origin.w).toVar('sprayAge');
     const life: any = age.div(lifeSpan).toVar('sprayLife');
@@ -669,27 +699,39 @@ export class Spray {
     // eight metres, the fastest droplets reach ten.
     const speedScale: any = strength.mul(0.9).add(0.55).toVar('spraySpeedScale');
     const lateral: any = seed.x.sub(0.5).mul(2).toVar('sprayLateral');
-    const up: any = isDrop
+    const upHull: any = isDrop
       .mul(seed.y.mul(7).add(4.5))
+      .add(isCluster.mul(seed.y.mul(5.5).add(4)))
       .add(isSheet.mul(seed.y.mul(4).add(3.2)))
       .add(isMist.mul(seed.y.mul(2).add(1.5)))
       .mul(speedScale)
-      // A slap climbs the topsides; a float barely leaves the surface.
-      .mul(isSlap.mul(0.35).add(1))
-      .mul(isFloat.mul(-0.45).add(1))
-      .toVar('sprayUp');
-    const outward: any = isDrop
+      // A slap climbs the topsides.
+      .mul(isSlap.mul(0.35).add(1));
+    // A floater coming down off a swell at 1–4 m/s throws a crown a few tens of
+    // centimetres high and beads to about a metre: v²/2g of the launch.
+    const upFloat: any = isBead
+      .mul(seed.y.mul(2).add(1.6))
+      .add(isSheet.mul(seed.y.mul(1.3).add(1)))
+      .add(isMist.mul(seed.y.mul(0.5).add(0.5)))
+      .mul(strength.mul(0.9).add(0.45));
+    const up: any = mix(upHull, upFloat, isFloat).toVar('sprayUp');
+    const outHull: any = isDrop
       .mul(seed.z.mul(3.6).add(2))
+      .add(isCluster.mul(seed.z.mul(3).add(1.8)))
       .add(isSheet.mul(seed.z.mul(2.2).add(1.4)))
       .add(isMist.mul(seed.z.mul(1.2).add(0.8)))
       .mul(speedScale)
-      .mul(isSlap.mul(-0.55).add(1))
-      .mul(isFloat.mul(-0.6).add(1))
-      .toVar('sprayOut');
+      .mul(isSlap.mul(-0.55).add(1));
+    const outFloat: any = isBead
+      .mul(seed.z.mul(1.3).add(0.5))
+      .add(isSheet.mul(seed.z.mul(0.5).add(0.35)))
+      .add(isMist.mul(seed.z.mul(0.4).add(0.3)))
+      .mul(strength.mul(0.8).add(0.5));
+    const outward: any = mix(outHull, outFloat, isFloat).toVar('sprayOut');
     const alongSpeed: any = lateral
-      .mul(isDrop.mul(3.2).add(isSheet.mul(2.4)).add(isMist.mul(2)))
+      .mul(isDrop.mul(3.2).add(isCluster.mul(2.8)).add(isSheet.mul(2.4)).add(isMist.mul(2)))
       .mul(isSlap.mul(0.5).add(1))
-      .mul(isFloat.oneMinus())
+      .mul(isHull)
       .toVar('sprayAlongSpeed');
 
     // A float throws a crown: radial, every azimuth.
@@ -707,17 +749,25 @@ export class Spray {
       .add(vec3(0, seed.y.mul(0.9).sub(0.3), 0));
     const v0: any = (mix(v0Spray as any, v0Wash as any, isWash) as any).toVar('sprayV0');
 
-    // Spawn: a wash is a line along the rail, everything else a small patch
-    // on the surface at the impact.
-    const p0: any = origin.xyz
-      .add(alongRaw.xyz.mul(seed.x.sub(0.5)).mul(isWash))
-      .add(alongDir.mul(lateral.mul(0.6).mul(scale)).mul(isWash.oneMinus()))
-      .add(outDir.mul(seed.z.mul(0.3).mul(scale)))
-      .toVar('sprayP0');
+    // Spawn: a wash is a line along the rail, a float a ring at its own radius,
+    // everything else a short line along the hull at the impact.
+    const p0Hull: any = alongRaw.xyz
+      .mul(seed.x.sub(0.5))
+      .mul(isWash)
+      .add(alongDir.mul(lateral.mul(0.6)).mul(isWash.oneMinus()))
+      .add(outDir.mul(seed.z.mul(0.3)));
+    const p0Float: any = outDir.mul(scale.mul(seed.z.mul(0.25).add(0.8)));
+    const p0: any = origin.xyz.add(mix(p0Hull, p0Float, isFloat)).toVar('sprayP0');
 
     // Linear drag toward the wind. See the header.
-    const k: any = isDrop.mul(0.35).add(isSheet.mul(0.9)).add(isMist.mul(2.2)).toVar('sprayDrag');
-    const vInf: any = (vec3((this.uWind as any).x, float(-GRAVITY).div(k), (this.uWind as any).z) as any).toVar('sprayVInf');
+    const k: any = isDrop
+      .mul(0.35)
+      .add(isCluster.mul(0.5))
+      .add(isSheet.mul(0.9))
+      .add(isMist.mul(2.2))
+      .toVar('sprayDrag');
+    const wind: any = sprayUniforms.wind;
+    const vInf: any = (vec3(wind.x, float(-GRAVITY).div(k), wind.z) as any).toVar('sprayVInf');
     const decay: any = exp(k.negate().mul(age.max(0))).toVar('sprayDecay');
     const centre: any = p0
       .add(vInf.mul(age))
@@ -725,126 +775,85 @@ export class Spray {
       .toVar('sprayCentre');
     const velocity: any = vInf.add(v0.sub(vInf).mul(decay)).toVar('sprayVelocity');
 
-    // Camera-facing quad, stretched along the screen-projected velocity — a
-    // droplet moving at ten metres a second is a streak, not a dot.
-    const toCamera: any = cameraPosition.sub(centre).toVar('sprayToCam');
-    const distance: any = toCamera.length().toVar('sprayDist');
-    const forward: any = toCamera.div(distance.max(1e-3)).toVar('sprayFwd');
-    const vPerp: any = velocity.sub(forward.mul(velocity.dot(forward))).toVar('sprayVPerp');
-    const vPerpLen: any = vPerp.length().toVar('sprayVPerpLen');
-    // Falls back to world up projected into the view plane, then to world X,
-    // when the droplet is moving straight at the eye or the eye is overhead.
-    const upPerp: any = vec3(0, 1, 0).sub(forward.mul(forward.y)).toVar('sprayUpPerp');
-    const upPerpLen: any = upPerp.length().toVar('sprayUpPerpLen');
-    const fallback: any = upPerpLen
-      .greaterThan(1e-3)
-      .select(upPerp.div(upPerpLen.max(1e-3)), vec3(1, 0, 0))
-      .toVar('sprayFallback');
-    const axisU: any = vPerpLen
-      .greaterThan(0.05)
-      .select(vPerp.div(vPerpLen.max(1e-3)), fallback)
-      .toVar('sprayAxisU');
-    const axisR: any = axisU.cross(forward).normalize().toVar('sprayAxisR');
-
-    const baseSize: any = isDrop
-      .mul(seed.w.mul(0.16).add(0.1))
+    // Widths, metres. Droplets are the 2–6 cm class that streaks visibly (see
+    // `sprayLook`); a sheet is a metre-scale curtain; mist covers metres. A
+    // float's crown is sized to the float.
+    const sizeHull: any = isDrop
+      .mul(seed.w.mul(0.035).add(0.025))
+      .add(isCluster.mul(seed.w.mul(0.35).add(0.35)))
       .add(isSheet.mul(seed.w.mul(0.8).add(0.6)))
       .add(isMist.mul(seed.w.mul(1.6).add(1.6)))
-      .mul(strength.mul(0.6).add(0.6))
-      .mul(scale)
-      .toVar('sprayBaseSize');
+      .mul(strength.mul(0.6).add(0.6));
+    const sizeFloat: any = isDrop
+      .mul(seed.w.mul(0.012).add(0.012))
+      .add(isCluster.mul(seed.w.mul(0.2).add(0.25)).mul(scale))
+      .add(isSheet.mul(seed.w.mul(0.25).add(0.3)).mul(scale))
+      .add(isMist.mul(seed.w.mul(0.6).add(0.9)).mul(scale))
+      .mul(strength.mul(0.5).add(0.7));
     // Sheets and mist spread as they disperse; droplets do not grow.
-    const grow: any = isDrop
+    const growHull: any = isDrop
+      .add(isCluster.mul(life.mul(0.6).add(0.8)))
       .add(isSheet.mul(life.mul(1.5).add(0.55)))
-      .add(isMist.mul(life.mul(1.8).add(0.45)))
+      .add(isMist.mul(life.mul(1.8).add(0.45)));
+    const growFloat: any = isDrop
+      .add(isCluster.mul(life.mul(0.4).add(0.8)))
+      .add(isSheet.mul(life.mul(0.6).add(0.7)))
+      .add(isMist.mul(life.mul(0.8).add(0.6)));
+    const grow: any = mix(sizeHull.mul(growHull), sizeFloat.mul(growFloat), isFloat)
       .mul(smoothstep(0, 0.08, life).mul(0.6).add(0.4))
       .toVar('sprayGrow');
-    const width: any = baseSize.mul(grow).mul(alive).mul(this.uStrength.min(1).max(0.5)).toVar('sprayWidth');
-    // Streak length: the distance covered in a fraction of a frame's exposure.
-    const streak: any = vPerpLen
-      .mul(isDrop.mul(0.06).add(isSheet.mul(0.14)).add(isMist.mul(0.02)))
-      .mul(alive)
-      .toVar('sprayStreak');
-    const length: any = width.add(streak).toVar('sprayLength');
-
-    const world: any = centre
-      .add(axisR.mul(positionGeometry.x.mul(width)))
-      .add(axisU.mul(positionGeometry.y.mul(length)))
-      .toVar('sprayWorld');
+    const width: any = grow.mul(this.uStrength.min(1).max(0.5)).toVar('sprayWidth');
 
     // Opacity. A droplet is dense and small; a sheet is thick at first and
-    // thins; mist is barely there and covers a lot.
-    const density: any = isDrop.mul(0.85).add(isSheet.mul(0.8)).add(isMist.mul(0.12)).toVar('sprayDensity');
-    const fadeIn: any = smoothstep(0, 0.05, life);
-    const fadeOut: any = smoothstepDown(life, isMist.mul(-0.1).add(0.5), 1);
+    // tears (the erosion does the thinning); mist is barely there.
+    const density: any = isDrop
+      .mul(0.9)
+      .add(isCluster.mul(0.9))
+      // A sheet thins as it stretches: it starts dense and ends half as opaque.
+      // A float's crown is a thinner wall than a hull's curtain.
+      .add(isSheet.mul(life.mul(-0.5).add(0.9)).mul(isFloat.mul(-0.35).add(1)))
+      .add(isMist.mul(mix(float(0.14), float(0.05), isFloat)))
+      .toVar('sprayDensity');
+    const fadeIn: any = smoothstep(0, 0.04, life);
+    const fadeOut: any = smoothstepDown(life, isMist.mul(-0.35).add(0.75), 1);
     // Back into the sea: a particle that falls below where it started is gone.
     // A wash starts a rail's height up, so its sea is that much lower.
     const waterLine: any = origin.y.sub(isWash.mul(WASH_DROP)).toVar('sprayWaterLine');
     const submerged: any = smoothstepDown(waterLine.sub(centre.y), 0.05, 0.5);
-    const range: any = smoothstepDown(distance, DRAW_RANGE * 0.55, DRAW_RANGE);
     const opacity: any = density
       .mul(fadeIn)
       .mul(fadeOut)
       .mul(submerged)
-      .mul(range)
-      .mul(alive)
       .mul(strength.sqrt())
       .mul(this.uStrength.min(1))
       .toVar('sprayOpacity');
 
-    // Lighting. Water droplets scatter almost everything forward, so a sheet
-    // between the eye and the sun lights up; seen with the sun behind the
-    // viewer it is a diffuse white lit by sun and sky like the foam below it.
-    const viewToParticle: any = forward.negate();
-    const towardSun: any = viewToParticle.dot(this.uSunDirection).max(0).toVar('sprayTowardSun');
-    const forwardScatter: any = towardSun
-      .pow(6)
-      .mul(isDrop.mul(1.8).add(isSheet.mul(1.4)).add(isMist.mul(2.4)))
-      .toVar('sprayForward');
-    const sunUp: any = this.uSunDirection.y.smoothstep(-0.05, 0.15);
-    const radiance: any = (this.uSunColor as any)
-      .mul(forwardScatter.add(0.6).mul(sunUp))
-      .add((this.uSkyColor as any).mul(0.85))
-      // White water with a little of the sea's colour in it.
-      .mul(vec3(0.93, 0.98, 1))
-      .toVar('sprayRadiance');
-
-    vShade.assign(vec4(radiance, opacity));
-    vQuad.assign(vec4(positionGeometry.x, positionGeometry.y, cls, seed.z));
-    return world;
+    return particleVertex({
+      centre,
+      velocity,
+      life,
+      alive,
+      isDrop,
+      isSheet,
+      isMist,
+      isCluster,
+      cls,
+      seed: seed.z,
+      width,
+      // Seconds of motion each streak spans: long for droplets, which is what
+      // reads as speed, and none for mist, which has none to show.
+      streak: isDrop.mul(0.035).add(isCluster.mul(0.03)).add(isSheet.mul(0.02)).add(isMist.mul(0.04)),
+      opacity,
+      // Depth over which each class fades into the water or hull behind it.
+      soft: isDrop
+        .mul(0.08)
+        .add(isCluster.mul(0.3))
+        .add(isSheet.mul(0.6))
+        .add(isMist.mul(1.5))
+        .mul(isFloat.mul(-0.6).add(1)),
+      range: DRAW_RANGE,
+    });
   }
-
-  private buildFragment(): any {
-    const q: any = vec2(vQuad.x, vQuad.y).toVar('sprayQ');
-    const cls: any = vQuad.z;
-    const isDrop: any = smoothstepDown(cls, 0.4, 0.5).toVar('sprayFDrop');
-    const radius: any = q.length().mul(2).toVar('sprayR');
-
-    // Droplets: a soft capsule (the quad is already stretched along the
-    // motion). Sheets and mist: a soft disc torn up by noise, so a sheet reads
-    // as ragged water rather than as a puff.
-    const disc: any = smoothstepDown(radius, 0.15, 1).toVar('sprayDisc');
-    const p: any = q.mul(3.1).add(vec2(vQuad.w.mul(37.1), vQuad.w.mul(11.7)));
-    const tear: any = cheapNoise(p).mul(0.65).add(cheapNoise(p.mul(2.3)).mul(0.35)).toVar('sprayTear');
-    const ragged: any = smoothstep(0.22, 0.6, tear.add(disc.mul(0.6)).sub(0.25)).mul(disc.sqrt());
-    const shape: any = mix(ragged, disc.mul(disc), isDrop).toVar('sprayShape');
-
-    const alpha: any = vShade.w.mul(shape).clamp(0, 1);
-    return vec4((vShade as any).xyz, alpha);
-  }
-}
-
-/** Arithmetic value noise in [0,1]: no texture, so it costs nothing to bind. */
-function cheapNoise(p: any): any {
-  const i: any = p.floor();
-  const f: any = fract(p);
-  const u: any = f.mul(f).mul(f.mul(-2).add(3));
-  const h: any = (o: any) => fract(sin(i.add(o).dot(vec2(127.1, 311.7))).mul(43758.5453));
-  const a: any = h(vec2(0, 0));
-  const b: any = h(vec2(1, 0));
-  const c: any = h(vec2(0, 1));
-  const d: any = h(vec2(1, 1));
-  return (mix as any)((mix as any)(a, b, u.x), (mix as any)(c, d, u.x), u.y);
 }
 
 function freshState(): ProbeState {
@@ -860,6 +869,18 @@ const _at = new THREE.Vector3();
 const _local = new THREE.Vector3();
 const _twisted = new THREE.Vector3();
 const _zero = new THREE.Vector3();
+
+/** One period of the per-event class interleave. */
+const CLASS_ORDER = [
+  CLASS_SHEET,
+  CLASS_DROP,
+  CLASS_CLUSTER,
+  CLASS_MIST,
+  CLASS_SHEET,
+  CLASS_DROP,
+  CLASS_CLUSTER,
+  CLASS_DROP,
+];
 
 function buildGeometry(): THREE.InstancedBufferGeometry {
   const geometry = new THREE.InstancedBufferGeometry();
@@ -886,9 +907,10 @@ function buildGeometry(): THREE.InstancedBufferGeometry {
     seed[i * 4 + 1] = hash2(i, 2);
     seed[i * 4 + 2] = hash2(i, 3);
     seed[i * 4 + 3] = hash2(sub, 4);
-    // One in four a sheet, one in eight mist, the rest droplets — interleaved so
-    // every prefix of the instance order keeps the same mix.
-    cls[i] = sub % 4 === 1 ? 1 : sub % 8 === 3 ? 2 : 0;
+    // A quarter sheets, a quarter droplet clusters, an eighth mist and the rest
+    // single droplets — interleaved so every prefix of the instance order keeps
+    // the same mix, which is what lets a tier trim the count evenly.
+    cls[i] = CLASS_ORDER[sub % CLASS_ORDER.length];
   }
   geometry.setAttribute('sprayEvent', new THREE.InstancedBufferAttribute(event, 1));
   geometry.setAttribute('spraySeed', new THREE.InstancedBufferAttribute(seed, 4));
