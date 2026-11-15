@@ -205,16 +205,16 @@ export function setSurfState(
 /**
  * Highest the swash can climb, metres above still water: the run-up of the
  * largest wave a set can hold (see `waveHeight`, whose factors top out at
- * 1.2 x 1.15 x 1.15 = 1.59).
+ * 1.2 x 1.15 x 1.15 x 1.25 = 1.98), with the 18% lobe `runup` adds.
  */
 function maxRunup(): any {
-  return surfUniforms.runupScale.mul(surfUniforms.height.mul(1.59).sqrt());
+  return surfUniforms.runupScale.mul(surfUniforms.height.mul(1.98).sqrt()).mul(1.18);
 }
 
 /** Deepest water, metres, in which anything here is non-zero. */
 export function surfReachDepth(): any {
-  // The biggest wave of a set is ~1.3 times the average.
-  return surfUniforms.height.mul((1.3 / BREAKER_INDEX) * SURF_REACH);
+  // The biggest wave of a set, on a peak, is ~1.5 times the average.
+  return surfUniforms.height.mul((1.5 / BREAKER_INDEX) * SURF_REACH);
 }
 
 /** Arithmetic value noise in [0,1] — no texture, so it costs nothing to bind. */
@@ -270,10 +270,20 @@ export function waveHeight(n: any, xz: any): any {
   const envelope = sin(n.mul((Math.PI * 2) / SET_LENGTH).add(1.3)).mul(0.5).add(0.5);
   const jitter = hash1(n).mul(0.3).add(0.85);
   const along = surfNoise(xz.div(90).add(vec2(3.7, 9.2))).mul(0.3).add(0.85);
+  // Peaks along the crest, re-drawn for every wave. A wave is never the same
+  // height along its whole length: it has peaks, where it breaks first and
+  // furthest out, and shoulders it peels toward. The 90 m term above is the
+  // bathymetry's steady share; this one is the wave's own, at about the 25 m
+  // a peak spans, so each breaker comes in as sections that go at different
+  // depths instead of the one extruded tube beach-transparency-1 showed.
+  const peaks = surfNoise(xz.div(26).add(vec2(hash1(n.add(11)).mul(53), hash1(n.add(17)).mul(41))))
+    .mul(0.5)
+    .add(0.75);
   return surfUniforms.height
     .mul(envelope.pow(1.5).mul(0.7).add(0.5))
     .mul(jitter)
-    .mul(along);
+    .mul(along)
+    .mul(peaks);
 }
 
 /**
@@ -287,8 +297,11 @@ export function waveHeight(n: any, xz: any): any {
  *
  * @returns vec2(elevation in units of amplitude, d elevation / d phase)
  */
-export function crestProfile(s: any, steep: any): any {
-  const width = s.lessThan(0).select(mix(float(0.15), float(0.055), steep), float(0.24));
+export function crestProfile(s: any, steep: any, minWidth: any = float(0)): any {
+  const width = s
+    .lessThan(0)
+    .select(mix(float(0.15), float(0.055), steep), float(0.24))
+    .max(minWidth);
   const x = s.div(width);
   const bump = x.mul(x).negate().exp();
   const elevation = bump.sub(0.3);
@@ -350,12 +363,19 @@ export interface BreakerSample {
  *                   caller has not measured it. Only the pitch reads it.
  * @param pitch      0..1 master on the horizontal pitch. At 0 the lean is zero
  *                   and the compression exactly 1.
+ * @param footprint  Metres the caller's mesh (or pixel) spans here. The crest
+ *                   is widened to at least this, so a mesh too coarse to carry
+ *                   a 1.5 m front face draws a softer one rather than landing
+ *                   every other vertex on the crest — the periodic saw-tooth
+ *                   along the far breakers in foam-4 and beach-transparency-1.
+ *                   The same band-limit the cascades take (`FOOTPRINT_SPACINGS`).
  */
 export function breaker(
   depth: any,
   xz: any,
   beachSlope: any = float(NOMINAL_SLOPE),
   pitch: any = float(1),
+  footprint: any = float(0),
 ): BreakerSample {
   const phase = surfPhase(depth, xz).toVar('surfPhase');
   const last = phase.floor().toVar('surfLast');
@@ -380,7 +400,9 @@ export function breaker(
     .mul(surfUniforms.strength.min(1))
     .toVar('surfReachFade');
   const amplitude = d.lessThan(breakDepth).select(bore, shoaled).mul(reachFade).toVar('surfAmplitude');
-  const profile = crestProfile(s, steep).toVar('surfProfile');
+  // The footprint in phase: metres times phase per metre.
+  const minWidth = footprint.mul(surfPhaseGradient(d).abs()).mul(0.6).toVar('surfMinWidth');
+  const profile = crestProfile(s, steep, minWidth).toVar('surfProfile');
 
   // --- the pitch ---------------------------------------------------------------
   // Iribarren on the deep-water steepness of this crest. `beachSlope` is floored
