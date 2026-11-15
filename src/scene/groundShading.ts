@@ -112,9 +112,9 @@ export const TRANSLUCENCY_GAIN = 0.55;
 export const LEAF_DIFFUSE_TRANSMITTANCE = 0.22;
 
 /**
- * Sway shared by the near trees and the distant canopy cards.
+ * Sway shared by the planted trees and the forest canopy.
  *
- * Only the billboards moved. `Canopy`'s model is the right one — shear by the
+ * Only the canopy moved. `Canopy`'s model is the right one — shear by the
  * square of the height so the trunk stays planted and the crown carries the
  * travel, and *one travelling gust* across the island rather than a per-instance
  * random phase, because a canopy moves in gusts and neighbours that move
@@ -123,12 +123,11 @@ export const LEAF_DIFFUSE_TRANSMITTANCE = 0.22;
  * front of them stand perfectly still.
  *
  * The wavelength, speed and amplitude below are `Canopy`'s, deliberately: the
- * canopy card field fades in over 90-180 m behind the planted trees, and the
- * shared constants are what keep that handover from changing how the forest
- * moves.
+ * canopy stands among and behind the planted trees, and the shared constants
+ * are what keep the two from moving differently.
  *
  * They do **not** share a phase, and no comment elsewhere should claim they do.
- * `Canopy` adds a per-instance offset from its card seed; a mesh has no equivalent constant available in the vertex
+ * `Canopy` adds a per-tree offset from its seed; a mesh has no equivalent constant available in the vertex
  * stage without new plumbing — `positionGeometry` varies across the tree and
  * `positionLocal` is post-instancing. What survives a handover is an amplitude
  * and frequency match, not a continuous phase: a plant swapping to a card keeps

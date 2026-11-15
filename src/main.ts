@@ -355,10 +355,9 @@ class App {
   private aerial!: AerialPerspective;
   /**
    * The gust the island's planting sways on. Three systems share it — the
-   * procedural plants, the meadow and the distant canopy cards — so the
-   * handover between them is not a change of character. The plants carry their
-   * own LOD chain to any range; the canopy field fades in over 90-180 m behind
-   * them.
+   * procedural plants, the meadow and the forest canopy — so where they stand
+   * together they do not move differently. The plants carry their own LOD
+   * chain to any range; the canopy stands among and behind them.
    */
   private readonly foliageWind = new FoliageWind();
   /**
@@ -838,21 +837,13 @@ class App {
     );
     this.scene.add(this.meadow.object);
 
-    // Distant canopy. The island's trees are LOD2 specks from the play area and
-    // the biome in the terrain colour cannot give a dome a broken edge, so past
-    // ninety metres the forest becomes billboards. See `src/scene/Canopy.ts`.
-    this.canopy = new IslandCanopy(
-      quality.canopy,
-      (worldPosition) => this.seafloor.heightNode(worldPosition),
-      {
-        // The forest takes the cloud deck's shade and the hill's own shadow.
-        // Without this it goes on being fully lit across a hillside that now has
-        // a shaded face — a canopy floating over its own shadow, which reads
-        // worse than the flat lighting it replaced.
-        sunOcclusion: (worldPosition) =>
-          this.seafloor.keyShadowNode(worldPosition),
-      },
-    );
+    // The forest canopy: thousands of small solid trees, levels of detail by
+    // distance, placed and hill-shaded on the CPU. See `src/scene/Canopy.ts`.
+    this.canopy = new IslandCanopy(quality.canopy, {
+      // Cloud shade only: the island's own shadow is baked per tree, on the
+      // CPU, because the vertex stage would run the march for every vertex.
+      cloudShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+    });
     this.scene.add(this.canopy.object);
 
     // The wreck's owner. Poly Haven publishes no skeleton and every CC0 source
@@ -2237,9 +2228,9 @@ class App {
         // first frame from seconds to minutes on the FXC path the test harness
         // forces. It is also nearly redundant: the sun's shadow map is a
         // +/-260 m box that follows the viewer, so a prop close enough for its
-        // own shadow to read is inside it, and past that range the canopy cards
-        // — which do carry the march, in their vertex stage, at four samples a
-        // card — are what the viewer is actually looking at.
+        // own shadow to read is inside it, and past that range the forest
+        // canopy — which carries the hill's shadow, baked per tree — is what
+        // the viewer is actually looking at.
         keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
         caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
         groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
@@ -3430,7 +3421,7 @@ class App {
     this.canopy.setSunColor(_keyLight);
     this.canopy.setAmbientColor(_meadowAmbient);
     this.canopy.setWind(_meadowWind, Math.min(1, this.state.windSpeed / 14));
-    this.canopy.update(dt);
+    this.canopy.update(dt, this.camera.position);
     // The planted meshes sway on the same gust the cards do — same wavelength,
     // same speed, same amplitude. Not the same phase: `groundShading` explains
     // why a mesh has no per-instance constant to offset by, so a plant crossing
