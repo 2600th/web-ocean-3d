@@ -174,15 +174,35 @@ const LIGHT_STEPS = 4;
  */
 const LIGHT_OCTAVES = 2;
 /**
+ * One extra light sample, at the full field with its erosion, this far toward
+ * the sun, and its weight in the optical depth.
+ *
+ * The coarse light march above sees no billows, so every lobe of a cumulus was
+ * lit as if the cloud were a smooth blob: one gradient from the lit side to the
+ * shaded one, and from below a flat grey base. That is the "melted" overhead
+ * deck in `clouds-1`. A billow is ~330 m across (`DETAIL_FREQUENCY` on
+ * `NOISE_SCALE`); a sample a quarter of that toward the sun lands inside the
+ * neighbouring lobe when there is one and in clear air when the sample is on a
+ * lobe's sunward face, so each lobe gets its own lit cap and shaded underside —
+ * Schneider's Nubis does the same with its first, full-detail light sample.
+ * 1.5 rather than 1 because one sample stands for the near path it skips.
+ * Measured cost under "GPU" in the round-2 report.
+ */
+const NEAR_LIGHT_DISTANCE = 90;
+const NEAR_LIGHT_WEIGHT = 1.5;
+/**
  * Extra extinction on the path toward the sun only. Above 1 deepens a cloud's
  * self-shadow — darker flanks and bases under the same lit tops — without
  * making it any more opaque to the eye.
  */
 const LIGHT_EXTINCTION_GAIN = 1.0;
 /**
- * Extinction toward the eye, relative to `uExtinction`.
+ * Extinction toward the eye, relative to `uExtinction`. 4, from 3: a denser
+ * surface toward the eye is a harder one, and the billow shading above only
+ * reads if the eye stops near the lobe it lights rather than averaging a few
+ * hundred metres of them.
  */
-const VIEW_EXTINCTION_GAIN = 3.0;
+const VIEW_EXTINCTION_GAIN = 4.0;
 
 /**
  * Radius the cloud layer is wrapped on, metres.
@@ -389,14 +409,26 @@ const WEATHER_AMOUNT = 0.9;
 const TOP_MIN = 0.5;
 /** Frequency of the erosion field relative to the base, and its strength. */
 const DETAIL_FREQUENCY = 5.5;
-const DETAIL_GAIN = 0.75;
+/** 1.15, from 0.75 with the switch to billow noise (see `densityFrom`). */
+const DETAIL_GAIN = 1.15;
 /**
- * Most the erosion octave can *raise* the field: `(0.13 - |detail|) * 0.55` at
- * `detail = 0`. A sample whose base field is this far under its edge is empty
- * whatever the detail says, so the march skips the detail noise, the profile
- * and the light march for it. Exact, not a heuristic.
+ * The billow erosion is `(min(|detail|, EROSION_CAP) - EROSION_OFFSET) * gain`.
+ *
+ * The offset is a coverage calibration, measured: with the dome hidden, the
+ * fraction of the upper frame that is cloud at the old ridged erosion was
+ * 0.637 (`sky-day`) and 0.707 (`clouds-day`); billow erosion at offsets 0.07,
+ * 0.10, 0.12 and 0.14 gave 0.767 / 0.819, 0.690 / 0.748, 0.641 / 0.700 and
+ * 0.600 / 0.646. 0.12 keeps the coverage the quantile table maps to.
  */
-const EROSION_LIFT_MAX = 0.13 * DETAIL_GAIN;
+const EROSION_CAP = 0.2;
+const EROSION_OFFSET = 0.12;
+/**
+ * Most the erosion octave can *raise* the field. A sample whose base field is
+ * this far under its edge is empty whatever the detail says, so the march
+ * skips the detail noise, the profile and the light march for it. Exact, not a
+ * heuristic.
+ */
+const EROSION_LIFT_MAX = (EROSION_CAP - EROSION_OFFSET) * DETAIL_GAIN;
 
 /**
  * Thinning of the far deck, as a rise in the coverage threshold with distance.
@@ -420,9 +452,11 @@ const EROSION_LIFT_MAX = 0.13 * DETAIL_GAIN;
  * at full contrast, with a dark base line under each, and those lines stacked
  * are the rows. Through that much marine boundary layer a cumulus field reads
  * as a pale, low-contrast band — which is what both reference projects draw.
+ * From 8 km over 16, since round 2 (was 12 over 30): with the sky brighter
+ * the horizon rows stood out again against the paler band behind them.
  */
-const FAR_HAZE_START = 12000;
-const FAR_HAZE_SCALE = 30000;
+const FAR_HAZE_START = 8000;
+const FAR_HAZE_SCALE = 16000;
 const THIN_NEAR = 7000;
 const THIN_FAR = 34000;
 const THIN_AMOUNT = 0.12;
@@ -493,8 +527,13 @@ const COVERAGE_QUANTILES: ReadonlyArray<readonly [number, number]> = [
   [1.0, -0.06],
 ];
 
-/** Softness of the cloud edge in noise units. Crisper = puffier cumulus. */
-const EDGE_WIDTH = 0.035;
+/**
+ * Softness of the cloud edge in noise units. Crisper = puffier cumulus.
+ * 0.02, from 0.035: the base field changes by ~0.16 over a kilometre or so,
+ * so 0.035 was a ramp of about 200 m on every edge — a visible soft fringe on
+ * an overhead cloud two kilometres up.
+ */
+const EDGE_WIDTH = 0.02;
 
 /** Strength of the single-scattering term with the sun fully above the horizon. */
 const SUN_GAIN = 1.5;
@@ -702,7 +741,7 @@ export class Clouds {
   private readonly uFrame = uniform(0);
   private frame = 0;
   /** Edge band-limit per metre of march step. See its use in `buildMarchNode`. */
-  private readonly uSoftnessPerMetre = uniform(0.0011);
+  private readonly uSoftnessPerMetre = uniform(0.0008);
 
   // --- the march's own passes ----------------------------------------------
   /** Eye position the march starts from; written by `setView`. */
@@ -1514,13 +1553,17 @@ export class Clouds {
     // the march resolves a tenth of its step, which is why the band-limit per
     // metre is a third of what a single march needed (`uSoftnessPerMetre`).
     const detailFade = float(1).sub(softness).clamp(0, 1);
-    // Billowed rather than added. A centred detail octave only nibbles the
-    // silhouette symmetrically, which reads as fuzz; eroding *more* toward the
-    // edge (where the base field is near the threshold) and less in the core is
-    // what carves cauliflower lobes into a cumulus instead of fraying it.
+    // Billow noise, |n|: rounded lumps around the noise's extrema, with creases
+    // along its zero crossings — Perlin's "turbulence", the cauliflower shape.
+    //
+    // What stood here was the opposite, ridged noise, `0.13 - |n|`: a network of
+    // thin raised lines along the zero crossings. On a cloud edge seen from the
+    // side that read as fraying; on the overhead deck in `clouds-1`, seen from
+    // below at two kilometres, every line was a tendril and the bases read as
+    // smoke ("melted"). See `EROSION_OFFSET` for how the coverage was held.
     const erosion = detail === null
       ? null
-      : detail.abs().mul(-1).add(0.13).mul(detailFade).mul(DETAIL_GAIN);
+      : detail.abs().min(EROSION_CAP).sub(EROSION_OFFSET).mul(detailFade).mul(DETAIL_GAIN);
     const field = erosion === null ? base : base.add(erosion);
     const shaped = smoothstep(edge, edge.add(width), field);
 
@@ -1602,7 +1645,9 @@ export class Clouds {
           // a fixed offset aliased the detail octave into moire, and a resolve
           // averaging ten well-spread offsets resolves a tenth of a step. At the
           // old setting every mid-distance cumulus was blurred into a soft ball
-          // — the "airbrushed" clouds in the head-to-head.
+          // — the "airbrushed" clouds in the head-to-head. 0.0008 since round
+          // 2: the billow erosion has rounder, lower-frequency edges than the
+          // ridged lines it replaced, and holds at a finer band-limit.
           const softness = clamp(stepSize.mul(this.uSoftnessPerMetre), 0.0, 1.0).toVar('cloudLod');
 
           // Powder only away from the sun.
@@ -1666,8 +1711,18 @@ export class Clouds {
                   const lp = p.add(this.uSunDir.mul(this.uLightStep.mul(float(i).add(1.0))));
                   lightAcc.addAssign(this.densityAt(lp, softness, weather, LIGHT_OCTAVES, thin));
                 });
+                // Plus one sample a billow's radius toward the sun at the full
+                // field, erosion included (`NEAR_LIGHT_DISTANCE`).
+                const nearAcc = this.densityAt(
+                  p.add(this.uSunDir.mul(NEAR_LIGHT_DISTANCE)),
+                  softness,
+                  weather,
+                  null,
+                  thin,
+                ).mul(NEAR_LIGHT_DISTANCE * NEAR_LIGHT_WEIGHT);
                 const opticalDepth = lightAcc
                   .mul(this.uLightStep)
+                  .add(nearAcc)
                   .mul(this.uExtinction)
                   .mul(LIGHT_EXTINCTION_GAIN)
                   .toVar('cloudOd');
