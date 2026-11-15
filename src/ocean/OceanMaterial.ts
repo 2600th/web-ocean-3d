@@ -215,12 +215,6 @@ const MAX_DETAIL = 1;
 const DETAIL_ROTATION = 1.1071487; // atan(2)
 
 /**
- * The cascade that, with the detail bands, makes the "fine" share of the slope:
- * the 16 m tile, wavelengths 5 cm to 3 m (`Spectrum.CASCADES[2]`).
- */
-const FINE_CASCADE = 2;
-
-/**
  * The display level, as a fraction of the white point (`1 / exposure`), that
  * the low-sun glint count is scaled against (see `glintGain`). Under ACES
  * that is about 0.9 of display white.
@@ -238,19 +232,24 @@ const BODY_NIGHT_FLOOR = 0.1;
  * (91, 145, 169): a near-black navy that the camo then dominated. With the
  * body tied to the white point, `deepColor` reads directly as a display
  * colour, and 1.8 recovers what the diffuse and cloud-shade terms take off
- * the mean (they average about 0.55 over a sunlit frame).
+ * the mean (they average about 0.55 over a sunlit frame). The foam's light is
+ * floored at the same `bodyLight`.
  */
 const BODY_GAIN = 1.8;
 
 /**
- * How much of the short-wave slope (`fineSlope`) the body's diffuse term
- * ignores. The body is light scattered back out of the volume, which does not
- * care which way a centimetre ripple faces; lit with the full shading normal
- * it carried the detail maps' envelope as a 2x swing in brightness, the
- * fbm-like mottle on waves-1 and refraction-1. The long waves keep their
- * troughs and faces; a share of the fine slope is kept for texture.
+ * The share of `bodyLight` the column's colour is drawn with.
+ *
+ * At the full light the body outshone the sky reflection about four to one in
+ * the near water (calm-close: body sRGB luma 115 against reflection 31), and
+ * the body is the one term with no wave shape in it, so the near sea read as
+ * one evenly lit teal sheet ("mushy", "milky" in round 3) while the
+ * reflection on it carried crisp facets. At 0.7 the facets and the troughs
+ * show through, at a cost of about 20 levels of near luma on the webocean
+ * pairs, whose pale body comes from a paler sky. Kept apart from BODY_GAIN so
+ * the foam, which is floored at `bodyLight`, keeps its white.
  */
-const BODY_FINE_SLOPE_DROP = 0.7;
+const BODY_COLUMN_SHARE = 0.7;
 
 /** Body brightness swing from trough (1 - x) to crest (1 + x), by height over the sea state. */
 const BODY_TROUGH_CONTRAST = 0.3;
@@ -602,6 +601,8 @@ export class OceanMaterial {
    * `setExposure` and the glitter ceiling.
    */
   private readonly uWhitePoint = uniform(1 / 0.42);
+  /** Wind gain on the detail band's slope; see `shortWaveGain`. */
+  private readonly uShortWaveGain = uniform(1);
   /**
    * How lit the scene is, 0..1, independent of the key light's colour.
    *
@@ -816,6 +817,7 @@ export class OceanMaterial {
     // fixed scale a calm day would have no crests to glow and a gale would have
     // nothing but. The floor keeps a glassy preset from dividing by nearly zero.
     this.uWaveScale.value = Math.max(0.35, 0.0246 * Math.max(0, speed) ** 2);
+    this.uShortWaveGain.value = shortWaveGain(speed);
     // The foam pattern's streaks lie along the same axis; it is shared with the
     // island's ground, which draws the swash foam, so it lives in `FoamPattern`.
     setFoamWind(bearingRadians);
@@ -1239,11 +1241,6 @@ export class OceanMaterial {
       // Slope variance lost inside the texture footprint — see the alpha channel
       // of the derivative pass. Bands are independent, so their variances add.
       const lostSlopeVariance = float(0).toVar();
-      /**
-       * The short-wave share of the slope (the finest cascade and the detail
-       * bands), which the body's diffuse term mostly ignores; see BODY_FINE_SLOPE_DROP.
-       */
-      const fineSlope = vec2(0).toVar();
       /** Cascade 0's share of the slope: the swell, which the surf replaces. */
       const swellSlope = vec2(0).toVar();
       for (let i = 0; i < cascadeCount; i++) {
@@ -1267,7 +1264,6 @@ export class OceanMaterial {
         lostSlopeVariance.addAssign(
           d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
         );
-        if (i === FINE_CASCADE) fineSlope.addAssign(vec2(d.x, d.y).mul(fade));
       }
 
       // [underwater-look] The swell and wind-wave cascades only, before the
@@ -1288,7 +1284,7 @@ export class OceanMaterial {
       const cosR = Math.cos(DETAIL_ROTATION);
       const sinR = Math.sin(DETAIL_ROTATION);
       for (let i = 0; i < MAX_DETAIL; i++) {
-        const weight = this.uDetailWeights[i].mul(Math.SQRT1_2);
+        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(Math.SQRT1_2);
         const uvA = fieldXZ.div(this.uDetailTiles[i]);
         const a = this.detailNodes[i].sample(uvA).toVar();
         // Rotated read: sample at R^T x, and rotate the slope it returns by R.
@@ -1307,10 +1303,10 @@ export class OceanMaterial {
           .max(0)
           .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
           .mul(this.uDetailWeights[i])
+          .mul(this.uShortWaveGain.mul(this.uShortWaveGain))
           .mul(0.5)
           .toVar();
         lostDetailVariance.addAssign(detailLost);
-        fineSlope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
       }
 
       // Rain impacts, added to the wave slope before the normal is built so they
@@ -1948,7 +1944,14 @@ export class OceanMaterial {
           .div(viewDistance.mul(0.05).add(1))
           .toVar();
         const rawUv = screenUV.add(offset).toVar();
-        const safeUv: any = (viewportSafeUV(rawUv) as any).toVar();
+        // The mirror's target is drawn from the mirrored camera, so it is the
+        // frame flipped left to right: three's own reflector samples it at
+        // `screenUV.flipX()`. Read unflipped, every object's reflection landed
+        // mirrored about the frame's centre line, so a ship right of centre left
+        // its hull reflection hundreds of pixels to the left (the "ghost hull"
+        // of reflections-3 and the rectangle beside the hull in boat-sea-2), and
+        // nothing under the ship itself.
+        const safeUv: any = (viewportSafeUV(vec2(rawUv.x.oneMinus(), rawUv.y)) as any).toVar();
         // Softer with sub-pixel roughness and with distance; capped because the
         // target is already at reduced resolution.
         const reflectionLod = sig.mul(6).add(viewDistance.mul(0.004)).clamp(0, 1.25).toVar();
@@ -2167,8 +2170,9 @@ export class OceanMaterial {
       const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
         .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
         .toVar();
-      const bodySlope = slope.sub(fineSlope.mul(BODY_FINE_SLOPE_DROP)).toVar();
-      const bodyDotL = normalize(vec3(bodySlope.x.negate(), 1, bodySlope.y.negate()))
+      // On the full slope. Dropping most of the short waves from it, as this did
+      // against the camo, took the near water's crisp facets with the camo.
+      const bodyDotL = normalize(vec3(slope.x.negate(), 1, slope.y.negate()))
         .dot(sunDirEarly)
         .clamp(0, 1)
         .toVar();
@@ -2184,7 +2188,7 @@ export class OceanMaterial {
         .toVar();
       const litBody = columnColor
         .mul(bodyDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
-        .mul(bodyLight.mul(troughShade))
+        .mul(bodyLight.mul(troughShade).mul(BODY_COLUMN_SHARE))
         .add(seenThrough)
         .add(scatter.mul(sunShade))
         .toVar();
@@ -3152,6 +3156,35 @@ const valueNoise = /*@__PURE__*/ Fn(([p]: [any]) => {
  * the detail far beyond where the geometry has flattened out, which is exactly
  * how real distant water reads — a smooth sheet with fine specular structure.
  */
+/**
+ * How the centimetre waves' slope grows with the wind, relative to a 7 m/s
+ * breeze.
+ *
+ * The spectrum's tail is Phillips' saturated k^-4 range with a fixed alpha
+ * (`Spectrum`, 0.0081), so everything shorter than the peak has the same
+ * slope at 5 m/s as at 15: the wind only moves the peak. That is why the near
+ * water of near-water-detail (15 m/s) drew the same as calm-close (5 m/s). Real
+ * short waves are not saturated at a fixed level. Their curvature spectrum
+ * scales with the friction velocity, which is Cox and Munk's mean-square slope
+ * rising from 0.03 to 0.08 over the same range.
+ *
+ * This takes the gravity-capillary saturation level from Elfouhaily, Chapron,
+ * Katsaros and Vandemark, "A unified directional spectrum for long and short
+ * wind-driven waves" (JGR 1997), eq. 44: alpha_m = 0.01 (1 + ln(u* / c_m)) below
+ * c_m = 0.23 m/s, and 0.01 (1 + 3 ln(u* / c_m)) above it. The friction velocity
+ * is u* = U10 sqrt(C_D), with C_D = 1.3e-3. The slope amplitude goes as the
+ * square root. Clamped so a flat calm keeps some sparkle and a gale does not
+ * read as crumpled foil.
+ */
+function shortWaveGain(windSpeed: number): number {
+  const alphaM = (u10: number): number => {
+    const uStar = Math.max(0.01, u10) * Math.sqrt(1.3e-3);
+    const r = Math.log(uStar / 0.23);
+    return Math.max(0.002, 0.01 * (1 + (uStar < 0.23 ? r : 3 * r)));
+  };
+  return Math.min(1.6, Math.max(0.6, Math.sqrt(alphaM(windSpeed) / alphaM(7))));
+}
+
 const CASCADE_SHADING_FADE_METRES: [number, number][] = [
   [Infinity, Infinity], // swell: always on
   [1400, 3000],
