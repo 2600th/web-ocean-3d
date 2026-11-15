@@ -315,6 +315,18 @@ export interface QualitySettings {
    */
   wakeDisplacement: number;
   /**
+   * How much of the foam's structure is drawn, 0..2. See `ocean/FoamPattern`.
+   *
+   * 0 draws the wind streaks alone and the breakers only rise; 1 adds the metre
+   * scale bubble rafts and the breakers' pitch, which costs two heightfield
+   * evaluations per surf vertex; 2 adds the fine bubble scale and the foam's own
+   * relief. All three are uniform branches in one graph, so a tier change
+   * recompiles nothing and a skipped level costs one compare. Every level puts
+   * the same amount of white on the water — the finer scales fade to their mean
+   * — so tiers differ in texture, never in how much foam there is.
+   */
+  foamDetail: number;
+  /**
    * Fraction of the placed scene dressing that is drawn, 0..1.
    *
    * Instance counts only — the island's planting, the cove's clutter and the
@@ -408,6 +420,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     lensFlare: 0,
     lensRainQuality: 1,
     wakeDisplacement: 0,
+    foamDetail: 0,
     propsDetail: 0.3,
     kelp: 0,
     reefLife: 0.3,
@@ -447,6 +460,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     lensFlare: 1,
     lensRainQuality: 2,
     wakeDisplacement: 0.75,
+    foamDetail: 1,
     propsDetail: 0.5,
     kelp: 800,
     reefLife: 0.5,
@@ -484,6 +498,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     lensFlare: 1,
     lensRainQuality: 3,
     wakeDisplacement: 1,
+    foamDetail: 2,
     propsDetail: 0.75,
     kelp: 1800,
     reefLife: 0.8,
@@ -521,6 +536,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     lensFlare: 1,
     lensRainQuality: 3,
     wakeDisplacement: 1,
+    foamDetail: 2,
     propsDetail: 1,
     kelp: 2900,
     reefLife: 1,
@@ -560,6 +576,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     lensFlare: 1,
     lensRainQuality: 3,
     wakeDisplacement: 1,
+    foamDetail: 2,
     propsDetail: 1,
     kelp: 4000,
     reefLife: 1,
