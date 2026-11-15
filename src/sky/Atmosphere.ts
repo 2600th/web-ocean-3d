@@ -16,6 +16,7 @@ import {
   positionGeometry,
   pow,
   saturate,
+  select,
   sin,
   smoothstep,
   uniform,
@@ -23,7 +24,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
-import { PhysicalAtmosphere } from './PhysicalAtmosphere';
+import { PhysicalAtmosphere, SUN_ANG_R } from './PhysicalAtmosphere';
 
 /**
  * Sky dome.
@@ -138,6 +139,54 @@ const SKY_RADIANCE_SCALE = 0.16;
  * environment capture reaches, so it is a calibration, not a look control.
  */
 const MODEL_SCALE = 28.5;
+
+/**
+ * Drawn radius of the sun's disc, as a multiple of the real one (0.53 degrees
+ * across, `SUN_ANG_R`).
+ *
+ * At the real size the disc is 10 pixels across through a 55-degree lens at
+ * 1080p and 19 through a 30-degree one, and at sunset those pixels sat inside
+ * a Mie aureole that was itself clipped to white, so nothing separated them
+ * (`sky-2`, and with the clouds off). Games that want a readable sun draw it
+ * larger than life; 1.8 keeps it a disc rather than a moon-sized ball. Its
+ * radiance is divided by the area increase, so the energy the physical disc
+ * carries is unchanged before the display cap below applies.
+ */
+const SUN_DISC_SCALE = 1.8;
+
+/**
+ * Display cap on the disc's centre, in tone-mapper input units (scene radiance
+ * times `toneMappingExposure`, over three's ACES 0.6), on its brightest channel.
+ *
+ * The physical disc is ~15000 times the sun's illuminance per steradian, so it
+ * is pure white at every exposure and limb darkening, which takes the edge to
+ * 35-60 % of the centre, never shows: 60 % of a hundred times white is white.
+ * Capped here the centre still clips (ACES reaches 0.96 at 8) while the limb,
+ * at 0.35-0.6 of it in the sun's own reddened colour, lands on the shoulder and
+ * reads as the warm rim a photographed sunset sun has. Only the drawn disc is
+ * capped: the key light, the glint on the water and the environment capture
+ * (which hides the disc) never read it.
+ */
+const SUN_DISC_PEAK = 14;
+
+/**
+ * Soft knee on the sky's own luminance, in the same tone-mapper input units:
+ * untouched below `SKY_KNEE_START`, rolled off toward `SKY_KNEE_MAX` above.
+ *
+ * At the sunset preset the Mie aureole within 4 degrees of the sun measures
+ * 7-16 in the dome's units (`skyRadiance`; the sky 90 degrees away is 0.2),
+ * which is 6-13 into ACES: flat white in a 20-degree circle around the sun,
+ * which is what swallowed the disc. The physical ratio is right — a camera
+ * would clip it too — but a clipped circle is not what the art references
+ * draw. Compressing only the top of the range keeps the aureole a bright warm
+ * glow with its hue (the red channel still clips first, so it goes orange, not
+ * grey) and leaves headroom for the disc, while everything under the knee — the
+ * whole noon sky except the sun's immediate surround — is unchanged.
+ */
+const SKY_KNEE_START = 1.0;
+const SKY_KNEE_MAX = 2.2;
+/** three's ACES divides by this before its curve (`ACESFilmicToneMapping`). */
+const ACES_INPUT_SCALE = 0.6;
 
 /** Haze when a caller gives none: web-ocean's sea air is 3, a clear trade-wind day less. */
 const DEFAULT_HAZE = 1.5;
@@ -392,6 +441,13 @@ export class Atmosphere {
   // colour uniform to a float-ish node, which blocks legitimate vec3 chaining.
   private readonly uGround: any = uniform(new THREE.Color(0.05, 0.09, 0.13));
   private readonly uSunDiscVisible = uniform(1);
+  /** The disc's drawn radiance over `T / max(T)`, scene units; see `SUN_DISC_PEAK`. */
+  private readonly uDiscLevel = uniform(0);
+  /** `SKY_KNEE_START` / `SKY_KNEE_MAX` in scene units at the current display exposure. */
+  private readonly uKneeStart = uniform(SKY_KNEE_START * ACES_INPUT_SCALE);
+  private readonly uKneeMax = uniform(SKY_KNEE_MAX * ACES_INPUT_SCALE);
+  /** The renderer's `toneMappingExposure`, which the knee and the disc cap are set against. */
+  private displayExposure = 1;
   /**
    * Cloud coverage, applied to the dome **only while the environment is being
    * captured**. Zero in the view, where the marched layer draws the real thing.
@@ -667,6 +723,14 @@ export class Atmosphere {
       db * day + (NIGHT_HORIZON.b + (NIGHT_ZENITH.b - NIGHT_HORIZON.b) * up) * night +
         TWILIGHT_HORIZON.b * wHorizon + TWILIGHT_BELT.b * wBelt + TWILIGHT_ZENITH.b * wZenith,
     );
+    // The highlight knee, as the shader applies it.
+    const raw = out.r * LUMA.x + out.g * LUMA.y + out.b * LUMA.z;
+    const k0 = this.uKneeStart.value as number;
+    const k1 = this.uKneeMax.value as number;
+    if (raw > k0) {
+      const over = raw - k0;
+      out.multiplyScalar((k0 + over / (1 + over / (k1 - k0))) / raw);
+    }
     const luma = out.r * LUMA.x + out.g * LUMA.y + out.b * LUMA.z;
     return out.setRGB(
       Math.max(0, luma + (out.r - luma) * SKY_CHROMA),
@@ -762,6 +826,20 @@ export class Atmosphere {
     this.applyParams();
     this.envDirty = true;
     if (structural) this.envForce = true;
+  }
+
+  /**
+   * The renderer's `toneMappingExposure`, which the sky's highlight knee and the
+   * disc's display cap are expressed against (`SKY_KNEE_START`, `SUN_DISC_PEAK`).
+   * A uniform write; re-captures the environment, since the knee is in it.
+   */
+  setDisplayExposure(exposure: number): void {
+    const e = Math.max(1e-3, exposure);
+    if (e === this.displayExposure) return;
+    this.displayExposure = e;
+    this.applyParams();
+    this.envDirty = true;
+    this.envForce = true;
   }
 
   /** Read-only view of the currently applied parameters. */
@@ -924,6 +1002,20 @@ export class Atmosphere {
       .set(this._sunDirection.x, 0, this._sunDirection.z)
       .normalize();
     this.uGround.value.copy(p.groundColor);
+
+    // The knee and the disc cap, from tone-mapper input units to scene units.
+    const toScene = ACES_INPUT_SCALE / this.displayExposure;
+    this.uKneeStart.value = SKY_KNEE_START * toScene;
+    this.uKneeMax.value = SKY_KNEE_MAX * toScene;
+    // The disc: physical radiance (energy-conserving at the drawn size) scaled
+    // like the dome, capped for display, over its own peak transmittance so
+    // the shader's `T(dir) / max(T)` keeps the lower limb redder than the upper.
+    this.model.transmittance(this._sunDirection.y, _rad);
+    const peakT = Math.max(_rad.r, _rad.g, _rad.b);
+    const drawnR = SUN_ANG_R * SUN_DISC_SCALE;
+    const physical = (peakT / (Math.PI * drawnR * drawnR)) * MODEL_SCALE * (this.uDayRadiance.value as number);
+    const cap = SUN_DISC_PEAK * toScene * (1 - 0.95 * night);
+    this.uDiscLevel.value = peakT > 1e-6 ? Math.min(physical, cap) / peakT : 0;
 
     // Published for the aerial perspective, which takes its *hue* from these.
     // web-ocean's own ocean fog uses exactly this sum (`fogExt`).
@@ -1163,8 +1255,13 @@ export class Atmosphere {
       // web-ocean clamps `dir.y` to 0.0005).
       const up = normalize(vec3(dir.x, max(dir.y, 0.0005), dir.z));
       const sky = this.model.skyView(up);
-      const disc = this.model.sunDisc(dir).mul(this.uSunDiscVisible);
-      const dayColor = sky.add(disc).mul(MODEL_SCALE).toVar('dayColor');
+      // The disc is added after the highlight knee below, at its own display
+      // level (`SUN_DISC_PEAK`), so the knee cannot compress it back into the glow.
+      const disc = this.model
+        .sunDisc(dir, SUN_ANG_R * SUN_DISC_SCALE)
+        .mul(this.uDiscLevel)
+        .mul(this.uSunDiscVisible);
+      const dayColor = sky.mul(MODEL_SCALE).toVar('dayColor');
 
       // --- overcast ----------------------------------------------------------
       //
@@ -1264,6 +1361,13 @@ export class Atmosphere {
         .add(nightSky.mul(this.uNightRadiance))
         .add(twilight)
         .toVar('skyColor');
+
+      // Highlight knee (`SKY_KNEE_START`): luminance rolled off, hue kept.
+      const raw = dot(color, vec3(LUMA.x, LUMA.y, LUMA.z));
+      const over = raw.sub(this.uKneeStart).max(0);
+      const kneed = this.uKneeStart.add(over.div(over.div(this.uKneeMax.sub(this.uKneeStart)).add(1)));
+      color.mulAssign(select(raw.greaterThan(this.uKneeStart), kneed.div(raw.max(1e-6)), float(1)));
+      color.addAssign(disc.mul(belowness.oneMinus()));
 
       const luma = dot(color, vec3(LUMA.x, LUMA.y, LUMA.z));
       const graded = mix(vec3(luma, luma, luma), color, SKY_CHROMA);

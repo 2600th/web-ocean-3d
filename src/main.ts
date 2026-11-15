@@ -3233,6 +3233,9 @@ class App {
     );
 
     this.renderer.toneMappingExposure = preset.toneMappingExposure;
+    // The sky's highlight knee and the sun disc's display cap are set in
+    // tone-mapper units, so the dome has to know where white is too.
+    this.atmosphere.setDisplayExposure(preset.toneMappingExposure);
     // The bloom needs to know where white is, and only the exposure knows.
     //
     // Tone mapping happens after this whole post chain, so "1.0" in here is not

@@ -155,13 +155,24 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.46,
       sunAzimuth: 2.4,
-      haze: 1.5,
+      // Recalibrated on corrected captures (`capturePixels` stopped encoding
+      // sRGB twice in fcc27da; the double encoding had lifted every dark tone
+      // and this sky was tuned through it). Measured at 1 and 1.5 the clear
+      // sky overhead rendered sRGB (12, 42, 85), a navy, against the
+      // references' (55, 93, 147) (Water Pro) and (123, 153, 193) (web-ocean).
+      // At 2.2 and 2.5 it is (38, 83, 143) overhead, (63, 107, 164) in the
+      // upper frame of `sky-day-b` against Water Pro's (55, 93, 147) there,
+      // and (122, 163, 201) toward the horizon against its (122, 158, 192):
+      // a deep blue overhead, a pale bright band at the horizon. The haze is
+      // what pales the horizon; the exposure lifts the whole dome, and with
+      // it the environment capture, so the sea's reflected sky follows.
+      haze: 2.5,
       turbidity: 2.2,
       rayleigh: 1.5,
       mieCoefficient: 0.004,
       mieDirectionalG: 0.8,
       overcast: 0,
-      exposure: 1,
+      exposure: 2.2,
       nightIntensity: 0,
       moonElevation: -0.5,
       moonAzimuth: 0,
@@ -777,11 +788,16 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.075,
       sunAzimuth: 4.6,
-      haze: 3.0,
+      // 2.2 and 0.8, from 3 and 0.88. With the forward lobe that tight and that
+      // much aerosol, the sky within 4 degrees of the sun was 30-80 times the
+      // sky away from it (`skyRadiance`: 16 against 0.2-0.3) and a 20-degree
+      // circle of it clipped to white, which is where the disc disappeared.
+      // A broader, weaker lobe leaves an orange glow the disc can sit in.
+      haze: 2.2,
       turbidity: 6,
       rayleigh: 2.9,
       mieCoefficient: 0.012,
-      mieDirectionalG: 0.88,
+      mieDirectionalG: 0.8,
       overcast: 0,
       exposure: 1,
       nightIntensity: 0.05,
