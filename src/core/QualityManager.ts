@@ -373,6 +373,13 @@ export interface QualitySettings {
    */
   reefLife: number;
   /**
+   * Fraction of the seabed's loose rock drawn — talus, boulder fields and
+   * rubble (see `src/scene/Rocks.ts`) — and how far the fine outcrop meshes
+   * and rock LODs reach. A rank threshold and a range, never a rebuild; the
+   * outcrops themselves are the geology and exist at every tier.
+   */
+  reefRocks: number;
+  /**
    * Fraction of the procedural sea creatures — turtles, rays, jellyfish, reef
    * fish clouds, crabs (see `src/scene/SeaCreatures.ts`). Zero at Low, for the
    * same reason the fish are.
@@ -442,6 +449,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     vegetationRange: 45,
     vegetationShadows: false,
     reefLife: 0.3,
+    reefRocks: 0.35,
     seaCreatures: 0,
     meadow: 0,
     canopy: 4000,
@@ -485,6 +493,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     vegetationRange: 65,
     vegetationShadows: false,
     reefLife: 0.5,
+    reefRocks: 0.6,
     seaCreatures: 0.5,
     meadow: 18000,
     canopy: 9000,
@@ -526,6 +535,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     vegetationRange: 95,
     vegetationShadows: true,
     reefLife: 0.8,
+    reefRocks: 0.85,
     seaCreatures: 0.8,
     meadow: 38000,
     canopy: 15000,
@@ -567,6 +577,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     vegetationRange: 120,
     vegetationShadows: true,
     reefLife: 1,
+    reefRocks: 1,
     seaCreatures: 1,
     meadow: 62000,
     canopy: 20000,
@@ -610,6 +621,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     vegetationRange: 140,
     vegetationShadows: true,
     reefLife: 1,
+    reefRocks: 1,
     seaCreatures: 1,
     meadow: 90000,
     canopy: 24000,

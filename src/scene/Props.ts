@@ -1205,6 +1205,13 @@ export class Props {
   private placeReefGarden(dressing: Dressing, random: () => number): void {
     const garden = new THREE.Group();
     garden.name = 'reef-garden';
+    // Retired for the period: `soft_coral_set` is a generic Indo-Pacific
+    // soft-coral kit, and the Caribbean carpet is gorgonians — `ReefLife`'s
+    // procedural sea plumes, rods and fans now carry it. Still built, hidden,
+    // because this function's draws on `random` feed every placement after it
+    // and the island dressing must not move; dropping the download needs that
+    // stream replayed without the bake.
+    garden.visible = false;
     this.object.add(garden);
 
     const kinds: {

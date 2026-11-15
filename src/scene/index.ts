@@ -10,6 +10,7 @@ export { FishSchool, loadReefFish, type FishSchoolOptions, type FishSpecies } fr
 export { KelpForest, type KelpForestOptions } from './Kelp';
 export { GroundCover, type GroundCoverOptions } from './GroundCover';
 export { ReefLife, type ReefLifeOptions } from './ReefLife';
+export { Rocks, type RocksOptions } from './Rocks';
 export { SeaCreatures, type SeaCreaturesOptions } from './SeaCreatures';
 export { IslandCanopy, type IslandCanopyOptions } from './Canopy';
 export { IslandMeadow, type IslandMeadowOptions } from './Meadow';

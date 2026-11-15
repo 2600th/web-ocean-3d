@@ -4,6 +4,8 @@ This project includes code adapted from the following open-source projects.
 
 ## abyssal-garden
 
+https://github.com/Noniv/abyssal-garden
+
 The underwater medium (analytic height-dependent in-scatter), the volumetric
 light shafts (ray march, depth-aware blur and upsample), the chromatic caustics
 and the submerged hemisphere ambient are adapted from abyssal-garden's WGSL
@@ -19,6 +21,17 @@ shader and its world layout:
 - `src/scene/LeafField.ts`
 - `src/scene/Kelp.ts`
 - `src/scene/GroundCover.ts`
+
+The seabed geology and its reef dressing are adapted from abyssal-garden's
+world builder: icosphere rock chunks, naive surface nets and layered-rock
+shading (`src/scene/reef/RockKit.ts`), the outcrop density profile of segment
+columns with overhang, waist, base flare, strata and relief
+(`src/scene/Rocks.ts`), and sponges and corals clustered on rock surfaces
+(`src/scene/ReefLife.ts`):
+
+- `src/scene/reef/RockKit.ts`
+- `src/scene/Rocks.ts`
+- `src/scene/ReefLife.ts`
 
 ```
 MIT License

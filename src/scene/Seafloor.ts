@@ -26,6 +26,8 @@ import { occludeLight } from '../core/lightOcclusion';
 // Shore hook: the swash wetting the sand. Self-contained; see `ocean/Surf`.
 import { applySwashToGround, swashRoughness } from '../ocean/Surf';
 import { SEEDS, mulberry32 } from '../core/random';
+// Underwater detail: the shared rock texture, for rubble on the sand.
+import { rockDetailTexture } from './reef/RockKit';
 
 /**
  * Sandy seafloor.
@@ -63,6 +65,14 @@ type Node = any;
  */
 const RAIN_WET_ALBEDO = 0.62;
 const RAIN_WET_ROUGHNESS = 0.5;
+
+/** A 1x1 black map: no rock anywhere, until `Rocks` supplies the real one. */
+function placeholderInfluence(): THREE.DataTexture {
+  const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.colorSpace = THREE.NoColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
 
 // ---------------------------------------------------------------- noise source
 
@@ -1049,6 +1059,18 @@ export class Seafloor {
   /** March steps for the terrain's own shadow; 0 leaves the island unshadowed. */
   private readonly uShadowSteps: Node = uniform(24, 'int');
   private causticsNode: Node = null;
+  /**
+   * Where `Rocks` stands, as a map over the seabed (r scree, g foot); a black
+   * placeholder until `setRockInfluence`. Swapping the texture is a binding
+   * change, not a shader rebuild.
+   */
+  private readonly rockMap = texture(placeholderInfluence());
+  private readonly uRockOrigin = uniform(new THREE.Vector2(0, 0));
+  private readonly uRockInvSize = uniform(1 / 4096);
+  /** `vec4(rubble, foot, grain, underwater)`, shared by the colour and normal graphs. */
+  private readonly seabedDetail: Node;
+  /** World-xz slope of the rubble bump, from the same fetches. */
+  private readonly seabedBump: Node;
   private cloudShadow: ((worldPosition: Node) => Node) | null = null;
   private occlusionAttached = false;
   private disposed = false;
@@ -1178,6 +1200,39 @@ export class Seafloor {
      * exists in the bump would otherwise still be sampled as if it were flat
      * ground, which is the same projection error one level down.
      */
+    /**
+     * The seabed's own small-scale story, below the swash only.
+     *
+     * The bed under the water was one sand colour mottled at 23 m with a
+     * ripple normal — correct for open sand and wrong next to an outcrop, where
+     * real reef floors are scree, coral rubble and a darker silty skirt in the
+     * rock's lee. The rubble is the rock texture (`RockKit`) read flat at two
+     * scales, so pebble and outcrop share a grain; where it lies comes from the
+     * rock map, plus sparse patches of its own on open sand. It starts below
+     * three metres of depth so the beach, the swash band and the shore-break
+     * frames are untouched.
+     */
+    const rockDetail = rockDetailTexture();
+    {
+      const xz: Node = vec2(positionWorld.x, positionWorld.z);
+      const depth: Node = positionWorld.y.negate();
+      const underwater: Node = depth.smoothstep(1.5, 3.5).toVar('sfUw');
+      const map: Node = this.rockMap.sample(xz.sub(this.uRockOrigin).mul(this.uRockInvSize)).toVar('sfRockMap');
+      const coarse: Node = texture(rockDetail, xz.mul(1 / 1.7)).toVar('sfRub1');
+      const fine: Node = texture(rockDetail, xz.mul(1 / 0.53).add(vec2(0.37, 0.71))).toVar('sfRub2');
+      const patches: Node = this.nodes.valueNoise(xz.mul(1 / 11).add(vec2(9.2, 1.3))).smoothstep(0.64, 0.84);
+      const rubble: Node = map.r.max(patches.mul(0.5)).mul(underwater).toVar('sfRubble');
+      const grain: Node = coarse.b.mul(0.6).add(fine.b.mul(0.4)).toVar('sfGrain');
+      this.seabedDetail = vec4(rubble, map.g.mul(underwater), grain, underwater);
+      const slopeCoarse: Node = coarse.rg.mul(2).sub(1);
+      const slopeFine: Node = fine.rg.mul(2).sub(1);
+      // Rubble is lumpy; open sand keeps a faint grain so the key light
+      // catches something on it at a grazing angle.
+      this.seabedBump = slopeCoarse
+        .mul(rubble.mul(0.75).add(underwater.mul(0.08)))
+        .add(slopeFine.mul(rubble.mul(0.4).add(underwater.mul(0.06))));
+    }
+
     this.material.normalNode = Fn(() => {
       const wp = positionWorld.toVar();
       const geo = normalize(normalWorldGeometry).toVar();
@@ -1193,7 +1248,11 @@ export class Seafloor {
       // A heightfield's normal is `(-dh/dx, 1, -dh/dz)`, so added relief
       // subtracts its gradient from the horizontal components.
       const n = normalize(
-        vec3(geo.x.sub(d.y.mul(bumpWeight)), geo.y, geo.z.sub(d.z.mul(bumpWeight))),
+        vec3(
+          geo.x.sub(d.y.mul(bumpWeight)).add(this.seabedBump.x),
+          geo.y,
+          geo.z.sub(d.z.mul(bumpWeight)).add(this.seabedBump.y),
+        ),
       ).toVar();
 
       // Whiteout triplanar blend (Ben Golus, "Normal Mapping for a Triplanar
@@ -1272,6 +1331,16 @@ export class Seafloor {
   setCaustics(node: unknown): void {
     this.causticsNode = (node ?? null) as Node;
     this.rebuildColorNode();
+  }
+
+  /**
+   * Hands over `Rocks`' map of the geology. A texture swap and two uniforms;
+   * the shader already samples it.
+   */
+  setRockInfluence(influence: { texture: THREE.Texture; minX: number; minZ: number; size: number }): void {
+    this.rockMap.value = influence.texture;
+    (this.uRockOrigin.value as THREE.Vector2).set(influence.minX, influence.minZ);
+    this.uRockInvSize.value = 1 / influence.size;
   }
 
   /** Scales the injected caustics without a rebuild. */
@@ -1481,7 +1550,23 @@ export class Seafloor {
       // Tight, because this is the beach edge: unambiguously sand above it,
       // seabed below it.
       const aboveWater: Node = wp.y.smoothstep(-0.8, 1.6).toVar();
-      const submerged: Node = mix(deepSilt, shallowSand, smoothstepDownNode(depth, 4, 70)).toVar();
+      const sand: Node = mix(deepSilt, shallowSand, smoothstepDownNode(depth, 4, 70)).toVar();
+      // Underwater detail; see `seabedDetail`. Rubble is dark stone flecked
+      // with pale coral fragments; algal turf greys and greens the open sand in
+      // broad patches; the rock's foot is a darker, siltier skirt.
+      const sd: Node = this.seabedDetail;
+      const rubbleTone: Node = mix(vec3(0.11, 0.105, 0.095), vec3(0.4, 0.37, 0.31), sd.z.smoothstep(0.38, 0.78));
+      const rubbled: Node = mix(sand, rubbleTone, sd.x.mul(sd.z.smoothstep(0.22, 0.5)).mul(0.85)).toVar();
+      const flats: Node = valueNoise(xz.mul(1 / 37).add(vec2(3.1, 7.7))).toVar();
+      const turf: Node = flats
+        .smoothstep(0.58, 0.8)
+        .mul(sd.w)
+        .mul(smoothstepDownNode(depth, 30, 60))
+        .mul(0.55);
+      const turfed: Node = mix(rubbled, rubbled.mul(vec3(0.62, 0.74, 0.55)), turf);
+      const pale: Node = flats.smoothstep(0.3, 0.12).mul(sd.w).mul(0.14).add(1);
+      const speckle: Node = mix(float(1), sd.z.mul(0.32).add(0.84), sd.w);
+      const submerged: Node = turfed.mul(pale).mul(speckle).mul(sd.y.mul(-0.38).add(1)).toVar();
       const base: Node = mix(submerged, ground, aboveWater).toVar();
 
       // The wet band: everything the swash reaches is darker and, through
