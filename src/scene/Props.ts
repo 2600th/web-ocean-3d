@@ -1,10 +1,37 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { HERO_ANISOTROPY, dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
+import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
 import { IslandDetail, applyTideline } from './islandDetail';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
+import { LIGHTHOUSE_BEARING, inLighthouseClearing, lighthouseSite } from './props/site';
+import {
+  CASK_PRESETS,
+  LIGHTHOUSE_LAMP_Y,
+  M as PM,
+  PropLibrary,
+  beaconLevel,
+  buildAnchor,
+  buildBartmann,
+  buildBeaconHalo,
+  buildBucket,
+  buildCannon,
+  buildCask,
+  buildCaseBottle,
+  buildChest,
+  buildConch,
+  buildCutlass,
+  buildGrating,
+  buildKeepersHut,
+  buildLantern,
+  buildLighthouse,
+  buildOliveJar,
+  buildRopeCoil,
+  buildStoveCask,
+  buildWreckage,
+  type PropPart,
+} from './props/index';
 
 /**
  * Scene dressing: floating props near the play area, the island that sits on the
@@ -50,11 +77,6 @@ import { SEEDS, mulberry32 } from '../core/random';
  * rather than the horizon, which is why the detail scale thins it hardest.
  */
 
-// KTX2 + Meshopt builds of the Poly Haven 1k glTFs; see `HERO_ASSETS` in
-// `scripts/optimize-assets.mjs`.
-const BUOY_URL = '/models/hero/ocean_buoy.glb';
-const BARREL_URL = '/models/hero/barrel_03.glb';
-
 /** Scene-dressing library. Every entry is optional: a 404 thins the scene. */
 const DRESSING_URLS = {
   // Shore rock. The three `rock_*` kinds are closed solids and the coast kinds
@@ -76,16 +98,10 @@ const DRESSING_URLS = {
   pinnace: '/models/dressing/ship_pinnace.glb',
   pier: '/models/dressing/modular_wooden_pier.glb',
   fort: '/models/dressing/modular_fort_01.glb',
-  cannon: '/models/dressing/cannon_01.glb',
-  barrels: '/models/dressing/wooden_barrels_01.glb',
-  lantern: '/models/dressing/wooden_lantern_01.glb',
-  coveCrate: '/models/dressing/wooden_crate_02.glb',
-  bucket: '/models/dressing/wooden_bucket_01.glb',
-  jug: '/models/dressing/jug_01.glb',
-  estoc: '/models/dressing/antique_estoc.glb',
-  chest: '/models/dressing/treasure_chest.glb',
-  reefCrate: '/models/dressing/wooden_crate_01.glb',
-  shell: '/models/dressing/lambis_shell.glb',
+  // The camp's stores, the fort's gun, the reef find and the floating casks
+  // and flotsam are not in this table either: they are built by `./props` at
+  // load. See `placeCove`, `placeFind` and `placeFloaters` for what replaced
+  // which download, and why.
   // The reef garden's carpet. See `placeReefGarden` for why these are the
   // shapes and ASSET_LICENSES.md for where they come from — the only asset in
   // the project not from Poly Haven, because Poly Haven publishes no coral.
@@ -158,7 +174,6 @@ const LOD_REFRESH_DISTANCE = 25;
 /** Shared empty result, so the common case allocates nothing. */
 const EMPTY_MESHES: THREE.InstancedMesh[] = [];
 
-const BUOY_COUNT = 5;
 const BARREL_COUNT = 6;
 const ROCK_COUNT = 34;
 
@@ -412,34 +427,22 @@ const PINNACE_TRIM = -0.05;
 const CAMP_OFFSHORE = -46;
 
 /**
- * The sword. The scan stands point *up* with its pommel 0.2 m below the origin,
- * so it is turned over before it is planted — hence the pi in the rotation and
- * `ESTOC_POINT`, which is where the tip ends up once it has been.
+ * The cutlass, thrust point-down into the sand between the camp and the sea.
  *
- * Thrust into the sand rather than laid on it. A sword lying flat on a beach is
- * a 4 cm silhouette from any camera higher than the dune line; standing, it
- * casts a shadow across the sand and reads from the water.
+ * It replaced `antique_estoc`, a thrusting sword of c.1400-1600 that was a
+ * century out of use by 1700; the short curved cutlass and the naval hanger are
+ * what a crew carried. Built point at the origin, hilt up, so planting it is a
+ * lean and a bury and nothing else.
+ *
+ * Standing rather than lying: a sword flat on a beach is a 4 cm silhouette
+ * from any camera higher than the dune line; standing, it casts a shadow
+ * across the sand and reads from the water.
  */
-const ESTOC_SCALE = 1.15;
-const ESTOC_LEAN = 0.3;
-/** Model-space metres from the origin to the point, at unit scale. */
-const ESTOC_POINT = 1.29;
-/** Metres of blade buried. */
-const ESTOC_BURY = 0.35;
+const CUTLASS_SCALE = 1.25;
+const CUTLASS_LEAN = 0.3;
+/** Metres of blade buried, before scale. */
+const CUTLASS_BURY = 0.2;
 
-/**
- * The three jugs, in the group's own frame, world metres.
- *
- * Two upright and one on its side, which is the whole difference between "a
- * camp" and "three jugs left in a row". The tipped one's `y` rests it on its
- * shoulder: a couple of centimetres of it buried in the sand is invisible, and a
- * couple of centimetres floating is not.
- */
-const JUG_PIECES: readonly KitPiece[] = [
-  { x: 0, z: 0, yaw: 0.4, scale: 2.2 },
-  { x: 0.62, z: 0.38, yaw: 2.1, scale: 2.2 },
-  { x: -0.3, y: 0.14, z: 0.66, yaw: 5, tilt: 1.45, scale: 2.2 },
-];
 
 // ------------------------------------------------------------- the shore fort
 
@@ -516,7 +519,13 @@ const FORT_PIECES = [
  * undoes `FORT_SINK`, so the carriage sits on the ground the walls are dug into.
  */
 const CANNON_LOCAL = { x: 4.4, z: 9.5, yaw: 0.18 } as const;
-const CANNON_SCALE = 1.7;
+/**
+ * The procedural nine-pounder is built at true size (2.75 m barrel). The
+ * `cannon_01` scan was placed at 1.7x its own scale to read from the water; at
+ * 1.15 the new gun matches that footprint (3.2 m over the carriage and barrel)
+ * without becoming a siege piece.
+ */
+const CANNON_SCALE = 1.15;
 
 /** Centre of the underwater find, world metres. A local high on the plateau. */
 const FIND = { x: -38, z: -66 } as const;
@@ -524,6 +533,8 @@ const FIND = { x: -38, z: -66 } as const;
 const FIND_SPREAD = 13;
 
 const UP = new THREE.Vector3(0, 1, 0);
+/** Axis the conch is rolled about to lie on its lip. */
+const _conchTip = new THREE.Vector3(1, 0, 0);
 const TAU = Math.PI * 2;
 
 /**
@@ -721,15 +732,18 @@ export class Props {
   /** Landmarks, beach dressing and the camp; all generated, nine draws. */
   private readonly islandDetail: IslandDetail;
 
+  /** Procedural period props: casks, chests, stores, lighthouse. See `./props`. */
+  private readonly library = new PropLibrary();
+  /** World position of the lighthouse lamp, for `LocalLights`. */
+  private beacon: THREE.Vector3 | null = null;
+
   private constructor(
-    sources: LoadedSources,
     dressing: Dressing,
     seed: number,
     detailScale: number,
   ) {
     this.object = new THREE.Group();
     this.object.name = 'props';
-    this.sources.push(sources.buoy, sources.barrel);
     for (const entry of Object.values(dressing)) {
       if (entry.base) this.sources.push(entry.base);
       for (const lod of entry.lods) this.sources.push(lod);
@@ -737,7 +751,7 @@ export class Props {
 
     const random = mulberry32(seed);
 
-    this.placeFloaters(sources.buoy, sources.barrel, random);
+    this.placeFloaters(random);
     this.placeIsland(dressing, random);
     this.reefPatches = reefPatches();
     this.placeReef(dressing, random);
@@ -747,7 +761,8 @@ export class Props {
     this.dressIsland(dressing, dressingRandom);
     this.placeCove(dressing);
     this.placeFort(dressing);
-    this.placeFind(dressing, dressingRandom);
+    this.placeFind(dressingRandom);
+    this.placeLighthouse();
 
     this.islandDetail = new IslandDetail({ bearing: COVE_BEARING, shore: shorelineRadius(COVE_BEARING) });
     this.object.add(this.islandDetail.object);
@@ -770,16 +785,10 @@ export class Props {
   static async load(loader: AssetLoader, options: PropsOptions = {}): Promise<Props> {
     const urlKeys = Object.keys(DRESSING_URLS) as UrlKey[];
 
-    const [hero, manifest] = await Promise.all([
-      Promise.all([
-        loader.load(BUOY_URL, { anisotropy: HERO_ANISOTROPY }),
-        loader.load(BARREL_URL, { anisotropy: HERO_ANISOTROPY }),
-      ]),
-      loadDressingManifest().catch((error: unknown) => {
-        console.warn('[ocean] dressing manifest unavailable; loading base models only', error);
-        return null;
-      }),
-    ]);
+    const manifest = await loadDressingManifest().catch((error: unknown) => {
+      console.warn('[ocean] dressing manifest unavailable; loading base models only', error);
+      return null;
+    });
 
     const requests = urlKeys.map((key) => {
       const model = manifest?.models[modelSlug(DRESSING_URLS[key])];
@@ -807,9 +816,6 @@ export class Props {
     const resultsByKey = new Map(
       loaded.map(({ request, results }) => [request.key, results]),
     );
-
-    const [buoy, barrel] = hero;
-    for (const group of hero) group.updateMatrixWorld(true);
 
     const dressing = {} as Dressing;
     for (const key of FLORA_KEYS) dressing[key] = flora[key];
@@ -845,7 +851,6 @@ export class Props {
     }
 
     return new Props(
-      { buoy, barrel },
       dressing,
       options.seed ?? SEEDS.props,
       options.detailScale ?? 1,
@@ -894,7 +899,12 @@ export class Props {
    * World positions of the island's light sources — the camp fire, the jetty
    * torches and the jetty lantern — for `lighting/LocalLights`.
    */
-  lightAnchors(): { fire: THREE.Vector3; torches: THREE.Vector3[]; lanterns: THREE.Vector3[] } {
+  lightAnchors(): {
+    fire: THREE.Vector3;
+    torches: THREE.Vector3[];
+    lanterns: THREE.Vector3[];
+    beacon: THREE.Vector3 | null;
+  } {
     const lanterns: THREE.Vector3[] = [];
     const lantern = this.object.getObjectByName('cove-lantern');
     if (lantern) {
@@ -902,7 +912,16 @@ export class Props {
       const box = new THREE.Box3().setFromObject(lantern);
       if (!box.isEmpty()) lanterns.push(box.getCenter(new THREE.Vector3()));
     }
-    return { ...this.islandDetail.lightAnchors, lanterns };
+    return { ...this.islandDetail.lightAnchors, lanterns, beacon: this.beacon?.clone() ?? null };
+  }
+
+  /**
+   * The lighthouse lamp's level, 0..1 with its flicker, from `LocalLights`.
+   * Drives the lit glazing, the candle flames and the far halo through one
+   * uniform, so it is a write per frame and never a recompile.
+   */
+  setBeaconLevel(level: number): void {
+    beaconLevel.value = level;
   }
 
   /** Light on the camp smoke: what the sky gives it, and the fire under it. See `IslandDetail.setLighting`. */
@@ -1070,41 +1089,80 @@ export class Props {
     this.ownedGeometries.length = 0;
     for (const source of this.sources) source.clear();
     this.sources.length = 0;
+    this.library.dispose();
   }
 
   // ------------------------------------------------------------------ internals
 
   /**
-   * Scatters buoys and barrels on an annulus around the origin. The inner
+   * Scatters flotsam and casks on an annulus around the origin. The inner
    * radius keeps them clear of the ship at spawn, the outer radius keeps them
    * inside the wake texture's footprint and inside the shallow plateau, where
    * they read against the turquoise instead of vanishing into deep blue.
+   *
+   * Both used to be downloads, and both were wrong for 1700: `ocean_buoy` is a
+   * modern steel channel buoy (Poly Haven files it under "project lighthouse",
+   * tagged "marine navigation"), and `barrel_03` a blue 200-litre oil drum
+   * that the cargo strings called a cask of rum. Wreckage is what a sea after a
+   * wreck actually carries — gratings, planks lashed to a spar, a cask stove in
+   * — and the casks are rum hogsheads, iron-hooped, floating on their sides
+   * with the bung up as a full cask does. 1.3 MB of glTF and KTX2 gone.
+   *
+   * The random draws are the ones the buoys and barrels made, one for one, so
+   * the island rocks and the reef that draw from the same stream after this
+   * have not moved.
    */
-  private placeFloaters(buoy: THREE.Group, barrel: THREE.Group, random: () => number): void {
-    const normaliseBuoy = normaliseFloater(buoy, 2.4);
-    const normaliseBarrel = normaliseFloater(barrel, 1.15);
-
-    for (let i = 0; i < BUOY_COUNT; i++) {
-      const angle = ((i + random() * 0.6) / BUOY_COUNT) * Math.PI * 2;
+  private placeFloaters(random: () => number): void {
+    const flotsam: { recipe: Parameters<PropLibrary['group']>[1]; radius: number }[] = [
+      { recipe: (pb, lod) => buildGrating(pb, PM.identity(), lod, 11), radius: 0.6 },
+      { recipe: (pb, lod) => buildWreckage(pb, PM.identity(), lod, 12), radius: 1.1 },
+      { recipe: (pb, lod) => buildStoveCask(pb, PM.identity(), lod, 13), radius: 0.55 },
+      { recipe: (pb, lod) => buildWreckage(pb, PM.identity(), lod, 14), radius: 1.1 },
+      { recipe: (pb, lod) => buildGrating(pb, PM.identity(), lod, 15), radius: 0.6 },
+    ];
+    for (let i = 0; i < flotsam.length; i++) {
+      const angle = ((i + random() * 0.6) / flotsam.length) * Math.PI * 2;
       const radius = 55 + random() * 145;
-      const object = normaliseBuoy();
-      object.name = `buoy-${i}`;
+      const object = new THREE.Object3D();
+      object.name = `flotsam-${i}`;
+      object.add(this.library.group(`flotsam-${i}-mesh`, flotsam[i].recipe, 1));
       object.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       object.rotation.y = random() * Math.PI * 2;
       this.object.add(object);
-      this.floaters.push({ object, radius: 1.1 });
+      this.floaters.push({ object, radius: flotsam[i].radius });
     }
 
+    // One cask geometry for all six and for the gameplay cargo, which clones
+    // `barrel-0`: same geometry and materials, so no new pipeline.
+    const hogshead = CASK_PRESETS.hogshead;
+    // On its side, waterline at a little over half the bilge diameter.
+    const caskRecipe: Parameters<PropLibrary['group']>[1] = (pb, lod) =>
+      buildCask(pb, PM.at(0, -hogshead.bilge * 0.05, -hogshead.height / 2, Math.PI / 2, 0, 0), {
+        ...hogshead,
+        staves: 18,
+        hoops: 'iron',
+        bung: true,
+        lod,
+        seed: 21,
+      });
+    const caskParts = this.library.parts(caskRecipe, 0);
     for (let i = 0; i < BARREL_COUNT; i++) {
       // Barrels cluster: flotsam travels together.
       const cluster = i < BARREL_COUNT / 2 ? 0 : 1;
       const baseAngle = cluster === 0 ? 2.1 : 4.9;
       const angle = baseAngle + (random() - 0.5) * 0.5;
       const radius = (cluster === 0 ? 34 : 72) + random() * 22;
-      const object = normaliseBarrel();
+      const object = new THREE.Object3D();
       object.name = `barrel-${i}`;
+      for (const part of caskParts) {
+        const mesh = new THREE.Mesh(part.geometry, part.material);
+        mesh.name = `barrel-${i}-${part.material.name}`;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        object.add(mesh);
+      }
       object.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      object.rotation.set((random() - 0.5) * 0.5, random() * Math.PI * 2, (random() - 0.5) * 0.5);
+      object.rotation.set((random() - 0.5) * 0.3, random() * Math.PI * 2, (random() - 0.5) * 0.3);
       this.object.add(object);
       this.floaters.push({ object, radius: 0.62 });
     }
@@ -1984,12 +2042,24 @@ export class Props {
     // Parented to the jetty rather than placed in world space: a lantern on a
     // pier is on the pier, and this way moving the jetty cannot leave it hanging
     // over open water. The scale compensates for the jetty's own.
-    const lantern = this.buildStaticFrom(dressing.lantern, 'cove-lantern');
-    if (lantern && jetty) {
+    if (jetty) {
+      const lantern = this.library.lod('cove-lantern', (pb, lod) => buildLantern(pb, PM.identity(), lod), [0, 30, 90]);
       lantern.position.set(0.86, PIER_DECK_LOCAL, -1.4);
       lantern.rotation.y = 0.7;
-      lantern.scale.setScalar(1.4);
+      lantern.scale.setScalar(1.6 / JETTY_SCALE);
       jetty.add(lantern);
+      // A coil of tarred line on the deck by the lantern, and one of hemp further out.
+      const coils = this.library.lod(
+        'cove-rope',
+        (pb, lod) => {
+          buildRopeCoil(pb, PM.at(-0.7, 0, -2.6, 0, 0.4, 0), lod, true);
+          buildRopeCoil(pb, PM.at(0.6, 0, 3.4, 0, 2.2, 0), lod, false);
+        },
+        [0, 30, 90],
+      );
+      coils.position.set(0, PIER_DECK_LOCAL, 0);
+      coils.scale.setScalar(1 / JETTY_SCALE);
+      jetty.add(coils);
     }
 
     const pinnace = this.buildStaticFrom(dressing.pinnace, 'cove-pinnace');
@@ -2009,57 +2079,75 @@ export class Props {
       cove.add(pinnace);
     }
 
-    const barrels = this.buildStaticFrom(dressing.barrels, 'cove-barrels');
-    if (barrels) {
-      covePoint(shore + CAMP_OFFSHORE, -12, point);
-      seatOnGround(barrels, point, 2.4, 0.9, 5);
-      barrels.scale.setScalar(1.35);
-      cove.add(barrels);
-    }
+    // The camp's stores. Each replaced a scan from a farmhouse set (Poly Haven
+    // tags `wooden_barrels_01` "celler, farmhouse", the crate and the lantern
+    // "farmhouse", the jug "ceramic, milk, white, fancy"), 2.2 MB between them.
+    // What a careening camp of 1700 kept ashore was casks of water, beef and
+    // rum, the men's sea chests, stoneware and case bottles.
+    const stores = this.library.lod(
+      'cove-barrels',
+      (pb, lod) => {
+        const p = CASK_PRESETS;
+        // Two hogsheads standing and a barrel on its side chocked against them.
+        buildCask(pb, PM.at(-0.55, 0, 0, 0, 0.3, 0), { ...p.hogshead, staves: 18, hoops: 'mixed', bung: true, lod, seed: 31 });
+        buildCask(pb, PM.at(0.35, 0, 0.25, 0, 1.4, 0), { ...p.hogshead, staves: 18, hoops: 'wood', sling: true, lod, seed: 32 });
+        buildCask(pb, PM.at(0.0, p.barrel.bilge, 1.05, Math.PI / 2, 1.3, 0), { ...p.barrel, staves: 16, hoops: 'iron', bung: true, lod, seed: 33 });
+        // One stove in, staves gone: the water cask that was drunk dry and broken up.
+        buildCask(pb, PM.at(-1.4, 0, 1.1, 0, 0.7, 0), { ...p.barrel, staves: 16, hoops: 'wood', stoveIn: true, lod, seed: 34 });
+      },
+      [0, 40, 140],
+    );
+    covePoint(shore + CAMP_OFFSHORE, -12, point);
+    seatOnGround(stores, point, 2.4, 0.9, 5);
+    cove.add(stores);
 
-    const crate = this.buildStaticFrom(dressing.coveCrate, 'cove-crate');
-    if (crate) {
-      covePoint(shore + CAMP_OFFSHORE + 6, -4, point);
-      seatOnGround(crate, point, 0.55, 0.8, 4);
-      crate.scale.setScalar(1.5);
-      cove.add(crate);
-    }
+    const chest = this.library.lod('cove-crate', (pb, lod) => buildChest(pb, PM.identity(), { style: 'sea', open: 0, treasure: false, lod, seed: 41 }), [0, 35, 110]);
+    covePoint(shore + CAMP_OFFSHORE + 6, -4, point);
+    seatOnGround(chest, point, 0.55, 0.8, 4);
+    cove.add(chest);
 
-    const bucket = this.buildStaticFrom(dressing.bucket, 'cove-bucket');
-    if (bucket) {
-      covePoint(shore + CAMP_OFFSHORE + 9, -18, point);
-      seatOnGround(bucket, point, 1.9, 0.9, 3);
-      bucket.scale.setScalar(1.8);
-      cove.add(bucket);
-    }
+    const bucket = this.library.lod('cove-bucket', (pb, lod) => buildBucket(pb, PM.identity(), lod, 51), [0, 25, 80]);
+    covePoint(shore + CAMP_OFFSHORE + 9, -18, point);
+    seatOnGround(bucket, point, 1.9, 0.9, 3);
+    bucket.scale.setScalar(1.25);
+    cove.add(bucket);
 
-    // Three jugs, assembled into one geometry rather than placed as three props.
-    // The model is a 21 cm pot: instancing it would cost a draw call to save
-    // nothing, and three separate meshes would cost three. Baking them together
-    // makes the whole group one draw and one bounding sphere, and lets the one
-    // on its side be authored as a tilt rather than as a special case.
-    const jugLevels = this.assembleLevels(dressing.jug, JUG_PIECES);
-    const jugs = this.buildStatic(jugLevels.base, 'cove-jugs', jugLevels.lods);
-    if (jugs) {
-      covePoint(shore + CAMP_OFFSHORE - 3, -7, point);
-      seatOnGround(jugs, point, 1.2, 0.8, 3);
-      cove.add(jugs);
-    }
+    // Stoneware and glass: two Bartmann jugs (one knocked over), a case bottle
+    // and a Spanish olive jar. One geometry per material for the lot.
+    const jugs = this.library.lod(
+      'cove-jugs',
+      (pb, lod) => {
+        buildBartmann(pb, PM.at(0, 0, 0, 0, 0.4, 0), lod);
+        buildBartmann(pb, PM.at(-0.3, 0.1, 0.62, Math.PI / 2 - 0.2, 5, 0), lod);
+        buildCaseBottle(pb, PM.at(0.42, 0, 0.3, 0, 0.3, 0), lod);
+        buildOliveJar(pb, PM.at(0.55, 0, -0.35, 0, 1, 0), lod);
+      },
+      [0, 25, 80],
+    );
+    covePoint(shore + CAMP_OFFSHORE - 3, -7, point);
+    seatOnGround(jugs, point, 1.2, 0.8, 3);
+    jugs.scale.setScalar(1.3);
+    cove.add(jugs);
 
-    const estoc = this.buildStaticFrom(dressing.estoc, 'cove-estoc');
-    if (estoc) {
+    const cutlass = this.library.lod('cove-estoc', (pb, lod) => buildCutlass(pb, PM.identity(), lod), [0, 20, 60]);
+    {
       const bearing = covePoint(shore + CAMP_OFFSHORE + 14, 3, point);
-      // Turned point-down (the pi) and then tilted back out of vertical, so the
-      // lean is a lean rather than an overhang. YXZ puts the tilt in the yawed
-      // frame, which is what makes the yaw decide *which way* it leans.
-      estoc.rotation.set(Math.PI - ESTOC_LEAN, bearing + 1.9, 0, 'YXZ');
-      estoc.position.set(
-        point.x,
-        point.y + ESTOC_POINT * ESTOC_SCALE * Math.cos(ESTOC_LEAN) - ESTOC_BURY,
-        point.z,
-      );
-      estoc.scale.setScalar(ESTOC_SCALE);
-      cove.add(estoc);
+      // Tilted back out of vertical in the yawed frame (YXZ), so the yaw
+      // decides which way it leans.
+      cutlass.rotation.set(-CUTLASS_LEAN, bearing + 1.9, 0, 'YXZ');
+      cutlass.position.set(point.x, point.y - CUTLASS_BURY * CUTLASS_SCALE * Math.cos(CUTLASS_LEAN), point.z);
+      cutlass.scale.setScalar(CUTLASS_SCALE);
+      cove.add(cutlass);
+    }
+
+    // A spare bower anchor dragged up the beach above the swash, lying on its
+    // stock and one arm, as a ship careening here would have landed it.
+    const anchor = this.library.lod('cove-anchor', (pb, lod) => buildAnchor(pb, PM.identity(), lod), [0, 60, 200]);
+    {
+      const bearing = covePoint(shore - 14, 16, point);
+      anchor.position.set(point.x, point.y + 0.04, point.z);
+      anchor.rotation.set(-Math.PI / 2 + 0.3, bearing + 0.6, 0.1, 'YXZ');
+      cove.add(anchor);
     }
   }
 
@@ -2082,7 +2170,9 @@ export class Props {
   private placeFort(dressing: Dressing): void {
     const wallLevels = this.assembleLevels(dressing.fort, FORT_PIECES);
     const walls = this.buildStatic(wallLevels.base, 'shore-fort-walls', wallLevels.lods);
-    const cannon = this.buildStaticFrom(dressing.cannon, 'shore-fort-cannon');
+    // A nine-pounder on a truck carriage, built rather than downloaded: the
+    // `cannon_01` scan and its two LODs were 525 KB.
+    const cannon = this.library.lod('shore-fort-cannon', (pb, lod) => buildCannon(pb, PM.identity(), lod, 81), [0, 60, 200]);
     if (!walls && !cannon) return;
 
     const fort = new THREE.Group();
@@ -2102,7 +2192,7 @@ export class Props {
 
     if (walls) fort.add(walls);
     if (cannon) {
-      cannon.position.set(CANNON_LOCAL.x, FORT_SINK, CANNON_LOCAL.z);
+      cannon.position.set(CANNON_LOCAL.x, FORT_SINK - 0.05, CANNON_LOCAL.z);
       cannon.rotation.y = CANNON_LOCAL.yaw;
       cannon.scale.setScalar(CANNON_SCALE);
       fort.add(cannon);
@@ -2121,32 +2211,57 @@ export class Props {
    * inside the reef's annulus, so the chest is found among rocks rather than on
    * open sand.
    */
-  private placeFind(dressing: Dressing, random: () => number): void {
+  private placeFind(random: () => number): void {
     const find = new THREE.Group();
     find.name = 'reef-find';
     this.object.add(find);
 
     const point = new THREE.Vector3();
 
-    const chest = this.buildStaticFrom(dressing.chest, 'reef-chest');
-    if (chest) {
-      groundPoint(FIND.x, FIND.z, point);
-      seatOnGround(chest, point, 0.92, 1, 4);
-      chest.position.y -= 0.14;
-      chest.scale.setScalar(2.2);
-      find.add(chest);
-    }
+    // A Spanish iron-bound strongbox, its lid sprung, coin heaped inside and
+    // spilling into the sand. It replaced `treasure_chest`, a domed storybook
+    // chest at 1.3 MB across three LODs; the arca is what silver actually
+    // travelled in. Built at true size (0.95 m) and placed at 2.3x, which keeps
+    // the 2.2 m footprint the reef shots were framed on.
+    const chest = this.library.lod(
+      'reef-chest',
+      (pb, lod) => buildChest(pb, PM.identity(), { style: 'strongbox', open: 0.62, treasure: true, lod, seed: 61 }),
+      [0, 22, 70],
+    );
+    groundPoint(FIND.x, FIND.z, point);
+    seatOnGround(chest, point, 0.92, 1, 4);
+    chest.position.y -= 0.06;
+    chest.scale.setScalar(2.3);
+    find.add(chest);
 
-    const crate = this.buildStaticFrom(dressing.reefCrate, 'reef-crate');
-    if (crate) {
-      groundPoint(FIND.x + 3.6, FIND.z - 2.4, point);
-      seatOnGround(crate, point, 2.6, 1, 4);
-      crate.position.y -= 0.1;
-      crate.scale.setScalar(2);
-      find.add(crate);
-    }
+    // A seaman's chest, shut, and a cask stove in on the bottom beside it:
+    // what a wreck actually sheds. Replaces `wooden_crate_01`, whose small
+    // tidy latch read a century late.
+    const debris = this.library.lod(
+      'reef-crate',
+      (pb, lod) => {
+        buildChest(pb, PM.at(0, 0, 0, 0.05, 0, 0.08), { style: 'sea', open: 0, treasure: false, lod, seed: 62 });
+        buildCask(pb, PM.at(-1.1, CASK_PRESETS.hogshead.bilge * 0.8, 0.9, Math.PI / 2, 0.6, 0.1), {
+          ...CASK_PRESETS.hogshead,
+          staves: 18,
+          hoops: 'iron',
+          stoveIn: true,
+          lod,
+          seed: 63,
+        });
+      },
+      [0, 22, 70],
+    );
+    groundPoint(FIND.x + 3.6, FIND.z - 2.4, point);
+    seatOnGround(debris, point, 2.6, 1, 4);
+    debris.position.y -= 0.1;
+    debris.scale.setScalar(1.7);
+    find.add(debris);
 
-    const shells = this.buildScatter(this.bakeParts(dressing.shell.base), SHELL_COUNT, 'reef-shells');
+    // Queen conch, not the Indo-Pacific spider conch the scan was. Instanced:
+    // one draw for the nine, two levels.
+    const conchParts = this.library.parts((pb, lod) => buildConch(pb, PM.identity(), lod), 1);
+    const shells = this.buildScatter(conchParts.map((part) => this.adoptPart(part)), SHELL_COUNT, 'reef-shells');
     if (!shells) return;
 
     const matrix = new THREE.Matrix4();
@@ -2162,21 +2277,77 @@ export class Props {
       const radius = 2 + Math.sqrt(random()) * FIND_SPREAD;
       const x = FIND.x + Math.cos(angle) * radius;
       const z = FIND.z + Math.sin(angle) * radius;
-      const s = 2.2 + random() * 2;
+      // 0.25 m shells drawn 1.3-2x: the scan was drawn at 2.2-4.2x of 14 cm.
+      const s = 1.3 + random() * 0.7;
 
-      position.set(x, seafloorHeight(x, z) - s * 0.01, z);
+      position.set(x, seafloorHeight(x, z) + 0.12 * s, z);
       groundNormal(x, z, 3, normal);
       quaternion.setFromUnitVectors(UP, normal);
       quaternion.multiply(spinAbout(UP, random() * TAU));
+      // Lying on the lip, spire tipped off vertical.
+      quaternion.multiply(spinAbout(_conchTip, 1.2));
       scale.set(s, s, s);
       for (const mesh of shells) mesh.setMatrixAt(i, matrix.compose(position, quaternion, scale));
     }
     this.seal(shells, SHELL_COUNT);
     for (const mesh of shells) {
-      // A 14 cm shell 16 m under water casts nothing anyone can resolve.
+      // A 25 cm shell 16 m under water casts nothing anyone can resolve.
       mesh.castShadow = false;
       find.add(mesh);
     }
+  }
+
+  /** Takes a library part into this class's baked-part shape (the library owns the geometry). */
+  private adoptPart(part: PropPart): BakedPart {
+    part.geometry.computeBoundingSphere();
+    return { geometry: part.geometry, material: part.material };
+  }
+
+  // ---------------------------------------------------------------- lighthouse
+
+  /**
+   * The lighthouse and its keeper's cottage on the headland. See
+   * `props/lighthouse` for the period reasoning and `LIGHTHOUSE_BEARING` for
+   * the siting.
+   *
+   * Seated level on the highest point of its footprint and sunk 0.6 m: the
+   * plinth is built two metres deep for exactly this, so the downhill side
+   * shows more footing rather than daylight. The door faces inland, to the
+   * cottage, and the lantern looks out over the cove toward the play area.
+   */
+  private placeLighthouse(): void {
+    const { x, z } = lighthouseSite();
+    let ground = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * TAU;
+      ground = Math.max(ground, seafloorHeight(x + Math.cos(a) * 3, z + Math.sin(a) * 3));
+    }
+
+    const site = new THREE.Group();
+    site.name = 'lighthouse';
+    site.position.set(x, ground - 0.6, z);
+    // Local +Z out to sea along the bearing; the door (local -Z) faces inland.
+    site.rotation.y = yawAlignZ(Math.cos(LIGHTHOUSE_BEARING), Math.sin(LIGHTHOUSE_BEARING));
+    this.object.add(site);
+
+    // Switches chosen for a 20 m tower: LOD1 once its corbels and glazing bars
+    // are under a pixel or two (~180 m), LOD2 past the cove (~600 m) — which is
+    // the level the play area and `island-approach` see.
+    const tower = this.library.lod('lighthouse-tower', (pb, lod) => buildLighthouse(pb, PM.identity(), lod), [0, 180, 600]);
+    site.add(tower);
+
+    // The cottage, inland of the door, turned square to the tower.
+    const hutLocal = new THREE.Vector3(-3.5, 0, -10.5);
+    const hutWorld = hutLocal.clone().applyEuler(site.rotation).add(site.position);
+    const hutGround = seafloorHeight(hutWorld.x, hutWorld.z);
+    const hut = this.library.lod('lighthouse-cottage', (pb, lod) => buildKeepersHut(pb, PM.identity(), lod), [0, 150, 500]);
+    hut.position.set(hutLocal.x, hutGround - site.position.y - 0.25, hutLocal.z);
+    hut.rotation.y = 0.2;
+    site.add(hut);
+
+    site.updateMatrixWorld(true);
+    this.beacon = new THREE.Vector3(0, LIGHTHOUSE_LAMP_Y, 0).applyMatrix4(site.matrixWorld);
+    this.object.add(buildBeaconHalo(this.beacon));
   }
 
   // ---------------------------------------------------------------- placement
@@ -2761,11 +2932,6 @@ export class Props {
   }
 }
 
-interface LoadedSources {
-  buoy: THREE.Group;
-  barrel: THREE.Group;
-}
-
 // ------------------------------------------------------------------- helpers
 
 const spinQuaternion = new THREE.Quaternion();
@@ -2950,6 +3116,8 @@ function recentreShift(box: THREE.Box3, out: THREE.Vector3): THREE.Vector3 {
 
 /** True if a candidate point clears the spec's elevation and slope bands. */
 function acceptPoint(x: number, z: number, spec: ScatterSpec, out: THREE.Vector3): boolean {
+  // Nothing grows through the lighthouse or its cottage.
+  if (inLighthouseClearing(x, z)) return false;
   const y = seafloorHeight(x, z);
   if (y < spec.minHeight || y > spec.maxHeight) return false;
   if (spec.maxSlope !== undefined) {
@@ -3005,37 +3173,3 @@ function pickClusterPoint(
   return false;
 }
 
-/**
- * Returns a factory producing normalised copies of a floating prop: scaled to
- * `targetHeight` metres tall, centred horizontally, and with its resting
- * waterline at y = 0 so buoyancy can drive the object origin directly.
- */
-function normaliseFloater(source: THREE.Group, targetHeight: number): () => THREE.Object3D {
-  const box = new THREE.Box3().setFromObject(source, true);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const scale = targetHeight / Math.max(1e-4, size.y);
-
-  // Floating debris sits with roughly 40% of its height submerged.
-  const waterlineY = box.min.y + size.y * 0.4;
-
-  return () => {
-    const inner = source.clone(true);
-    inner.position.set(-center.x, -waterlineY, -center.z);
-
-    const holder = new THREE.Object3D();
-    const scaled = new THREE.Group();
-    scaled.scale.setScalar(scale);
-    scaled.add(inner);
-    holder.add(scaled);
-
-    holder.traverse((node) => {
-      const mesh = node as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-    });
-
-    return holder;
-  };
-}

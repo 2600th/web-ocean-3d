@@ -3482,6 +3482,7 @@ class App {
       .multiplyScalar((this.atmosphere.sunLight.intensity / 3.4) * 0.75)
       .add(_smokeSky.copy(this.atmosphere.zenithColor).multiplyScalar(this.atmosphere.ambientLight.intensity * 0.6));
     this.props?.setDetailLighting(_smokeLight, this.lighting.local.fireLevel);
+    this.props?.setBeaconLevel(this.lighting.local.beaconLevel);
 
     // The key light, whichever body is providing it, at its actual strength.
     //

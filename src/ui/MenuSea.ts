@@ -5,7 +5,7 @@
  * WebGPU or WebGL2 — so it cannot borrow the real sea. Instead it paints its
  * own: an illustrated dusk seascape in the interface's art direction, on a
  * plain 2D canvas. Parallax swell, drifting clouds, a silhouetted ship riding
- * the swell with spray off the bow, gulls, a lighthouse beam on a far headland
+ * the swell with spray off the bow, gulls, a lit lighthouse on a far headland
  * and sun glitter on the water.
  *
  * Budget, because it runs while shaders compile on the same thread:
@@ -589,7 +589,17 @@ export class MenuSea {
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  /** A far headland with a lighthouse whose beam sweeps the dusk. */
+  /**
+   * A far headland with a lighthouse, its lamp lit for the dusk.
+   *
+   * Drawn to the in-world tower's proportions (`scene/props/lighthouse`), in
+   * units of its 21 m height: a battered shaft 6 m across at the foot and 4.5 m
+   * under the gallery, a gallery on corbels, a glazed lantern with a lead
+   * cupola, and the keeper's cottage beside it. The light is *fixed* — candles
+   * behind glass — so it glows and gutters and never turns: revolving
+   * apparatus is eighty years after this game's date (Carlsten, 1781). The
+   * sweeping beam and flash this used to paint are gone for that reason.
+   */
   private paintHeadland(): void {
     const { ctx, width: w, height: h, horizon, time } = this;
     const baseX = this.headlandX;
@@ -605,33 +615,56 @@ export class MenuSea {
 
     const lx = baseX + hw * 0.42;
     const ly = horizon - hh;
-    const tower = hh * 0.9;
+    // One unit is a metre of the 21 m tower.
+    const u = (hh * 1.05) / 21;
     ctx.fillStyle = '#132a33';
-    ctx.fillRect(lx - tower * 0.09, ly - tower, tower * 0.18, tower);
-    const lampY = ly - tower - tower * 0.06;
-
-    // The beam: a lamp turning in 3D, seen side on. It reads as a wedge that
-    // swings across, and as a flash when it points at the viewer.
-    const theta = time * 0.9;
-    const facing = Math.max(0, Math.sin(theta));
-    const sweep = Math.cos(theta);
-    const reach = w * 0.38;
-    ctx.globalCompositeOperation = 'lighter';
-    const beam = ctx.createLinearGradient(lx, lampY, lx + sweep * reach, lampY);
-    beam.addColorStop(0, `rgba(255, 228, 170, ${0.16 + facing * 0.14})`);
-    beam.addColorStop(1, 'rgba(255, 228, 170, 0)');
-    ctx.fillStyle = beam;
+    // Keeper's cottage, landward of the tower: walls and a gable roof.
+    const cx = lx - 9 * u;
+    ctx.fillRect(cx - 2.8 * u, ly - 2.6 * u, 5.6 * u, 2.6 * u + 1);
     ctx.beginPath();
-    ctx.moveTo(lx, lampY);
-    ctx.lineTo(lx + sweep * reach, lampY - reach * 0.05);
-    ctx.lineTo(lx + sweep * reach, lampY + reach * 0.035);
+    ctx.moveTo(cx - 3.1 * u, ly - 2.5 * u);
+    ctx.lineTo(cx, ly - 4.4 * u);
+    ctx.lineTo(cx + 3.1 * u, ly - 2.5 * u);
     ctx.closePath();
     ctx.fill();
-    const flash = ctx.createRadialGradient(lx, lampY, 0, lx, lampY, tower * (0.5 + facing * 1.6));
-    flash.addColorStop(0, `rgba(255, 236, 190, ${0.5 + facing * 0.5})`);
-    flash.addColorStop(1, 'rgba(255, 236, 190, 0)');
-    ctx.fillStyle = flash;
-    ctx.fillRect(lx - tower * 2.2, lampY - tower * 2.2, tower * 4.4, tower * 4.4);
+    ctx.fillRect(cx - 2.6 * u, ly - 5.2 * u, 0.8 * u, 2 * u);
+    // The battered shaft.
+    ctx.beginPath();
+    ctx.moveTo(lx - 3.3 * u, ly + 1);
+    ctx.lineTo(lx - 2.25 * u, ly - 15.7 * u);
+    ctx.lineTo(lx + 2.25 * u, ly - 15.7 * u);
+    ctx.lineTo(lx + 3.3 * u, ly + 1);
+    ctx.closePath();
+    ctx.fill();
+    // Corbelled gallery and its rail.
+    ctx.fillRect(lx - 3.05 * u, ly - 16.4 * u, 6.1 * u, 0.75 * u);
+    ctx.fillRect(lx - 2.95 * u, ly - 17.4 * u, 5.9 * u, Math.max(1, 0.12 * u));
+    // Cupola and vane.
+    const top = ly - 19.15 * u;
+    ctx.beginPath();
+    ctx.moveTo(lx - 1.85 * u, top);
+    ctx.quadraticCurveTo(lx - 1.2 * u, top - 1.2 * u, lx, top - 1.4 * u);
+    ctx.quadraticCurveTo(lx + 1.2 * u, top - 1.2 * u, lx + 1.85 * u, top);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(lx - Math.max(0.5, 0.06 * u), top - 2.6 * u, Math.max(1, 0.12 * u), 1.4 * u);
+
+    // The lantern: glazing lit from inside, guttering. Three incommensurate
+    // sines at candle rates, a few percent deep — no period a viewer can find.
+    const flutter = 0.82 + 0.07 * Math.sin(time * 2.3) + 0.05 * Math.sin(time * 5.7 + 1.1) + 0.04 * Math.sin(time * 13.1 + 0.3);
+    const lampY = ly - 17.8 * u;
+    ctx.fillStyle = `rgba(255, 196, 120, ${flutter})`;
+    ctx.fillRect(lx - 1.55 * u, ly - 19.15 * u, 3.1 * u, 2.6 * u);
+    ctx.fillStyle = '#132a33';
+    // Glazing bars across the light.
+    ctx.fillRect(lx - Math.max(0.5, 0.05 * u), ly - 19.15 * u, Math.max(1, 0.1 * u), 2.6 * u);
+    ctx.globalCompositeOperation = 'lighter';
+    const halo = ctx.createRadialGradient(lx, lampY, 0, lx, lampY, 9 * u);
+    halo.addColorStop(0, `rgba(255, 214, 150, ${0.45 * flutter})`);
+    halo.addColorStop(0.35, `rgba(255, 190, 120, ${0.12 * flutter})`);
+    halo.addColorStop(1, 'rgba(255, 190, 120, 0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(lx - 9 * u, lampY - 9 * u, 18 * u, 18 * u);
     ctx.globalCompositeOperation = 'source-over';
   }
 
