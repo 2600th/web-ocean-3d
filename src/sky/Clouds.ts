@@ -5,6 +5,7 @@ import {
   If,
   Loop,
   cameraPosition,
+  cameraProjectionMatrix,
   clamp,
   dot,
   exp,
@@ -20,6 +21,7 @@ import {
   positionGeometry,
   pow,
   screenCoordinate,
+  screenSize,
   smoothstep,
   uniform,
   vec3,
@@ -213,6 +215,14 @@ const MAX_SPAN_FACTOR = 7;
 
 /** Feature scale of the base noise: 1 noise unit ~= 1/NOISE_SCALE metres. */
 const NOISE_SCALE = 0.00055;
+// Not domain-warped, and that was tried. web-ocean breaks its cumulus cells up
+// with a low-frequency warp (`lowEdge`), aimed here at the "cobblestone" rows
+// near the horizon (`clouds-2` in the head-to-head). Measured on its own branch
+// state: at web-ocean's 1.4 cells the near cumulus smeared into melted shapes;
+// at 0.6 the far rows were only partly broken; and the two extra noise calls
+// per march step cost 1.5-2 ms GPU at High 1080p (interleaved A/B, sky-day-b
+// and clear-day-wide). Not worth it for that result.
+
 
 /**
  * Feature scale of the weather field, and how far it moves the coverage
@@ -362,9 +372,23 @@ const UNDER_GLOW = 1.1;
 
 /** Altitude of the cirrus sheet, metres above the wrapped surface. */
 const CIRRUS_ALTITUDE = 7800;
-/** Streak length and width scales for the cirrus noise, per metre. */
-const CIRRUS_ALONG = 1 / 7000;
-const CIRRUS_ACROSS = 1 / 700;
+/**
+ * The high sheet's shape is web-ocean's altostratus deck (`highEdge` in
+ * github.com/Noniv/web-ocean `js/wgsl/sky.js`, MIT): rotated fBm stretched
+ * only 0.09 : 0.20 per km (about 2:1), octaves faded by the pixel footprint.
+ *
+ * It replaced a 10:1 streak field (7 km along, 700 m across the wind) that the
+ * head-to-head read as "radial streak artefacts" across the blue gaps: a field
+ * of parallel filaments at 7.8 km seen in perspective converges on the wind's
+ * vanishing point, so it drew ruled lines fanning across the sky. Measured on
+ * `sky-day-b`: the lines vanish with `cirrus: 0` and are untouched by the
+ * volumetric fog (`steps: 0`) — so they were never the fog's crepuscular
+ * shafts the AAA plan suspected.
+ */
+const CIRRUS_SCALE_ALONG = 0.09 / 1000;
+const CIRRUS_SCALE_ACROSS = 0.2 / 1000;
+/** web-ocean `cloudFbm` octave count for the high layer. Cost-neutral against the old streak field (A/B within noise). */
+const CIRRUS_OCTAVES = 6;
 /** Peak opacity of the cirrus sheet. Ice cloud is thin; it veils, never hides. */
 const CIRRUS_OPACITY = 0.5;
 /** Cirrus rides the jet, well above the cumulus steering wind. */
@@ -983,6 +1007,7 @@ export class Clouds {
     return mx_fractal_noise_float(q, 2, 2.0, 0.5, 1.0).mul(0.5).add(0.5);
   }
 
+
   /**
    * @param baseOctaves Non-null selects the *coarse* evaluation: the erosion
    *   octave is skipped entirely and the base field runs at this many octaves
@@ -1372,36 +1397,49 @@ export class Clouds {
       .add(0.5);
     const mask = smoothstep(float(0.62).sub(this.uCirrusAmount.mul(0.3)), 0.78, patch);
 
-    const bend = mx_noise_float(vec3(along.mul(1 / 9000), across.mul(1 / 9000), 1.3)).mul(3.0);
-    const streak = mx_fractal_noise_float(
-      vec3(
-        along.mul(CIRRUS_ALONG),
-        across.mul(CIRRUS_ACROSS).add(bend),
-        this.uEvolution.y.mul(0.35),
-      ),
-      4,
-      2.3,
-      0.55,
-      1.0,
-    )
-      .mul(0.5)
-      .add(0.5);
-
-    // Breaks each filament into tufts — the hooks and wisps of mares' tails —
-    // so a streak fades in and out along its length instead of running the
-    // width of the sky at one strength.
-    const tufts = smoothstep(
-      -0.25,
-      0.55,
-      mx_noise_float(vec3(along.mul(1 / 2600), across.mul(1 / 2600), this.uEvolution.x.mul(0.5))),
-    );
+    // web-ocean `highEdge` / `cloudFbm`, transcribed. Their noise is a PCG-hashed
+    // gradient noise; MaterialX Perlin is the same family and is what this file
+    // already uses. `fp` is the pixel footprint in noise units — the slant
+    // distance to the sheet times the angle of one pixel, over the sine of the
+    // elevation — and each octave fades out before it reaches pixel size,
+    // which is what keeps the sheet from shimmering or ruling lines in motion.
+    const pixAngle = float(2).div((cameraProjectionMatrix as any).element(1).y.mul(screenSize.y));
+    const fp = t
+      .mul(pixAngle)
+      .div(max(rd.y, 0.03))
+      .mul(CIRRUS_SCALE_ACROSS)
+      .toVar('cirrusFp');
+    const ax = along.mul(CIRRUS_SCALE_ALONG);
+    const cy = across.mul(CIRRUS_SCALE_ACROSS);
+    // CLOUD_ROT = mat2x2(0.8, 0.6, -0.6, 0.8), column-major.
+    const qx = ax.mul(0.8).sub(cy.mul(0.6)).toVar('cirrusQx');
+    const qy = ax.mul(0.6).add(cy.mul(0.8)).toVar('cirrusQy');
+    const fbm = float(0).toVar('cirrusFbm');
+    let amp = 0.5;
+    let freq = 1;
+    for (let o = 0; o < CIRRUS_OCTAVES; o++) {
+      const w = float(1).sub(smoothstep(0.08, 0.28, fp.mul(freq)));
+      fbm.addAssign(mx_noise_float(vec3(qx, qy, this.uEvolution.y.mul(0.35).add(o * 3.1))).mul(amp).mul(w));
+      // q = ROT * q * 2.03 + (13.1, 7.7)
+      const nx = qx.mul(0.8).sub(qy.mul(0.6)).mul(2.03).add(13.1);
+      const ny = qx.mul(0.6).add(qy.mul(0.8)).mul(2.03).add(7.7);
+      qx.assign(nx);
+      qy.assign(ny);
+      freq *= 2.03;
+      amp *= 0.5;
+    }
+    const big = mx_noise_float(vec3(along.mul(0.012 / 1000), across.mul(0.012 / 1000), 7.0)).mul(0.6);
+    // web-ocean's veil coverage is 0.36 by default; `cirrus` 0.45 (skyPro) maps near it.
+    const edge = fbm.mul(1.25).add(0.5).add(big).sub(float(1).sub(this.uCirrusAmount.mul(0.8))).toVar('cirrusEdge');
+    const soft = float(0.85).add(min(fp.mul(0.2), 1).mul(0.3));
+    // Their analytic silhouette anti-aliasing: opacity ramps over ~1.5 px of edge.
+    const aa = smoothstep(0, fp.mul(0.2 * 2.5 * 1.5).add(1e-6), edge);
 
     // Thinned toward the horizon, where the sheet is foreshortened below the
-    // sampling rate of a screen pixel and the streaks would only shimmer.
-    const density = smoothstep(0.5, 0.84, streak)
-      .mul(tufts)
+    // sampling rate of a screen pixel.
+    const density = clamp(edge.div(soft), 0, 1)
+      .mul(aa)
       .mul(mask)
-      .mul(this.uCirrusAmount)
       .mul(smoothstep(0.012, 0.09, view.y));
     const alpha = density.mul(CIRRUS_OPACITY).toVar('cirrusAlpha');
 

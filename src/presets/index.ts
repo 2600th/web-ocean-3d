@@ -13,6 +13,14 @@ export interface Preset {
   atmosphere: {
     sunElevation: number;
     sunAzimuth: number;
+    /**
+     * Aerosol amount for the physical sky (web-ocean's "Haze": 1 clear, 3 its
+     * default sea air). Required for the reason `overcast` is: `setParams`
+     * merges, so a key only some presets set would leak between them.
+     * `turbidity`, `rayleigh` and `mieCoefficient` below are the Preetham-era
+     * knobs; the physical model does not read them.
+     */
+    haze: number;
     turbidity: number;
     rayleigh: number;
     mieCoefficient: number;
@@ -147,6 +155,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.46,
       sunAzimuth: 2.4,
+      haze: 1.5,
       turbidity: 2.2,
       rayleigh: 1.5,
       mieCoefficient: 0.004,
@@ -277,6 +286,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.16,
       sunAzimuth: 1.6,
+      haze: 1.0,
       turbidity: 1.6,
       rayleigh: 2.4,
       mieCoefficient: 0.003,
@@ -343,6 +353,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.55,
       sunAzimuth: 3.1,
+      haze: 2.0,
       turbidity: 3.4,
       rayleigh: 1.2,
       mieCoefficient: 0.006,
@@ -409,6 +420,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.045,
       sunAzimuth: 4.3,
+      haze: 3.0,
       turbidity: 5,
       rayleigh: 2.6,
       mieCoefficient: 0.009,
@@ -478,6 +490,7 @@ export const PRESETS: Record<PresetId, Preset> = {
       sunAzimuth: 2,
       // Same correction as Storm, less of it: fog is a bright diffuse overcast
       // rather than a dark one.
+      haze: 6.0,
       turbidity: 5,
       rayleigh: 1.3,
       mieCoefficient: 0.012,
@@ -545,6 +558,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: -0.35,
       sunAzimuth: 5,
+      haze: 1.0,
       turbidity: 1.4,
       rayleigh: 0.6,
       mieCoefficient: 0.002,
@@ -613,6 +627,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.62,
       sunAzimuth: 1.9,
+      haze: 1.5,
       turbidity: 2.6,
       rayleigh: 1.3,
       mieCoefficient: 0.005,
@@ -689,6 +704,7 @@ export const PRESETS: Record<PresetId, Preset> = {
       // horizon instead — Preetham reads high turbidity as *dust*, not cloud, and
       // the ocean then reflected the dust. `overcast` is the parameter that
       // actually describes this sky.
+      haze: 4.0,
       turbidity: 5.5,
       rayleigh: 1.6,
       mieCoefficient: 0.009,
@@ -761,6 +777,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     atmosphere: {
       sunElevation: 0.075,
       sunAzimuth: 4.6,
+      haze: 3.0,
       turbidity: 6,
       rayleigh: 2.9,
       mieCoefficient: 0.012,
@@ -776,8 +793,12 @@ export const PRESETS: Record<PresetId, Preset> = {
       density: 1,
       altitude: 2200,
       thickness: 900,
-      color: color(0xffcfa8),
-      shadowColor: color(0x6b5f78),
+      // Near white and a neutral grey, from peach and mauve: the key light is
+      // now the physically reddened sun (transmittance at 4.3 degrees, about
+      // (1, 0.47, 0.16)), so a peach albedo on top of it tinted the deck twice,
+      // and the mauve shade was the purple underside the head-to-head flagged.
+      color: color(0xfff2e6),
+      shadowColor: color(0x5c6470),
       baseRoughness: 0.1,
       cirrus: 0.75,
     },
@@ -808,7 +829,12 @@ export const PRESETS: Record<PresetId, Preset> = {
       visibility: 30,
       godRayStrength: 0.7,
     },
-    toneMappingExposure: 1,
+    // 0.5, down from 1. The 1 was compensating the Preetham dome, whose sky
+    // collapsed ~17x toward a low sun; the physical sky (web-ocean's model)
+    // 25 degrees up and away from a 4-degree sun is within 30% of noon's
+    // (measured `skyRadiance`), so this preset now sits near skyPro's 0.42 like
+    // a camera would. At 1 it read as a white wash, 220 mean sRGB on `sunset`.
+    toneMappingExposure: 0.5,
     grade: {
       // Warm, and — the part that matters — *contrastier*. Shooting into a low
       // sun puts a large amount of scattered light into every part of the
