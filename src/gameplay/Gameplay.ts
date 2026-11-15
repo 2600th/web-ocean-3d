@@ -111,11 +111,36 @@ const PICKUP_MARGIN = 4;
 
 /**
  * Trauma a full-strength impact adds, by kind. A slam is felt through the whole
- * hull; a beam slap mostly heard; green water over the bow is the worst of the
- * three. Strength itself comes from `physics/Spray`, which owns impact
+ * hull; green water over the bow is the worst. A beam slap is heard, not felt:
+ * it adds none. Strength itself comes from `physics/Spray`, which owns impact
  * detection — this layer only decides how much of it reaches the camera.
  */
-const IMPACT_TRAUMA = { slam: 0.42, slap: 0.16, wash: 0.55, float: 0 } as const;
+const IMPACT_TRAUMA = { slam: 0.3, slap: 0, wash: 0.55, float: 0 } as const;
+/**
+ * Strength below which an impact does not reach the camera, by kind; the
+ * trauma ramps in from here to full strength.
+ *
+ * The shake is for the impact that stands out, not for sailing. Every impact
+ * used to add trauma, and under way they arrive two or three a second in any
+ * sea (sampled over 20 s at full sail: 2.4/s in `skyPro`, 1.9 in
+ * `seaOfThieves`, 3.2 in `storm`). Trauma sat near 1 and the camera shook in
+ * 47–84% of frames, up to 0.85 degrees of pitch at 2–4 Hz: the whole frame
+ * wobbling up and down while simply sailing, on top of the hull's own pitch,
+ * which already shows every one of those waves.
+ */
+const IMPACT_THRESHOLD = { slam: 0.7, slap: 1, wash: 0.5, float: 1 } as const;
+// The slam threshold filters little at full sail: `Spray` counts a third of
+// the forward speed into a bow strike's strength, so under way nearly every
+// one arrives at 1. What keeps slams from becoming a wobble is the cooldown
+// below and their smaller trauma (0.3, which squares to a tenth of the full
+// shake: under a tenth of a degree, a thud). Green water and groundings keep
+// the large ones.
+/**
+ * Seconds after an impact shakes the camera before another may. Keeps a run of
+ * heavy slams in a storm from stacking into a continuous shake; groundings are
+ * not limited by it.
+ */
+const IMPACT_COOLDOWN = 4;
 /** Depth under the hull, metres, at which she is touching. Above `SHOAL_HARD_DEPTH` in the controller. */
 const GROUND_DEPTH = 6;
 /** Trauma lost per second. */
@@ -246,6 +271,8 @@ export class Gameplay {
 
   // --- feel ---------------------------------------------------------------
   private trauma = 0;
+  /** Seconds until an impact may add trauma again; see `IMPACT_COOLDOWN`. */
+  private impactCooldown = 0;
   private grounded = false;
   private reducedMotion = false;
   private readonly motionQuery: MediaQueryList | null;
@@ -335,6 +362,7 @@ export class Gameplay {
     this.cargo = 0;
     this.gold = 0;
     this.trauma = 0;
+    this.impactCooldown = 0;
     this.grounded = false;
     this.clock = 0;
     this.uiTimer = 0;
@@ -438,9 +466,12 @@ export class Gameplay {
    * ignored otherwise — shaking an orbit or cinematic camera would be wrong.
    */
   reportImpact(kind: 'slam' | 'slap' | 'wash' | 'float', strength: number): void {
-    if (!this.active) return;
+    if (!this.active || this.impactCooldown > 0) return;
     const s = Math.min(1, Math.max(0, strength));
-    this.addTrauma(IMPACT_TRAUMA[kind] * (0.35 + 0.65 * s));
+    const threshold = IMPACT_THRESHOLD[kind];
+    if (s <= threshold) return;
+    this.addTrauma(IMPACT_TRAUMA[kind] * (0.35 + 0.65 * ((s - threshold) / (1 - threshold))));
+    this.impactCooldown = IMPACT_COOLDOWN;
   }
 
   toggleAnchor(): void {
@@ -817,6 +848,7 @@ export class Gameplay {
     }
 
     this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * dt);
+    this.impactCooldown = Math.max(0, this.impactCooldown - dt);
     const shake = this.o.shake;
     if (!shake) return;
     const amount = this.reducedMotion ? 0 : this.trauma * this.trauma;
