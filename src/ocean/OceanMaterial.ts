@@ -1662,8 +1662,16 @@ export class OceanMaterial {
           ? float(0)
           : floorDepth(worldPos).max(0).sub(bufferThickness).smoothstep(0.35, 1.2)
       ).toVar();
+      // The bed's colour reaches the eye only after the light that shows it has
+      // gone *down* to the bed as well as back up the view ray, so it is
+      // attenuated over the depth too, not over the view path alone. With the
+      // view path alone, thirty metres of clear water (blue extinction
+      // 0.06 /m) still passed a sixth of the sand tint, and every open-sea
+      // frame near the island came out lagoon cyan (boat-sea-1/2, waves-1).
+      // A two-metre lagoon keeps 90% of it.
+      const bedLit: any = this.uExtinction.mul(seabedDepth).negate().exp();
       const inscatter: any = mix(
-        mix(this.uDeepColor, this.uShallowColor, absorption),
+        mix(this.uDeepColor, this.uShallowColor, absorption.mul(bedLit)),
         this.uDeepColor,
         objectBehind,
       ).toVar();
