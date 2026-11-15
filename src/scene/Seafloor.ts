@@ -1630,8 +1630,9 @@ export class Seafloor {
       const wet: Node = smoothstepDownNode(wp.y, wetTop.mul(0.35), wetTop).mul(wp.y.smoothstep(-1.2, -0.2)).toVar();
       const damp: Node = mix(base, mix(sandWet, base.mul(0.45), rockExposure), wet.mul(aboveWater.max(0.6))).toVar();
 
-      // Seabed mottling: weed and darker sediment under the shallows.
-      const seabedMottle: Node = mix(float(1), patch.mul(0.45).add(0.72), float(1).sub(aboveWater));
+      // Seabed mottling: weed and darker sediment under the shallows, and
+      // paler sand between. Centred on 1 — it is variation, not a darkening.
+      const seabedMottle: Node = mix(float(1), patch.mul(0.45).add(0.775), float(1).sub(aboveWater));
       const mottled: Node = damp.mul(seabedMottle).toVar();
 
       // Shore hook: the swash darkens the sand it reaches and it dries over

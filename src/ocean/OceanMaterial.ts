@@ -257,6 +257,13 @@ export const COS_CRITICAL_ANGLE = Math.sqrt(1 - 1 / (WATER_IOR * WATER_IOR));
  * by construction.
  */
 const REFRACTION_FADE_NEAR = 140;
+
+/**
+ * Diffuse attenuation of light to and from the seabed, as a fraction of the
+ * preset's beam extinction. NeuralSpecOcean's 0.58 (`Offshore.js`, MIT); clear
+ * ocean water sits at about half to two thirds. See the transmission block.
+ */
+const BED_DIFFUSE_K = 0.58;
 const REFRACTION_FADE_FAR = 460;
 
 /**
@@ -1590,17 +1597,28 @@ export class OceanMaterial {
         .toVar();
       const pathLength: any = seenDepth.div(cosRefracted).toVar();
 
-      const absorption: any = this.uExtinction.mul(pathLength).negate().exp().toVar();
+      // The bed is a diffuse reflector, and the light it sends back is not
+      // lost to the eye when it scatters: water scatters almost entirely
+      // forward, so what leaves the image ray mostly still arrives, a little
+      // blurred. Bed light therefore falls off with the *diffuse* attenuation
+      // coefficient K_d on both legs, not with the beam coefficient the
+      // preset's `extinction` is — and for clear ocean water K_d is a little
+      // over half of it (NeuralSpecOcean takes 0.58, `Offshore.js`, MIT). With
+      // the beam coefficient on the way up and K_d plus an extra scattering
+      // term on the way down, the green and blue came out 1.6 to 2 times
+      // Jerlov type I's (about 0.06 and 0.03 per metre). Over 3 m of sand the
+      // shallows were navy rather than aquamarine (shore-break). The same
+      // coefficient weights the column's own colour against the bed, so the
+      // two stay complementary.
+      const diffuseK: any = this.uExtinction.mul(BED_DIFFUSE_K).toVar();
+      const absorption: any = diffuseK.mul(pathLength).negate().exp().toVar();
       // Daylight reaching the bed was attenuated on the way *down* too, and the
-      // ground shader lights the bed as if it were dry. Diffuse attenuation
-      // after NeuralSpecOcean: K_d from the same extinction plus a little for
-      // scattering, over the depth, divided by the mean cosine of downwelling
-      // light (0.82). This is the shallow-water gradient the reference shows —
-      // pale over a metre of water, green-blue by four, blue past ten — and it
-      // comes from the same coefficients as everything else.
-      const downwelling: any = this.uExtinction
-        .mul(0.58)
-        .add(vec3(0.032, 0.038, 0.016))
+      // ground shader lights the bed as if it were dry: the same K_d over the
+      // depth, divided by the mean cosine of downwelling light (0.82). This is
+      // the shallow-water gradient the reference shows — pale over a metre of
+      // water, green-blue by four, blue past ten — and it comes from the same
+      // coefficients as everything else.
+      const downwelling: any = diffuseK
         .mul(seenDepth.div(0.82))
         .negate()
         .exp()
