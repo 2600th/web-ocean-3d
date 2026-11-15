@@ -1169,8 +1169,9 @@ export class OceanMaterial {
       }
 
       // [underwater-look] The swell and wind-wave cascades only, before the
-      // centimetre detail bands are added: what the underside's ripple term
-      // subtracts to keep only the fine ripples.
+      // centimetre detail bands are added: what the refraction offset below
+      // bends the backdrop with (see the note there), and what the underside's
+      // ripple term subtracts to keep only the fine ripples.
       const refractSlope = vec2(slope).toVar('oceanRefractSlope');
 
       // The detail bands (`Spectrum.detailCascades`): centimetre and millimetre
@@ -1455,7 +1456,16 @@ export class OceanMaterial {
       // same lateral offset at the horizon is a whole screen away, and scaled by
       // depth so shallow water distorts less than deep — which is what stops the
       // distortion from tearing at a shoreline.
-      const distortion = n.xz
+      //
+      // [underwater-look] Bent by the wave cascades' normal, not the full one.
+      // The centimetre detail bands vary from pixel to pixel at any viewing
+      // distance, so offsetting the backdrop by them scrambled it into speckle:
+      // the caustic web on a 5 m lagoon floor, 0.7 m cells and 60 px across
+      // from 10 m up, came through as grain, and both blind lagoon frames were
+      // judged to have no caustics. The detail bands still shade, glint and
+      // foam; they just no longer decide where the refracted floor is sampled.
+      const refractNormal = normalize(vec3(refractSlope.x.negate(), 1, refractSlope.y.negate()));
+      const distortion = refractNormal.xz
         .mul(this.uRefractionStrength)
         .div(viewDistance.mul(0.06).add(1))
         .toVar();
