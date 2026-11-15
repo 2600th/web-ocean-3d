@@ -422,6 +422,10 @@ export function buildBeaconHalo(position: THREE.Vector3): THREE.Mesh {
 
   const mat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   mat.name = 'prop-beacon-halo';
+  // Additive, so scene fog must stay off: fog mixes the card's black corners
+  // toward the fog colour, and blending adds that, which drew a pale square
+  // round the lighthouse at dusk.
+  mat.fog = false;
   mat.userData.noGroundShading = true;
   const c = attribute('corner', 'vec2') as Node;
   const centre = positionGeometry as Node;
