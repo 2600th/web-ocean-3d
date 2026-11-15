@@ -31,8 +31,15 @@ import { SEEDS, fillRandom } from '../core/random';
 
 export type WeatherKind = 'clear' | 'rain' | 'snow';
 
-/** Instances allocated once; the visible count is scaled by intensity. */
-const RAIN_COUNT = 9000;
+/**
+ * Instances allocated once; the visible count is scaled by intensity.
+ *
+ * Rain was 9000, and with the streak length and brightness it read as a
+ * curtain in front of the shot (A/B critic, waves-5: "too long, too bright and
+ * too dense"). The storm should be read through the rain, not the rain read
+ * instead of the storm.
+ */
+const RAIN_COUNT = 5000;
 const SNOW_COUNT = 6000;
 
 /** Half-extent of the effect volume around the viewer, metres. */
@@ -161,12 +168,19 @@ export class Weather {
     this.rainGeometry.instanceCount = Math.round(RAIN_COUNT * ramp);
     this.snowGeometry.instanceCount = Math.round(SNOW_COUNT * ramp);
 
-    this.uRainOpacity.value = 0.16 + 0.44 * this.intensity;
+    // Additive and unlit, so this is the streak's whole brightness: at the old
+    // 0.6 a storm streak added ~40% of the storm preset's white point. A drop is
+    // a small, mostly transparent lens; it should glint, not glow.
+    this.uRainOpacity.value = 0.08 + 0.17 * this.intensity;
     this.uSnowOpacity.value = 0.35 + 0.5 * this.intensity;
-    this.uRainSpeed.value = 18 + 12 * this.intensity;
+    // Terminal velocity, measured: about 6.5 m/s for a 2 mm drop and at most
+    // ~9 m/s for the largest (Gunn & Kinzer, J. Meteorology 6, 1949). It was
+    // 18–30 m/s, three times anything that falls, which is half of why the
+    // streaks were so long; the gusts of a storm account for the margin here.
+    this.uRainSpeed.value = 7 + 3 * this.intensity;
     // Harder rain falls faster and therefore streaks longer, on top of the
     // per-drop variation the material already applies.
-    this.uStreakLength.value = 0.85 + 0.85 * this.intensity;
+    this.uStreakLength.value = 0.9 + 0.5 * this.intensity;
   }
 
   /**
@@ -210,7 +224,11 @@ export class Weather {
     // which is most of why the old curtain looked like static.
     const lengthScale: any = speed.div(this.uRainSpeed).mul(this.uStreakLength);
     const width: any = float(0.016).add(seed.z.mul(0.012));
-    const length: any = float(0.7).add(seed.w.mul(0.6)).mul(lengthScale);
+    // Metres. A streak is the fall during the exposure, and at a real terminal
+    // velocity a 1/60 s shutter gives ~15 cm; this is about twice that, the
+    // eye's own integration time, so a streak still reads as a streak at a few
+    // metres. It was 0.7–1.3 m before the speed scale — up to 2.8 m in a storm.
+    const length: any = float(0.24).add(seed.w.mul(0.2)).mul(lengthScale);
     material.scaleNode = vec2(width, length);
 
     // Tilt from the actual shear, not a baked constant, so the streak lies along
