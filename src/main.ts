@@ -3973,6 +3973,9 @@ class App {
 
     this.ssr?.update(dt);
     this.caustics.setSunDirection(this.atmosphere.sunDirection);
+    // [underwater-look-2] Seen from above, the bed's web softens with depth
+    // and wind; see `Caustics.setViewer`. Uniform writes.
+    this.caustics.setViewer(1 - this.director.submersion(), this.state.windSpeed);
     this.caustics.update(dt);
     // Re-bake around the viewer. Must run outside an active render target, so it
     // sits here in the update rather than inside the post chain.

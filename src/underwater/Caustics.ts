@@ -126,6 +126,12 @@ export class Caustics {
    */
   readonly uShaftA = uniform(new THREE.Vector2(0.95, 1.35));
   readonly uShaftB = uniform(new THREE.Vector2(0.85, 1.25));
+  /** [underwater-look-2] 1 with the eye above water, 0 below; see `setViewer`. */
+  private readonly uAbove = uniform(0);
+  /** [underwater-look-2] Blur growth per metre of depth seen from above. */
+  private readonly uAboveBlur = uniform(0.6);
+  /** [underwater-look-2] Extra contrast loss per metre of depth seen from above. */
+  private readonly uAboveFade = uniform(0.03);
 
   /**
    * The node graphs, built exactly once. TSL functions are lazily compiled at
@@ -309,14 +315,21 @@ export class Caustics {
     return a.smoothstep(this.uShaftA.x, this.uShaftA.y).mul(b.smoothstep(this.uShaftB.x, this.uShaftB.y));
   }
 
-  /** Mip bias for the tile at `below` metres: sharp at the top, softer down. */
+  /**
+   * Mip bias for the tile at `below` metres: sharp at the top, softer down.
+   *
+   * [underwater-look-2] Seen from above the water, the web widens much faster
+   * with depth, and faster again in a wind; see `setViewer`.
+   */
   private detailBias(below: any): any {
-    return below.mul(0.08).add(1).log2();
+    const k = mix(float(0.08), this.uAboveBlur, this.uAbove);
+    return below.mul(k).add(1).log2();
   }
 
   /** How much of the web survives at `below` metres, times the strength. */
   private detailContrast(below: any): any {
-    return exp(below.mul(this.uDepthFade).negate()).mul(this.uStrength).clamp(0, 1.5);
+    const fade = this.uDepthFade.add(this.uAboveFade.mul(this.uAbove));
+    return exp(below.mul(fade).negate()).mul(this.uStrength).clamp(0, 1.5);
   }
 
   /**
@@ -393,6 +406,37 @@ export class Caustics {
    * of depth in air, arrives under water at 47 degrees and shears by 0.93 —
    * which is what stands the shafts steep, as every reference shows them.
    */
+  /**
+   * [underwater-look-2] Who is looking, and how rough the sea is.
+   *
+   * From under water the web on the bed is the strong, sharp pattern a diver
+   * sees a few metres off. From above it has come back up through the same
+   * rough surface and is seen at a grazing angle through a few metres of
+   * water, and two things soften it with depth that the bake does not model:
+   * the sun is a 0.53-degree disc, so each filament widens by about a
+   * centimetre per metre of depth, and a wind sea's spectrum focuses its
+   * caustics at a metre or two and defocuses them below, so at 2-6 m under a
+   * wind of 15 the bed shows soft, low-contrast dappling rather than a
+   * swimming-pool web (shore-break against the Water Pro reference). In calm
+   * water and in the first metre the web stays sharp and bright.
+   *
+   * @param above 0..1, how far above the water the eye is (1 - submersion).
+   * @param windSpeed m/s.
+   */
+  setViewer(above: number, windSpeed: number): void {
+    const a = Math.min(1, Math.max(0, above));
+    // 0 at 5 m/s and below, 0.82 at 15, 1 at 18.
+    const rough = smoothstepNumber(5, 18, windSpeed);
+    this.uAbove.value = a;
+    // Mip growth per metre: at the lagoon's 5.5 m under a wind of 15, about
+    // four levels, filaments some 12 cm wide; calm, under two.
+    this.uAboveBlur.value = 0.25 + 2.5 * rough;
+    // Contrast per metre on top of `depthFade`: at 5.5 m under a wind of 15
+    // the web keeps 31% of its contrast against 74% before, at 3 m 53%;
+    // calm, 66% at 5.5 m.
+    this.uAboveFade.value = 0.02 + 0.16 * rough;
+  }
+
   setSunDirection(dir: THREE.Vector3): void {
     const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
     const hx = dir.x / len / WATER_IOR;
@@ -474,6 +518,11 @@ function normalizeResolution(size: number): number {
   // Capped: past 8 mm a texel the filaments gain nothing, and the bake is the
   // one per-frame cost this module has above water.
   return Number.isFinite(size) ? Math.min(512, Math.max(16, Math.round(size))) : 512;
+}
+
+function smoothstepNumber(lo: number, hi: number, v: number): number {
+  const t = Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+  return t * t * (3 - 2 * t);
 }
 
 function clampNumber(v: number, lo: number, hi: number): number {
