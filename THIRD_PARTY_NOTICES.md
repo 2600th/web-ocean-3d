@@ -1,5 +1,6 @@
 # Third-party notices
 
+<<<<<<< HEAD
 This project includes code adapted from the following open-source projects.
 
 ## abyssal-garden
@@ -13,6 +14,10 @@ shaders and ported to three.js TSL. Affected files:
 - `src/underwater/Caustics.ts`
 
 ```
+=======
+## abyssal-garden
+
+>>>>>>> underwater-kelp
 MIT License
 
 Copyright (c) 2026 Maksymilian Dendura
@@ -34,4 +39,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+<<<<<<< HEAD
 ```
+=======
+>>>>>>> underwater-kelp
