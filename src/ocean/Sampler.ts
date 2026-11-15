@@ -43,8 +43,12 @@ interface CascadeSlice {
   tileSize: number;
   /** Texels per side of this slice. Matches the target it was read from. */
   size: number;
-  /** RGBA half-float texels, `size^2`. */
-  data: Float32Array | null;
+  /**
+   * RGBA texels, `size^2`, as the target stores them: binary16 bit patterns
+   * for a half-float target (`half`), plain floats otherwise. See `adoptInto`.
+   */
+  data: Float32Array | Uint16Array | null;
+  half: boolean;
 }
 
 export class OceanSampler {
@@ -68,7 +72,7 @@ export class OceanSampler {
   rebuild(): void {
     this.slices.length = 0;
     for (const tileSize of this.simulation.tileSizes) {
-      this.slices.push({ tileSize, size: 0, data: null });
+      this.slices.push({ tileSize, size: 0, data: null, half: false });
     }
     this.everResolved = false;
   }
@@ -119,7 +123,7 @@ export class OceanSampler {
           size,
         );
         this.slices[i].size = size;
-        this.slices[i].data = decodeInto(raw, this.slices[i]);
+        adoptInto(raw, this.slices[i]);
       }
       this.everResolved = true;
     } catch {
@@ -140,6 +144,7 @@ export class OceanSampler {
       if (!slice.data) continue;
       sampleBilinear(
         slice.data,
+        slice.half,
         slice.size,
         x / slice.tileSize,
         z / slice.tileSize,
@@ -191,9 +196,13 @@ export class OceanSampler {
   }
 }
 
-/** Wraps to [0,1) then samples with bilinear interpolation. */
+/**
+ * Wraps to [0,1) then samples with bilinear interpolation. Half-float data is
+ * decoded here, for the sixteen values a sample reads.
+ */
 function sampleBilinear(
-  data: Float32Array,
+  data: Float32Array | Uint16Array,
+  half: boolean,
   size: number,
   u: number,
   v: number,
@@ -212,55 +221,79 @@ function sampleBilinear(
   const z0w = wrap(z0);
   const z1w = wrap(z0 + 1);
 
+  const lut = half ? halfTable() : null;
   for (let c = 0; c < 4; c++) {
-    const a = data[(z0w * size + x0w) * 4 + c];
-    const b = data[(z0w * size + x1w) * 4 + c];
-    const d = data[(z1w * size + x0w) * 4 + c];
-    const e = data[(z1w * size + x1w) * 4 + c];
+    const ia = (z0w * size + x0w) * 4 + c;
+    const ib = (z0w * size + x1w) * 4 + c;
+    const id = (z1w * size + x0w) * 4 + c;
+    const ie = (z1w * size + x1w) * 4 + c;
+    const a = lut ? lut[data[ia]] : data[ia];
+    const b = lut ? lut[data[ib]] : data[ib];
+    const d = lut ? lut[data[id]] : data[id];
+    const e = lut ? lut[data[ie]] : data[ie];
     out[c] = (a + (b - a) * tx) * (1 - tz) + (d + (e - d) * tx) * tz;
   }
 }
 
 /**
- * Decodes a readback into the slice's own buffer, allocating at most once.
+ * Copies a readback into the slice's own buffer, allocating at most once, and
+ * leaves it encoded.
  *
  * Render-target readbacks come back typed to match the attachment. Half-float
  * targets yield a Uint16Array of raw IEEE-754 binary16 bit patterns, which must
  * be decoded — reading them as integers silently produces values in the tens of
  * thousands instead of the tenths of a metre they represent.
  *
- * The decode used to allocate its output every call. At the default 64x64 slice
- * that is 64 kB per cascade per readback, and the readback runs every frame for
- * every cascade — around 190 kB of garbage a frame at three cascades, in a
- * project whose stated performance policy is no per-frame allocation. It never
- * showed up in the frame time because the cost is deferred to whenever the
- * collector decides to run, which is exactly what makes this kind of allocation
- * worth removing rather than measuring.
+ * **Decoded where they are read, not here.** This used to decode the whole
+ * field on arrival: at High, three cascades of 256² RGBA, 786k conversions and
+ * about 12 ms of main thread per readback, in three chunks that landed whenever
+ * each copy came back. A chunk landing just before an animation frame made that
+ * frame late, and Chrome then showed it a refresh late: measured from Chrome's
+ * own frame reporter at High, 44% of frames were on screen for one or three
+ * refreshes instead of two. That was the jitter on the hull and on the island
+ * in fly mode, in every camera mode, since the readback runs whatever the
+ * camera does. The copies alone measured 2%, the same as no readback at all;
+ * the decode alone with no copies, 57%. A sample reads sixteen texels, and the
+ * frame takes a few hundred samples, so decoding at the read is a few thousand
+ * table lookups instead of most of a million conversions. The values are the
+ * same floats either way.
  *
- * The buffer is grown, never shrunk, and reused across readbacks; a tier change
- * that alters the slice size reallocates once and then settles.
+ * Still copied, never kept by reference: the array the renderer hands back is
+ * not guaranteed to outlive the next readback. A copy is a memcpy, and the
+ * buffer is grown, never shrunk, and reused, so a tier change that alters the
+ * slice size reallocates once and then settles.
  */
-function decodeInto(raw: ArrayBufferView, slice: CascadeSlice): Float32Array {
-  // A Float32 target needs no decode, but it must still be copied: the array the
-  // renderer hands back is not guaranteed to outlive the next readback.
-  const source =
-    raw instanceof Float32Array || raw instanceof Uint16Array
-      ? raw
-      : (raw as unknown as ArrayLike<number>);
-  const length = source.length;
-
-  let out = slice.data;
-  if (out === null || out.length !== length) {
-    out = new Float32Array(length);
+function adoptInto(raw: ArrayBufferView, slice: CascadeSlice): void {
+  if (raw instanceof Uint16Array) {
+    let out = slice.data;
+    if (!(out instanceof Uint16Array) || out.length !== raw.length) out = new Uint16Array(raw.length);
+    out.set(raw);
     slice.data = out;
+    slice.half = true;
+    return;
   }
+  const source =
+    raw instanceof Float32Array ? raw : (raw as unknown as ArrayLike<number>);
+  let out = slice.data;
+  if (!(out instanceof Float32Array) || out.length !== source.length) out = new Float32Array(source.length);
+  if (source instanceof Float32Array) out.set(source);
+  else for (let i = 0; i < source.length; i++) out[i] = source[i];
+  slice.data = out;
+  slice.half = false;
+}
 
-  if (source instanceof Uint16Array) {
-    for (let i = 0; i < length; i++) out[i] = halfToFloat(source[i]);
-  } else {
-    for (let i = 0; i < length; i++) out[i] = source[i];
+/**
+ * Every binary16 pattern as a float, built on first use: 256 kB, about a
+ * millisecond once. Float32 holds every half exactly, so a lookup gives the
+ * value `halfToFloat` would.
+ */
+let _halfTable: Float32Array | null = null;
+function halfTable(): Float32Array {
+  if (_halfTable === null) {
+    _halfTable = new Float32Array(65536);
+    for (let i = 0; i < 65536; i++) _halfTable[i] = halfToFloat(i);
   }
-  return out;
+  return _halfTable;
 }
 
 function halfToFloat(bits: number): number {
