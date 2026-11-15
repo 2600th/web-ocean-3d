@@ -854,6 +854,10 @@ async function runConfiguration(browser, baseUrl, config, options) {
     const launchUrl = new URL(baseUrl);
     launchUrl.searchParams.set('gate', '0');
     launchUrl.searchParams.set('quality', config.tier);
+    // The flags above unhook rAF from the display, so there is no refresh for
+    // the app's frame pacer to divide; it would pace against whatever cadence
+    // the GPU gave it, and "delivered" would measure the pacer, not the renderer.
+    launchUrl.searchParams.set('pacing', '0');
     if (config.backend === 'webgl') launchUrl.searchParams.set('webgl', '1');
     const url = launchUrl.toString();
     await page.goto(url, { waitUntil: 'domcontentloaded' });
