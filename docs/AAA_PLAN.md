@@ -193,7 +193,20 @@ User direction 2026-11-13: make the language more interesting, engaging and user
 - [ ] **three's async pipeline error scope.** `WebGPUPipelineUtils` pops its validation scope only after awaiting the pipeline, so any unrelated validation error in between is reported against that pipeline and marks it failed. That is how a render pass ended twice surfaced as "Async render pipeline creation failed". Worth an upstream issue.
 - [ ] **Wave cascade count is fixed at boot.** A tier change rescales the FFT but keeps the boot tier's cascades.
 - [x] **Whitecap coverage.** Re-measured, it was low at every wind speed, not only 9 m/s. The deposit rate is recalibrated: 0.86x, 0.47x, 1.22x, 0.56x and 0.37x Monahan at 6, 9, 15, 21 and 24 m/s, against 49x of the law's 38x range. At that rate, saturated foam drew as flat white discs, so open-water foam now thresholds a two-scale bubble-cell field rather than mixing to white: thin foam is the cell rims, dense foam fills in from the rims, and fresh foam still shows its cells.
-- [ ] **Far-field foam reads as smooth patches.** Past ~200 m the cells fade to their average and the buffer's soft density blobs show through as flat pale ovals (`landfall`, the hero). Wants a coarse, band-limited breakup there, plus streak-shaped deposits along the wind, before it reads like wind-driven foam lanes.
+- [ ] **Far-field foam reads as smooth patches.** Mostly addressed. All foam now goes through one feathered pattern, `ocean/FoamPattern`. It has three scales: wind streaks at 6.5 m, raft rims at 1.15 m and bubbles at 0.48 m. Each scale fades to its measured mean with distance and tier.
+  - Whitecaps are split into Monahan's stage A and stage B.
+  - A 26 m patchiness octave breaks up saturated buffer plates.
+  - As the detail fades, from 60 to 260 m, the feather hands over to plain coverage.
+
+  What remains is in strong seas (18 m/s and above), at 150–300 m. The crest mask is saturated over whole fold regions there, so some patches still read as smooth bright plates with soft edges. They are no longer hard white ovals. The fix wants streak-shaped deposits along the wind in the buffer itself (`physics/Wake`), which was not touched.
+- [x] **Shore break and swash, AAA pass.** References and sources are in `docs/REFERENCE_TARGETS.md`, under "Shore break and sea foam".
+  - The open-sea FFT is faded per band within the surf reach, so the shoaling set reads. Before, a 5.5 m swell hid it.
+  - The breaker amplitude was half what its profile implied.
+  - Breakers lean shoreward with the Iribarren number, and the thin face glows.
+  - Run-up follows Hunt's relation, and the swash front is skewed.
+  - The sand has two drying timescales: a glossy film and a damp darkening.
+  - A foam mark is left at maximum run-up.
+  - Medium has raft rims but no bubble scale, so thin foam there can read as a crack-like net.
 - [ ] **Sky streaks toward the sun.** In `island-approach` and `waterline`, thin radial lines cross the upper-left sky and the cloud edges are hatched. They are likely the fog march's crepuscular shafts sampling a cloud shadow too fine for 24 steps. Not traced.
 - [x] Failing on `main` as well, now fixed:
   - **Spectrum bound.** The spectrum was right and the bound wrong: on the diagonal wind, a uniform spectrum scores 0.653 on the ripple tile's grid. The test now compares against that.
