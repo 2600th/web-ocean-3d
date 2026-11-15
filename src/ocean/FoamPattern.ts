@@ -47,8 +47,11 @@ import { smoothstepDownClamped } from '../core/tslMath';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Stretch of the patchiness field along the wind, as a ratio. */
-const STREAK_STRETCH = 2.4;
+/**
+ * Stretch of the patchiness field along the wind, as a ratio. 1.5: at 3.1 the
+ * far-field rafts read as a ladder of parallel bands (waves-4).
+ */
+const STREAK_STRETCH = 1.5;
 
 /**
  * Normalisation of the raw pattern onto roughly uniform [0, 1], for
@@ -194,6 +197,15 @@ export function foamCells(p: any): any {
  * @param salt Offsets the hash, so two calls at the same scale differ.
  */
 function foamBubbles(p: any, salt: number, rMin: number, rMax: number): any {
+  return bubbleDistance(p, salt, rMin, rMax).smoothstep(0.8, 1.25);
+}
+
+/**
+ * Distance to the nearest bubble's centre in units of its radius: below 1
+ * inside a bubble. `foamBubbles` thresholds it at 1; `foamLace` moves the
+ * threshold with the foam's age, so the bubbles grow and merge as it thins.
+ */
+function bubbleDistance(p: any, salt: number, rMin: number, rMax: number): any {
   const half = p.mul(0.5);
   const warp = vec2(gradNoise(half.add(vec2(salt, 0))), gradNoise(half.add(vec2(17 + salt, 17))));
   const q = p.add(warp.mul(0.9)).toVar();
@@ -210,7 +222,47 @@ function foamBubbles(p: any, salt: number, rMin: number, rMax: number): any {
       v.assign(v.min(r.length().div(radius)));
     }
   }
-  return v.smoothstep(0.8, 1.25);
+  return v;
+}
+
+/**
+ * Aerated foam with round holes, for a ship's wake: 1 in the foam, 0 in a
+ * hole, at world point `p` for a foam `amount` 0..1.
+ *
+ * Three.js Water Pro's wake (the critic's reference for boat-sea-1) is a milky
+ * film punched with round holes from a few centimetres to most of a metre — a
+ * "cellular, Voronoi-like aerated foam". It is how a bubble raft dies: the
+ * smallest bubbles burst first and their neighbours drain into the gaps, so
+ * holes open and grow until the raft is a lace of rims and then shreds. Here
+ * that is the bubble field of `foamPattern`'s swiss cheese at two scales —
+ * holes 0.35–1.1 m and 0.1–0.35 m — with the hole radius tied to the amount:
+ * at 1 (the churn at the transom) only the cores of the holes are open; as the
+ * amount decays astern the holes widen and merge, and below about 0.3 what is
+ * left is a net of rims.
+ *
+ * Band-limited like the pattern: each scale fades to its mean coverage before
+ * its holes fall under a pixel (a hole 0.4 m across is about two pixels at
+ * 120 m at 1080p), so far off this is a translucent flat amount and the
+ * distance takes the lace's detail, never its brightness. Must be called
+ * inside a TSL `Fn`.
+ */
+export function foamLace(p: any, amount: any, viewDistance: any): any {
+  const a = amount.clamp(0, 1).toVar('foamLaceAmount');
+  // Normalised-radius threshold: holes are where the distance is below it.
+  const open = mix(float(1.5), float(0.45), a).toVar('foamLaceOpen');
+  const coarseNear = smoothstepDownClamped(viewDistance, 60, 140).toVar('foamLaceCoarseNear');
+  const coarse = float(1).toVar('foamLaceCoarse');
+  If(coarseNear.greaterThan(0.001), () => {
+    const d = bubbleDistance(p.mul(1.45).add(vec2(11.3, 4.7)), 53, 0.3, 0.75);
+    coarse.assign(mix(a.mul(0.5).add(0.5), d.smoothstep(open.sub(0.12), open.add(0.12)), coarseNear));
+  });
+  const fineNear = smoothstepDownClamped(viewDistance, 20, 50).toVar('foamLaceFineNear');
+  const fine = float(1).toVar('foamLaceFine');
+  If(foamUniforms.detail.greaterThan(0.5).and(fineNear.greaterThan(0.001)), () => {
+    const d = bubbleDistance(p.mul(4.3).add(vec2(2.9, 8.3)), 71, 0.25, 0.6);
+    fine.assign(mix(a.mul(0.25).add(0.75), d.smoothstep(open.mul(0.85).sub(0.1), open.mul(0.85).add(0.1)), fineNear));
+  });
+  return coarse.mul(fine);
 }
 
 /**
@@ -269,19 +321,27 @@ export function foamPattern(p: any, viewDistance: any): any {
 }
 
 /**
- * Wind streaks, about [0.35, 0.65]: web-ocean's `FOAM_TEX` alpha, sampled in the
- * wind frame at `(along * 0.035, across * 0.11)` of a texture holding
- * `pfbm(uv * (4, 16))`. In metres that is lanes about 7 m long and 0.6 m wide,
- * a 12:1 stretch. web-ocean multiplies *aged* foam by
- * `smoothstep(0.25, 0.75, streak) * 1.5`, which is what pulls a decaying patch
- * into the lanes a wind sea leaves (Beaufort 7: "foam blown in well-marked
- * streaks"). The finer octaves fade before they fall under a pixel across the
- * wind, so far off this flattens to 0.5 and `foamPatchiness` takes over.
+ * Wind streaks, about [0.35, 0.65], after web-ocean's `FOAM_TEX` alpha, which
+ * web-ocean multiplies into *aged* foam as `smoothstep(0.25, 0.75, streak) * 1.5`
+ * — what pulls a decaying patch into the lanes a wind sea leaves (Beaufort 7:
+ * "foam blown in well-marked streaks").
+ *
+ * **Not web-ocean's 12:1 stretch.** Lanes 7 m by 0.6 m, ruler-straight, were
+ * the critic's "ladder of over-regular parallel streak bands" (waves-4) and the
+ * "hatch lines" in the streak foam at the horizon (waves-3): gradient noise
+ * stretched that far has no features left along the stretch, so what survives
+ * the threshold is a comb. Here the lanes are 4:1 (about 3.6 m by 0.9 m) and
+ * meander: the across-wind coordinate is bent by a 12 m noise, the way real
+ * streaks follow Langmuir cells rather than rulings. The finer octaves fade
+ * before they fall under a pixel across the wind, so far off this flattens to
+ * 0.5 and `foamPatchiness` takes over.
  */
 export function foamStreaks(p: any, viewDistance: any): any {
   const along = vec2(foamUniforms.windAxis.x, foamUniforms.windAxis.y);
   const across = vec2(foamUniforms.windAxis.y.negate(), foamUniforms.windAxis.x);
-  const q = vec2(p.dot(along).mul(0.14), p.dot(across).mul(1.76)).toVar('foamStreakQ');
+  const frame = vec2(p.dot(along), p.dot(across)).toVar('foamStreakFrame');
+  const meander = gradNoise(frame.mul(0.083).add(vec2(3.1, 7.7))).mul(2.4);
+  const q = vec2(frame.x.mul(0.28), frame.y.add(meander).mul(1.1)).toVar('foamStreakQ');
   const first = gradNoise(q).mul(0.5);
   const rest = gradNoise(q.mul(2)).mul(0.25).add(gradNoise(q.mul(4)).mul(0.125));
   return first
@@ -305,30 +365,6 @@ export function featherFoam(amount: any, pattern: any): any {
   const normalised = pattern.sub(PATTERN_LOW).div(PATTERN_SPAN);
   const threshold = amount.clamp(0, 1).mul(-(1 + FEATHER)).add(1).toVar();
   return normalised.smoothstep(threshold, threshold.add(FEATHER));
-}
-
-/**
- * Where along a breaking crest the white actually is, 0..1, at world point `p`.
- *
- * Our fold regions are not whitecap-sized. In a 15–18 m/s sea on a 47 m peak,
- * the swell cascade's Jacobian sits deep below zero over whole crest faces,
- * tens of metres across (measured: the foam buffer's hard-breaking freshness
- * was 1 over most of the waves-4 frame's right half). The buffer is right that
- * the crest is breaking there; it cannot say that a real crest breaks in
- * separate whitecaps a few metres long with calmer water between them, because
- * that is turbulence the spectrum does not carry. This says it: blobs 2–7 m
- * across, stretched 1.8x *across* the wind (along the crest, which is how a
- * whitecap lies; its trail then runs along the wind, which `foamStreaks` draws).
- */
-export function foamCrestPatches(p: any): any {
-  const along = vec2(foamUniforms.windAxis.x, foamUniforms.windAxis.y);
-  const across = vec2(foamUniforms.windAxis.y.negate(), foamUniforms.windAxis.x);
-  const q = vec2(p.dot(along), p.dot(across).div(1.8));
-  return foamNoise(q.div(6.5).add(vec2(2.3, 5.9)))
-    .mul(0.5)
-    .add(foamNoise(q.div(2.9).add(vec2(8.1, 1.4))).mul(0.32))
-    .add(foamNoise(q.div(1.3).add(vec2(3.6, 7.2))).mul(0.18))
-    .smoothstep(0.32, 0.68);
 }
 
 /**
