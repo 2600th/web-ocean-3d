@@ -1519,9 +1519,9 @@ export class Props {
    *  - **2-14 m** pachira on the fringe, grass and sorrel, the first ferns.
    *  - **5-100 m** the closed canopy: the broadleaf over most of the flanks,
    *    with the rain tree's (`jacaranda`) broad crown held to sheltered ground
-   *    below 40 m and
-   *    under a fifth grade — a crown that wide on a ridge would be shredded, and
-   *    one that big on a slope reads as a mushroom sitting on the hill.
+   *    below 40 m and under a fifth grade — a crown that wide on a ridge would
+   *    be shredded, and one that big on a slope reads as a mushroom sitting on
+   *    the hill.
    *  - **7-78 m** the Geiger trees, in three clumps on the sheltered mid-slopes.
    *  - **10-108 m** the second broadleaf carries the upper flanks to the
    *    treeline, which `Seafloor` puts at 0.72 of `ISLAND.peak`.
