@@ -225,6 +225,55 @@ User direction 2026-11-13: make the language more interesting, engaging and user
   - **Bird test.** It aimed at a patch of sky the reworked flock rarely crosses; re-aimed, it measures ~600 px.
 - [ ] Storm palette reads grey-green; a daytime storm shows a horizon line; the moon's path on the water is broad; clouds are not lit by lightning.
 
+### Q. Head-to-head against the reference projects
+
+Not done yet. The projects in the reference table were mined for techniques, and the looks were judged against game screenshots in `REFERENCE_TARGETS.md`. Our build has never been put side by side with the projects themselves, so nothing here shows ours is better looking or faster than them.
+
+- [ ] **Matched visual comparison.** Capture the same kinds of views at the same resolution (1920x1080, High) from our build and from each live demo. Every pair goes on one sheet.
+  - Open ocean by day, sun glitter, whitecaps and sunset: against [web-ocean](https://ocean-noniv.vercel.app/).
+  - Coastal waves and shore: against [NeuralSpecOcean](https://bgbg108555.github.io/NeuralSpecOcean/).
+  - Underwater (after section H's upgrade): against [abyssal-garden](https://noniv.github.io/abyssal-garden/).
+  - Foam, hull contact and wake: against the Water Pro demo page, if a public one exists.
+- [ ] **Categories to compare.** One matched pair or set per row; the critic rules on each row on its own.
+
+  | Category | Compare against | What to look at |
+  |---|---|---|
+  | Refraction | NeuralSpecOcean, Water Pro, web-ocean | Seabed and hull seen through the surface, distorted by the waves; Snell's window and total internal reflection from below |
+  | Reflections | web-ocean, Water Pro | Sky, sun, island and ship mirrored in the water; stability while moving (no SSR edge tears); Fresnel at grazing angles |
+  | Boat–sea interaction | Water Pro | Bow wave, Kelvin wake, hull contact foam, water kept out of the hull, spray, how the hull rides the waves |
+  | Waves and wave shapes | web-ocean, NeuralSpecOcean | Spectrum and swell, choppy peaked crests and wide troughs, no tiling, how the shape changes from calm to storm |
+  | Caustics | abyssal-garden, NeuralSpecOcean | Shallow seabed seen from above, light on the seabed and reef underwater, colour split, how they move |
+  | Beach water transparency | NeuralSpecOcean, Water Pro | Depth-based colour from clear turquoise shallows to blue, visible sand and ripples near the shore, waterline |
+  | Foam | web-ocean, Water Pro, NeuralSpecOcean | Whitecaps (texture, fade, streaks), shore-break foam and swash, contact foam at hull and rocks, far-field foam |
+  | Underwater | abyssal-garden | Light shafts, depth haze, kelp, reef, rocks, life |
+  | Sky, sun and atmosphere | web-ocean | Sunset sky, clouds, sun disc, horizon |
+  | Clouds | web-ocean; Sea of Thieves screenshots | Cumulus shape (no blobs or tiling), dark flat bases and lit tops, silver lining toward the sun, edges eroded into wisps, layered depth, drift, no banding or noise crawl, the storm deck |
+
+- [ ] **Blind critic.** A separate reviewer sees only the unlabelled pairs, never the code. It picks the better image in each pair, says why, and lists concrete defects. Iterate on every category we lose until we win or tie, then record the verdicts here.
+- [ ] **Matched performance.** On the same machine and resolution, measure each project:
+  - GPU time per frame: timestamp queries where we control the build, otherwise Chrome's own GPU trace.
+  - Delivered frame rate, and how evenly frames are presented (PipelineReporter).
+  - Time to first frame and to interactive.
+  - Bytes transferred.
+  - Against [slop-newyork](https://mrdoob.github.io/slop-newyork/), add load time and transfer size: it is the procedural-scene reference for loading.
+- [ ] **Scoreboard.** Add a table to `REFERENCE_TARGETS.md` with each category's winner, the frame-time and load numbers, and the date and build. Fix every category where we lose by a clear margin. Where the other project only does less (for example a single fixed scene that can precompute everything), note that and match its look within our dynamic constraints.
+
+### R. Period props and procedural models
+
+The world is set around 1700 in the Caribbean, in the Golden Age of Piracy. Every model has to belong to that time, and anything that can be built in code at the same quality should be, which also cuts loading. Today `public/models` holds 42 MB of glTF. `dressing/` has rocks, a fort, a pier, a pinnace, cannon, crates, barrels, a bucket, a jug, a lantern, a chest, a sword, shells, coral and an angelfish; `hero/` has the ship, a barrel and a buoy. The lighthouse exists only on the start screen.
+
+- [ ] **Period audit.** List every model and prop and check each against the period, with a source for each verdict. `hero/ocean_buoy.glb` looks like a modern navigation buoy; check `antique_estoc` (a 16th-century sword), the fort and the pier as well. Replace or remove anything out of period.
+- [ ] **Procedural lighthouse, in the world.** Put one on a headland of the island in the style of the period: a tapering masonry tower, a gallery, and a glazed lantern room with an open fire or candle lamp, not a modern Fresnel optic. Build it in code with LODs and a TSL stone material. At dusk and night it shows a lit lamp with a light, and a beam only if a period lamp could throw one. Check it against the start screen's lighthouse so the two agree.
+- [ ] **Procedural treasure chest.** Replace `treasure_chest.glb` with a chest built in code: a planked lid, iron bands and corners, a hasp and padlock, worn wood, and optionally a spill of gold coins. LODs, matched scale and placement on the reef, and it must look as good as or better than the glTF from the gameplay camera.
+- [ ] **Other procedural props.** Where code can match the glTF's quality, replace it:
+  - Ship's stores: barrels, crates, bucket, jug, lantern, cannon.
+  - Ship's gear: a period anchor, rope coils.
+  - Shore buildings: the jetty and pier, the fort walls.
+  - Underwater: rocks and coastal rocks (shared with the underwater rock generator in section H), shells and coral.
+  - New props worth adding: a shipwreck on the reef, a careening beach camp, palm-thatch shelters, a beached longboat, a flag on the fort.
+  Each prop gets LODs and seeded variety, and a side-by-side check against the asset it replaces. The hero ship stays a model unless code can match it.
+- [ ] **Measure the gain.** Record the bytes and time to interactive before and after, and add the numbers to section Q's scoreboard.
+
 ### F. Verification
 - [ ] Progress screenshots each milestone
 - [ ] `npm run typecheck`, functional suite, rebaseline visual suite deliberately
