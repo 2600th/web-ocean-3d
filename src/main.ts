@@ -24,6 +24,7 @@ import {
   GroundCover,
   KelpForest,
   ReefLife,
+  Rocks,
   SeaCreatures,
   Props,
   Remains,
@@ -35,6 +36,7 @@ import {
   SurfaceWetness,
   FoliageWind,
   applyGroundShadingTo,
+  type GroundShadingInputs,
 } from './scene';
 import {
   AudioSystem,
@@ -389,6 +391,7 @@ class App {
   /** Seagrass meadows, gorgonians, Halimeda and sargassum; shares the kelp's water. */
   private seabedCover!: GroundCover;
   private reefLife!: ReefLife;
+  private rocks!: Rocks;
   private creatures!: SeaCreatures;
   private meadow!: IslandMeadow;
   private canopy!: IslandCanopy;
@@ -911,14 +914,18 @@ class App {
     // The procedural reef. Built after the caustics because it takes the same
     // ground treatment the props do — caustics on every coral, the cloud deck's
     // shade, contact darkening at the base — and that binding is compiled in.
-    this.reefLife = new ReefLife(quality.reefLife, {
-      shading: {
-        light: this.atmosphere.sunLight,
-        keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
-        caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
-        groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
-      },
-    });
+    const seabedShading: Omit<GroundShadingInputs, 'foliage'> = {
+      light: this.atmosphere.sunLight,
+      keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
+      caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+      groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
+    };
+    // The geology first: the reef grows on its outcrops, and the sand reads
+    // its map. Same ground treatment as the reef.
+    this.rocks = new Rocks(quality.reefRocks, { shading: seabedShading });
+    this.scene.add(this.rocks.object);
+    this.seafloor.setRockInfluence(this.rocks.influence);
+    this.reefLife = new ReefLife(quality.reefLife, { shading: seabedShading, gardens: this.rocks.gardens });
     this.scene.add(this.reefLife.object);
 
     // The animals that live on it, homed on the same sites.
@@ -960,6 +967,7 @@ class App {
     this.reflections?.excludeLayer(this.camera, UNDERWATER_LAYER);
     for (const root of [
       this.reefLife.object,
+      this.rocks.object,
       this.creatures.object,
       this.kelp.object,
       this.seabedCover.object,
@@ -2813,6 +2821,7 @@ class App {
     this.seabedCover.setCount(quality.seabedCover);
     this.seabedCover.setRange(quality.vegetationRange * 0.65);
     this.reefLife.setDetail(quality.reefLife);
+    this.rocks.setDetail(quality.reefRocks);
     this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
@@ -3442,6 +3451,7 @@ class App {
     );
     this.reefLife.setCameraPosition(this.camera.position);
     this.reefLife.update(dt);
+    this.rocks.setCameraPosition(this.camera.position);
 
     // The animals take the same sun the fish do — its colour, scaled as `Fish`
     // scales its own, and gone when the sun is.
@@ -4136,6 +4146,8 @@ class App {
         /** Kelp groves and seabed cover, so a harness can frame and count them. */
         kelp: this.kelp,
         seabedCover: this.seabedCover,
+        /** The seabed geology: outcrop centres, triangle counts. */
+        rocks: this.rocks,
         creatures: this.creatures,
         /**
          * Readiness signals. `sceneContentLoaded` settles whether or not the
@@ -4589,6 +4601,7 @@ class App {
     this.fish?.dispose();
     this.kelp?.dispose();
     this.seabedCover?.dispose();
+    this.rocks?.dispose();
     this.meadow?.dispose();
     this.stormQuote?.dispose();
     this.canopy?.dispose();
