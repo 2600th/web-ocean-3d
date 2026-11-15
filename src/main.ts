@@ -1642,8 +1642,10 @@ class App {
     const s = impact.strength;
     const p = impact.position;
     if (!impact.hull) {
-      // A buoy or a barrel: a small patch of foam where it came down.
-      this.wake.splash(p.x, p.z, 1.2, 0.35 + 0.4 * s);
+      // A buoy or a barrel: a patch of foam the size of what came down — no
+      // wider than the old fixed 1.2 m, which on a buoy already stamped a
+      // visibly square patch at the wake buffer's resolution.
+      this.wake.splash(p.x, p.z, Math.min(1.2, Math.max(0.6, impact.radius * 1.1)), 0.3 + 0.35 * s);
       return;
     }
 
@@ -3743,6 +3745,8 @@ class App {
       this.atmosphere.sunLight.intensity / 3.4,
       this.atmosphere.zenithColor,
     );
+    // The lens and the frame height set the one-pixel floor on droplet width.
+    this.spray.setView(this.camera.fov, this.renderer.getDrawingBufferSize(_drawingBuffer).y, this.camera.position, dt);
     this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.
