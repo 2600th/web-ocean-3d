@@ -187,3 +187,47 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## NeuralSpecOcean
+
+https://github.com/bgbg108555/NeuralSpecOcean
+
+The shallow-water optics of the sea surface near a shore are adapted from
+NeuralSpecOcean's beach optics (`source/src/Offshore.js`): the view ray refracted
+at the surface and followed to the bed, the bed point projected to choose the
+backdrop pixel (offset clamped, faded at the frame edge, stepped back when the
+sample lands in front of the water), the optical path taken along the refracted
+ray (`depth / cos(refracted)`, floored at 0.66), and the bed attenuated on the
+way down by a diffuse coefficient derived from the same extinction. The wet-sand
+model is adapted from its `source/src/ShoreVisual.js`: the dry-to-film roughness
+range, the water film's normal flattened toward the beach plane, and the
+wet/dry edge perturbed by multi-scale seepage noise. Ported to three.js TSL;
+the surf, the foam and the wetting state are this project's own. Affected files:
+
+- `src/ocean/OceanMaterial.ts`
+- `src/ocean/Surf.ts`
+- `src/scene/Seafloor.ts`
+
+```
+MIT License
+
+Copyright (c) 2026 bgbg108555 and NeuralSpecOcean Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
