@@ -589,21 +589,23 @@ export class PhysicalAtmosphere {
   }
 
   /**
-   * The sun's disc, limb darkened (web-ocean `sunDisk`), for unit solar
-   * illuminance. Its edge is anti-aliased over one pixel of angle via `fwidth`
-   * rather than web-ocean's screen-size uniform, so the same node serves every
-   * camera (and the cube capture, which hides the disc anyway).
+   * The sun's disc, limb darkened (web-ocean `sunDisk`): the limb-darkening
+   * profile times the transmittance along `dir`, without the disc's radiance,
+   * which the caller sets (`Atmosphere` caps it for display). `angularRadius`
+   * is the drawn radius in radians; web-ocean draws the real `SUN_ANG_R`. Its
+   * edge is anti-aliased over one pixel of angle via `fwidth` rather than
+   * web-ocean's screen-size uniform, so the same node serves every camera (and
+   * the cube capture, which hides the disc anyway).
    */
-  sunDisc(dir: any): any {
+  sunDisc(dir: any, angularRadius: number = SUN_ANG_R): any {
     const c = dot(dir, this.uSunDir);
     const ang = sqrt(max(float(1).sub(c).mul(2), 0));
     const pix = fwidth(ang).max(1e-5).mul(0.75);
-    const edge = float(1).sub(smoothstep(float(SUN_ANG_R).sub(pix), float(SUN_ANG_R).add(pix), ang));
-    const x = min(ang.div(SUN_ANG_R), 1);
+    const edge = float(1).sub(smoothstep(float(angularRadius).sub(pix), float(angularRadius).add(pix), ang));
+    const x = min(ang.div(angularRadius), 1);
     const mu = sqrt(max(float(1).sub(x.mul(x)), 0));
     const limb = vec3(1).sub(vec3(0.397, 0.503, 0.652).mul(float(1).sub(mu)));
-    const rad = 1 / (Math.PI * SUN_ANG_R * SUN_ANG_R);
-    return limb.mul(edge).mul(rad).mul(this.transNode(float(CAM_R), max(dir.y, -0.01)));
+    return limb.mul(edge).mul(this.transNode(float(CAM_R), max(dir.y, -0.01)));
   }
 
   dispose(): void {
