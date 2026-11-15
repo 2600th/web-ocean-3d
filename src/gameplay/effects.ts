@@ -272,11 +272,11 @@ const SPRAY_CLASSES = [
   CLASS_DROP,
   CLASS_CLUSTER,
   CLASS_SHEET,
-  CLASS_DROP,
-  CLASS_CLUSTER,
   CLASS_MIST,
-  CLASS_DROP,
   CLASS_CLUSTER,
+  CLASS_SHEET,
+  CLASS_DROP,
+  CLASS_MIST,
 ];
 
 /**
@@ -545,8 +545,12 @@ export class BowSpray {
     const density: any = isDrop
       .mul(0.8)
       .add(isCluster.mul(0.85))
-      .add(isSheet.mul(life.mul(-0.4).add(0.85)))
-      .add(isMist.mul(0.07));
+      .add(isSheet.mul(life.mul(-0.3).add(0.9)))
+      // The white haze over the bow wave, which is what reads from a chase
+      // camera when the individual drops are under a pixel. At 0.07 a mist
+      // quad was invisible past twenty metres (boat-sea-1: "the bow spray is
+      // faint from the chase camera").
+      .add(isMist.mul(0.2));
     const fadeIn: any = smoothstep(0, 0.06, life);
     const fadeOut: any = smoothstepDown(life, isMist.mul(-0.35).add(0.7), 1);
     // Back into the sea a little below where it left the crest.
