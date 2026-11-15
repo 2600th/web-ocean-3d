@@ -79,6 +79,14 @@ const TILE_NORM = 1 / 0.125;
 const SHAFT_SCALE_A = 8.2;
 const SHAFT_SCALE_B = 3.3;
 
+/**
+ * How far the web moves a surface's light, below and above the mean; see
+ * `applyWeb`. The gaps between filaments keep half the light; the filaments
+ * keep most of their excess.
+ */
+const SURFACE_DARK_SHARE = 0.5;
+const SURFACE_BRIGHT_SHARE = 0.8;
+
 /** The surfaces' second, modulating read, abyssal's `6.9 / 3.3`. */
 const BROAD_SCALE = 2.1;
 
@@ -242,7 +250,7 @@ export class Caustics {
     const web = texture(this.texture, xz.div(this.uTile))
       .bias(this.detailBias(below))
       .r.mul(this.broadPattern(xz));
-    return mix(float(1), web, this.detailContrast(below));
+    return applyWeb(web, this.detailContrast(below));
   }
 
   /**
@@ -273,7 +281,11 @@ export class Caustics {
     const g = texture(this.texture, tileUv).bias(bias).r;
     const b = texture(this.texture, tileUv.sub(offset)).bias(bias).r;
     const web = vec3(r, g, b).mul(this.broadPattern(xz));
-    return mix(vec3(1, 1, 1), web, this.detailContrast(below));
+    return vec3(
+      applyWeb(web.x, this.detailContrast(below)),
+      applyWeb(web.y, this.detailContrast(below)),
+      applyWeb(web.z, this.detailContrast(below)),
+    );
   }
 
   /**
@@ -297,7 +309,7 @@ export class Caustics {
 
   /** How much of the web survives at `below` metres, times the strength. */
   private detailContrast(below: any): any {
-    return exp(below.mul(this.uDepthFade).negate()).mul(this.uStrength).clamp(0, 2);
+    return exp(below.mul(this.uDepthFade).negate()).mul(this.uStrength).clamp(0, 1.5);
   }
 
   /**
@@ -402,6 +414,25 @@ export class Caustics {
     this.bakeMaterial.dispose();
     this.quad.geometry.dispose();
   }
+}
+
+/**
+ * A surface's light under the web `w` (mean 1) at contrast `c`.
+ *
+ * Not `mix(1, w, c)`. The tile's median is 0.09 against its mean of 1, so at
+ * full contrast the brightest tenth carried all the light, the tone curve
+ * clipped it, and the rest of the shelf read darker than with no caustics at
+ * all: 0.82x mean and 0.58x median on the shore-break shelf, measured with
+ * the sea hidden. Here the gaps keep half the light, which is what sand
+ * between real caustic lines gets, and the filaments keep 0.8 of their excess.
+ * That puts the linear mean somewhat above 1, which the tone curve's
+ * compression of the filaments takes back: measured the same way, the shelf
+ * now displays at 0.98x of its uncausticked brightness, with the gaps at
+ * 0.79x and the filaments at 1.56x (p90).
+ */
+function applyWeb(w: any, c: any): any {
+  const d = float(w).sub(1);
+  return d.mul(c).mul(d.greaterThan(0).select(float(SURFACE_BRIGHT_SHARE), float(SURFACE_DARK_SHARE))).add(1);
 }
 
 /**
