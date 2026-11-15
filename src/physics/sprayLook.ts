@@ -55,10 +55,14 @@ import { smoothstepDown } from '../core/tslMath';
  * narrow feather so the edges stay crisp like water rather than soft like smoke.
  *
  * **Droplets stretched along their velocity.** Every quad's long axis is its
- * screen-projected velocity and its length grows with speed — Niagara's
- * "Velocity Aligned" sprite and three.quarks' stretched billboard
- * (`stretched_bb_particle_vert.glsl.ts`, MIT; see THIRD_PARTY_NOTICES.md),
- * whose length rule `size * (1 + lengthFactor * |v|)` is the one used here.
+ * velocity projected into the view plane and its short axis the cross product
+ * of that with the view ray — Niagara's "Velocity Aligned" sprite, and the axis
+ * construction of three.quarks' stretched billboard
+ * (`stretched_bb_particle_vert.glsl.ts`, MIT; see THIRD_PARTY_NOTICES.md).
+ * The length differs from three.quarks', which scales `|v| * size`: here it is
+ * `width + |v_rel| * streak`, with `streak` in seconds, so a streak is an
+ * exposure time — the same at any droplet size — and `v_rel` is relative to
+ * the camera, because motion blur is.
  * Droplets are 2–6 cm wide — the size class that streaks visibly; Ryerson
  * measured a 234 µm median on a cutter's slam spray, which is mist at any
  * range a camera sees it from — and never thinner than about a pixel, with
