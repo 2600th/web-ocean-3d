@@ -215,6 +215,74 @@ const MAX_DETAIL = 1;
 const DETAIL_ROTATION = 1.1071487; // atan(2)
 
 /**
+ * The cascade that, with the detail bands, makes the "fine" share of the slope:
+ * the 16 m tile, wavelengths 5 cm to 3 m (`Spectrum.CASCADES[2]`).
+ */
+const FINE_CASCADE = 2;
+
+/**
+ * The display level, as a fraction of the white point (`1 / exposure`), that
+ * the low-sun glint count is scaled against (see `glintGain`). Under ACES
+ * that is about 0.9 of display white.
+ */
+const GLITTER_CEILING = 0.8;
+
+/** Upwelling light under a night sky, as a share of full daylight's. */
+const BODY_NIGHT_FLOOR = 0.1;
+
+/**
+ * The body's radiance under full daylight, per unit of the authored
+ * `deepColor`, in display-referred terms (it multiplies the white point).
+ * The body was previously lit in scene units against a 0.42 exposure, so the
+ * clear-day sea measured sRGB (10, 31, 54) beside a reference at
+ * (91, 145, 169): a near-black navy that the camo then dominated. With the
+ * body tied to the white point, `deepColor` reads directly as a display
+ * colour, and 1.8 recovers what the diffuse and cloud-shade terms take off
+ * the mean (they average about 0.55 over a sunlit frame).
+ */
+const BODY_GAIN = 1.8;
+
+/**
+ * How much of the short-wave slope (`fineSlope`) the body's diffuse term
+ * ignores. The body is light scattered back out of the volume, which does not
+ * care which way a centimetre ripple faces; lit with the full shading normal
+ * it carried the detail maps' envelope as a 2x swing in brightness, the
+ * fbm-like mottle on waves-1 and refraction-1. The long waves keep their
+ * troughs and faces; a share of the fine slope is kept for texture.
+ */
+const BODY_FINE_SLOPE_DROP = 0.7;
+
+/** Body brightness swing from trough (1 - x) to crest (1 + x), by height over the sea state. */
+const BODY_TROUGH_CONTRAST = 0.3;
+
+/**
+ * Facets per square metre times the sun disc's area in slope space: the
+ * expected number of glinting facets in a square metre whose slope density at
+ * the half-vector is 1. The disc is 0.0047 rad across, so a normal must sit
+ * within 0.0023 rad of the half-vector, about 1.7e-5 of slope area; 20 is then
+ * about 1.2e6 facets per m^2, millimetre roughness on the capillaries.
+ *
+ * Tuned on the captures rather than derived, between two failures: at 0.17
+ * (centimetre facets) the path all but vanished into a few dozen points, and
+ * at 50 the up-sun sea of boat-sea-1 was a carpet of white flecks again.
+ */
+const GLINT_FACETS_PER_SUN = 20;
+/** How far the glitter's ceiling sits above the sky radiance it is reflected beside. */
+const GLINT_OVER_SKY = 4;
+/**
+ * Share of the mean glitter the draw must carry under the ceiling when the sun
+ * is low (sunset). On reflections-2, 1 drew a solid column and 0 a few faint
+ * points; this keeps a glittering column.
+ */
+const GLINT_LOW_SUN_FLOOR = 0.5;
+/** Terms of the Poisson inverse CDF; above about this count the draw is normal. */
+const GLINT_MAX_COUNT = 12;
+/** Cap on one cell's draw over its mean, so a lone glint in a dim tail cannot flare. */
+const GLINT_MAX_GAIN = 24;
+/** How often the draw is re-seeded, per second of simulation time: the twinkle. */
+const GLINT_TWINKLE_HZ = 9;
+
+/**
  * The undisplaced world XZ a fragment's surface point was generated from.
  *
  * A varying rather than a recomputation: the vertex stage is the only place that
@@ -530,6 +598,11 @@ export class OceanMaterial {
   private readonly uSunColor = uniform(new THREE.Color(1.0, 0.94, 0.84));
   private readonly uSunIntensity = uniform(4.0);
   /**
+   * Scene radiance the tone curve maps to (nearly) white: `1 / exposure`. See
+   * `setExposure` and the glitter ceiling.
+   */
+  private readonly uWhitePoint = uniform(1 / 0.42);
+  /**
    * How lit the scene is, 0..1, independent of the key light's colour.
    *
    * Terms that represent transmitted or scattered daylight — as opposed to
@@ -668,6 +741,15 @@ export class OceanMaterial {
     (this.uSunColor.value as THREE.Color).copy(color);
     this.uSunIntensity.value = intensity;
     this.uLightLevel.value = Math.max(0, Math.min(1, lightLevel));
+  }
+
+  /**
+   * The preset's tone-mapping exposure. The glitter is held under the white
+   * point it implies, and only the exposure knows where that is (the same
+   * reason `SceneBloom.setExposure` exists).
+   */
+  setExposure(toneMappingExposure: number): void {
+    this.uWhitePoint.value = 1 / Math.max(0.05, toneMappingExposure);
   }
 
   setSky(sky: THREE.Color, horizon: THREE.Color, fog: THREE.Color, fogDensity: number): void {
@@ -1157,6 +1239,11 @@ export class OceanMaterial {
       // Slope variance lost inside the texture footprint — see the alpha channel
       // of the derivative pass. Bands are independent, so their variances add.
       const lostSlopeVariance = float(0).toVar();
+      /**
+       * The short-wave share of the slope (the finest cascade and the detail
+       * bands), which the body's diffuse term mostly ignores; see BODY_FINE_SLOPE_DROP.
+       */
+      const fineSlope = vec2(0).toVar();
       /** Cascade 0's share of the slope: the swell, which the surf replaces. */
       const swellSlope = vec2(0).toVar();
       for (let i = 0; i < cascadeCount; i++) {
@@ -1180,6 +1267,7 @@ export class OceanMaterial {
         lostSlopeVariance.addAssign(
           d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
         );
+        if (i === FINE_CASCADE) fineSlope.addAssign(vec2(d.x, d.y).mul(fade));
       }
 
       // [underwater-look] The swell and wind-wave cascades only, before the
@@ -1214,14 +1302,15 @@ export class OceanMaterial {
         const bSlope = vec2(b.x.mul(cosR).sub(b.y.mul(sinR)), b.x.mul(sinR).add(b.y.mul(cosR)));
         slope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
         // Variance scales with the square of the 1/sqrt(2) weight.
-        lostDetailVariance.addAssign(
-          a.w
-            .sub(a.x.mul(a.x).add(a.y.mul(a.y)))
-            .max(0)
-            .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
-            .mul(this.uDetailWeights[i])
-            .mul(0.5),
-        );
+        const detailLost = a.w
+          .sub(a.x.mul(a.x).add(a.y.mul(a.y)))
+          .max(0)
+          .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
+          .mul(this.uDetailWeights[i])
+          .mul(0.5)
+          .toVar();
+        lostDetailVariance.addAssign(detailLost);
+        fineSlope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
       }
 
       // Rain impacts, added to the wave slope before the normal is built so they
@@ -1653,8 +1742,16 @@ export class OceanMaterial {
       const objectBehind: any = (
         floorDepth === null ? float(0) : column.sub(seenDepth).smoothstep(0.35, 1.2)
       ).toVar();
+      // The bed's colour reaches the eye only after the light that shows it has
+      // gone *down* to the bed as well as back up the view ray, so it is
+      // attenuated over the depth too, not over the view path alone. With the
+      // view path alone, thirty metres of clear water (blue extinction
+      // 0.06 /m) still passed a sixth of the sand tint, and every open-sea
+      // frame near the island came out lagoon cyan (boat-sea-1/2, waves-1).
+      // A two-metre lagoon keeps 90% of it.
+      const bedLit: any = this.uExtinction.mul(seabedDepth).negate().exp();
       const inscatter: any = mix(
-        mix(this.uDeepColor, this.uShallowColor, absorption),
+        mix(this.uDeepColor, this.uShallowColor, absorption.mul(bedLit)),
         this.uDeepColor,
         objectBehind,
       ).toVar();
@@ -1938,7 +2035,6 @@ export class OceanMaterial {
       const oneMinusVH = float(1).sub(vDotH).toVar();
       const vhPow = oneMinusVH.mul(oneMinusVH).mul(oneMinusVH).mul(oneMinusVH).mul(oneMinusVH).toVar();
       const fresnelSpecular = vhPow.mul(0.98).add(0.02).toVar();
-      const nDotL = n.dot(sunDirEarly).clamp(0, 1).toVar();
 
       const specular = this.uSunColor
         .mul(
@@ -1964,6 +2060,90 @@ export class OceanMaterial {
         specular.mulAssign(sunShade);
       }
 
+      // The brightest a glint can be drawn: GLITTER_CEILING of the white point,
+      // or a multiple of the sky this facet reflects where that sky is itself
+      // past white (sunset). Only the low-sun count floor below uses it. A soft
+      // shoulder that compressed the glitter to it was dropped after the
+      // spectrum fix (aaa-pass 0f78f7c): with the slopes right, the sun path is
+      // already tight, and the shoulder only dimmed it.
+      const skyReflected = reflection.x.max(reflection.y).max(reflection.z).mul(fresnel);
+      const whiteCeiling = this.uWhitePoint.mul(GLITTER_CEILING).toVar();
+      const glitterCeiling = whiteCeiling.max(skyReflected.mul(GLINT_OVER_SKY)).toVar();
+      /** 1 under a low sun, 0 by day: see the count floor in `glintGain`. */
+      const lowSun = float(1).sub(sunDirEarly.y.smoothstep(0.1, 0.25)).toVar();
+
+      // **Glints, not a sheet.** What the lobe above returns is the *expected*
+      // glitter of the pixel: the mean over every facet in its footprint. A real
+      // footprint holds a countable number of facets turned to the sun, a few or
+      // none, each as bright as the sun's image in a mirror, and that count is
+      // what reads as sparkle. Evaluated as the mean, any pixel whose facets
+      // straddle the half-vector lit up together with its neighbours, so the
+      // path drew as smeared blotches (reflections-1, waves-6, refraction-1).
+      //
+      // So the count is drawn, after Zirr & Kaplanyan, "Real-time Rendering of
+      // Procedural Multiscale Materials" (I3D 2016): the expected number of
+      // glinting facets in a world-anchored cell the size of the pixel is the
+      // facet density times the cell's area times the probability a facet faces
+      // the sun (the distribution times the sun disc's area in slope space),
+      // and a Poisson draw of it, hashed from the cell and the clock, scales the
+      // mean. Where the count is large (far water, wide footprints) the draw is
+      // its mean and the sheen is untouched; near the eye it is a scatter of
+      // points that keeps the path's energy. Two power-of-two cell sizes are
+      // blended so the cells do not pop as the footprint changes.
+      const glintFootprintX = dFdx(fieldXZ);
+      const glintFootprintY = dFdy(fieldXZ);
+      const glintArea = glintFootprintX.x
+        .mul(glintFootprintY.y)
+        .sub(glintFootprintX.y.mul(glintFootprintY.x))
+        .abs()
+        .max(1e-8)
+        .toVar();
+      const glintLevel = log2(glintArea).mul(0.5).toVar();
+      const glintLevel0 = glintLevel.floor().toVar();
+      // `uRainTime` is the simulation clock (see `setRain`), so a deterministic
+      // rewind replays the same twinkle.
+      const glintSlot = this.uRainTime.mul(GLINT_TWINKLE_HZ).floor().mod(997).toVar();
+      const glintMean = specular.x.max(specular.y).max(specular.z).toVar();
+      const glintRate = distribution.mul(shadowing).mul(GLINT_FACETS_PER_SUN).toVar();
+      const glintGain = (level: any): any => {
+        const side = level.exp2();
+        const cell = fieldXZ.div(side).floor().mod(4096);
+        const u: any = hashNoSine22(cell.add(vec2(glintSlot.mul(41), level.mul(113)))).toVar();
+        // Under a low sun, never fewer glints than it takes to carry a share of
+        // the mean under the ceiling. The whole path is then seen at grazing
+        // incidence beside an aureole already at white, and a sparse draw
+        // clips at the display and throws the column's energy away. By day
+        // (`lowSun` 0) the draw is left sparse, which is the whole point of it.
+        const expected: any = glintRate
+          .mul(side.mul(side))
+          .max(glintMean.div(glitterCeiling).mul(lowSun.mul(GLINT_LOW_SUN_FLOOR)))
+          .toVar();
+        // Poisson inverse CDF, unrolled: k = how many of the terms u exceeds.
+        const term: any = expected.negate().exp().toVar();
+        const cdf: any = term.toVar();
+        const count = float(0).toVar();
+        for (let k = 1; k <= GLINT_MAX_COUNT; k++) {
+          count.addAssign(u.x.greaterThan(cdf).select(float(1), float(0)));
+          term.mulAssign(expected.div(k));
+          cdf.addAssign(term);
+        }
+        // Past a dozen the Poisson is its normal approximation (Box-Muller).
+        const normal = u.x.max(1e-6).log().mul(-2).sqrt().mul(u.y.mul(2 * Math.PI).cos());
+        const gaussian = float(1).add(normal.div(expected.max(1e-3).sqrt())).max(0);
+        const drawn = mix(
+          count.div(expected.max(1e-6)),
+          gaussian,
+          expected.smoothstep(GLINT_MAX_COUNT * 0.5, GLINT_MAX_COUNT * 0.8),
+        );
+        return drawn.min(GLINT_MAX_GAIN);
+      };
+      const glintDraw = mix(
+        glintGain(glintLevel0),
+        glintGain(glintLevel0.add(1)),
+        glintLevel.sub(glintLevel0),
+      ).toVar();
+      specular.mulAssign(glintDraw);
+
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
       // at 0.45, which is a floor on how dark lit water can get — so at night the
@@ -1971,10 +2151,40 @@ export class OceanMaterial {
       // around the submerged hull read as a green lamp. It now falls with the
       // light, to a small floor rather than to zero: a night sea is dark, but it
       // is not black, because the whole sky is still faintly lighting it.
-      const ambientFloor = mix(float(0.1), float(1), this.uLightLevel).toVar();
+      //
+      // The body is display-referred: it scales with the white point
+      // (`1 / exposure`), so a preset's exposure, which is set for its sky, no
+      // longer decides how bright its water is (see BODY_GAIN). The light
+      // reaching the column is the sun's, tinted a third of the way to its
+      // colour (the rest is skylight), and falls as the sun drops, toward the
+      // night floor.
+      const sunLift = sunDirEarly.y.mul(2.2).clamp(0, 1).toVar();
+      const upwelling = mix(
+        float(BODY_NIGHT_FLOOR),
+        float(1),
+        this.uLightLevel.mul(sunLift.mul(0.7).add(0.3)),
+      ).toVar();
+      const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
+        .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
+        .toVar();
+      const bodySlope = slope.sub(fineSlope.mul(BODY_FINE_SLOPE_DROP)).toVar();
+      const bodyDotL = normalize(vec3(bodySlope.x.negate(), 1, bodySlope.y.negate()))
+        .dot(sunDirEarly)
+        .clamp(0, 1)
+        .toVar();
+      // Troughs read darker than faces: the eye looks into a trough through
+      // the wave in front of it, and the light that comes back up out of it
+      // has crossed more water. Relative to the sea state, as the crest term
+      // above is, so a chop and a swell shade alike.
+      const troughShade = worldPos.y
+        .div(seaScale)
+        .clamp(-1, 1)
+        .mul(BODY_TROUGH_CONTRAST)
+        .add(1)
+        .toVar();
       const litBody = columnColor
-        .mul(nDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
-        .mul(ambientFloor)
+        .mul(bodyDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
+        .mul(bodyLight.mul(troughShade))
         .add(seenThrough)
         .add(scatter.mul(sunShade))
         .toVar();
@@ -2883,6 +3093,17 @@ const rainSlope = /*@__PURE__*/ Fn(([worldXZ, time, intensity]: [any, any, any])
     }
   }
   return slope;
+});
+
+/**
+ * Dave Hoskins' "Hash without Sine" (MIT, https://www.shadertoy.com/view/4djSRW),
+ * hash22: two uniforms from a 2D lattice point. Used for the glint draw, whose
+ * cells run to thousands, where `sin`-based hashes lose their low bits.
+ */
+const hashNoSine22 = /*@__PURE__*/ Fn(([p]: [any]) => {
+  const p3 = vec3(p.x, p.y, p.x).mul(vec3(0.1031, 0.103, 0.0973)).fract().toVar();
+  p3.addAssign(p3.dot(vec3(p3.y, p3.z, p3.x).add(33.33)));
+  return vec2(p3.x, p3.x).add(vec2(p3.y, p3.z)).mul(vec2(p3.z, p3.y)).fract();
 });
 
 const hash2 = /*@__PURE__*/ Fn(([p]: [any]) => {

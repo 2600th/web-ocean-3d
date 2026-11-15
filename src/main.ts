@@ -3172,6 +3172,7 @@ class App {
     // the sensor limit — `1 / exposure` is. The presets span 0.42 to 1.35, so a
     // fixed threshold would mean something different in each of the nine.
     this.bloom.setExposure(preset.toneMappingExposure);
+    this.water.setExposure(preset.toneMappingExposure);
     this.postChain.setPreset(this.state.preset);
     // With the exposure, not instead of it, and the pair is not redundant:
     // exposure decides where the scene sits on the tone curve, the grade decides
