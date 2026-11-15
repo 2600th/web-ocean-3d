@@ -122,6 +122,8 @@ const _pinTarget = new THREE.Vector3();
 const _keyDirection = new THREE.Vector3();
 /** Scratch for the camera forward axis, read every frame. */
 const _keyDirection2 = new THREE.Vector3();
+/** The underwater medium's colour, handed to the ocean's underside each frame. */
+const _underMedium = new THREE.Vector3();
 const _impactForward = new THREE.Vector3();
 const _impactRight = new THREE.Vector3();
 const _impactOffset = new THREE.Vector3();
@@ -922,7 +924,7 @@ class App {
     this.seafloor.setKeyLight(this.atmosphere.sunLight);
     // The volumetric march picks its caustics mip level from this, so it has to
     // be told after the field exists — see `uCausticsTexel`.
-    this.underwater.setCausticsTexelSize(this.caustics.extent / this.caustics.resolution);
+    this.underwater.setCausticsTexelSize(this.caustics.tileSize / this.caustics.resolution);
 
     // The procedural reef. Built after the caustics because it takes the same
     // ground treatment the props do — caustics on every coral, the cloud deck's
@@ -3811,6 +3813,8 @@ class App {
       // flat — see `Preset.underwater`.
       distortion: preset.underwater.distortion,
     });
+    // What the surface shows from below outside Snell's window: the medium.
+    this.water.setUnderwaterMedium(this.underwater.mediumColor(_underMedium));
     // The receivers' shadow lookup follows the refracted key light below the
     // surface (`SunShadows.setLightDirection`), so the hull's shadow on the sand
     // lands where the shafts' shadow column does. A uniform write.
@@ -4164,6 +4168,8 @@ class App {
           /** AO, TAAU, sharpen, motion blur, CA, grain, eye adaptation; `setOverride` for A/B. */
           chain: this.postChain,
         },
+        /** The caustics field, so a harness can read the bake back and tune it. */
+        caustics: this.caustics,
         loop: this.loop,
         backend: this.backend,
         wake: this.wake,

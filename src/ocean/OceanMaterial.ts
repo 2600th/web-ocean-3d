@@ -586,6 +586,11 @@ export class OceanMaterial {
    * shading normal must not decide it.
    */
   private readonly uEyeSubmerged = uniform(0);
+  /**
+   * [underwater-look] The medium's colour at the top of the column, from
+   * `UnderwaterPass.mediumColor`: what total internal reflection shows.
+   */
+  private readonly uUnderMedium = uniform(new THREE.Vector3(0.03, 0.27, 0.46));
   private readonly uReflectionAmount = uniform(1);
   /** Screen-space offset applied to the reflection lookup, at unit distance. */
   private readonly uReflectionDistortion = uniform(0.09);
@@ -790,6 +795,11 @@ export class OceanMaterial {
   /** Whether the eye is under water; selects topside or underside shading. */
   setEyeSubmerged(submerged: boolean): void {
     this.uEyeSubmerged.value = submerged ? 1 : 0;
+  }
+
+  /** [underwater-look] See `uUnderMedium`. A uniform write; call per frame. */
+  setUnderwaterMedium(color: THREE.Vector3): void {
+    (this.uUnderMedium.value as THREE.Vector3).copy(color);
   }
 
   setReflection(amount: number, distortion = 0.09): void {
@@ -1157,6 +1167,11 @@ export class OceanMaterial {
           d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
         );
       }
+
+      // [underwater-look] The swell and wind-wave cascades only, before the
+      // centimetre detail bands are added: what the underside's ripple term
+      // subtracts to keep only the fine ripples.
+      const refractSlope = vec2(slope).toVar('oceanRefractSlope');
 
       // The detail bands (`Spectrum.detailCascades`): centimetre and millimetre
       // ripples, shading only. Their mean slope adds to the normal and their
@@ -2382,78 +2397,85 @@ export class OceanMaterial {
       // The branch is on the *sign* of `n . v`, which is exactly "is this a back
       // face". It is coherent over large regions of the screen, so the cost above
       // water is a compare.
-      const facingSign = n.dot(viewDir).toVar();
-      If(facingSign.lessThan(0).and(this.uEyeSubmerged.greaterThan(0.5)), () => {
-        const cosI = facingSign.abs().clamp(0, 1).toVar();
+      // [underwater-look] Rebuilt after abyssal-garden's `W_SURF` (MIT, (c) 2026
+      // Maksymilian Dendura); see THIRD_PARTY_NOTICES.md. Three changes, each
+      // answering one thing a blind critic saw in `underwater-1` and
+      // `refraction-3`:
+      //
+      // 1. The branch is "the eye is under water", not "this facet faces
+      //    away". From below every visible point of the surface is seen from
+      //    beneath; a ripple facet that happened to tilt toward the eye was
+      //    sent down the *topside* path and came out as a dark ragged hole.
+      // 2. The window's edge is read off a normal relaxed toward vertical with
+      //    distance (abyssal's `ss(260, 60, d)`), widened to its `ss(0, .22, k)`
+      //    band, and faded by the transmission (`1 - fr`), so it is a soft rim
+      //    rather than a noisy cut-out that blew to white.
+      // 3. Outside the window, total internal reflection shows the *water*:
+      //    the medium's own colour looking down (abyssal's `fogIn` along the
+      //    reflected ray), not a screen-space lookup that found dark pixels or
+      //    the frame edge and drew the stripe along the top of `refraction-3`.
+      If(this.uEyeSubmerged.greaterThan(0.5), () => {
+        const relax = viewDistance.smoothstep(8, 120).mul(0.12).add(0.85).toVar();
+        const nUp = normalize(mix(n, vec3(0, 1, 0), relax)).toVar();
+        const cosI = nUp.dot(viewDir).abs().clamp(0, 1).toVar();
 
         // Snell: sin(t) = ior * sin(i). Past sin(t) = 1 there is no transmitted
-        // ray and everything is reflected.
+        // ray and everything is reflected. `k` is cos^2 of the air-side angle.
         const sinT2 = float(1)
           .sub(cosI.mul(cosI))
           .mul(WATER_IOR * WATER_IOR)
           .toVar();
-        const insideWindow = smoothstepDownClamped(sinT2, 0.88, 1.0).toVar();
+        const k = float(1).sub(sinT2).toVar();
+        const insideWindow = k.smoothstep(0, 0.22).toVar();
+        const cosT = k.max(0).sqrt().toVar();
+        // Schlick-style transmission falloff toward the critical angle: the
+        // window's rim darkens into the mirror instead of ending on a bright edge.
+        const fr = float(1).sub(cosT).pow(5).toVar();
 
-        // Where in the sky this ray came from — through Snell, not through a
-        // linear remap of the incidence cosine.
-        //
-        // `sin(t) = ior * sin(i)` gives the *air-side* angle, and the sky's
-        // elevation is what that angle subtends from vertical. The two are not
-        // proportional: the outer third of the window's radius holds more than
-        // half the sky, which is exactly why a real Snell window is a bright disc
-        // with the whole horizon crammed into a rim around it. A linear remap
-        // spreads the sky evenly and loses that.
-        const cosT = float(1).sub(sinT2.min(1)).max(0).sqrt().toVar();
-        const windowColor = mix(this.uHorizonColor, this.uSkyColor, cosT)
+        // Where in the sky this ray came from, through Snell: the outer third of
+        // the window's radius holds the horizon.
+        const skyBase = mix(this.uHorizonColor, this.uSkyColor, cosT).toVar();
+        // abyssal's ripple term: the slope, read across the window, brightens and
+        // darkens the refracted sky in bands, which is what makes a Snell window
+        // read as water rather than as a hole in the ceiling.
+        // From the centimetre ripples alone (the full slope less the wave
+        // cascades'), as abyssal's is from its short slope texture: it textures
+        // the window without deciding where the window is, and without the
+        // swell painting metre-wide bright blobs across it.
+        const fine = slope.sub(refractSlope).toVar();
+        const ripple = float(1)
+          .add(fine.x.mul(2.4).sub(fine.y.mul(3.2)))
+          .clamp(0.45, 1.9)
+          .toVar();
+        // The refracted sun, from the air-side ray: a broad glow and a disc.
+        const airRay = normalize(vec3(viewDir.x.negate(), cosT, viewDir.z.negate())).toVar();
+        const sd = airRay.dot(normalize(this.uSunDirection)).max(0).toVar();
+        const sd2 = sd.mul(sd).toVar();
+        const sd8 = sd2.mul(sd2).mul(sd2).mul(sd2).toVar();
+        const sd64 = sd8.mul(sd8).mul(sd8).mul(sd8).mul(sd8).mul(sd8).mul(sd8).mul(sd8).toVar();
+        const sunGlow = sd64.mul(1.1).add(sd64.pow(8).mul(9)).toVar();
+        // Seen through the water above it the sky is already the water's
+        // colour at its rim (abyssal draws its window cyan, `(.30, .78, 1)`):
+        // half way toward the medium's hue at the same brightness.
+        const mediumHue = this.uUnderMedium.div(this.uUnderMedium.dot(vec3(0.2126, 0.7152, 0.0722)).max(1e-4));
+        const tintedSky = mix(skyBase, mediumHue.mul(skyBase.dot(vec3(0.2126, 0.7152, 0.0722))), 0.6);
+        const windowColor = tintedSky
+          .mul(ripple)
+          .mul(1.1)
+          .add((this.uSunColor as any).mul(sunGlow))
           .mul(this.uLightLevel.mul(0.85).add(0.15))
-          .mul(1.9)
+          .mul(fr.oneMinus())
           .toVar();
 
-        // Outside the window: a mirror, and it now behaves like one.
-        //
-        // The first version put an authored colour here — `litBody` scaled — and
-        // called it total internal reflection. It is not: a mirror shows *the
-        // scene*, and the whole reason a diver notices the ceiling outside the
-        // window is that the reef, the hull and the seabed appear upside down in
-        // it. So the reflected direction now drives a lookup into the same
-        // backdrop the refraction already reads.
-        //
-        // **A screen-space offset, not a traced reflection.** There is no march
-        // and no depth test: the reflected direction is projected to a uv
-        // displacement and sampled once, which is the same approximation the
-        // refraction above uses and carries the same error — what it returns is
-        // whatever happens to be at that screen position, not what the reflected
-        // ray would actually hit. It is right for a distant, roughly planar
-        // ceiling and wrong for anything with parallax. A real trace is
-        // `ScreenSpaceReflection`, and pointing it downward from a submerged
-        // camera is the honest upgrade.
-        //
-        // Off-screen rays fall back to the water's own body colour, which is what
-        // an infinite column of water looks like — and is what the previous
-        // version showed everywhere.
-        const reflectedDir = viewDir.negate().reflect(n).toVar();
-        const tirOffset = reflectedDir.xz
-          .mul(this.uRefractionStrength.mul(1.6))
-          .div(viewDistance.mul(0.05).add(1))
+        // Total internal reflection: the water column below, looking down along
+        // the reflected ray. The in-scatter of a ray descending at |R.y|
+        // converges on `C * sigma / (sigma + K |R.y|)`, and the pass's `K` is
+        // 2.2 sigma, so steeper reflections are darker, as abyssal's are.
+        const reflectedDir = viewDir.negate().reflect(nUp).toVar();
+        const mirrored = this.uUnderMedium
+          .mul(float(1.3).div(reflectedDir.y.abs().mul(2.2).add(1)))
+          .mul(mix(float(1), ripple, 0.3))
           .toVar();
-        // The in-frame test is on the *raw* offset uv, before clamping.
-        //
-        // `viewportSafeUV` pulls an out-of-range coordinate back inside the
-        // frame, so testing its output asks "is this uv on screen" of something
-        // that has just been made on screen by construction — the fallback could
-        // never engage. The raw coordinate is the one that knows whether the
-        // reflected ray left the frame.
-        const tirRawUv = screenUV.add(tirOffset).toVar();
-        const tirUv: any = (viewportSafeUV(tirRawUv) as any).toVar();
-        const tirEdge = tirRawUv.min(tirRawUv.oneMinus()).toVar();
-        const tirInFrame = tirEdge.x.min(tirEdge.y).smoothstep(0, 0.06).clamp(0, 1).toVar();
-        const tirScene = vec3(viewportSharedTexture(tirUv)).toVar();
-
-        const mirrored = mix(
-          litBody.mul(0.88).add(scatter.mul(0.35)),
-          tirScene,
-          tirInFrame.mul(0.8),
-        ).toVar();
 
         // Foam floats *on* the surface and is visible from beneath as a dark
         // patch against the window, because it scatters the sky away before it
