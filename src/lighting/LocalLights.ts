@@ -50,6 +50,8 @@ interface Source {
 const FIRE_COLOR = new THREE.Color(1.0, 0.5, 0.2);
 const TORCH_COLOR = new THREE.Color(1.0, 0.55, 0.24);
 const LANTERN_COLOR = new THREE.Color(1.0, 0.64, 0.32);
+/** Tallow candles behind crown glass: a little warmer than the jetty's lantern. */
+const BEACON_COLOR = new THREE.Color(1.0, 0.6, 0.28);
 
 /** Where the ship's stern lantern hangs, in the ship's own frame (metres). Measured off the hull mesh. */
 export const SHIP_LANTERN_LOCAL = new THREE.Vector3(-13.2, 6.38, 0);
@@ -62,6 +64,7 @@ export class LocalLights {
   private readonly torch: Source;
   private readonly lantern: Source;
   private readonly shipLantern: Source;
+  private readonly beacon: Source;
   /** In order of how much they matter; the tier lights the first `count`. */
   private readonly sources: Source[];
   private count = 0;
@@ -73,6 +76,12 @@ export class LocalLights {
   private readonly glowOffset = new THREE.Vector3();
   /** 0..1 of the fire's own strength after the night ramp and flicker, for the smoke. */
   fireLevel = 0;
+  /**
+   * 0..1, the lighthouse lamp after the night ramp and its candle flutter: the
+   * level of its lit glass, flames and far halo. Not tier-gated, and not culled
+   * by distance — the halo is the part of it that is seen from the play area.
+   */
+  beaconLevel = 0;
 
   constructor(count: number) {
     this.group.name = 'local-lights';
@@ -90,7 +99,12 @@ export class LocalLights {
     this.shipLantern = make('ship-lantern-light', LANTERN_COLOR, 3, 16, 280, 0.25, 0.71);
     this.torch = make('jetty-torch-light', TORCH_COLOR, 6, 16, 170, 0.8, 0.13);
     this.lantern = make('jetty-lantern-light', LANTERN_COLOR, 2.5, 10, 150, 0.2, 0.53);
-    this.sources = [this.fire, this.shipLantern, this.torch, this.lantern];
+    // The lighthouse lamp: a hoop of candles in a glazed lantern 20 m up. Lights
+    // its own gallery and lantern frame and the tower head; 30 m of radius
+    // reaches the gallery deck and the cottage roof. Last in the list, so the
+    // tiers that light four keep the camp and the ship.
+    this.beacon = make('lighthouse-light', BEACON_COLOR, 14, 30, 420, 0.15, 0.91);
+    this.sources = [this.fire, this.shipLantern, this.torch, this.lantern, this.beacon];
     this.setCount(count);
 
     // The ship lantern's flame. Additive, so at zero it adds nothing — the hull
@@ -113,7 +127,14 @@ export class LocalLights {
   }
 
   /** Places the island's lights. `anchors` are world positions. */
-  setIsland(anchors: { fire: THREE.Vector3; torches: THREE.Vector3[]; lanterns: THREE.Vector3[] }, props?: THREE.Object3D): void {
+  setIsland(
+    anchors: { fire: THREE.Vector3; torches: THREE.Vector3[]; lanterns: THREE.Vector3[]; beacon?: THREE.Vector3 | null },
+    props?: THREE.Object3D,
+  ): void {
+    if (anchors.beacon) {
+      this.beacon.light.position.copy(anchors.beacon);
+      this.beacon.placed = true;
+    }
     this.fire.light.position.copy(anchors.fire);
     this.fire.placed = true;
     if (anchors.torches.length > 0) {
@@ -191,6 +212,12 @@ export class LocalLights {
     this.uGlow.value = Math.max(0, Math.min(1, darkness)) * (this.ship ? 1 : 0);
     // The smoke's glow follows the fire whether or not this tier lights it.
     this.fireLevel = Math.max(0, Math.min(1, darkness));
+    {
+      // Candles gutter rather than flicker: a slow, shallow wander.
+      const t = elapsed + this.beacon.seed * 100;
+      const flutter = 1 + 0.06 * Math.sin(t * 2.3) + 0.04 * Math.sin(t * 5.7 + 1.1) + 0.03 * Math.sin(t * 13.1 + 0.3);
+      this.beaconLevel = Math.max(0, Math.min(1, darkness)) * flutter;
+    }
     for (let i = 0; i < this.count; i++) {
       const s = this.sources[i];
       if (!s.placed || night <= 0) {
