@@ -115,6 +115,9 @@ export interface AoSettings {
  * itself in every wave trough — a darkening the water shader already models
  * physically and would get twice.
  */
+/** [underwater-look-3] GTAO with the eye under water; see `setSubmerged`. */
+const UW_AO = { radius: 1.8, thickness: 3, strength: 1 };
+
 export class AmbientOcclusion {
   private readonly node: SequencedGTAO;
   private readonly uStrength = uniform(0.75);
@@ -186,11 +189,37 @@ export class AmbientOcclusion {
     this.node.enabled = settings.enabled;
     this.node.resolutionScale = settings.resolutionScale;
     this.node.samples.value = settings.samples;
-    this.uStrength.value = settings.enabled ? this.strength : 0;
+    this.submergedRadius(this.submerged);
   }
 
   setStrength(strength: number): void {
     this.strength = strength;
+    this.submergedRadius(this.submerged);
+  }
+
+  /**
+   * [underwater-look-3] How submerged the eye is, 0..1. Under water the
+   * occluders that matter are a reef's — a sponge on the sand, a coral head on
+   * a rock, the rock on the bed — a metre or two across, not the ship's deck
+   * furniture the 0.6 m radius was set for, and the light is almost all
+   * ambient, so the occlusion the round-3 review missed ("no contact shadows
+   * where reef life meets the rock and sand") is the term doing the most work.
+   * Radius, thickness and strength blend toward `UW_AO`. Uniform writes only;
+   * call per frame.
+   */
+  setSubmerged(amount: number): void {
+    const a = Math.min(1, Math.max(0, amount));
+    if (a === this.submerged) return;
+    this.submerged = a;
+    this.submergedRadius(a);
+  }
+
+  private submerged = 0;
+
+  private submergedRadius(a: number): void {
+    this.node.radius.value = 0.6 + (UW_AO.radius - 0.6) * a;
+    this.node.thickness.value = 1.5 + (UW_AO.thickness - 1.5) * a;
+    const strength = this.strength + (UW_AO.strength - this.strength) * a;
     this.uStrength.value = this.settings.enabled ? strength : 0;
   }
 
