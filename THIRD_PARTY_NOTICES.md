@@ -16,6 +16,20 @@ shaders and ported to three.js TSL. Affected files:
 - `src/underwater/UnderwaterPass.ts`
 - `src/underwater/Caustics.ts`
 
+The underwater look also adapts these parts of abyssal-garden:
+
+- The fluorescence term, the water-scattered side light and the grade's
+  luminance S-curve, from `W_POST` and its lighting helpers, in
+  `src/underwater/UnderwaterPass.ts`.
+- The caustics arrangement, in `src/underwater/Caustics.ts`: one periodic tile
+  read at metre scale for surfaces (`caus`), with a second read at another
+  scale and orientation, and read again at shaft scale with abyssal's
+  thresholds (`W_RAYS`). The pattern inside the tile is our own.
+- The water surface seen from below (`W_SURF`): Snell's window, the Fresnel
+  term at the window edge, the ripple brightness, the refracted sun, and total
+  internal reflection as the medium's own in-scatter. These are in the fenced
+  `[underwater-look]` underside branch of `src/ocean/OceanMaterial.ts`.
+
 The instanced leaf renderer for kelp and seabed cover (leaf strips, sway, palette,
 two-sided translucent lighting, glints) is adapted from abyssal-garden's `W_LEAF`
 shader and its world layout:

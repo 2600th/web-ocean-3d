@@ -46,11 +46,14 @@ import {
  * rigging, the flare goes with it. Without this it floats over solid geometry
  * and reads as an overlay — which is exactly what it would be.
  *
- * **Ghosts sit on a radially warped axis.** Their positions are laid out along
- * `-uvd` where `uvd = uv · |uv|` rather than along the plain vector to centre.
- * The warp stretches the chain toward the frame edge, which is what an actual
- * chain of internal reflections does, because each element images the aperture
- * at a different magnification.
+ * A second, frame gate closes the effect as the light leaves the frame (see
+ * `OFFSCREEN_FADE`): the angular one alone kept it at full strength 60° off
+ * axis, where its long-tailed halo lay a veil over a shot with no sun in it.
+ *
+ * **Ghosts sit on the line through the light and the frame centre**, at signed
+ * magnifications (`GHOST_SCALES`), and are faint (`GHOST_GAIN`). Subtle by
+ * design: the A/B critic read the previous, brighter chain as blobs and a
+ * streak, and a flare that is noticed is a flare that is too strong.
  *
  * **The moon is the same lens, and reading it wrong is an easy trap.**
  * `Atmosphere` owns *one* directional light and retargets it to the moon once
@@ -63,17 +66,53 @@ import {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Ghosts in the chain. Each is one internal reflection pair. */
-const GHOST_COUNT = 4;
+/**
+ * Ghost positions, as signed multiples of the light's offset from frame centre.
+ *
+ * A ghost is an image of the source formed by a pair of internal reflections,
+ * and every such image lies on the line through the source and the optical
+ * axis — at its own magnification, which can be either sign (Chapman's
+ * "pseudo lens flare" uses the same construction: `ghostUv = -uv * k`).
+ * Negative is the far side of centre, which is where most of a real chain
+ * lands. The previous placement put every ghost *between* the source and the
+ * centre, on the warped radius of the pixel being shaded rather than of the
+ * source, so the chain smeared into a band near the sun.
+ */
+const GHOST_SCALES = [-0.45, -0.9, -1.35, 0.4];
+/** Ghost disc radii, frame heights. Small: these are aperture images, not haloes. */
+const GHOST_RADII = [0.022, 0.035, 0.05, 0.016];
+/**
+ * Peak of one ghost relative to the source radiance factor.
+ *
+ * Was 0.03, which against Clear Day's white point (1/0.42 ≈ 2.4) made each
+ * ghost about 1.3% of white — a visible disc in open sky. A ghost is two
+ * reflections off coated glass, each well under 1%, so it should sit near the
+ * threshold of visibility against a bright sky: 0.006 is about a quarter of a
+ * percent of white there.
+ */
+const GHOST_GAIN = 0.006;
 
 /**
- * Spacing of the ghost chain along the light-to-centre axis.
+ * Glare core amplitude and radius (frame heights).
  *
- * Ghost `i` sits at `-uvd * (i + 1) * SPACING`, so the chain runs from the
- * light through the centre and out the far side — which is where a real one
- * goes, since each reflection inverts about the optical axis.
+ * Shaped as `1 / (1 + (r / r0)^2)`: the near field of a lens's veiling-glare
+ * point-spread function falls roughly as the inverse square of the angle from
+ * the source (Spencer et al., "Physically-Based Glare Effects for Digital
+ * Images", SIGGRAPH 1995, after Vos). The previous `1 / (1 + 14r)` fell as
+ * the inverse *first* power, so its tail never ended — measured on corrected
+ * captures it lifted every pixel of `sky-day-b`, with the sun 60° out of
+ * frame, by about one output level, which is a veil, not a flare.
  */
-const GHOST_SPACING = 0.31;
+const HALO_GAIN = 0.04;
+const HALO_RADIUS = 0.035;
+
+/**
+ * How far outside the frame, in NDC units past the edge, the light can be
+ * before the flare has gone. Past the edge the light is not imaged by the lens
+ * at all and the only glare left is stray light off the barrel, which this
+ * effect does not model.
+ */
+const OFFSCREEN_FADE = 0.3;
 
 export class LensFlare {
   private camera: THREE.PerspectiveCamera | null = null;
@@ -92,6 +131,8 @@ export class LensFlare {
   private readonly uEnabled = uniform(1);
   /** Elevation of the light, for the horizon fade. */
   private readonly uElevation = uniform(1);
+  /** 1 with the light in frame, falling to 0 `OFFSCREEN_FADE` past the edge. */
+  private readonly uInFrame = uniform(0);
 
   /** Scratch — this runs every frame and must not allocate. */
   private readonly _world = new THREE.Vector3();
@@ -132,6 +173,15 @@ export class LensFlare {
     // with it at the boundary.
     camera.getWorldDirection(this._forward);
     this.uAxisDot.value = this._forward.dot(direction);
+
+    // The frame gate. The angular one below fades over tens of degrees, so on
+    // its own it left the flare at full strength with the sun 60° off axis and
+    // well outside the frame — a glare veil over a shot that has no sun in it.
+    // `project` is only meaningful in front of the camera; behind it the
+    // angular gate is already shut.
+    const outside = Math.max(Math.abs(this._world.x) - 1, Math.abs(this._world.y) - 1, 0);
+    const t = THREE.MathUtils.clamp(1 - outside / OFFSCREEN_FADE, 0, 1);
+    this.uInFrame.value = this.uAxisDot.value > 0 ? t * t * (3 - 2 * t) : 0;
 
     this.uSourceColor.value.copy(color);
     this.uSourceIntensity.value = Math.max(0, intensity);
@@ -177,6 +227,7 @@ export class LensFlare {
       const horizon = smoothstep(-0.02, 0.08, this.uElevation).toVar('flareHorizon');
       const dry = float(1).sub(this.uSubmersion).toVar('flareDry');
       const gate = angular
+        .mul(this.uInFrame)
         .mul(horizon)
         .mul(dry)
         .mul(this.uEnabled)
@@ -215,52 +266,43 @@ export class LensFlare {
         const d = toSource(here).toVar('flareD');
         const r = d.length().toVar('flareR');
 
-        // --- halo -----------------------------------------------------------
+        // --- glare core -----------------------------------------------------
         //
-        // A rational falloff rather than a Gaussian: `1 / (1 + k·r)` has a much
-        // longer tail, which is what glare around a bright source actually looks
-        // like — the near field is scattering in the glass and it does not end
-        // where a Gaussian would put it.
-        const halo = float(0.085).div(r.mul(14).add(1)).toVar('flareHalo');
+        // Inverse-square falloff with a finite core; see `HALO_GAIN`.
+        const rr = r.div(HALO_RADIUS).toVar('flareRr');
+        const halo = float(HALO_GAIN).div(rr.mul(rr).add(1)).toVar('flareHalo');
 
         // --- anamorphic streak ----------------------------------------------
         //
-        // One horizontal bar. Kept faint and singular: this is the element that
-        // most quickly turns a flare into a costume.
-        const streak = exp(d.x.mul(d.x).mul(-90))
-          .mul(exp(d.y.mul(d.y).mul(-5200)))
-          .mul(0.05)
+        // One horizontal bar, faint and short. It was 0.05 tall and ran a fifth
+        // of the frame each way; it is the element that most quickly turns a
+        // flare into a costume, and a spherical lens barely has one.
+        const streak = exp(d.x.mul(d.x).mul(-260))
+          .mul(exp(d.y.mul(d.y).mul(-9000)))
+          .mul(0.015)
           .toVar('flareStreak');
 
         // --- ghosts ---------------------------------------------------------
         //
-        // Radially warped placement. `uvd = v · |v|` stretches the chain toward
-        // the frame edge, because each internal reflection images the aperture
-        // at its own magnification rather than all of them at one spacing.
+        // On the line through the light and the optical centre; see
+        // `GHOST_SCALES`. Unrolled: four ghosts, constants per ghost.
         const centred = vec2(here.x.sub(0.5).mul(aspect), here.y.sub(0.5)).toVar('flareCentred');
-        const warp = centred.mul(centred.length()).toVar('flareWarp');
-        const ghosts = float(0).toVar('flareGhosts');
+        const sourceCentred = vec2(this.uSourceUv.x.sub(0.5).mul(aspect), this.uSourceUv.y.sub(0.5))
+          .toVar('flareSrcC');
         const ghostTint = vec3(0).toVar('flareGhostTint');
-        Loop(GHOST_COUNT, ({ i }: any) => {
-          const step = float(i).add(1).mul(GHOST_SPACING).toVar('flareGhostStep');
-          const centre = warp.mul(step.negate()).toVar('flareGhostC');
-          const gd = d.sub(centre).length().toVar('flareGhostD');
-          // Alternating sizes, so the chain does not read as a ruler.
-          const radius = float(0.055).add(float(i).mul(0.021)).toVar('flareGhostR');
-          const g = smoothstep(radius, float(0), gd).pow(2).mul(0.03).toVar('flareGhostG');
-          ghosts.addAssign(g);
+        for (let i = 0; i < GHOST_SCALES.length; i++) {
+          const gd = centred.sub(sourceCentred.mul(GHOST_SCALES[i])).length();
+          const g = smoothstep(float(GHOST_RADII[i]), float(0), gd).pow(2).mul(GHOST_GAIN);
           // Ghosts disperse: the further down the chain, the cooler. A single
           // white ghost chain is the other tell of a synthetic flare.
-          ghostTint.addAssign(
-            vec3(float(1).sub(float(i).mul(0.12)), 1, float(1).add(float(i).mul(0.16))).mul(g),
-          );
-        });
+          ghostTint.addAssign(vec3(1 - i * 0.12, 1, 1 + i * 0.16).mul(g));
+        }
 
         // Ghosts fade toward the frame edge rather than clipping at it.
         const edge = smoothstep(float(0.9), float(0.35), centred.length()).toVar('flareEdge');
 
         out.addAssign(tint.mul(halo.add(streak)).mul(strength));
-        out.addAssign(ghostTint.mul(strength).mul(edge));
+        out.addAssign(ghostTint.mul(tint).mul(strength).mul(edge));
       });
 
       return vec4(out, src.a);
