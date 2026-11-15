@@ -87,7 +87,10 @@ https://github.com/Noniv/web-ocean
 
 The physical sky (transmittance and sky-view atmosphere model, limb-darkened sun
 disc) is ported from `js/wgsl/sky.js` and `common.js`, and the high cloud layer
-from its cloud shader, to three.js TSL:
+from its cloud shader, to three.js TSL. The volumetric cumulus take three more
+pieces of that cloud shader: the rotated fBm with a 2.03 lacunarity and
+per-octave offset (`cloudFbm`, used for the 3D shape field and the 2D weather
+map), and the clear far band where the low layer thins out before the horizon:
 
 - `src/sky/PhysicalAtmosphere.ts`
 - `src/sky/Atmosphere.ts`
@@ -97,9 +100,11 @@ The water surface shading (LEAN slope statistics, Gaussian slope-space sun
 glitter with Smith shadowing, Fresnel on a flattened normal, the sky
 reflection's grazing tilt and fold), the capillary detail band (dispersion,
 cut-off and band gains from `js/wgsl/sim.js`), and the foam model (the
-`FOAM_TEX` pattern, the cover and soft-threshold composite, wind streaks and
-the foam-freshness channel) are ported from `js/wgsl/ocean.js` and
-`js/wgsl/sim.js`:
+`FOAM_TEX` pattern, the cover and soft-threshold composite, wind streaks, the
+foam-freshness channel, and the foam buffer's injection: breaking on the
+surface's total Jacobian, `max(previous, inject)` with growth and a 1.6 cap,
+and the 0.22 / s decay, from `FOAM_UPDATE`) are ported from `js/wgsl/ocean.js`
+and `js/wgsl/sim.js`:
 
 - `src/ocean/OceanMaterial.ts`
 - `src/ocean/FoamPattern.ts`
@@ -248,8 +253,12 @@ ray (`depth / cos(refracted)`, floored at 0.66), and the bed attenuated on the
 way down by a diffuse coefficient derived from the same extinction. The wet-sand
 model is adapted from its `source/src/ShoreVisual.js`: the dry-to-film roughness
 range, the water film's normal flattened toward the beach plane, and the
-wet/dry edge perturbed by multi-scale seepage noise. Ported to three.js TSL;
-the surf, the foam and the wetting state are this project's own. Affected files:
+wet/dry edge perturbed by multi-scale seepage noise. The surf's second, wind-sea
+wave train follows the secondary train in its `source/src/CoastalWaves.js`, at
+about two thirds of the swell's period, and the surf foam's long-tail wake
+behind each bore follows that file's roller envelope. Ported to three.js TSL;
+the surf's closed form, the foam and the wetting state are this project's own.
+Affected files:
 
 - `src/ocean/OceanMaterial.ts`
 - `src/ocean/Surf.ts`

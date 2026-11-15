@@ -42,17 +42,21 @@ import { breaker } from '../ocean/Surf';
  * to Froude number, handle finite depth, or propagate history at the group
  * velocity.
  *
- * **Two foam channels, one output.** The sea's foam and the hull's are not the
- * same material and cannot share a time constant. Whitecap foam is gone a second
- * or two after the crest that made it, while the churn behind a transom is still
- * white a hundred metres astern; running both at the whitecap's 1.5 s meant the
- * wake was erased within half a ship length of the hull that made it, and
- * lengthening the shared constant to fix that turned every breaking crest into a
- * streak. So the ping-pong buffer carries breaking-crest and rain foam in R,
- * hull foam in B, each with its own decay, and the resolve pass composites them
- * into the single foam value the water shader reads. The public texture's layout
- * is unchanged — foam in R, elevation in G — and the split costs nothing: the
- * target was already RGBA and the pass was already sampling all of it.
+ * **Two foam channels, kept apart all the way to the surface.** The sea's foam
+ * and the hull's are not the same material and cannot share a time constant or
+ * a look. The ping-pong buffer carries breaking-crest, surf and rain foam in R,
+ * hull foam in B, freshness in A; the resolved texture the water reads is
+ *
+ *   R  sea foam (whitecaps, surf, rain), 0..1
+ *   G  wake elevation, metres
+ *   B  freshness, 0..1 (see `FRESH_TAU`)
+ *   A  hull foam (wake, contact collar, splashes), 0..1
+ *
+ * The hull channel used to be screened into R, and the surface then drew it
+ * through the whitecap model — torn into crest-sized patches and drawn at the
+ * aged-foam density — which is why a ship at full speed left "only a soft puff
+ * at the rudder" (critic, boat-sea-1). Kept separate, the surface draws it as a
+ * turbulent wake: dense at the transom, aerated lace astern.
  *
  * **Foam accumulates; elevation does not.** Foam is history — it is deposited
  * and then decays, and adding this frame's deposit to last frame's remainder is
@@ -96,19 +100,43 @@ const MAX_SPLASHES = 6;
 /**
  * Exponential decay time constant for the *sea's* own foam, seconds.
  *
- * This is the single biggest lever on apparent whitecap coverage, and it is not
- * obvious why. Only about 5.5% of the surface is folding at any instant — the
- * measured figure for cascade 0 at 15 m/s — but a crest travels at its phase
- * speed, roughly 8.6 m/s for a 47 m swell, so over one time constant it sweeps a
- * band far wider than the patch that deposited it. Coverage is therefore
- * *deposit area times how far the crest runs while the foam survives*, and at
- * 1.7 s that multiplied 5.5% into something closer to a fifth of the frame.
- *
- * 1.5 s still reads as persistence — foam is visibly left behind the crest that
- * made it, which is the whole point of the buffer — without the streaks growing
- * long enough to merge into a sheet.
+ * web-ocean's (Noniv/web-ocean, MIT, `main.js` `writeFoamUniforms`: a decay of
+ * 0.22 / s). It was 1.5 s here, and that was a work-around for the deposit
+ * rather than a property of foam: when the fold was the most-folded *single*
+ * cascade, the fold regions were the swell's, 10–20 m blobs fifty metres apart,
+ * and a long decay smeared each into a sheet. With the total Jacobian
+ * (`createAccumulateMaterial`) the regions that inject are a few metres across
+ * and sit on the crests, and a whitecap's residual foam — Monahan's stage-B
+ * patch, about ten times the area of the active crest at a fraction of its
+ * density — survives several seconds (Monahan & Woolf 1989, "Comments on
+ * 'Variations of whitecap coverage with wind stress and water temperature'",
+ * JPO 19). The surface draws that aged foam thinning into lace, so the decay is
+ * what makes the lace exist at all.
  */
-const DECAY_TAU = 1.5;
+const DECAY_TAU = 1 / 0.22;
+
+/**
+ * How hard a texel is injected for each unit the total Jacobian falls below the
+ * breaking threshold: full injection an eighth below it.
+ *
+ * web-ocean's gain is 2.0, full injection half a unit under its 0.68
+ * threshold, and that is written for a sea that folds: its Jacobian reaches
+ * zero and below. Ours does not. With the spectrum's packing fixed (see
+ * `generateInitialSpectrum`), the total Jacobian at 15–18 m/s bottoms out
+ * around 0.6 — measured with the coverage readback, a threshold of 0.6 foams
+ * 0.08% of the sea — so at web-ocean's gain the hardest crest injected 0.3
+ * and nothing was ever fresh. The criterion is the same, "the most compressed
+ * water breaks"; the ramp is scaled to the range this sea actually spans.
+ */
+const INJECT_GAIN = 8;
+
+/**
+ * Cap on the sea channel, above the 1.0 the surface reads. web-ocean's 1.6:
+ * foam that broke hard sits above white for a while before it starts to thin,
+ * so a whitecap holds its core for about two seconds instead of fading from the
+ * frame it stops injecting.
+ */
+const SEA_FOAM_CAP = 1.6;
 
 /**
  * Decay time constant for hull foam, seconds.
@@ -117,17 +145,17 @@ const DECAY_TAU = 1.5;
  * the eye reads as its length is `V * tau`, not anything the deposit does. At the
  * whitecap's 1.5 s a hull at 8 m/s left 12 m of foam — under half its own length
  * — so the churn ended before the transom had finished passing over it and the
- * ship looked like it was being wiped clean behind. 5 s puts the trail at 40 m
- * per e-fold, which stays legible for around a hundred metres, or three to four
- * ship lengths. That is what a displacement hull actually leaves.
+ * ship looked like it was being wiped clean behind. 9 s puts the trail at 65 m
+ * per e-fold at 7 m/s, legible for two hundred metres — the "long-lived
+ * turbulent trail" the critic asked for (boat-sea-1), and still far short of
+ * the kilometres a real displacement hull's wake stays visible from the air.
  *
  * Air in a wake genuinely does survive longer than air in a whitecap, and for a
  * reason: a breaking crest entrains a shallow film that dissolves as fast as it
  * rises, while a hull drives bubbles metres down and they come back up over
- * minutes. Five seconds is still far short of that; it is the point where the
- * trail reads as a trail.
+ * minutes.
  */
-const WAKE_FOAM_TAU = 5;
+const WAKE_FOAM_TAU = 9;
 
 /**
  * Decay time constant of foam *freshness*, seconds: how long a texel still
@@ -152,24 +180,12 @@ const WAKE_FOAM_TAU = 5;
 const FRESH_TAU = 1 / 1.6;
 
 /**
- * Freshness deposited per second by a crest that is folding *hard*, and how far
- * past the sea channel's breaking threshold that has to be.
- *
- * Not the sea channel's own test, and that was measured: with freshness fed by
- * the same `breaking` term, whole swell faces read as fresh. The sea channel
- * trips at a Jacobian just under its threshold and, at `uBreakRate * DECAY_TAU`
- * of 2.2 for 15 m/s, saturates anything that stays there half a second, so its
- * footprint is the whole *weakly* folding face, tens of metres wide. That is
- * Monahan's coverage, and it is calibrated as such; it is not where the water is
- * white. The surface's own crest mask (`OceanMaterial`) needs the Jacobian well
- * below zero before it shows anything, and freshness follows it: it starts
- * 0.15 below the breaking threshold and is full 0.45 below, about -0.37 at the
- * default threshold, which is where the crest mask is solid. 4 / s saturates a
- * texel in a quarter of a second under such a crest.
+ * Freshness is web-ocean's: `max(previous * exp(-1.6 dt), inject)`, the same
+ * injection the sea channel takes, so a texel is fresh exactly while a crest is
+ * breaking over it and for about a second after. The hard-breaking-only test
+ * that stood here existed because the old fold region was a whole swell face;
+ * the total Jacobian's injection region is already only the breaking crest.
  */
-const FRESH_RATE = 4;
-const FRESH_ONSET = 0.15;
-const FRESH_FULL = 0.45;
 
 /**
  * Hull foam deposited per second at reference speed.
@@ -179,8 +195,8 @@ const FRESH_FULL = 0.45;
  * equilibrium far above white, so anything the term touches saturates within a
  * frame or two. It is not that here, because nothing the hull deposits on is
  * exposed for anything like a time constant. The band deposits with an e-fold of
- * L = 1.2 beams abaft the transom and the hull tows it over the water at V, so a
- * texel is under it for about L/V — 1.1 s at 8 m/s against a 5 s constant. What
+ * L = 1.6 beams abaft the transom and the hull tows it over the water at V, so a
+ * texel is under it for about L/V — 1.4 s at 8 m/s against a 9 s constant. What
  * it ends up holding is the deposit it catches on the way past, thinned by the
  * decay while it is still catching it: about two thirds of `rate * L / V`, which
  * is 0.86 in the band's core and falls away from there.
@@ -211,8 +227,15 @@ const DEPOSIT_RATE = 1.1;
  * drawn rather than shed.
  */
 const STERN_FOAM = 1;
-const BOW_FOAM = 0.55;
-const ARM_FOAM = 0.3;
+const BOW_FOAM = 0.8;
+const ARM_FOAM = 0.45;
+/**
+ * The collar of white water along the hull's waterline, where the topsides
+ * push the sea aside and it climbs and falls back down the planking. Below the
+ * bow break and the band, and broken up by the boil, so it reads as contact
+ * foam that comes and goes with the water rather than a painted outline.
+ */
+const COLLAR_FOAM = 0.3;
 
 /**
  * Half the hull's length, in beams.
@@ -614,71 +637,21 @@ export class Wake {
   /** Frame step, seconds, so deposits are a rate rather than a per-frame amount. */
   private readonly uStep = uniform(1 / 60);
   /**
-   * Jacobian below which the surface counts as breaking.
-   *
-   * Low, because folding is rare: the measured sea state carries a mean Jacobian
-   * of 0.86/0.95/0.98 per cascade and only about 0.1% of the surface is actually
-   * folded at any instant, against a few percent whitecap coverage. A threshold
-   * loose enough to catch "nearly folding" catches most of the ocean.
+   * *Total* Jacobian below which the surface counts as breaking. See the
+   * breaking-crest term; `main.ts` sets it from the wind against Monahan.
    */
-  private readonly uBreakThreshold = uniform(0.14);
+  private readonly uBreakThreshold = uniform(0.5);
   /**
-   * Foam deposited per second by fully-broken water.
-   *
-   * The value that matters is `rate * DECAY_TAU`, which is the coverage this
-   * settles at under continuous breaking — an equilibrium, not a per-frame
-   * amount. At 2.6 that product was 4.4 and clamped to 1, so anything that broke
-   * even weakly saturated to solid white within a frame or two.
-   *
-   * 0.55 against a 1.5 s time constant settles at 0.83. That is deliberately well
-   * short of white: a texel only reaches the equilibrium if it stays under a
-   * breaking crest indefinitely, which nothing does, and the surface's own
-   * breakup noise then decides how much of that reads as bubbles. Setting it so a
-   * *continuously* breaking texel goes white leaves no headroom for the far more
-   * common case of a crest passing over once.
+   * Growth per second on top of the injection, web-ocean's `growth` (1.0): a
+   * crest that keeps breaking over a texel drives it past white toward
+   * `SEA_FOAM_CAP`, so long-breaking crests leave longer-lived foam.
    */
-  private readonly uBreakRate = uniform(0.55);
+  private readonly uBreakRate = uniform(1);
   /**
-   * Unit wind axis in world XZ, the direction the sea runs toward.
-   *
-   * Only the windward-face term uses it. `uDrift` cannot stand in: drift is a
-   * velocity and goes to zero in a calm, and an axis that vanishes would swing
-   * the foam bias through every heading on the way down.
+   * Unit wind axis in world XZ, the direction the sea runs toward. Stretches
+   * the wake's boil along the wind, so an old wake drifts into wind lanes.
    */
   private readonly uWindAxis = uniform(new THREE.Vector2(1, 0));
-  /**
-   * Foam per second deposited by a fully wind-facing wave face.
-   *
-   * A separate term from `uBreakRate`, and it has to be, because it answers a
-   * different question. The fold asks "is this water overturning", which is true
-   * of a fraction of a percent of the sea; this asks "is the wind driving up
-   * this face", which is true of about half of it. So the rate is far lower and
-   * what it produces is not whitecap but the faint aeration that a wind-driven
-   * face carries before it breaks — and, once persistence has had it for a
-   * second, the foam that is still there after the crest has passed over it.
-   *
-   * That last part is the point. Depositing only on the fold puts foam exactly
-   * on the crest line and nowhere else, so a wave has a white top and clean
-   * water either side of it. Real wind seas carry foam *up* the face and leave
-   * it *behind* the crest, because the water that was at the crest a moment ago
-   * is now on the back of it. Injecting on the rising face and letting the
-   * existing decay carry it is the cheapest way to say that: no new buffer, no
-   * new pass, one dot product in a shader that already samples the slope.
-   *
-   * 0.06 against the 1.5 s sea-foam constant settles at 0.09 — a wash, an order
-   * of magnitude below what breaking deposits, which is the correct relationship
-   * between "the wind is on this face" and "this face is overturning".
-   */
-  private readonly uWindwardRate = uniform(0.06);
-  /**
-   * Slope, in metres of rise per metre, at which a face counts as fully facing
-   * the wind.
-   *
-   * 0.25 is a little under the 0.44 steepness at which waves fold, so the term
-   * saturates on faces that are steep but not breaking — which is exactly the
-   * band the fold term cannot see.
-   */
-  private readonly uWindwardSlope = uniform(0.25);
   /** Rain rate, 0..1. */
   private readonly uRainAgitation = uniform(0);
   /** Foam per second deposited by rain at full intensity. */
@@ -894,21 +867,15 @@ export class Wake {
     axis.set(Math.cos(bearingRadians), Math.sin(bearingRadians));
   }
 
-  /**
-   * Foam deposited per second on a fully wind-facing face, and the slope at
-   * which a face counts as fully facing. See `uWindwardRate`.
-   */
-  setWindward(rate: number, slope = 0.25): void {
-    this.uWindwardRate.value = Math.max(0, rate);
-    this.uWindwardSlope.value = Math.max(0.01, slope);
-  }
-
   /** Rain rate, 0..1, driving the agitation term. */
   setRainAgitation(intensity: number): void {
     this.uRainAgitation.value = Math.max(0, Math.min(1, intensity));
   }
 
-  /** Tunes how readily the surface is treated as breaking, and how fast it foams. */
+  /**
+   * Total-Jacobian threshold below which crests break, and the growth rate on
+   * top of the injection. See `uBreakThreshold` and `uBreakRate`.
+   */
   setBreaking(threshold: number, rate: number): void {
     this.uBreakThreshold.value = threshold;
     this.uBreakRate.value = Math.max(0, rate);
@@ -1249,12 +1216,12 @@ export class Wake {
         .toVar();
 
       const world = coord.sub(0.5).mul(extent).add(this.uCenter).toVar();
-      /** Fresh foam from the sea itself — breaking crests and rain. */
+      /** Fresh foam from the sea itself — rain and the shore break. */
       const deposit = float(0).toVar();
+      /** The shore break's share of `deposit`, which is also fresh white water. */
+      const surfDeposit = float(0).toVar();
       /** Fresh foam from the hulls, kept apart for its own time constant. */
       const wakeDeposit = float(0).toVar();
-      /** Freshness from hard-breaking crests. See `FRESH_RATE`. */
-      const freshDeposit = float(0).toVar();
       /** Fresh Kelvin elevation, metres, summed over emitters. */
       const stamped = float(0).toVar();
       /** How completely the fresh stamp owns this texel, 0..1. */
@@ -1267,54 +1234,37 @@ export class Wake {
       // by a wave that broke two seconds ago is still on the water, drifting and
       // dissolving, long after the wave itself has moved on.
       //
-      // Evaluating the fold per fragment each frame — which is what the surface
-      // used to do — cannot express that. It can only ever show where the water
-      // is folding *now*, so foam appears and vanishes with the wave instead of
-      // being left behind by it, and to read as continuous at all it has to be
-      // spread far more widely than real whitecaps are. That is why the near
-      // field was a third white.
+      // **The fold is the surface's total Jacobian, not the most-folded
+      // cascade's.** Tessendorf's criterion (Simulating Ocean Water, 2001,
+      // section 4.4) is on the Jacobian of the *whole* horizontal displacement,
+      // and every band displaces the same water, so their stretch terms add:
+      // J = (1 + Σ jxx)(1 + Σ jzz) - (Σ jxz)². web-ocean evaluates exactly that
+      // (`sim.js`, `FOAM_UPDATE`: "injected where the TOTAL surface Jacobian (all
+      // cascades) folds"). Taking the minimum of each cascade's own Jacobian,
+      // which is what this did, measures something else: the swell cascade's
+      // fold alone, over regions 10–20 m across and ~50 m apart (the buffer
+      // readback for whitecaps-close), with nothing from the 3–24 m band that
+      // decides *where along a crest* the water actually breaks. That is why the
+      // near field was empty from a 3 m eye (foam-1, foam-3) and, when a blob did
+      // land under the camera, a flat slab filled the frame (waves-4).
       //
-      // Here the same fold drives a *rate*, and persistence and dissipation are
-      // left to the accumulation. Coverage can then be sparse and still read as
-      // foam, because what the eye integrates is the trail, not the instant.
+      // Only each cascade's own Jacobian is stored (`OceanSimulation`, the
+      // derivative pass's blue channel), so the sum is taken to first order:
+      // J - 1 ≈ Σ (J_i - 1). That is exact for the divergence terms, keeps each
+      // band's own product terms, and drops only the cross-band products
+      // (jxx_i jzz_j, jxz_i jxz_j for i ≠ j), which for bands with independent
+      // phases average to zero.
       const fold = float(1).toVar();
-      // Surface slope, summed over the active cascades. The fold is a running
-      // minimum because a texel breaks if *any* band folds it; slope is a sum
-      // because the bands displace the same water and their gradients add.
-      const slope = vec2(0, 0).toVar();
       for (let i = 0; i < WAKE_CASCADES; i++) {
         const d = this.derivativeNodes[i].sample(world.div(this.uTileSizes[i])).toVar();
-        // Unused cascades are weighted to 1 — the neutral value for a running
-        // minimum — rather than to 0, which would read as maximal folding
-        // everywhere and paint the whole ocean white.
-        fold.assign(fold.min(mix(float(1), d.z, this.uCascadeWeights[i])));
-        slope.addAssign(d.xy.mul(this.uCascadeWeights[i]));
+        // Unused cascades are weighted to 0, the neutral value for the sum.
+        fold.addAssign(d.z.sub(1).mul(this.uCascadeWeights[i]));
       }
-      // Only genuinely folding water breaks. The threshold is deliberately
-      // tighter than the old per-frame mask could afford to be.
-      const breaking = smoothstepDown(fold, this.uBreakThreshold.sub(0.22), this.uBreakThreshold);
-      deposit.addAssign(breaking.mul(this.uBreakRate).mul(this.uStep));
-      freshDeposit.addAssign(
-        smoothstepDown(fold, this.uBreakThreshold.sub(FRESH_FULL), this.uBreakThreshold.sub(FRESH_ONSET))
-          .mul(FRESH_RATE)
-          .mul(this.uStep),
-      );
-
-      // --- windward faces -----------------------------------------------------
-      //
-      // Positive slope along the wind axis is the face rising toward the crest
-      // as you travel downwind — the face the wind is pushing on, and the one a
-      // wind sea aerates before it breaks. Negative is the lee face, which gets
-      // nothing here and gets its foam a second later when the crest that was
-      // upwind of it has passed over and the persistence buffer still holds what
-      // was deposited then. That handover is the whole mechanism; see
-      // `uWindwardRate`.
-      const windward = slope
-        .dot(this.uWindAxis)
-        .div(this.uWindwardSlope)
-        .clamp(0, 1)
-        .toVar();
-      deposit.addAssign(windward.mul(this.uWindwardRate).mul(this.uStep));
+      // web-ocean's injection: a ramp below the threshold, full `0.5` under it.
+      // The sea channel holds at least what is being injected now and grows on
+      // top of it while the crest keeps breaking; freshness is the same
+      // injection with a fast decay (see `FRESH_TAU`).
+      const inject = this.uBreakThreshold.sub(fold).mul(INJECT_GAIN).clamp(0, 1).toVar();
 
       // Rain agitation. Heavy rain aerates a surface on its own — it goes white
       // in a downpour whether or not the waves are steep enough to break — so
@@ -1347,11 +1297,10 @@ export class Wake {
       // in by the drift — and that is what this buffer is. The surface can only
       // ever draw where the water is white at this instant.
       //
-      // Deposited into the hull-foam channel rather than the sea's, and for the
-      // reason the two channels exist at all. Surf is deeply aerated — a bore
-      // drives air metres down the way a transom does, not the shallow film a
-      // whitecap entrains — and against the whitecap's 1.5 s the band went out
-      // between sets instead of standing on the beach through them.
+      // Deposited into the sea channel. It went into the hull channel while the
+      // sea's foam lasted 1.5 s, because against that the band went out between
+      // sets; the sea channel now holds foam for `DECAY_TAU`, about the hull
+      // channel's old 5 s, and the hull channel is drawn as a ship's wake.
       if (this.shoreDepthNode !== null) {
         const floorDepth = this.shoreDepthNode;
         If(this.uShoreActive.greaterThan(0.5), () => {
@@ -1402,9 +1351,10 @@ export class Wake {
           // scintillate along the entire beach.
           const cells = boil.mul(wakeBoil(world.mul(SURF_CELL_SCALE)).mul(0.4).add(0.68)).toVar();
 
-          wakeDeposit.addAssign(
+          surfDeposit.assign(
             band.mul(wet).mul(exposure).mul(surge).mul(cells).mul(SURF_RATE).mul(this.uStep),
           );
+          deposit.addAssign(surfDeposit);
         });
       }
 
@@ -1523,7 +1473,7 @@ export class Wake {
         // `WAKE_FOAM_TAU`. Depositing along the whole visible length instead would
         // integrate to white over a hundred metres of water, which is the
         // saturation this file has twice been burnt by.
-        const bandHalfWidth = width.mul(0.5).add(fromTransom.max(0).mul(0.055)).toVar();
+        const bandHalfWidth = width.mul(0.4).add(fromTransom.max(0).mul(0.035)).toVar();
         const bandOffset = lateral.div(bandHalfWidth).toVar();
         const bandSq = bandOffset.mul(bandOffset).min(8).toVar();
         // exp(-x⁴) rather than exp(-x²): the churn at a transom has a flat white
@@ -1533,9 +1483,36 @@ export class Wake {
         // Widening as it goes, but fading faster than it widens, so the bright
         // core narrows astern while the faint edges spread — which is how a real
         // band tapers rather than ending.
-        const bandFade = fromTransom.max(0).div(width.mul(1.2)).min(12).negate().exp().toVar();
+        const bandFade = fromTransom.max(0).div(width.mul(1.6)).min(12).negate().exp().toVar();
         const bandStart = fromTransom.smoothstep(width.mul(-0.75), width.mul(-0.05)).toVar();
         const sternFoam = bandProfile.mul(bandFade).mul(bandStart).mul(boil).toVar();
+
+        // The waterline collar. The hull's waterplane is taken as a
+        // superellipse, `|x|³ + |y|² = 1` over the half-length and half-beam:
+        // full amidships, closing to a point at the stem and the sternpost,
+        // which is the outline a carvel-built hull of the period has at its
+        // waterline. The collar sits just outside it, strongest at the bow where
+        // the water is driven hardest, weakest amidships, and stirred by a finer
+        // boil so it breaks up along the planking instead of drawing the hull's
+        // outline. Plus a knot of white right at the stem, where the cutwater
+        // splits the sea.
+        const halfLength = width.mul(HALF_LENGTH_BEAMS).toVar();
+        const xf = along.negate().div(halfLength).toVar();
+        const xa = xf.abs().min(1).toVar();
+        const halfWidth = float(1).sub(xa.mul(xa).mul(xa)).max(0).sqrt().mul(width.mul(0.5)).toVar();
+        const offHull = lateral.sub(halfWidth).sub(0.35).div(0.55).toVar();
+        const collarLine = offHull.mul(offHull).min(24).negate().exp().toVar();
+        const collarSpan = smoothstepDown(xf.abs(), 0.95, 1.08).toVar();
+        const collarWeight = xf
+          .smoothstep(0.2, 0.9)
+          .mul(0.6)
+          .add(0.4)
+          .add(xf.negate().smoothstep(0.55, 0.95).mul(0.25))
+          .toVar();
+        const stemDist = delta.sub(forward.mul(halfLength.add(width.mul(0.08)))).length().div(width.mul(0.32));
+        const stemKnot = stemDist.mul(stemDist).min(24).negate().exp().toVar();
+        const churn = wakeBoil(world.mul(1.9).add(vec2(13.1, 7.3))).mul(0.9).add(0.35).toVar();
+        const collar = collarLine.mul(collarSpan).mul(collarWeight).max(stemKnot).mul(churn).toVar();
 
         wakeDeposit.addAssign(
           armFoam
@@ -1545,6 +1522,7 @@ export class Wake {
             .mul(ARM_FOAM)
             .add(bowBreak)
             .add(sternFoam.mul(STERN_FOAM))
+            .add(collar.mul(COLLAR_FOAM))
             .mul(amount),
         );
 
@@ -1616,12 +1594,16 @@ export class Wake {
         // a bow wave is: the mound was previously sitting a beam ahead of the
         // ship's centre, half a hull short of the stem that raises it, and the
         // trough was under the mainmast rather than at the shoulder.
+        // Centred a fifth of a beam ahead of the stem rather than on it: centred
+        // on the stem, half the mound was under the forefoot, where the hull
+        // hides it, and from the side (ship-underway) there was "no bow wave
+        // displacement" to see.
         const bow = delta
-          .sub(forward.mul(width.mul(HALF_LENGTH_BEAMS)))
+          .sub(forward.mul(width.mul(HALF_LENGTH_BEAMS + 0.2)))
           .length()
-          .div(width)
+          .div(width.mul(0.85))
           .toVar();
-        const crest = bow.mul(bow).min(20).negate().exp().mul(1.25).toVar();
+        const crest = bow.mul(bow).min(20).negate().exp().mul(1.45).toVar();
 
         // Centred about a beam abaft the mound, and wider — the shoulder trough is
         // a longer, shallower feature than the crest ahead of it, which is what
@@ -1673,18 +1655,19 @@ export class Wake {
       // Blend, do not sum: see the class comment.
       const elevation = mix(previousElevation, stamped, stampWeight.clamp(0, 1)).toVar();
 
-      // Freshness: hard-breaking crests (`FRESH_RATE`) and everything the hulls
-      // and splashes put down. The churn at the stem and the transom is white
-      // water being made now, and the trail it leaves ages into lace exactly as
-      // a whitecap's does. The windward wash and rain never make it fresh.
-      const fresh = previousFresh.add(freshDeposit).add(wakeDeposit).clamp(0, 1);
+      // Freshness: breaking crests, the surf, and everything the hulls and
+      // splashes put down. The churn at the stem and the transom is white water
+      // being made now, and the trail it leaves ages into lace exactly as a
+      // whitecap's does. Rain never makes it fresh.
+      const fresh = previousFresh.max(inject).add(surfDeposit).add(wakeDeposit).clamp(0, 1);
 
-      return vec4(
-        previous.add(deposit).clamp(0, 1),
-        elevation,
-        previousWake.add(wakeDeposit).clamp(0, 1),
-        fresh,
-      );
+      const sea = previous
+        .max(inject)
+        .add(inject.mul(this.uBreakRate).mul(this.uStep))
+        .add(deposit)
+        .min(SEA_FOAM_CAP);
+
+      return vec4(sea, elevation, previousWake.add(wakeDeposit).clamp(0, 1), fresh);
     })();
 
     return material;
@@ -1732,17 +1715,10 @@ const wakeBoil = /*@__PURE__*/ Fn(([p]: [any]) => {
 });
 
 /**
- * Resolves into the target whose texture reference never changes, and composites
- * the two foam channels on the way through.
- *
- * A screen, `1 - (1-a)(1-b)`, rather than a sum or a max. R and B are coverage
- * fractions of the same material laid down by two independent processes, and the
- * chance a texel is covered by either is exactly one minus the chance it is
- * covered by neither. Summing them puts wake over whitecap past white and clips
- * the difference away — the wake's own structure disappears wherever it crosses a
- * breaking crest — and `max` throws away the fact that two thin coverages
- * together are denser than one. The screen cannot exceed 1 by construction, so
- * the composite adds no saturation risk of its own.
+ * Resolves into the target whose texture reference never changes, re-ordering
+ * the channels into the public layout (see the class comment): sea foam in R,
+ * elevation in G, freshness in B, hull foam in A. The two foam channels are no
+ * longer screened together here; the surface draws them differently.
  */
 function createCopyMaterial(source: THREE.Texture): THREE.NodeMaterial {
   const material = new THREE.NodeMaterial();
@@ -1750,10 +1726,7 @@ function createCopyMaterial(source: THREE.Texture): THREE.NodeMaterial {
   material.depthWrite = false;
   material.fragmentNode = Fn(() => {
     const s = texture(source, uv()).toVar();
-    const sea = s.r.clamp(0, 1).toVar();
-    const hull = s.b.clamp(0, 1).toVar();
-    // B: freshness, 0..1, how recently this foam was made (see `FRESH_TAU`).
-    return vec4(sea.oneMinus().mul(hull.oneMinus()).oneMinus(), s.g, s.a.clamp(0, 1), 1);
+    return vec4(s.r.clamp(0, 1), s.g, s.a.clamp(0, 1), s.b.clamp(0, 1));
   })();
   return material;
 }

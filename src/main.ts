@@ -223,6 +223,7 @@ const _seenHorizon = new THREE.Color();
 const _seenZenith = new THREE.Color();
 const _cloudFog = new THREE.Color();
 const _cloudZenith = new THREE.Color();
+const _cloudEye = new THREE.Vector3();
 
 /**
  * A fill tint dimmed to the dome's own radiance, once the sun is down.
@@ -342,6 +343,30 @@ const boot = {
     }
   },
 };
+
+
+/**
+ * The foam buffer's breaking threshold (total Jacobian) that stands at a
+ * fractional whitecap coverage `w`, inverted from the measured table in
+ * `applyPreset`'s whitecap block. Log-linear between the points and past both
+ * ends, using the end segments' slopes.
+ */
+function breakingThresholdFor(w: number): number {
+  const table: [number, number][] = [
+    [0.0124, 0.6],
+    [0.0392, 0.65],
+    [0.107, 0.7],
+    [0.249, 0.75],
+    [0.483, 0.8],
+  ];
+  const x = Math.log(Math.max(1e-5, w));
+  let i = 0;
+  while (i < table.length - 2 && x > Math.log(table[i + 1][0])) i++;
+  const [w0, t0] = table[i];
+  const [w1, t1] = table[i + 1];
+  const t = (x - Math.log(w0)) / (Math.log(w1) - Math.log(w0));
+  return Math.max(0.4, Math.min(0.85, t0 + (t1 - t0) * t));
+}
 
 class App {
   private readonly canvas: HTMLCanvasElement;
@@ -1004,7 +1029,6 @@ class App {
     // a bandwidth saving that pays for most of the resolve.
     this.taaEnabled =
       this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
-    this.clouds.setTemporalJitter(this.taaEnabled);
     const scenePass = this.taaEnabled
       ? pass(this.scene, this.camera, { samples: 0 })
       : pass(this.scene, this.camera);
@@ -1379,6 +1403,9 @@ class App {
       this.camera.projectionMatrix,
       this.camera.matrixWorldInverse,
     );
+    // The cloud march runs on its own unjittered grid and is looked up from
+    // the dome through the same matrix; see `Clouds.setView`.
+    this.clouds.setView(this.currViewProjection.value, _cloudEye.setFromMatrixPosition(this.camera.matrixWorld));
     this.liveFrame = live;
     try {
       await this.post.renderAsync();
@@ -3079,137 +3106,46 @@ class App {
 
     // --- whitecaps ----------------------------------------------------------
     //
-    // Neither of these was called at all, which meant the accumulation buffer
-    // ran at one fixed threshold and one fixed rate for every preset and every
-    // wind speed: a glassy dusk foamed exactly as hard as a 21 m/s storm. The
-    // preset's `foamThreshold` reached only the surface's instantaneous mask,
-    // which since the near field went over to the buffer is the one place it no
-    // longer decides anything.
-    //
     // Coverage against wind follows Monahan & O'Muircheartaigh's fit to ship
-    // observations, W = 3.84e-6 * U^3.41 — a very steep law, and the reason a
-    // linear wind response never looks right. It gives 3.9% at 15 m/s, which is
-    // what the sea state assertions measure, 0.2% at 6 m/s and 12% at 21 m/s.
-    // Normalising by the 15 m/s value turns it into a multiplier on how strongly
-    // the deposit reads, with the clamp keeping a calm sea faintly streaked
-    // rather than surgically clean.
+    // observations (J. Phys. Oceanogr. 10, 1980), W = 3.84e-6 * U^3.41 — a very
+    // steep law: 0.2% at 6 m/s, 3.9% at 15, 7.3% at 18, 12% at 21. It counts
+    // the active crest *and* the decaying patch it leaves (Monahan's stages A
+    // and B), which is what the foam buffer's sea channel holds, so the law is
+    // matched on the buffer and the surface then draws the aged part as lace.
+    //
+    // **The wind moves the breaking threshold, not a deposit rate.** The buffer
+    // now breaks on the surface's *total* Jacobian with web-ocean's injection
+    // (`Wake`, breaking-crest term), so how much of the sea foams is the
+    // fraction of it compressed below the threshold. Measured with the buffer
+    // readback `tests/foam.spec.ts` uses (skyPro, High, 240 settle steps, at
+    // 15 m/s), the standing coverage against threshold is
+    //
+    //   threshold  0.60   0.65   0.70    0.75    0.80
+    //   coverage   1.24%  3.92%  10.7%   24.9%   48.3%
+    //
+    // and it barely moves with the wind at a fixed threshold (4.67% at 6 m/s,
+    // 3.92% at 15, 3.68% at 24, all at 0.65): at a fixed peak wavelength the
+    // JONSWAP spectrum's steepness distribution holds still as the wind rises,
+    // so the wind's whole effect on whitecaps has to come through here. The
+    // table is inverted in log space for Monahan's coverage at this wind. The
+    // preset's own `foamThreshold` still shifts it, relative to skyPro's 0.42,
+    // so a storm preset foams harder than a lagoon at the same wind.
     const whitecapAt = (u: number) => 3.84e-6 * Math.pow(Math.max(0, u), 3.41);
     const foamThreshold = preset.water.foamThreshold ?? DEFAULT_APPEARANCE.foamThreshold;
-    // The buffer's threshold is far tighter than the surface mask's. It has to
-    // be: the mask asks "is this water folding *now*", which it answers for
-    // every frame the crest is overhead, while the buffer asks "did it break
-    // here", and then keeps the answer for a time constant afterwards. Measured
-    // on cascade 0 at 15 m/s, fold < 0.14 covers 5.5% of the surface and fold < 0
-    // covers 3.8%, so the buffer sees only genuinely folded water and the trail
-    // it leaves supplies the rest of the coverage.
-    // Monahan drives the *deposit rate*, not just the surface's read strength.
-    //
-    // It previously scaled only `setFoamStrength`, which changes how strongly an
-    // existing deposit reads — so the empirical coverage law was decorating the
-    // opacity of a foam field whose generation was a fixed constant for every
-    // wind speed. The rate is what the law is about, so that is what it now
-    // moves; the strength keeps a gentler share of it, because at a given
-    // coverage heavier seas also entrain more air per breaking event.
     const whitecapRatio = whitecapAt(this.state.windSpeed) / whitecapAt(15);
-    // 0.32, down from 0.55, and this is the first version of the number that was
-    // measured rather than judged. `tests/foam.spec.ts` reads the accumulation
-    // buffer back and compares the standing coverage against the law that is
-    // supposed to be producing it: at 0.55 a 15 m/s sea stood at 7.96% against
-    // Monahan's 3.93%, which is what made the reference image a sheet of white
-    // rather than a sea with whitecaps on it.
-    //
-    // The limits are soft — bounded, but never flat. A hard
-    // `max(0.45, min(2.2, ratio))` binds below about 11.9 m/s and above about
-    // 18.9, and inside those regions the deposit rate stopped responding to the
-    // wind at all: measured coverage was *identical* at 6 and 9 m/s, and
-    // identical again at 21 and 24. That is a dead zone at each end of the
-    // slider, where dragging the wind moved the waves and not the foam. Adding a
-    // small share of the unclamped ratio keeps the bound while leaving the
-    // response monotonic everywhere.
-    //
-    // The rate deliberately does not carry the whole of U^3.41, and the
-    // measurements are what say so: the *area* that folds rises with wind too,
-    // so a rate following the full law on top of it double-counts. At 21 m/s the
-    // clamped rate is a fifth of what the law alone would ask for, and the
-    // rendered coverage lands within 0.02 points of it.
-    // 0.50, up from 0.32, and the increase is a consequence of the spectrum
-    // rather than a change of taste.
-    //
-    // 0.32 was measured against a directional lobe with a fixed `cos^8`
-    // exponent, which made every cascade run downwind together. Replacing it
-    // with the Hasselmann frequency-dependent spread left the *energy*
-    // untouched — the lobe is renormalised, see `Spectrum` — but spread the
-    // short waves across every heading, and waves that do not agree on a
-    // direction do not pile into steep crests. The fold threshold is unchanged
-    // and the sea state is unchanged; what fell is the fraction of the surface
-    // steep enough to trip it, measured at 0.60 to 0.67 of the old value at
-    // every wind speed from 6 to 24 m/s.
-    //
-    // `tests/foam.spec.ts` is what caught it and what set this number: it reads
-    // the accumulation buffer back and compares the standing coverage against
-    // Monahan & O'Muircheartaigh, so the rate is a calibration against a
-    // measurement rather than a free parameter. A more realistic spectrum
-    // needing a higher deposit rate to reach the same observed coverage is not a
-    // contradiction — the law predicts coverage, and it is coverage that is held
-    // fixed.
-    this.wake.setBreaking(
-      foamThreshold * 0.34,
-      // Recalibrated 2026-11-14. The surface work since the last calibration
-      // left fewer texels steep enough to fold, and the old rate (0.5 x
-      // (clamp(0.34, 2.2) + 0.08 r)) measured 0.38x, 0.14x, 0.38x, 0.37x and
-      // 0.24x Monahan at 6, 9, 15, 21 and 24 m/s — two outside the band.
-      // Doubling it fixed the middle and not the ends: 6 m/s rose to 2.96x,
-      // because 6 and 9 m/s shared the floor and moved together, while 21 and
-      // 24 m/s barely moved at all. Above ~7% the buffer saturates, and a
-      // higher rate whitens folds that are already white rather than adding
-      // new ones.
-      //
-      // So the floor drops below 9 m/s's own ratio (0.175) and the linear share
-      // rises, which separates the calm pair: 9 m/s now gets more than 6. The
-      // cap stays because past it the rate buys nothing. Measured, against
-      // Monahan and in the test's own units:
-      //
-      //   6 m/s  0.15%  0.86x     15 m/s  4.79%  1.22x     24 m/s  7.30%  0.37x
-      //   9 m/s  0.32%  0.47x     21 m/s  6.96%  0.56x
-      //
-      // Monotonic, and the 6-to-24 range is 49x against the 38x the law's
-      // shape demands. 24 m/s is the tight one: it is held by saturation, not
-      // by this rate.
-      Math.max(0.2, Math.min(4, whitecapRatio)) + 0.46 * whitecapRatio,
-    );
+    const breakThreshold =
+      breakingThresholdFor(whitecapAt(this.state.windSpeed)) + (foamThreshold - 0.42) * 0.15;
+    // Growth on top of the injection: web-ocean's 1.0.
+    this.wake.setBreaking(breakThreshold, 1);
 
-    // The windward-face term rides the same law, and has to: it is the same air
-    // being entrained by the same wind, just before the fold rather than at it.
-    //
-    // **It does overlap the breaking term, and the rate is set knowing that.** A
-    // wind-facing crest that is also folding satisfies both tests and receives
-    // both deposits — they are not disjoint and cannot be, because a crest
-    // steepens on its windward face before it breaks there. What keeps that from
-    // being a bug is the size of the two: the windward rate is an order of
-    // magnitude below the breaking rate, so on the small fraction of the surface
-    // that is doing both, the windward share is a rounding error on top of a
-    // deposit that was already going to saturate. What it buys is the *other*
-    // 99% — the wind-facing water that never breaks at all, which the fold term
-    // by construction cannot see.
-    //
-    // `tests/foam.spec.ts` measures the total, so the calibration above is
-    // against both terms together rather than against the fold alone.
-    this.wake.setWindward(windwardFoam * Math.max(0.15, Math.min(3, whitecapRatio)));
-
-    // The surface's own mask is re-scaled from the same number.
-    //
-    // The preset values (0.42 to 0.55) were authored when that mask painted the
-    // whole ocean, and against the measured fold distribution they select about
-    // 18% of the surface — which is what a 15 m/s clear day was rendering, and it
-    // reads as a gale. Now that the near field belongs to the buffer, the mask's
-    // only job is the far field beyond the buffer's 420 m square, so it is scaled
-    // to select roughly what the buffer does and the two meet without a seam.
-    //
-    // Derived here rather than by editing the nine presets so the two thresholds
-    // cannot drift apart: they describe one physical property of one sea.
+    // The surface's own instantaneous mask, which only draws past the buffer's
+    // 420 m square, follows the same total Jacobian a little below the buffer's
+    // threshold (web-ocean runs its per-pixel crest mask below its buffer's,
+    // because the mask has no persistence to spread a crest's foam behind it),
+    // over the injection's own ramp width.
     this.water.setAppearance({
-      foamThreshold: foamThreshold * 0.62,
-      foamSoftness: 0.42,
+      foamThreshold: breakThreshold - 0.02,
+      foamSoftness: 0.125,
     });
     this.weatherFoamStrength = Math.max(0.35, Math.min(1.2, Math.sqrt(whitecapRatio)));
     this.water.setFoamStrength(this.foamOverride ?? this.weatherFoamStrength);

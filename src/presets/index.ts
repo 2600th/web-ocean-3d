@@ -71,8 +71,9 @@ export interface Preset {
    * at all. A sheltered lagoon and an open gale can share a wind vector and
    * agree on nothing else.
    *
-   * `windwardFoam` is the deposit rate for the wind-facing-face term in
-   * `Wake.setWindward`, before the wind law scales it.
+   * `windwardFoam` is no longer read: the foam buffer's wind-facing-face term
+   * it drove was removed when whitecaps moved to the surface's total Jacobian
+   * (`Wake`, breaking-crest term).
    */
   sea: Pick<
     SpectrumParams,
