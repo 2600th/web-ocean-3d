@@ -3058,6 +3058,8 @@ class App {
     );
     this.clouds.setParams({
       ...preset.clouds,
+      // Resolved here, not left to merge: only `sunset` sets it.
+      windStretch: preset.clouds.windStretch ?? 1,
       coverage: this.state.cloudCoverage,
       steps: QUALITY_TIERS[this.state.quality].cloudSteps,
       // Driven by the same wind that raises the sea, so a storm's clouds scud

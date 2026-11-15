@@ -59,6 +59,11 @@ export interface Preset {
     baseRoughness: number;
     /** High cirrus veil, 0..1. Required for the same reason. */
     cirrus: number;
+    /**
+     * Banks drawn out along the wind; `CloudParams.windStretch`. Optional, as
+     * `applyPreset` in main resolves a missing value to 1 rather than merging.
+     */
+    windStretch?: number;
   };
   weather: { kind: WeatherKind; intensity: number };
   /**
@@ -818,6 +823,12 @@ export const PRESETS: Record<PresetId, Preset> = {
       shadowColor: color(0x5c6470),
       baseRoughness: 0.1,
       cirrus: 0.75,
+      // An evening deck in banks lying downwind, not a field of separate
+      // heaps: at 1 the round-3 critique read `sky-sunset-b` as popcorn. 1.6
+      // draws the banks out without smearing the erosion detail into streaks,
+      // which 2 to 2.5 began to. Costs about 0.02 of screen coverage in the
+      // sunset shots (banks seen end-on hide less sky), left as is.
+      windStretch: 1.6,
     },
     weather: { kind: 'clear', intensity: 0 },
     sea: {
