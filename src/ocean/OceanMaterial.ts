@@ -233,6 +233,40 @@ const FINE_GRAZING_A0 = 1.2;
 const FINE_GRAZING_A1 = 3.5;
 
 /**
+ * Where the glitter's soft shoulder levels off, as a fraction of the white
+ * point (`1 / exposure`). Under ACES that is about 0.9 of display white, so a
+ * glint sits just under clip on top of the sky it is reflected beside.
+ */
+const GLITTER_CEILING = 0.8;
+
+/**
+ * Facets per square metre times the sun disc's area in slope space: the
+ * expected number of glinting facets in a square metre whose slope density at
+ * the half-vector is 1. The disc is 0.0047 rad across, so a normal must sit
+ * within 0.0023 rad of the half-vector, about 1.7e-5 of slope area; 20 is then
+ * about 1.2e6 facets per m^2, millimetre roughness on the capillaries.
+ *
+ * Tuned on the captures rather than derived, between two failures: at 0.17
+ * (centimetre facets) the path all but vanished into a few dozen points, and
+ * at 50 the up-sun sea of boat-sea-1 was a carpet of white flecks again.
+ */
+const GLINT_FACETS_PER_SUN = 20;
+/** How far the glitter's ceiling sits above the sky radiance it is reflected beside. */
+const GLINT_OVER_SKY = 4;
+/**
+ * Share of the mean glitter the draw must carry under the ceiling when the sun
+ * is low (sunset). On reflections-2, 1 drew a solid column and 0 a few faint
+ * points; this keeps a glittering column.
+ */
+const GLINT_LOW_SUN_FLOOR = 0.5;
+/** Terms of the Poisson inverse CDF; above about this count the draw is normal. */
+const GLINT_MAX_COUNT = 12;
+/** Cap on one cell's draw over its mean, so a lone glint in a dim tail cannot flare. */
+const GLINT_MAX_GAIN = 24;
+/** How often the draw is re-seeded, per second of simulation time: the twinkle. */
+const GLINT_TWINKLE_HZ = 9;
+
+/**
  * The undisplaced world XZ a fragment's surface point was generated from.
  *
  * A varying rather than a recomputation: the vertex stage is the only place that
@@ -543,6 +577,11 @@ export class OceanMaterial {
   private readonly uSunColor = uniform(new THREE.Color(1.0, 0.94, 0.84));
   private readonly uSunIntensity = uniform(4.0);
   /**
+   * Scene radiance the tone curve maps to (nearly) white: `1 / exposure`. See
+   * `setExposure` and the glitter ceiling.
+   */
+  private readonly uWhitePoint = uniform(1 / 0.42);
+  /**
    * How lit the scene is, 0..1, independent of the key light's colour.
    *
    * Terms that represent transmitted or scattered daylight — as opposed to
@@ -676,6 +715,15 @@ export class OceanMaterial {
     (this.uSunColor.value as THREE.Color).copy(color);
     this.uSunIntensity.value = intensity;
     this.uLightLevel.value = Math.max(0, Math.min(1, lightLevel));
+  }
+
+  /**
+   * The preset's tone-mapping exposure. The glitter is held under the white
+   * point it implies, and only the exposure knows where that is (the same
+   * reason `SceneBloom.setExposure` exists).
+   */
+  setExposure(toneMappingExposure: number): void {
+    this.uWhitePoint.value = 1 / Math.max(0.05, toneMappingExposure);
   }
 
   setSky(sky: THREE.Color, horizon: THREE.Color, fog: THREE.Color, fogDensity: number): void {
@@ -1923,6 +1971,104 @@ export class OceanMaterial {
         specular.mulAssign(sunShade);
       }
 
+      // The glitter's ceiling. The distribution above is radiometrically right
+      // and the sun is ~10^5 times the sky per steradian, so a pixel whose facets
+      // face the half-vector carries tens of times the white point: a third of
+      // reflections-3 and the left half of boat-sea-1 went flat white, and every
+      // stray glint bloomed into a fleck that read as foam. A display cannot show
+      // that energy anyway; what it can show is *where* the glints are. So the
+      // glitter goes through its own soft shoulder (Reinhard on the brightest
+      // channel, hue kept), with its asymptote at GLITTER_CEILING of the white
+      // point: a glint is as bright as the curve can draw without clipping, and
+      // the sun path's sheen keeps its gradient instead of saturating. Applied
+      // after the glint draw below, so it shapes glints rather than the mean.
+      //
+      // A glint is the sun's image and always outshines the sky beside it. At
+      // sunset that sky is itself past the white point, so the ceiling rises to
+      // a multiple of the sky this facet reflects, or the sun path would sink
+      // into its own aureole.
+      const skyReflected = reflection.x.max(reflection.y).max(reflection.z).mul(fresnel);
+      const whiteCeiling = this.uWhitePoint.mul(GLITTER_CEILING).toVar();
+      const glitterCeiling = whiteCeiling.max(skyReflected.mul(GLINT_OVER_SKY)).toVar();
+      /** 1 under a low sun, 0 by day: see the count floor in `glintGain`. */
+      const lowSun = float(1).sub(sunDirEarly.y.smoothstep(0.1, 0.25)).toVar();
+
+      // **Glints, not a sheet.** What the lobe above returns is the *expected*
+      // glitter of the pixel: the mean over every facet in its footprint. A real
+      // footprint holds a countable number of facets turned to the sun, a few or
+      // none, each as bright as the sun's image in a mirror, and that count is
+      // what reads as sparkle. Evaluated as the mean, any pixel whose facets
+      // straddle the half-vector lit up together with its neighbours, so the
+      // path drew as smeared blotches (reflections-1, waves-6, refraction-1).
+      //
+      // So the count is drawn, after Zirr & Kaplanyan, "Real-time Rendering of
+      // Procedural Multiscale Materials" (I3D 2016): the expected number of
+      // glinting facets in a world-anchored cell the size of the pixel is the
+      // facet density times the cell's area times the probability a facet faces
+      // the sun (the distribution times the sun disc's area in slope space),
+      // and a Poisson draw of it, hashed from the cell and the clock, scales the
+      // mean. Where the count is large (far water, wide footprints) the draw is
+      // its mean and the sheen is untouched; near the eye it is a scatter of
+      // points that keeps the path's energy. Two power-of-two cell sizes are
+      // blended so the cells do not pop as the footprint changes.
+      const glintFootprintX = dFdx(fieldXZ);
+      const glintFootprintY = dFdy(fieldXZ);
+      const glintArea = glintFootprintX.x
+        .mul(glintFootprintY.y)
+        .sub(glintFootprintX.y.mul(glintFootprintY.x))
+        .abs()
+        .max(1e-8)
+        .toVar();
+      const glintLevel = log2(glintArea).mul(0.5).toVar();
+      const glintLevel0 = glintLevel.floor().toVar();
+      // `uRainTime` is the simulation clock (see `setRain`), so a deterministic
+      // rewind replays the same twinkle.
+      const glintSlot = this.uRainTime.mul(GLINT_TWINKLE_HZ).floor().mod(997).toVar();
+      const glintMean = specular.x.max(specular.y).max(specular.z).toVar();
+      const glintRate = distribution.mul(shadowing).mul(GLINT_FACETS_PER_SUN).toVar();
+      const glintGain = (level: any): any => {
+        const side = level.exp2();
+        const cell = fieldXZ.div(side).floor().mod(4096);
+        const u: any = hashNoSine22(cell.add(vec2(glintSlot.mul(41), level.mul(113)))).toVar();
+        // Under a low sun, never fewer glints than it takes to carry a share of
+        // the mean under the ceiling. The whole path is then seen at grazing
+        // incidence beside an aureole already at white, and a sparse draw
+        // clamped to the ceiling threw the column's energy away: the sunset
+        // path all but vanished. By day (`lowSun` 0) the draw is left sparse,
+        // which is the whole point of it.
+        const expected: any = glintRate
+          .mul(side.mul(side))
+          .max(glintMean.div(glitterCeiling).mul(lowSun.mul(GLINT_LOW_SUN_FLOOR)))
+          .toVar();
+        // Poisson inverse CDF, unrolled: k = how many of the terms u exceeds.
+        const term: any = expected.negate().exp().toVar();
+        const cdf: any = term.toVar();
+        const count = float(0).toVar();
+        for (let k = 1; k <= GLINT_MAX_COUNT; k++) {
+          count.addAssign(u.x.greaterThan(cdf).select(float(1), float(0)));
+          term.mulAssign(expected.div(k));
+          cdf.addAssign(term);
+        }
+        // Past a dozen the Poisson is its normal approximation (Box-Muller).
+        const normal = u.x.max(1e-6).log().mul(-2).sqrt().mul(u.y.mul(2 * Math.PI).cos());
+        const gaussian = float(1).add(normal.div(expected.max(1e-3).sqrt())).max(0);
+        const drawn = mix(
+          count.div(expected.max(1e-6)),
+          gaussian,
+          expected.smoothstep(GLINT_MAX_COUNT * 0.5, GLINT_MAX_COUNT * 0.8),
+        );
+        return drawn.min(GLINT_MAX_GAIN);
+      };
+      const glintDraw = mix(
+        glintGain(glintLevel0),
+        glintGain(glintLevel0.add(1)),
+        glintLevel.sub(glintLevel0),
+      ).toVar();
+      specular.mulAssign(glintDraw);
+      const glitterPeak = specular.x.max(specular.y).max(specular.z).toVar();
+
+      specular.mulAssign(glitterCeiling.div(glitterCeiling.add(glitterPeak)));
+
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
       // at 0.45, which is a floor on how dark lit water can get — so at night the
@@ -2695,6 +2841,17 @@ const rainSlope = /*@__PURE__*/ Fn(([worldXZ, time, intensity]: [any, any, any])
     }
   }
   return slope;
+});
+
+/**
+ * Dave Hoskins' "Hash without Sine" (MIT, https://www.shadertoy.com/view/4djSRW),
+ * hash22: two uniforms from a 2D lattice point. Used for the glint draw, whose
+ * cells run to thousands, where `sin`-based hashes lose their low bits.
+ */
+const hashNoSine22 = /*@__PURE__*/ Fn(([p]: [any]) => {
+  const p3 = vec3(p.x, p.y, p.x).mul(vec3(0.1031, 0.103, 0.0973)).fract().toVar();
+  p3.addAssign(p3.dot(vec3(p3.y, p3.z, p3.x).add(33.33)));
+  return vec2(p3.x, p3.x).add(vec2(p3.y, p3.z)).mul(vec2(p3.z, p3.y)).fract();
 });
 
 const hash2 = /*@__PURE__*/ Fn(([p]: [any]) => {
