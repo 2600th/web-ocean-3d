@@ -216,6 +216,71 @@ const MAX_DETAIL = 1;
 const DETAIL_ROTATION = 1.1071487; // atan(2)
 
 /**
+ * Mip bias on the detail band's reads, in levels: the footprint filter of a
+ * LEAN fold (Olano & Baker 2010; Toksvig 2005 for the same idea on normal
+ * lengths).
+ *
+ * The band runs from 4 mm to 12.5 cm and is read through a 16x anisotropic
+ * sampler, which keeps it sharp along the footprint's minor axis right down
+ * to the pixel. Content at one or two pixels per wavelength is not a ripple
+ * the eye can follow; on screen it read as "grainy fur" over the near water
+ * (round 4: waves-1, waves-2, foam-3), and switching the band off removed the
+ * fur outright, so it was the band's resolved slope and not the cascades.
+ * Reading two levels coarser moves everything finer than about four texels
+ * of the minor axis out of the mean slope, and the alpha channel at that
+ * level (E[s^2] - |E[s]|^2) carries exactly what left into
+ * `lostDetailVariance`, so the energy becomes glitter roughness rather than
+ * being thrown away. Bias 1 still showed the fur; 3 matched 2. Coarser reads
+ * are also cheaper.
+ */
+const DETAIL_MIP_BIAS = 2;
+
+/**
+ * Gain on the sky's reflection (the environment lookup, not the planar
+ * mirror's objects).
+ *
+ * The near sea's contrast is the Fresnel swing between facets times the gap
+ * between what they reflect and the body under them. Measured on calm-close
+ * (round 5, rows 0.6-0.95), the reflected sky alone came to sRGB luma 113 and
+ * the lit body alone to 106: nearly the same brightness, so every facet
+ * cancelled and the water read flat and fuzzy whatever its normals did. The
+ * reflection is darker than the sky the frame shows for two reasons, both
+ * measured: the environment capture has no clouds and is graded toward a
+ * dimmed deck (`Atmosphere`, CLOUD_ENV_DARKEN), which left a flat mirror 15%
+ * under the visible sky in linear terms; and web-ocean's visible-facet tilt
+ * aims the near water's rays higher, into deeper blue. The references show
+ * reflection well above body in both renderers. 1.3 lifted near mid-band
+ * contrast by about 40% on waves-1/2 and foam-3 and near luma by 5 levels
+ * toward the references; 2.0 went further but turned the far field pale, the
+ * grey horizon band the critic marked against Water Pro.
+ */
+const SKY_REFLECTION_GAIN = 1.3;
+
+/**
+ * Fresnel's flattening of the normal toward vertical, at a grazing view.
+ *
+ * web-ocean's 45% stands for the visible-facet statistics of everything finer
+ * than the pixel at grazing incidence. Where the view is steep (the water
+ * under the camera) the facets are resolved and that argument does not hold,
+ * and the flattening was taking away the Fresnel swing that draws their shape.
+ * Held at 45% below a view elevation of about 5 degrees and released to none
+ * by about 20.
+ */
+const FRESNEL_FLATTEN = 0.45;
+
+/**
+ * How far the swell's own facing toward the sun brightens or darkens the body,
+ * per unit of `N.L - sun height`, on the cascades' slope only.
+ *
+ * In side light (waves-4: sun 90 degrees off the view) the lit and shadowed
+ * faces of a swell are the relief, and the body's earlier N.L on the full
+ * slope spent that contrast on centimetre ripples, which the reflection draws
+ * anyway. Centred on the sun's height so a flat sea keeps its brightness;
+ * clamped so a steep face cannot go black or blow out. 2.5 gave dark streaks.
+ */
+const SWELL_RELIEF = 1;
+
+/**
  * The display level, as a fraction of the white point (`1 / exposure`), that
  * the low-sun glint count is scaled against (see `glintGain`). Under ACES
  * that is about 0.9 of display white.
@@ -1326,7 +1391,8 @@ export class OceanMaterial {
       for (let i = 0; i < MAX_DETAIL; i++) {
         const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(Math.SQRT1_2);
         const uvA = fieldXZ.div(this.uDetailTiles[i]);
-        const a = this.detailNodes[i].sample(uvA).toVar();
+        // Two levels coarser than the footprint: see DETAIL_MIP_BIAS.
+        const a = this.detailNodes[i].sample(uvA).bias(float(DETAIL_MIP_BIAS)).toVar();
         // Rotated read: sample at R^T x, and rotate the slope it returns by R.
         const uvB = vec2(
           fieldXZ.x.mul(cosR).add(fieldXZ.y.mul(sinR)),
@@ -1334,7 +1400,7 @@ export class OceanMaterial {
         )
           .div(this.uDetailTiles[i])
           .add(vec2(0.37, 0.71));
-        const b = this.detailNodes[i].sample(uvB).toVar();
+        const b = this.detailNodes[i].sample(uvB).bias(float(DETAIL_MIP_BIAS)).toVar();
         const bSlope = vec2(b.x.mul(cosR).sub(b.y.mul(sinR)), b.x.mul(sinR).add(b.y.mul(cosR)));
         slope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
         // Variance scales with the square of the 1/sqrt(2) weight.
@@ -1589,7 +1655,12 @@ export class OceanMaterial {
       // the real reflected ray into the environment, tilted toward the facets a
       // grazing eye actually sees, so the far sea reflects the greyer sky above
       // the horizon by itself and the fade has nothing left to correct.
-      const nFresnel = normalize(mix(n, vec3(0, 1, 0), 0.45)).toVar();
+      //
+      // Only at grazing views, though: see FRESNEL_FLATTEN.
+      const fresnelFlatten = float(FRESNEL_FLATTEN)
+        .mul(viewDir.y.smoothstep(0.08, 0.35).oneMinus())
+        .toVar();
+      const nFresnel = normalize(mix(n, vec3(0, 1, 0), fresnelFlatten)).toVar();
       const oneMinus = float(1).sub(nFresnel.dot(viewDir).clamp(0, 1)).toVar();
       const fresnelPow = oneMinus.mul(oneMinus).mul(oneMinus).mul(oneMinus).mul(oneMinus).toVar();
       const fresnel = fresnelPow.mul(0.98).add(0.02).clamp(0, 1).toVar();
@@ -1992,7 +2063,10 @@ export class OceanMaterial {
       this.envNode = pmremTexture(this.envPlaceholder!, reflectDir, envRoughness) as any;
       const skyBlend = reflectDir.y.clamp(0, 1).sqrt().toVar();
       const analyticSky = mix(this.uHorizonColor, this.uSkyColor, skyBlend);
-      const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady).toVar();
+      // Lifted toward the sky the frame shows: see SKY_REFLECTION_GAIN.
+      const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
+        .mul(SKY_REFLECTION_GAIN)
+        .toVar();
 
       if (planar !== null) {
         // **Objects only from the planar mirror.** The hull, the island and the
@@ -2236,11 +2310,22 @@ export class OceanMaterial {
       const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
         .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
         .toVar();
-      // On the full slope. Dropping most of the short waves from it, as this did
-      // against the camo, took the near water's crisp facets with the camo.
-      const bodyDotL = normalize(vec3(slope.x.negate(), 1, slope.y.negate()))
+      // The body's facing is the swell's, not the ripples'. The light comes up
+      // out of the column, so how much reaches the eye follows the sun's height
+      // and the face of the wave it leaves through, at the scale of the
+      // cascades (`refractSlope`); the centimetre facets are drawn by the
+      // Fresnel swing of the reflection on top. On the full slope, the body's
+      // N.L put a second, unrelated ripple pattern under the reflection's, and
+      // the sum read as fuzz. See SWELL_RELIEF.
+      const sunHeight = sunDirEarly.y.clamp(0, 1).toVar();
+      const swellDotL = normalize(vec3(refractSlope.x.negate(), 1, refractSlope.y.negate()))
         .dot(sunDirEarly)
-        .clamp(0, 1)
+        .toVar();
+      const swellRelief = swellDotL
+        .sub(sunHeight)
+        .mul(SWELL_RELIEF)
+        .add(1)
+        .clamp(0.25, 1.75)
         .toVar();
       // Troughs read darker than faces: the eye looks into a trough through
       // the wave in front of it, and the light that comes back up out of it
@@ -2253,7 +2338,7 @@ export class OceanMaterial {
         .add(1)
         .toVar();
       const litBody = columnColor
-        .mul(bodyDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
+        .mul(sunHeight.mul(0.55).add(0.45).mul(swellRelief).mul(sunShade.mul(0.55).add(0.45)))
         .mul(bodyLight.mul(troughShade).mul(BODY_COLUMN_SHARE))
         .add(seenThrough)
         .add(scatter.mul(sunShade))
