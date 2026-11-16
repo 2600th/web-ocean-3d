@@ -4,6 +4,7 @@ import {
   attribute,
   faceDirection,
   float,
+  instanceIndex,
   mix,
   positionGeometry,
   uniform,
@@ -25,11 +26,22 @@ import { ISLAND } from './Seafloor';
  * vertex shader get the things that actually read: the silhouette — the bent
  * "M" of a gull's wing, arm raised and hand drooped — and the way it moves.
  *
- * The whole system is **one instanced draw**. Geometry is a single gull built in
- * code — a body with volume, a tail, and an arm and a hand panel per wing — and
- * every bird is that geometry deformed and placed by the vertex stage. The CPU
- * writes no transforms: per frame it writes four uniforms, and a float per
- * perched bird when one of them is moving between the ship and the sky.
+ * The whole system is **two instanced draws of one animation**: a cheap gull of
+ * a few dozen faceted triangles for the flock at distance, and a detailed one —
+ * a lofted body with a round head, aerofoil wings with notched primaries, a
+ * tapered bill, a wedge tail, legs — for the birds near the camera (see
+ * `LOD_DISTANCE`). Each draw collapses, in its vertex stage, the birds the other
+ * one is drawing, so every bird is drawn exactly once. Both are deformed and
+ * placed by the same vertex code. The CPU writes no transforms: per frame it
+ * writes four uniforms, and a float per perched bird when one of them is moving
+ * between the ship and the sky.
+ *
+ * References looked at before building the detailed gull: three.js's GPGPU
+ * birds example (`BirdGeometry`, three triangles flapped on y in the vertex
+ * shader — the same idea as the cheap gull here) and Sebastian Lague's Boids
+ * (a small imported mesh, no procedural body). Neither has a body or wing
+ * worth porting at close range, so the detailed gull is built here: a loft of
+ * superellipse rings for the body, the NACA four-digit section for the wings.
  *
  * `InstancedBufferGeometry` on a plain `Mesh` rather than `InstancedMesh`, for
  * the same reason `Weather` and `Particles` do it: there is no per-instance
@@ -104,14 +116,20 @@ type Role = 'ship' | 'island' | 'soar' | 'perch';
  * Found by casting rays down onto the rigging and hull meshes of
  * `dutch_ship_medium` in the ship's frame and keeping the hits on spars: the
  * main and fore course yards at 10.6 m and 9.4 m, the fore topsail yard at
- * 19.2 m, and the stern rail at 5.8 m. The yards are braced, so their arms do
- * not share an x. Each point is the top of the spar, so the bird's belly sits
- * on it.
+ * 19.2 m, and the stern rail at 5.7 m. The yards are braced, so their arms do
+ * not share an x. Each point is the top of the spar, so the bird's feet stand on
+ * it (`PERCH_LIFT`).
+ *
+ * The taffrail bird was on the centreline at 5.8 m, which is the top of the
+ * stern lantern's iron bracket (5.77 m, 10 cm wide) rather than the rail: from
+ * the deck it stood 3 cm clear of anything, against the rail's crest 10 cm
+ * lower. Re-cast on a 4 cm grid, the crest is a 16 cm-wide ridge at
+ * 5.66–5.71 m; the bird now stands on it 15 cm to starboard of the bracket.
  */
 const PERCHES: ReadonlyArray<readonly [number, number, number, number]> = [
   [6.4, 9.37, -3.1, 0.3], // fore yard, port arm
   [8.1, 9.38, 3.2, -0.4], // fore yard, starboard arm
-  [-12.8, 5.8, 0.0, Math.PI * 0.92], // taffrail, looking aft
+  [-12.78, 5.685, 0.15, Math.PI * 0.92], // taffrail crest, looking aft
   [0.1, 10.57, 3.5, -0.2], // main yard, starboard arm
   [8.1, 19.15, 2.6, 0.5], // fore topsail yard, starboard arm
 ];
@@ -130,11 +148,24 @@ const LAND_TIME = 4.5;
 /** Height of the hop arc between the perch and the circuit, metres. */
 const HOP_HEIGHT = 3.5;
 /**
- * Height of a perched bird's centre above its perch point, at scale 1: the
- * feet (`LEG_FOOT_Y`) on the spar. It was 0.07, the belly on the spar, before
- * the bird had legs.
+ * Where the legs fold to in flight, and how low the feet reach on the perch,
+ * in the authored frame (metres at scale 1). The hip is under the body's centre
+ * and just inside the belly, and it is also the pivot of `PERCH_PITCH`, so the
+ * legs stay vertical and the feet stay on the spar however the body tilts.
  */
-const PERCH_LIFT = 0.12;
+const LEG_HIP = [0, -0.044, 0.01] as const;
+const LEG_FOOT_Y = -0.12;
+/**
+ * Height of a perched bird's centre above its perch point, at scale 1: exactly
+ * the feet's depth, so the feet stand on the spar.
+ */
+const PERCH_LIFT = -LEG_FOOT_Y;
+/**
+ * Nose-up tilt of a perched bird's body, radians (20 degrees). A resting gull
+ * stands with its breast up and its folded wingtips angled down over the tail;
+ * level, it reads as a bird in flight that has stopped.
+ */
+const PERCH_PITCH = 0.35;
 
 /**
  * Plumage: a laughing gull (*Leucophaeus atricilla*), the common gull of the
@@ -144,24 +175,28 @@ const PERCH_LIFT = 0.12;
  * Linear albedo, chosen against field-guide plates rather than measured.
  *
  * Painted from one float per vertex (`shape.w`): the wing's chord (0 leading
- * edge, 1 trailing) on the wing sheets, `PAINT_BILL` and `PAINT_LEG` on those
- * parts, `PAINT_PLUMAGE` everywhere else. No texture and no extra attribute.
+ * edge, 1 trailing) on the wings — negated on the detailed wing's lower
+ * surface, which says which side of the wing a fragment is on, and exactly 0
+ * and 1 on the leading and trailing edges the two surfaces share, which are
+ * neither (see `upness` in the vertex stage); the cheap gull's sheets, all
+ * upper side, use 0.001 and 0.999 for their edges — `PAINT_BILL`
+ * and `PAINT_LEG` on those parts, `PAINT_PLUMAGE` everywhere else. No texture
+ * and no extra attribute.
  */
 const PAINT_PLUMAGE = 0;
 const PAINT_BILL = 2;
 const PAINT_LEG = 3;
 const GULL_WHITE = [0.86, 0.87, 0.88] as const;
-const GULL_MANTLE = [0.15, 0.16, 0.185] as const;
+/**
+ * Slate grey, not black. At 0.15 the upper wing in shade, which is most of the
+ * time a bird is seen from above or banked, went to near-black and the flock
+ * read as crows.
+ */
+const GULL_MANTLE = [0.25, 0.265, 0.3] as const;
 const GULL_HOOD = [0.03, 0.03, 0.035] as const;
 const GULL_TIPS = [0.025, 0.025, 0.03] as const;
 const GULL_BILL = [0.36, 0.05, 0.035] as const;
 const GULL_LEGS = [0.07, 0.03, 0.03] as const;
-/**
- * Where the legs fold to in flight, and how low the feet reach on the perch,
- * in the authored frame (metres at scale 1). The belly is at y = -0.066.
- */
-const LEG_HIP = [0, -0.05, -0.01] as const;
-const LEG_FOOT_Y = -0.115;
 /**
  * Soft shading under the bird: how much of the shade light the underwing near
  * the body and the belly lose to the body and wings over them.
@@ -246,6 +281,12 @@ const NEAR_SHOW = 3.5;
  * thin enough to glow against a low sun rather than going black.
  */
 const TRANSMISSION = 0.55;
+/**
+ * How far a backlit wing's upper side pales toward the light coming through it:
+ * gain on the transmission term, and the grey (a fraction of the white) it pales
+ * to. See `mantleTone`.
+ */
+const BACKLIT_MANTLE = [3.2, 0.8] as const;
 
 /** Wing half-span of the authored geometry, metres, at instance scale 1. */
 const HALF_SPAN = 0.66;
@@ -253,6 +294,75 @@ const HALF_SPAN = 0.66;
 const SHOULDER_X = 0.045;
 /** Lateral offset of the wrist — the pivot the hand rotates about. */
 const WRIST_X = 0.3;
+/**
+ * Height of the wing's chord plane above the body's axis. A gull's wing roots
+ * in the upper half of the body; at 0 the wing came out of the middle of the
+ * flank and the bird read as low-winged.
+ */
+const WING_Y = 0.018;
+
+/**
+ * The folded wing of a perched bird, in the authored frame at scale 1.
+ *
+ * The wing is laid along the body as a resting gull carries it. Span runs back
+ * along the body from the shoulder (`FOLD_FRONT_Z`, `FOLD_LENGTH`); chord runs
+ * round the body's cross-section, from high on the back (`FOLD_PHI_LE`, angle
+ * from the top) down to mid-flank (`FOLD_PHI_TE`), hugging it at
+ * `FOLD_CLEAR`, so the dark mantle shows between the two wings and the white
+ * belly below them. Behind the rump (`FOLD_CROSS_START` of the span) the hand
+ * lies down flat over the tail and slides inboard until the two sets of black
+ * primaries cross (`FOLD_CROSS`) and project past it. The authored right wing
+ * stacks over the left by `FOLD_STACK` where they cross, so they never share a
+ * depth.
+ *
+ * The body's cross-section is an analytic fit to `BODY_STATIONS`
+ * (`FOLD_BODY_*`): half-width and half-height an ellipse in z about
+ * `FOLD_BODY_MID_Z`, centre rising toward the rump. It is a fixed map from each
+ * wing vertex's span and chord fractions, so the cheap and detailed gulls fold
+ * the same way, and its frame is orthonormal, so normals map with it.
+ */
+const FOLD_FRONT_Z = 0.09;
+const FOLD_LENGTH = 0.47;
+const FOLD_PHI_LE = 0.5;
+const FOLD_PHI_TE = 1.5;
+// 7% over the body's own half-width and half-height: the body is a
+// superellipse (`BODY_ROUNDNESS`), fuller than this ellipse on the diagonals,
+// and at the fit's exact size its flank came through the folded wing's
+// trailing edge as z-fighting stripes.
+const FOLD_BODY_W = 0.062;
+const FOLD_BODY_H = 0.064;
+const FOLD_BODY_MID_Z = 0.03;
+const FOLD_BODY_HALF_LENGTH = 0.22;
+const FOLD_CROSS_START = 0.55;
+const FOLD_BACK_X = 0.03;
+const FOLD_CROSS = 0.042;
+/** Height of the hand over the tail where it lies flat, and its width there. */
+const FOLD_TAIL_Y = 0.034;
+const FOLD_TAIL_WIDTH = 0.03;
+const FOLD_STACK = 0.004;
+/** Gap between the folded wing's underside and the body, metres. */
+const FOLD_CLEAR = 0.004;
+/** How much of the wing section's thickness and camber survive folding. */
+const FOLD_FLATTEN = 0.35;
+/** How much narrower the tail is closed on the perch than spread in flight. */
+const TAIL_CLOSE = 0.55;
+
+/**
+ * Level of detail. A bird is drawn with the detailed gull while it is closer
+ * than this many metres per unit of its scale — 36 m for a 1.0 gull, 47 m for a
+ * 1.3 one, where it spans about 45 px of a 1080p frame at the default lens —
+ * and with the cheap one beyond. The switch is hard: at that size the two
+ * silhouettes are within a pixel of each other, and a crossfade would draw both.
+ */
+const LOD_DISTANCE = 36;
+/**
+ * Only the first this-many instances can take the detailed gull: the detailed
+ * draw's instance count is capped here, so its vertex cost is fixed whatever the
+ * tier's flock size. Every perched bird and most of the ship flock's are below
+ * it (`roleOf`); the island and soaring birds below it are never that close and
+ * collapse in its vertex stage.
+ */
+const DETAIL_INSTANCES = 32;
 
 export class Birds {
   /** Instances the buffers hold. `setCount` is clamped to this. */
@@ -260,9 +370,13 @@ export class Birds {
 
   readonly object: THREE.Object3D;
 
+  /** The cheap gull, every bird; and the detailed one, the first `DETAIL_INSTANCES`. */
   private readonly geometry: THREE.InstancedBufferGeometry;
+  private readonly detailGeometry: THREE.InstancedBufferGeometry;
   private readonly material: THREE.MeshBasicNodeMaterial;
+  private readonly detailMaterial: THREE.MeshBasicNodeMaterial;
   private readonly mesh: THREE.Mesh;
+  private readonly detailMesh: THREE.Mesh;
   /** 1 = sitting on its perch, 0 = flying its circuit. One float per instance. */
   private readonly perchState: THREE.InstancedBufferAttribute;
 
@@ -305,9 +419,13 @@ export class Birds {
   constructor(count = 24) {
     this.count = clampCount(count);
 
-    this.geometry = buildFlockGeometry();
-    this.geometry.instanceCount = this.count;
-    this.perchState = this.geometry.getAttribute('perchState') as THREE.InstancedBufferAttribute;
+    // Both gulls read the same per-bird buffers, so a bird is the same bird
+    // whichever of them draws it.
+    const instances = buildInstanceAttributes();
+    this.perchState = instances.perchState;
+    this.geometry = withInstances(buildCheapGull(), instances);
+    this.detailGeometry = withInstances(buildDetailGull(), instances);
+    this.applyCount();
 
     const random = mulberry32(SEED ^ 0x5eed);
     for (let k = 0; k < PERCHES.length; k++) {
@@ -319,21 +437,27 @@ export class Birds {
       this.perchReturn[k] = 16 + random() * 22;
     }
 
-    this.material = this.buildMaterial();
+    this.material = this.buildMaterial(false);
+    this.detailMaterial = this.buildMaterial(true);
 
-    this.mesh = new THREE.Mesh(this.geometry, this.material);
-    this.mesh.name = 'gulls';
-    // Placed in world space by the vertex stage, so a bounding sphere is
-    // meaningless.
-    this.mesh.frustumCulled = false;
-    this.mesh.castShadow = false;
-    this.mesh.receiveShadow = false;
+    const makeMesh = (geometry: THREE.InstancedBufferGeometry, material: THREE.Material, name: string): THREE.Mesh => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = name;
+      // Placed in world space by the vertex stage, so a bounding sphere is
+      // meaningless.
+      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      return mesh;
+    };
+    this.mesh = makeMesh(this.geometry, this.material, 'gulls');
+    this.detailMesh = makeMesh(this.detailGeometry, this.detailMaterial, 'gulls-near');
 
     this.object = new THREE.Object3D();
     this.object.name = 'birds';
     this.object.matrixAutoUpdate = false;
     this.object.updateMatrix();
-    this.object.add(this.mesh);
+    this.object.add(this.mesh, this.detailMesh);
     this.applyVisibility();
     this.resetPerches();
   }
@@ -350,7 +474,7 @@ export class Birds {
     const next = clampCount(count);
     if (next === this.count) return;
     this.count = next;
-    this.geometry.instanceCount = next;
+    this.applyCount();
     this.applyVisibility();
   }
 
@@ -459,13 +583,21 @@ export class Birds {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.object.remove(this.mesh);
+    this.object.remove(this.mesh, this.detailMesh);
     this.object.removeFromParent();
     this.geometry.dispose();
+    this.detailGeometry.dispose();
     this.material.dispose();
+    this.detailMaterial.dispose();
   }
 
   // ------------------------------------------------------------------ internals
+
+  /** The cheap draw takes every bird; the detailed one only those that can be close. */
+  private applyCount(): void {
+    this.geometry.instanceCount = this.count;
+    this.detailGeometry.instanceCount = Math.min(this.count, DETAIL_INSTANCES);
+  }
 
   /** An empty flock is hidden outright, so it costs not even a culling test. */
   private applyVisibility(): void {
@@ -587,9 +719,11 @@ export class Birds {
     (this.uViewer.value as THREE.Vector3).copy(cameraPosition);
   }
 
-  private buildMaterial(): THREE.MeshBasicNodeMaterial {
+  /** `detail`: the detailed gull's draw (near birds) or the cheap one's (the rest). */
+  private buildMaterial(detail: boolean): THREE.MeshBasicNodeMaterial {
     const material = new THREE.MeshBasicNodeMaterial();
-    // Wings and tail are sheets with no thickness, so both faces rasterise.
+    // The cheap gull's wings and tail are sheets with no thickness, and both
+    // gulls' feet are, so both faces rasterise.
     material.side = THREE.DoubleSide;
     material.transparent = false;
     material.depthWrite = true;
@@ -601,35 +735,44 @@ export class Birds {
     // own vertex-stage flow, and sharing vars across the two is how you get a
     // shader that references a name it never declared. Rebuilding the frame
     // costs a few dozen vector ops on a few thousand vertices.
-    material.positionNode = Fn(() => this.buildVertex().world)() as any;
+    material.positionNode = Fn(() => this.buildVertex(detail).world)() as any;
 
+    // `outboard` (wings) and `zone` (body) share a slot: every triangle is all
+    // one part, so `part` unpacks them exactly.
     const shading: any = varying(
       Fn(() => {
-        const vertex = this.buildVertex();
-        return vec4(vertex.normal, vertex.outboard);
+        const vertex = this.buildVertex(detail);
+        return vec4(vertex.normal, mixn(vertex.outboard, vertex.zone, vertex.part));
       })(),
     );
     const bodyShading: any = varying(
       Fn(() => {
-        const vertex = this.buildVertex();
+        const vertex = this.buildVertex(detail);
         return vec4(vertex.part, vertex.upness, vertex.head, vertex.paint);
       })(),
     );
 
     const normal: any = shading.xyz.normalize();
-    /** Distance out the span, 0 at the shoulder and 1 at the tip. */
-    const outboard: any = shading.w;
-    /** 1 on the body's volume, 0 on the wing and tail sheets. */
+    /** 1 on the body's volume, 0 on the wings and tail. */
     const part: any = bodyShading.x;
-    /** The body's local surface normal's up component: back +1, belly -1. */
+    /** Distance out the span, 0 at the shoulder and 1 at the tip. */
+    const outboard: any = shading.w.mul(part.oneMinus());
+    /** 1 on the body between the neck and the rump, where the mantle is. */
+    const zone: any = shading.w.mul(part);
+    /**
+     * On the body, the surface normal's up component: back +1, belly -1. On the
+     * wings and tail, the *rest* normal's: +1 on the upper surface, -1 under.
+     */
     const upness: any = bodyShading.y;
-    /** 1 toward the head, 0 from the shoulders back. */
+    /** 1 on the hood, 0 from the nape back. */
     const head: any = bodyShading.z;
 
     // `faceDirection` is +1 on a sheet's back and -1 on its belly, because the
-    // sheets are wound counter-clockwise seen from above; on the closed body it
-    // is +1 wherever a face is visible at all.
+    // cheap gull's sheets are wound counter-clockwise seen from above; on a
+    // closed surface it is +1 wherever a face is visible at all, and `upness`
+    // says which side it is. Their product is the wing's upper side either way.
     const facing: any = faceDirection;
+    const wingUp: any = facing.mul(upness);
     const seen: any = normal.mul(facing);
     const ndl: any = seen.dot(this.uSunDir);
 
@@ -648,14 +791,26 @@ export class Birds {
     // Dark mantle above, white below — the countershading that makes a gull read
     // as a gull the instant it banks and shows the other side. On the body the
     // mantle is the back; the tail is white both sides.
-    const sheetTop: any = facing.mul(0.5).add(0.5).mul(wing);
-    const bodyTop: any = upness.smoothstep(0.15, 0.75).mul(head.oneMinus());
+    const sheetTop: any = wingUp.smoothstep(-0.3, 0.3).mul(wing);
+    // The body's mantle is the back between the wings: white neck in front of
+    // it, white rump behind.
+    const bodyTop: any = upness.smoothstep(0.15, 0.75).mul(zone);
     const topness: any = mix(sheetTop, bodyTop, part);
-    const mantled: any = mix(white, vec3(...GULL_MANTLE), topness);
+    // Against the light the wing's upper side is the shaded one, and slate in
+    // shadow read black against a bright sky. What a backlit gull's wing shows
+    // there is light through it, which comes through white underwing feathers:
+    // the mantle tends to pale grey with the transmission (`BACKLIT_MANTLE`).
+    const mantleTone: any = mix(
+      vec3(...GULL_MANTLE),
+      white.mul(BACKLIT_MANTLE[1]),
+      through.mul(wing).mul(BACKLIT_MANTLE[0]).clamp(0, 1),
+    );
+    const mantled: any = mix(white, mantleTone, topness);
     // The white trailing edge of the inner wing, on top: the line that shows
     // the wing's shape against the dark mantle.
     const trailing: any = paint
-      .smoothstep(0.72, 0.95)
+      .abs()
+      .smoothstep(0.8, 0.97)
       .mul(wing)
       .mul(part.oneMinus())
       .mul(outboard.smoothstep(0.5, 0.65).oneMinus());
@@ -674,7 +829,7 @@ export class Birds {
     // body, which the body and the other wing hide part of the sky from, and the
     // belly, which the wings do. Without it the underside was one flat tone, and
     // a flat white underside is most of what read as a cut-out.
-    const underWing: any = facing
+    const underWing: any = wingUp
       .negate()
       .max(0)
       .mul(wing)
@@ -683,9 +838,7 @@ export class Birds {
     const occlusion: any = underWing.max(underBody).mul(UNDER_OCCLUSION);
 
     const light: any = mix(this.uShadeColor.mul(occlusion.oneMinus()), this.uSunColor.mul(occlusion.mul(0.5).oneMinus()), lit);
-    material.colorNode = vec4(albedo.mul(light), 1) as any;
-
-    return material;
+    material.colorNode = vec4(albedo.mul(light), 1) as any;    return material;
   }
 
   /**
@@ -697,10 +850,11 @@ export class Birds {
    * then place the deformed vertex in the frame. Nothing here reads a texture or
    * a previous frame.
    */
-  private buildVertex(): {
+  private buildVertex(detail: boolean): {
     world: any;
     normal: any;
     outboard: any;
+    zone: any;
     part: any;
     upness: any;
     head: any;
@@ -878,73 +1032,334 @@ export class Birds {
       restZ,
     ).toVar();
 
-    // Folded along the back for a bird on its perch: the span collapses onto
-    // the flank, and the primaries cross over the tail.
-    const tuck = perched.smoothstep(0.55, 1.0).mul(side.abs()).toVar();
-    const fromShoulder = rest.x.sub(pivot).toVar();
-    const folded = vec3n(
-      pivot.add(fromShoulder.mul(0.06)),
-      fromShoulder.abs().mul(0.05).add(0.03),
-      rest.z.sub(fromShoulder.abs().mul(0.42)),
+    // In flight the normal turns with the wing about the bird's long axis: the
+    // arm angle, plus the wrist angle on the hand. On the body and tail both are
+    // exactly 0 and this is the authored normal.
+    const sheetAngle = shoulder.add(wrist).toVar();
+    const sheetCos = sheetAngle.cos().toVar();
+    const sheetSin = sheetAngle.sin().toVar();
+    const flyingNormal = vec3n(
+      restNormal.x.mul(sheetCos).sub(restNormal.y.mul(sheetSin)),
+      restNormal.x.mul(sheetSin).add(restNormal.y.mul(sheetCos)),
+      restNormal.z,
     );
+
+    // Folded along the back for a bird on its perch. See `FOLD_FRONT_Z`: a map
+    // from span fraction (back along the body) and chord fraction (down over
+    // the flank), with the wing's own thickness laid outward.
+    const tuck = perched.smoothstep(0.55, 1.0).mul(side.abs()).toVar();
+    const along = rest.x
+      .abs()
+      .sub(SHOULDER_X)
+      .div(HALF_SPAN - SHOULDER_X)
+      .clamp(0, 1)
+      .toVar();
+    // Chord fraction; negative on the detailed wing's lower surface (see
+    // `PAINT_PLUMAGE`).
+    const chord = shape.w.abs().clamp(0, 1);
+    const crossing = along.smoothstep(FOLD_CROSS_START, 1).toVar();
+    const foldZ = float(FOLD_FRONT_Z).sub(along.mul(FOLD_LENGTH)).toVar();
+    // The body's cross-section at this station (see `FOLD_BODY_W`).
+    const bodyFrom = foldZ.sub(FOLD_BODY_MID_Z).div(FOLD_BODY_HALF_LENGTH);
+    const bodyExtent = bodyFrom.mul(bodyFrom).oneMinus().max(0).sqrt().toVar();
+    const bodyW = bodyExtent.mul(FOLD_BODY_W).toVar();
+    const bodyH = bodyExtent.mul(FOLD_BODY_H).toVar();
+    const bodyY = foldZ.negate().sub(0.04).max(0).mul(0.1).add(0.006);
+    // Thickness off the body: the wing's own section, upper surface outermost.
+    // Pressed flatter than the open section (`FOLD_FLATTEN`): a folded wing's
+    // feathers lie close, and at full thickness it stood off the flank as a
+    // plank.
+    const lift = rest.y.sub(WING_Y).mul(FOLD_FLATTEN).add(FOLD_CLEAR).toVar();
+    // Round the flank: chord fraction to angle from the top of the body, about
+    // the middle of the folded wing's band. The hand's chord is narrower
+    // folded, and the band closes in toward the bend of the wing at the front,
+    // which tucks into the breast instead of ending square.
+    const band = along.smoothstep(0, 0.18).mul(0.65).add(0.35).mul(along.mul(-0.5).add(1));
+    const phi = chord
+      .sub(0.4)
+      .mul(band)
+      .mul(FOLD_PHI_TE - FOLD_PHI_LE)
+      .add(FOLD_PHI_LE + 0.4 * (FOLD_PHI_TE - FOLD_PHI_LE))
+      .toVar();
+    const phiSin = phi.sin().toVar();
+    const phiCos = phi.cos().toVar();
+    const hug = vec3n(
+      side.mul(bodyW.add(lift)).mul(phiSin),
+      bodyY.add(bodyH.add(lift).mul(phiCos)),
+      foldZ,
+    );
+    // Over the tail: flat, the tips crossing, the trailing edge outboard.
+    const flat = vec3n(
+      side.mul(float(FOLD_BACK_X).sub(crossing.mul(FOLD_CROSS)).add(chord.mul(FOLD_TAIL_WIDTH))),
+      float(FOLD_TAIL_Y).add(lift).add(side.mul(crossing).mul(FOLD_STACK)),
+      foldZ,
+    );
+    const folded = mixn(hug, flat, crossing);
+    // The frame the wing's section is laid in: the outward normal of the body's
+    // ellipse there, and the direction round it toward the trailing edge; over
+    // the tail, straight up and straight out.
+    const hugOut = vec3n(side.mul(bodyH.max(1e-3)).mul(phiSin), bodyW.max(1e-3).mul(phiCos), 0).normalize();
+    const hugDown = vec3n(side.mul(bodyW.max(1e-3)).mul(phiCos), bodyH.max(1e-3).mul(phiSin).negate(), 0).normalize();
+    const outward = mixn(hugOut, vec3(0, 1, 0), crossing).normalize().toVar();
+    const down = mixn(hugDown, vec3n(side, 0, 0), crossing).normalize().toVar();
+    // The same map applied to the normal: up -> outward, toward the trailing
+    // edge -> down, out along the span -> back along the body.
+    const foldedNormal = outward
+      .mul(restNormal.y)
+      .add(down.mul(restNormal.z.negate()))
+      .add(vec3(0, 0, -1).mul(restNormal.x.mul(side)));
+
+    // A resting gull closes its tail; spread, it stuck out either side of the
+    // body seen head-on. The tail is the one part with neither span nor volume.
+    const tailClose = part.oneMinus().mul(side.abs().oneMinus()).mul(settle).mul(TAIL_CLOSE).oneMinus();
+    const posed = mixn(flying, folded, tuck).mul(vec3n(tailClose, 1, 1)).toVar();
+    const posedNormal = mixn(flyingNormal, foldedNormal, tuck).toVar();
+
+    // Nose up on the perch (`PERCH_PITCH`), about the hip, so the feet stay
+    // where they are. The legs themselves stay vertical.
+    const legPart = shape.w.step(PAINT_LEG - 0.5).toVar();
+    const pitch = settle.mul(PERCH_PITCH).mul(legPart.oneMinus()).toVar();
+    const pitchCos = pitch.cos().toVar();
+    const pitchSin = pitch.sin().toVar();
+    const hip = vec3(...LEG_HIP);
+    const fromHip = posed.sub(hip).toVar();
+    const pitched = vec3n(
+      fromHip.x,
+      fromHip.y.mul(pitchCos).add(fromHip.z.mul(pitchSin)),
+      fromHip.z.mul(pitchCos).sub(fromHip.y.mul(pitchSin)),
+    ).add(hip);
+    const localNormal = vec3n(
+      posedNormal.x,
+      posedNormal.y.mul(pitchCos).add(posedNormal.z.mul(pitchSin)),
+      posedNormal.z.mul(pitchCos).sub(posedNormal.y.mul(pitchSin)),
+    ).toVar();
+
     // Legs fold up into the belly in flight; see LEG_HIP.
-    const leg = shape.w.step(PAINT_LEG - 0.5).mul(perched.smoothstep(0.6, 1.0).oneMinus());
-    const shaped = mixn(mixn(flying, folded, tuck), vec3(0, LEG_HIP[1], LEG_HIP[2]), leg).toVar();
+    const leg = legPart.mul(perched.smoothstep(0.6, 1.0).oneMinus());
+    const shaped = mixn(pitched, hip, leg).toVar();
 
     // --- placement -----------------------------------------------------------
     // See `NEAR_HIDE`. Scaling to zero costs no fragments; an alpha fade would.
-    const size = style.x
-      .mul(centreFlight.sub(this.uViewer).length().smoothstep(NEAR_HIDE, NEAR_SHOW))
-      .toVar();
+    const distance = centreFlight.sub(this.uViewer).length().toVar();
+    // Which draw this bird is in: see `LOD_DISTANCE` and `DETAIL_INSTANCES`.
+    // The other draw collapses it the same way the near hide does.
+    // (`a.step(b)` is 1 where a >= b.)
+    const near = float(LOD_DISTANCE)
+      .mul(style.x)
+      .step(distance)
+      .mul(float(DETAIL_INSTANCES - 0.5).step(float(instanceIndex)));
+    const drawn = detail ? near : near.oneMinus();
+    const size = style.x.mul(distance.smoothstep(NEAR_HIDE, NEAR_SHOW)).mul(drawn).toVar();
     const local = shaped.mul(size);
 
+    // Authored +X goes to `-bankRight`. `bankRight` is forward x up, so
+    // `[bankRight, bankUp, forward]` is a reflection, and under a reflection a
+    // surface wound outward rasterises as back faces: `faceDirection` was -1 on
+    // every visible face of a closed body, and +1 on the cheap gull's sheets
+    // seen from *below*, so the mantle was painted on the underside of every
+    // bird in flight and the light came from the wrong side of the body
+    // (measured: facing rendered as colour). With `-bankRight` the frame is a
+    // rotation. The gull is symmetric, so its shape does not change, and the
+    // bank still drops the wing on the inside of the turn.
     const world = centreFlight
-      .add(bankRight.mul(local.x))
+      .sub(bankRight.mul(local.x))
       .add(bankUp.mul(local.y))
       .add(forward.mul(local.z));
 
-    // Sheets: (0,1,0) rotated about the bird's long axis by the arm angle plus,
-    // on the hand, the wrist angle. Body: the authored face normal. A folded
-    // wing lies flat on the back.
-    const sheetAngle = shoulder.add(wrist).toVar();
-    const sheetNormal = vec3n(sheetAngle.sin().negate(), sheetAngle.cos(), 0);
-    const localNormal = mixn(mixn(sheetNormal, vec3(0, 1, 0), tuck), restNormal, part).toVar();
+    // The fold is a reflection too — span to back, thickness to outward, chord
+    // to down has determinant -1 — so a folded wing's outer, upper surface
+    // rasterises as a back face. Flipping the normal and the up-side sign once
+    // the wing is mostly folded puts both back.
+    const foldSign = tuck.step(0.5).mul(-2).add(1).toVar();
     const normal = bankRight
       .mul(localNormal.x)
+      .negate()
       .add(bankUp.mul(localNormal.y))
-      .add(forward.mul(localNormal.z));
+      .add(forward.mul(localNormal.z))
+      .mul(foldSign);
 
-    // Head: the forward third of the body, which stays white.
-    const head = rest.z.smoothstep(0.1, 0.18).mul(part);
+    // The hood: the head, from a line that runs from the nape down and forward
+    // to the throat. Measured on the rest pose, so it does not slide when the
+    // body tilts.
+    const head = rest.z.add(rest.y.mul(0.25)).smoothstep(0.155, 0.215).mul(part);
+    // The mantle's extent on the body: from the rump forward to the neck.
+    const zone = rest.z
+      .smoothstep(-0.15, -0.07)
+      .mul(rest.z.smoothstep(0.12, 0.17).oneMinus())
+      .mul(part);
 
-    return { world, normal, outboard, part, upness: localNormal.y, head, paint: shape.w };
+    return {
+      world,
+      normal,
+      outboard,
+      zone,
+      part,
+      // Which side of the wing this is: the cheap gull's sheets are all upper
+      // side (+1) and `faceDirection` tells the faces apart; the detailed wing
+      // marks its lower surface with a negative chord, and the edges the two
+      // surfaces share are neither (0). Not the rest normal's sign, which is 0
+      // round the leading edge and left a white rim along the top of the folded
+      // wing; and not +1 on the shared edges, which painted a mantle rim along
+      // the underwing's leading edge.
+      upness: mixn(shape.w.sign().mul(shape.w.abs().step(0.9995).oneMinus()).mul(foldSign), localNormal.y, part),
+      head,
+      paint: shape.w,
+    };
   }
 }
 
 const WHITE = /*@__PURE__*/ new THREE.Color(1, 1, 1);
 
 /**
- * The gull, authored nose-forward: **+X right wing, +Y up, +Z nose**, the frame
- * the vertex stage builds, so placement is three multiply-adds.
+ * The gulls are authored nose-forward: **+X right wing, +Y up, +Z nose**, the
+ * frame the vertex stage builds, so placement is three multiply-adds. Both carry
+ * the same per-vertex attributes:
  *
- * Non-indexed: every triangle carries its own face normal, because the body is
- * faceted on purpose — at a few dozen pixels a smooth-shaded lozenge reads as a
- * blob, a faceted one reads as a body with a back and a belly.
+ * - `shape.x`, span: signed distance out the wing, normalised to the tip. Its
+ *   sign mirrors the flap; its magnitude drives the dark primaries. 0 on the
+ *   body and tail, which excludes them from every wing rotation.
+ * - `shape.y`, hand: 1 on the vertices outboard of the wrist, which take the
+ *   wrist rotation as well as the shoulder's.
+ * - `shape.z`, part: 1 on the body's volume (with the bill and legs), 0 on the
+ *   wings and tail.
+ * - `shape.w`, paint: see `PAINT_PLUMAGE`.
  *
- * Attributes:
- * - `span`: signed distance out the wing, normalised to the tip. Its sign
- *   mirrors the flap; its magnitude drives the dark primaries. 0 on the body
- *   and tail, which excludes them from every wing rotation.
- * - `hand`: 1 on the vertices outboard of the wrist, which take the wrist
- *   rotation as well as the shoulder's.
- * - `part`: 1 on the body's volume, 0 on the wing and tail sheets.
- *
- * Sheets are wound counter-clockwise seen from above, which is what makes
- * `faceDirection` mean "this is the bird's back"; the body is wound outward.
- * Both are enforced here rather than trusted to the vertex order below.
+ * The cheap gull's sheets are wound counter-clockwise seen from above, which
+ * is what makes `faceDirection` mean "this is the bird's back"; every closed
+ * surface is wound outward. Both are enforced as the triangles are added rather
+ * than trusted to the vertex order.
  */
-function buildFlockGeometry(): THREE.InstancedBufferGeometry {
-  type V = readonly [number, number, number];
+class GullBuilder {
+  readonly positions: number[] = [];
+  readonly shape: number[] = [];
+  readonly normals: number[] = [];
+  readonly index: number[] = [];
+  private readonly a = new THREE.Vector3();
+  private readonly b = new THREE.Vector3();
+  private readonly c = new THREE.Vector3();
+  private readonly n = new THREE.Vector3();
+  private readonly t = new THREE.Vector3();
+
+  /** Adds a vertex and returns its index. */
+  vertex(p: Vec, span: number, hand: number, part: number, paint: number): number {
+    this.positions.push(p[0], p[1], p[2]);
+    this.shape.push(span, hand, part, paint);
+    return this.positions.length / 3 - 1;
+  }
+
+  /**
+   * An indexed triangle, wound so its face normal agrees with `outward` — a
+   * direction, or a point inside the surface (`inside`) the face must face away
+   * from.
+   */
+  tri(i: number, j: number, k: number, outward: Vec, inside = false): void {
+    const p = this.positions;
+    this.a.fromArray(p, i * 3);
+    this.b.fromArray(p, j * 3);
+    this.c.fromArray(p, k * 3);
+    if (this.facesOut(outward, inside)) this.index.push(i, j, k);
+    else this.index.push(i, k, j);
+  }
+
+  /** Whether `a`, `b`, `c` as loaded wind toward `outward`. Leaves the unit face normal in `n`. */
+  private facesOut(outward: Vec, inside: boolean): boolean {
+    this.n.subVectors(this.b, this.a).cross(this.t.subVectors(this.c, this.a)).normalize();
+    if (inside) {
+      this.t.copy(this.a).add(this.b).add(this.c).divideScalar(3);
+      this.t.set(this.t.x - outward[0], this.t.y - outward[1], this.t.z - outward[2]);
+    } else {
+      this.t.set(outward[0], outward[1], outward[2]);
+    }
+    return this.n.dot(this.t) >= 0;
+  }
+
+  /**
+   * A non-indexed, flat-shaded triangle with its own face normal, for the cheap
+   * gull. Same winding rule as `tri`.
+   */
+  facet(tri: readonly Vec[], outward: Vec, inside: boolean, attrs: (v: Vec) => [number, number, number, number]): void {
+    this.a.fromArray(tri[0]);
+    this.b.fromArray(tri[1]);
+    this.c.fromArray(tri[2]);
+    const flip = !this.facesOut(outward, inside);
+    if (flip) this.n.negate();
+    for (const k of flip ? [0, 2, 1] : [0, 1, 2]) {
+      this.vertex(tri[k], ...attrs(tri[k]));
+      this.normals.push(this.n.x, this.n.y, this.n.z);
+    }
+  }
+
+  /**
+   * A loft: rings of `ring` points per station, joined into a closed tube, with
+   * each end either left open or closed on a single point. `centre(s)` is a point
+   * inside station `s`'s ring, for the winding. Returns each station's vertex
+   * indices.
+   */
+  loft(
+    stations: number,
+    ring: number,
+    point: (s: number, k: number) => Vec,
+    centre: (s: number) => Vec,
+    attrs: (v: Vec, s: number, k: number) => [number, number, number, number],
+    caps: { start?: Vec; end?: Vec } = {},
+    outwardOf?: (s: number, k: number) => Vec,
+  ): number[][] {
+    const rows: number[][] = [];
+    for (let s = 0; s < stations; s++) {
+      const row: number[] = [];
+      for (let k = 0; k < ring; k++) {
+        const v = point(s, k);
+        row.push(this.vertex(v, ...attrs(v, s, k)));
+      }
+      rows.push(row);
+    }
+    for (let s = 0; s + 1 < stations; s++) {
+      const mid = centre(s).map((x, i) => (x + centre(s + 1)[i]) / 2) as unknown as Vec;
+      for (let k = 0; k < ring; k++) {
+        const k1 = (k + 1) % ring;
+        const a = rows[s][k];
+        const b = rows[s][k1];
+        const c = rows[s + 1][k];
+        const d = rows[s + 1][k1];
+        const out = outwardOf?.(s, k);
+        this.tri(a, b, d, out ?? mid, out === undefined);
+        this.tri(a, d, c, out ?? mid, out === undefined);
+      }
+    }
+    const cap = (s: number, tip: Vec, away: number): void => {
+      const t = this.vertex(tip, ...attrs(tip, s, -1));
+      const dir: Vec = [0, 0, 0];
+      const c = centre(s);
+      for (let i = 0; i < 3; i++) dir[i] = tip[i] - c[i];
+      if (Math.hypot(dir[0], dir[1], dir[2]) < 1e-6) dir[2] = away;
+      for (let k = 0; k < ring; k++) this.tri(rows[s][k], rows[s][(k + 1) % ring], t, dir);
+    };
+    if (caps.start) cap(0, caps.start, -1);
+    if (caps.end) cap(stations - 1, caps.end, 1);
+    return rows;
+  }
+}
+
+type Vec = [number, number, number];
+
+/** A superellipse ring point: `k` of `n` round from the top, half-width `w`, half-heights up and down. */
+function ringPoint(k: number, n: number, w: number, up: number, down: number, exponent: number): [number, number] {
+  const phi = (k / n) * Math.PI * 2;
+  const s = Math.sin(phi);
+  const c = Math.cos(phi);
+  const e = 2 / exponent;
+  const x = w * Math.sign(s) * Math.abs(s) ** e;
+  const y = (c >= 0 ? up : down) * Math.sign(c) * Math.abs(c) ** e;
+  return [x, y];
+}
+
+/**
+ * The cheap gull: twenty-odd faceted triangles. Non-indexed, every triangle
+ * with its own face normal, because at a few dozen pixels a smooth-shaded
+ * lozenge reads as a blob, a faceted one as a body with a back and a belly.
+ */
+function buildCheapGull(): THREE.InstancedBufferGeometry {
+  type V = Vec;
   // Body.
   const nose: V = [0, 0.012, 0.3];
   const crown: V = [0, 0.06, 0.19];
@@ -978,12 +1393,15 @@ function buildFlockGeometry(): THREE.InstancedBufferGeometry {
 
   // Right wing: arm panel shoulder->wrist, then a long pointed hand swept back.
   // The wrist is the leading edge's most forward point, as on a real gull.
-  const shoulderLead: V = [SHOULDER_X, 0, 0.1];
-  const shoulderTrail: V = [SHOULDER_X, 0, -0.08];
-  const wristLead: V = [WRIST_X, 0, 0.095];
-  const wristTrail: V = [WRIST_X, 0, -0.12];
-  const handTrail: V = [0.48, 0, -0.15];
-  const tip: V = [HALF_SPAN, 0, -0.12];
+  const y = WING_Y;
+  // Matched to the detailed wing's planform (`WING_STATIONS`), narrow and
+  // pointed, so the LOD switch does not change the bird's shape.
+  const shoulderLead: V = [SHOULDER_X, y, 0.072];
+  const shoulderTrail: V = [SHOULDER_X, y, -0.068];
+  const wristLead: V = [WRIST_X, y, 0.096];
+  const wristTrail: V = [WRIST_X, y, -0.09];
+  const handTrail: V = [0.48, y, -0.096];
+  const tip: V = [HALF_SPAN, y, -0.08];
   const rightWing: V[][] = [
     [shoulderLead, wristLead, wristTrail],
     [shoulderLead, wristTrail, shoulderTrail],
@@ -1006,99 +1424,295 @@ function buildFlockGeometry(): THREE.InstancedBufferGeometry {
     [billLeft, billTop, billTip],
   ];
 
-  // Legs: a thin blade from the belly to the foot, and a webbed foot, each
-  // side. Drawn on the perch only; in flight they fold into the belly (the
-  // vertex stage collapses them onto `LEG_HIP`).
+  // Legs: a thin blade from the hip to the foot, and a webbed foot, each side.
+  // Drawn on the perch only; in flight they fold into the belly (the vertex
+  // stage collapses them onto `LEG_HIP`).
   const legTris: V[][] = [];
+  const footTris: V[][] = [];
   for (const sx of [1, -1]) {
     const hipA: V = [sx * 0.02, LEG_HIP[1], LEG_HIP[2] + 0.008];
     const hipB: V = [sx * 0.02, LEG_HIP[1], LEG_HIP[2] - 0.008];
-    const ankle: V = [sx * 0.022, LEG_FOOT_Y + 0.004, 0.004];
-    const heel: V = [sx * 0.022, LEG_FOOT_Y + 0.004, -0.008];
+    const ankle: V = [sx * 0.022, LEG_FOOT_Y + 0.004, LEG_HIP[2] + 0.004];
+    const heel: V = [sx * 0.022, LEG_FOOT_Y + 0.004, LEG_HIP[2] - 0.008];
     legTris.push([hipA, ankle, heel], [hipA, heel, hipB]);
-    legTris.push([
-      [sx * 0.022, LEG_FOOT_Y, -0.01],
-      [sx * 0.04, LEG_FOOT_Y, 0.045],
-      [sx * 0.004, LEG_FOOT_Y, 0.045],
+    footTris.push([
+      [sx * 0.022, LEG_FOOT_Y, LEG_HIP[2] - 0.01],
+      [sx * 0.04, LEG_FOOT_Y, LEG_HIP[2] + 0.045],
+      [sx * 0.004, LEG_FOOT_Y, LEG_HIP[2] + 0.045],
     ]);
   }
 
   // Wing chord, 0 on the leading edge and 1 on the trailing (and the tip), for
-  // the white trailing edge. The leading-edge vertices are the only ones forward
-  // of the body's centre.
-  const chordOf = (v: V): number => (v[2] > 0.05 ? 0 : 1);
+  // the white trailing edge and the fold. The leading-edge vertices are the
+  // only ones forward of the body's centre.
+  const chordOf = (v: V): number => (v[2] > 0.05 ? 0.001 : 0.999);
 
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const spans: number[] = [];
-  const hands: number[] = [];
-  const parts: number[] = [];
-  const paints: number[] = [];
-
-  const a = new THREE.Vector3();
-  const b = new THREE.Vector3();
-  const c = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  const out = new THREE.Vector3();
-
-  const push = (tri: V[], kind: 'body' | 'sheet' | 'wing', paint: number | null = null): void => {
-    a.fromArray(tri[0]);
-    b.fromArray(tri[1]);
-    c.fromArray(tri[2]);
-    n.subVectors(b, a).cross(out.subVectors(c, a)).normalize();
-    // Sheets face up; the body faces away from its own centre.
-    const wantOutward =
-      kind === 'body'
-        ? out.set(
-            (tri[0][0] + tri[1][0] + tri[2][0]) / 3 - bodyCentre[0],
-            (tri[0][1] + tri[1][1] + tri[2][1]) / 3 - bodyCentre[1],
-            (tri[0][2] + tri[1][2] + tri[2][2]) / 3 - bodyCentre[2],
-          )
-        : out.set(0, 1, 0);
-    const order = n.dot(wantOutward) >= 0 ? [0, 1, 2] : [0, 2, 1];
-    if (order[1] === 2) n.negate();
-    for (const k of order) {
-      const v = tri[k];
-      positions.push(v[0], v[1], v[2]);
-      normals.push(n.x, n.y, n.z);
-      const wing = kind === 'wing';
-      spans.push(wing ? v[0] / HALF_SPAN : 0);
-      hands.push(wing && Math.abs(v[0]) > WRIST_X + 1e-4 ? 1 : 0);
-      parts.push(kind === 'body' ? 1 : 0);
-      paints.push(paint ?? (wing ? chordOf(v) : PAINT_PLUMAGE));
-    }
-  };
-
-  for (const t of bodyTris) push(t, 'body');
-  for (const t of billTris) push(t, 'body', PAINT_BILL);
-  for (const t of legTris) push(t, 'body', PAINT_LEG);
-  for (const t of tailTris) push(t, 'sheet');
-  for (const t of rightWing) push(t, 'wing');
-  for (const t of leftWing) push(t, 'wing');
+  const g = new GullBuilder();
+  const up: Vec = [0, 1, 0];
+  const body = (paint: number) => (): [number, number, number, number] => [0, 0, 1, paint];
+  for (const t of bodyTris) g.facet(t, bodyCentre, true, body(PAINT_PLUMAGE));
+  for (const t of billTris) g.facet(t, bodyCentre, true, body(PAINT_BILL));
+  for (const t of legTris) g.facet(t, [t[0][0] > 0 ? 1 : -1, 0, 0], false, body(PAINT_LEG));
+  for (const t of footTris) g.facet(t, up, false, body(PAINT_LEG));
+  for (const t of tailTris) g.facet(t, up, false, () => [0, 0, 0, PAINT_PLUMAGE]);
+  const wingAttrs = (v: V): [number, number, number, number] => [
+    v[0] / HALF_SPAN,
+    Math.abs(v[0]) > WRIST_X + 1e-4 ? 1 : 0,
+    0,
+    chordOf(v),
+  ];
+  for (const t of [...rightWing, ...leftWing]) g.facet(t, up, false, wingAttrs);
 
   const geometry = new THREE.InstancedBufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  const shape: number[] = [];
-  for (let i = 0; i < spans.length; i++) shape.push(spans[i], hands[i], parts[i], paints[i]);
-  geometry.setAttribute('shape', new THREE.Float32BufferAttribute(shape, 4));
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(g.positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(g.normals, 3));
+  geometry.setAttribute('shape', new THREE.Float32BufferAttribute(g.shape, 4));
+  return geometry;
+}
 
+/**
+ * Body of the detailed gull: stations along the long axis, nose last —
+ * `[z, centre y, half-width, half-height above, half-height below]`, metres at
+ * scale 1. A teardrop from the rump to the breast, a short neck at 0.175, a
+ * round head, and a face narrowing into the bill. Matched to the cheap gull's
+ * extents so the LOD switch does not move the silhouette.
+ */
+const BODY_STATIONS: ReadonlyArray<readonly [number, number, number, number, number]> = [
+  [-0.215, 0.022, 0.01, 0.006, 0.006],
+  [-0.17, 0.02, 0.026, 0.022, 0.02],
+  [-0.11, 0.012, 0.042, 0.04, 0.042],
+  [-0.04, 0.006, 0.054, 0.056, 0.058],
+  [0.03, 0.006, 0.058, 0.06, 0.06],
+  [0.09, 0.01, 0.054, 0.054, 0.054],
+  [0.14, 0.02, 0.042, 0.042, 0.042],
+  [0.175, 0.03, 0.03, 0.032, 0.03],
+  [0.2, 0.04, 0.031, 0.033, 0.03],
+  [0.23, 0.044, 0.034, 0.034, 0.031],
+  [0.258, 0.042, 0.031, 0.03, 0.027],
+  [0.28, 0.036, 0.023, 0.022, 0.02],
+  [0.294, 0.03, 0.012, 0.012, 0.011],
+];
+/** Rings round the body, and the superellipse exponent: a little fuller than an ellipse. */
+const BODY_SEGMENTS = 14;
+const BODY_ROUNDNESS = 2.4;
+/** The bill: `[z, centre y, half-width, half-height]`. Long, and drooping at the tip. */
+const BILL_STATIONS: ReadonlyArray<readonly [number, number, number, number]> = [
+  [0.284, 0.029, 0.01, 0.011],
+  [0.315, 0.026, 0.0078, 0.0085],
+  [0.345, 0.022, 0.0055, 0.0065],
+  [0.366, 0.016, 0.003, 0.004],
+];
+const BILL_TIP: Vec = [0, 0.011, 0.378];
+/** The tail: `[z, half-width]` of a thin wedge from the rump, widening to a squared end. */
+const TAIL_STATIONS: ReadonlyArray<readonly [number, number]> = [
+  [-0.15, 0.028],
+  [-0.21, 0.05],
+  [-0.27, 0.066],
+  [-0.318, 0.076],
+  [-0.334, 0.066],
+];
+const TAIL_THICKNESS = 0.005;
+/**
+ * The wing, spanwise stations `[x, leading-edge z, trailing-edge z]`: a gull's
+ * long, narrow, pointed wing. The arm's leading edge sweeps *forward* to the
+ * wrist at `WRIST_X`, the most forward point of the wing, and its trailing edge
+ * is the straight line of the secondaries; the hand is longer than the arm and
+ * tapers to a point, its leading edge swept hard back and its trailing edge
+ * closing in to meet it. Aspect ratio about 11.
+ *
+ * No notches. A first version slotted the primaries the way a crow's or a
+ * raptor's are; a flying gull shows a smooth pointed tip, and with a broad
+ * rounded hand the notches made the flock read as crows.
+ */
+const WING_STATIONS: ReadonlyArray<readonly [number, number, number]> = [
+  [0.025, 0.07, -0.065],
+  [0.1, 0.078, -0.078],
+  [0.18, 0.086, -0.086],
+  [0.25, 0.092, -0.09],
+  [WRIST_X, 0.096, -0.09],
+  [0.36, 0.078, -0.094],
+  [0.42, 0.054, -0.096],
+  [0.48, 0.026, -0.096],
+  [0.54, -0.006, -0.094],
+  [0.59, -0.034, -0.09],
+  [0.625, -0.056, -0.086],
+  [0.648, -0.072, -0.083],
+  [HALF_SPAN, -0.08, -0.081],
+];
+/** Chord fractions the section is sampled at, leading edge to trailing. */
+const WING_CHORD = [0, 0.04, 0.12, 0.25, 0.42, 0.6, 0.78, 0.92, 1];
+/**
+ * Section thickness and camber as fractions of chord, root and tip: a thin,
+ * well-cambered bird's section, thinning out to the tip, where it closes.
+ */
+const WING_THICKNESS = [0.1, 0.05] as const;
+const WING_CAMBER = [0.06, 0.02] as const;
+const WING_CAMBER_AT = 0.4;
+
+/**
+ * NACA four-digit section, half-thickness and camber line at chord fraction `c`
+ * (Jacobs, Ward and Pinkerton, NACA Report 460, 1933; the closed-trailing-edge
+ * coefficient). `t` thickness and `m` camber as fractions of chord, camber
+ * peak at `p`.
+ */
+function nacaSection(c: number, t: number, m: number, p: number): [number, number] {
+  const half = 5 * t * (0.2969 * Math.sqrt(c) - 0.126 * c - 0.3516 * c * c + 0.2843 * c ** 3 - 0.1036 * c ** 4);
+  const camber = c < p ? (m / (p * p)) * (2 * p * c - c * c) : (m / ((1 - p) * (1 - p))) * (1 - 2 * p + 2 * p * c - c * c);
+  return [half, camber];
+}
+
+/**
+ * The detailed gull, for the birds near the camera: about 1,400 triangles,
+ * indexed, with smooth normals, so no facet reads at 1:1 from the taffrail.
+ */
+function buildDetailGull(): THREE.InstancedBufferGeometry {
+  const g = new GullBuilder();
+
+  // Body: a loft of superellipse rings, closed at the rump and the face.
+  const n = BODY_SEGMENTS;
+  const bodyPoint = (s: number, k: number): Vec => {
+    const [z, cy, w, hu, hd] = BODY_STATIONS[s];
+    const [x, y] = ringPoint(k, n, w, hu, hd, BODY_ROUNDNESS);
+    return [x, cy + y, z];
+  };
+  const bodyCentre = (s: number): Vec => [0, BODY_STATIONS[s][1], BODY_STATIONS[s][0]];
+  const last = BODY_STATIONS[BODY_STATIONS.length - 1];
+  g.loft(BODY_STATIONS.length, n, bodyPoint, bodyCentre, () => [0, 0, 1, PAINT_PLUMAGE], {
+    start: [0, BODY_STATIONS[0][1], BODY_STATIONS[0][0] - 0.006],
+    end: [0, last[1] - 0.002, last[0] + 0.006],
+  });
+
+  // Bill: six-sided, tapering and drooping to a point.
+  const billSides = 6;
+  g.loft(
+    BILL_STATIONS.length,
+    billSides,
+    (s, k) => {
+      const [z, cy, w, h] = BILL_STATIONS[s];
+      const [x, y] = ringPoint(k, billSides, w, h, h, 2);
+      return [x, cy + y, z];
+    },
+    (s) => [0, BILL_STATIONS[s][1], BILL_STATIONS[s][0]],
+    () => [0, 0, 1, PAINT_BILL],
+    { end: BILL_TIP },
+  );
+
+  // Tail: a thin wedge, its root inside the rump, closed at the end.
+  const tailSides = 10;
+  const tailY = (z: number): number => 0.02 + (-0.15 - z) * 0.03;
+  g.loft(
+    TAIL_STATIONS.length,
+    tailSides,
+    (s, k) => {
+      const [z, w] = TAIL_STATIONS[s];
+      const [x, y] = ringPoint(k, tailSides, w, TAIL_THICKNESS, TAIL_THICKNESS, 6);
+      return [x, tailY(z) + y, z];
+    },
+    (s) => [0, tailY(TAIL_STATIONS[s][0]), TAIL_STATIONS[s][0]],
+    () => [0, 0, 0, PAINT_PLUMAGE],
+    { end: [0, tailY(-0.34), -0.34] },
+  );
+
+  // Wings: each station a NACA section, upper surface leading edge to
+  // trailing, then the lower surface back; thickness closes to nothing at the
+  // tip. The `paint` channel carries the chord fraction (see `PAINT_PLUMAGE`).
+  const chordSamples = WING_CHORD.length;
+  const ring = 2 * chordSamples - 2;
+  const span0 = WING_STATIONS[0][0];
+  for (const side of [1, -1]) {
+    const sectionAt = (s: number, k: number): { v: Vec; c: number } => {
+      const [x, lead, trail] = WING_STATIONS[s];
+      const f = (x - span0) / (HALF_SPAN - span0);
+      const tip = s === WING_STATIONS.length - 1;
+      const t = tip ? 0 : WING_THICKNESS[0] + (WING_THICKNESS[1] - WING_THICKNESS[0]) * f;
+      const m = WING_CAMBER[0] + (WING_CAMBER[1] - WING_CAMBER[0]) * f;
+      const upper = k < chordSamples;
+      const c = WING_CHORD[upper ? k : ring - k];
+      const length = lead - trail;
+      const [half, camber] = nacaSection(c, t, m, WING_CAMBER_AT);
+      const y = WING_Y + (camber + (upper ? half : -half)) * length;
+      return { v: [side * x, y, lead - c * length], c };
+    };
+    g.loft(
+      WING_STATIONS.length,
+      ring,
+      (s, k) => sectionAt(s, k).v,
+      () => [0, 0, 0],
+      // Paint: the chord fraction, negated on the lower surface.
+      (v, s, k) => [
+        v[0] / HALF_SPAN,
+        Math.abs(v[0]) > WRIST_X + 1e-4 ? 1 : 0,
+        0,
+        k < chordSamples ? sectionAt(s, k).c : -sectionAt(s, k).c,
+      ],
+      {},
+      // Upper-surface quads face up and lower-surface ones down; the strips
+      // either side of the leading and trailing edges take their surface's.
+      (_s, k) => [0, k < chordSamples - 1 ? 1 : -1, 0],
+    );
+  }
+
+  // Legs: a tapering four-sided shank from the hip to the ankle, each side,
+  // and a webbed foot of three toes. Folded into the belly in flight.
+  for (const sx of [1, -1]) {
+    const ends: Array<[Vec, number]> = [
+      [[sx * 0.02, LEG_HIP[1], LEG_HIP[2]], 0.0055],
+      [[sx * 0.024, LEG_FOOT_Y + 0.006, LEG_HIP[2]], 0.0035],
+    ];
+    g.loft(
+      2,
+      4,
+      (s, k) => {
+        const [c, r] = ends[s];
+        const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+        return [c[0] + Math.cos(a) * r, c[1], c[2] + Math.sin(a) * r];
+      },
+      (s) => ends[s][0],
+      () => [0, 0, 1, PAINT_LEG],
+    );
+    const heel = g.vertex([sx * 0.024, LEG_FOOT_Y, LEG_HIP[2] - 0.012], 0, 0, 1, PAINT_LEG);
+    const toes = [
+      [sx * 0.046, LEG_FOOT_Y, LEG_HIP[2] + 0.05],
+      [sx * 0.026, LEG_FOOT_Y, LEG_HIP[2] + 0.06],
+      [sx * 0.004, LEG_FOOT_Y, LEG_HIP[2] + 0.05],
+    ].map((v) => g.vertex(v as Vec, 0, 0, 1, PAINT_LEG));
+    g.tri(heel, toes[0], toes[1], [0, 1, 0]);
+    g.tri(heel, toes[1], toes[2], [0, 1, 0]);
+  }
+
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setIndex(g.index);
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(g.positions, 3));
+  geometry.setAttribute('shape', new THREE.Float32BufferAttribute(g.shape, 4));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** The per-bird buffers both gulls share. */
+interface InstanceAttributes {
+  interleaved: THREE.InstancedInterleavedBuffer;
+  perchState: THREE.InstancedBufferAttribute;
+}
+
+function buildInstanceAttributes(): InstanceAttributes {
   // The six static per-bird vectors share one interleaved buffer. Separate
   // attributes were a vertex buffer each, and with the per-vertex ones and the
   // perch state that came to twelve — over WebGPU's guaranteed limit of eight,
   // which fails pipeline creation outright rather than degrading.
-  const data = buildInstanceData();
-  const interleaved = new THREE.InstancedInterleavedBuffer(data, INSTANCE_STRIDE, 1);
-  INSTANCE_LAYOUT.forEach((name, slot) => {
-    geometry.setAttribute(name, new THREE.InterleavedBufferAttribute(interleaved, 4, slot * 4));
-  });
+  const interleaved = new THREE.InstancedInterleavedBuffer(buildInstanceData(), INSTANCE_STRIDE, 1);
   const perchState = new THREE.InstancedBufferAttribute(new Float32Array(MAX_BIRDS), 1);
   perchState.setUsage(THREE.DynamicDrawUsage);
-  geometry.setAttribute('perchState', perchState);
+  return { interleaved, perchState };
+}
 
+/** Attaches the shared per-bird buffers to one gull's geometry. */
+function withInstances(geometry: THREE.InstancedBufferGeometry, instances: InstanceAttributes): THREE.InstancedBufferGeometry {
+  INSTANCE_LAYOUT.forEach((name, slot) => {
+    geometry.setAttribute(name, new THREE.InterleavedBufferAttribute(instances.interleaved, 4, slot * 4));
+  });
+  geometry.setAttribute('perchState', instances.perchState);
   geometry.instanceCount = 0;
   geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Number.POSITIVE_INFINITY);
-
   return geometry;
 }
 
