@@ -151,13 +151,40 @@ export function sprayAtlas(): THREE.DataTexture {
   if (atlas) return atlas;
   const n = ATLAS_SIZE;
   const data = new Uint8Array(n * n * 4);
+  // The sheet and mist fields are gradient noise, rank-matched to the value
+  // noise they replace (`matchQuantiles`), so every erosion threshold tuned on
+  // the old fields cuts the same share of a sheet at the same age.
+  //
+  // **Why.** Value noise is bilinear between lattice values, and a threshold
+  // through it comes out as straight-sided, square-cornered contours aligned to
+  // the lattice. Cut with a narrow feather and edged with a bright rim, those
+  // were the "glassy, translucent, cube-like sprites ... ice, not spray" of
+  // round 10's boat-sea-2, which every round since 8 had flagged. Gradient
+  // noise has no lattice-aligned facets: its contours are rounded and ragged.
+  const sheetOld = new Float32Array(n * n);
+  const sheetNew = new Float32Array(n * n);
+  const mistOld = new Float32Array(n * n);
+  const mistNew = new Float32Array(n * n);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const u = x / n;
+      const v = y / n;
+      const k = y * n + x;
+      sheetOld[k] = fbm(u, v, 4, 4, 11);
+      sheetNew[k] = gradientFbm(u, v, 4, 5, 11);
+      mistOld[k] = billow(u, v, 3, 5, 53);
+      mistNew[k] = gradientBillow(u, v, 3, 5, 53);
+    }
+  }
+  matchQuantiles(sheetNew, sheetOld);
+  matchQuantiles(mistNew, mistOld);
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
       const u = x / n;
       const v = y / n;
       // R: the intact sheet — smooth fBm, so the first holes open as rounded
       // perforations, which is how a thinning sheet fails.
-      const sheet = fbm(u, v, 4, 4, 11);
+      const sheet = sheetNew[y * n + x];
       // B: ligaments — ridged noise three times finer across the velocity than
       // along it, so the strands run the way the water is going. (Six times read
       // as needles: ice, not water.)
@@ -176,7 +203,7 @@ export function sprayAtlas(): THREE.DataTexture {
       // a rising threshold shrinks drops unevenly and the small ones go first.
       const drops = dropField(u, v, 9, 37);
       // A: mist — billowed fBm with more octaves; soft, irregular, not round.
-      const mist = billow(u, v, 3, 5, 53);
+      const mist = mistNew[y * n + x];
       const i = (y * n + x) * 4;
       data[i] = Math.round(255 * clamp01(sheet));
       data[i + 1] = Math.round(255 * clamp01(drops));
@@ -368,8 +395,10 @@ export function particleFragment(): any {
   // rises with age and is higher toward the rim, so the edge goes first.
   const envSheet: any = smoothstepDown(r, 0.35, 1.0).toVar('sprayEnvS');
   // The rim goes first: the outer half of the sheet is a quarter-life ahead.
-  const toLigament: any = smoothstep(0.12, 0.55, life.add(r.mul(0.25)));
-  const toDrops: any = smoothstep(0.42, 0.85, life);
+  // Earlier than it was (0.12–0.55, 0.42–0.85): a sheet that held its shape
+  // for half its flight was one of the ice cubes of round 10.
+  const toLigament: any = smoothstep(0.05, 0.42, life.add(r.mul(0.25)));
+  const toDrops: any = smoothstep(0.3, 0.72, life);
   // Streaked along the motion from the start, at a third strength, so even the
   // intact sheet has the grain of water being thrown rather than of a cloud.
   const intact: any = mix(t1.x, t1.z, 0.3);
@@ -394,12 +423,20 @@ export function particleFragment(): any {
   // little brighter, and as the sheet ages into drops it leaves a soft white
   // haze behind it — the mist a real sheet sheds as it disintegrates — rather
   // than vanishing to its ligaments.
-  const shedMist: any = envSheet.mul(envSheet).mul(smoothstep(0.35, 0.9, life)).mul(0.4);
-  const aSheet: any = smoothstep(-0.07, 0.04, inside)
-    .mul(rim.mul(0.25).add(0.75))
-    .mul(smoothstepDown(r, 0.62, 0.98))
+  //
+  // **Soft, not faceted** (round 10). A narrow feather and rims a third
+  // brighter than the membrane are what made each sheet read as a cut block of
+  // ice: hard outline, glassy middle, lit edges. Spray seen from a few tens of
+  // metres has none of that; its edge is a fringe of drops too small to resolve,
+  // which reads as a soft alpha edge, and it sheds mist from the moment it tears.
+  // So the feather is half again wider, the rims only a touch brighter, the
+  // envelope round and soft, and the mist it leaves starts earlier and thicker.
+  const shedMist: any = envSheet.mul(envSheet).mul(smoothstep(0.2, 0.8, life)).mul(0.55);
+  const aSheet: any = smoothstep(-0.11, 0.07, inside)
+    .mul(rim.mul(0.12).add(0.88))
+    .mul(smoothstepDown(r, 0.45, 0.97))
     .max(shedMist);
-  const thickSheet: any = rim.mul(0.25).add(0.75);
+  const thickSheet: any = rim.mul(0.12).add(0.88);
 
   // Cluster: a handful of drops in one quad; they shrink as they evaporate.
   const envCluster: any = smoothstepDown(r, 0.45, 1.0);
@@ -436,8 +473,9 @@ export function particleFragment(): any {
   // And in front of the lens, so a sheet through the chase camera is not a wall.
   const nearFade: any = smoothstep(0.4, 2.0, vMisc.y.negate());
 
-  // Thin water transmits: darker and a touch bluer where it is thin.
-  const tint: any = mix(vec3(0.82, 0.88, 0.9), vec3(1, 1, 1), thick);
+  // Thin water transmits: a little darker and bluer where it is thin. Only a
+  // little: round 10's critic read the old 0.82 grey-blue membrane as glass.
+  const tint: any = mix(vec3(0.92, 0.95, 0.96), vec3(1, 1, 1), thick);
   const alpha: any = vShade.w.mul(shape).mul(depthFade).mul(nearFade).mul(thick.mul(0.25).add(0.75)).clamp(0, 1);
   return vec4((vShade as any).xyz.mul(tint), alpha);
 }
@@ -513,6 +551,61 @@ function fbm(u: number, v: number, base: number, octaves: number, seed: number):
   }
   // Stretch the narrow fBm histogram so thresholds 0.3–0.7 span holes to strands.
   return clamp01((sum / norm - 0.5) * 1.9 + 0.5);
+}
+
+/** Gradient noise on a lattice that wraps at (px, py) cells, about [-0.7, 0.7]: tileable. */
+function periodicGradient(x: number, y: number, px: number, py: number, seed: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const xf = x - xi;
+  const yf = y - yi;
+  const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
+  const sx = fade(xf);
+  const sy = fade(yf);
+  const corner = (ox: number, oy: number) => {
+    const cx = (((xi + ox) % px) + px) % px;
+    const cy = (((yi + oy) % py) + py) % py;
+    const a = hashCell(cx, cy, seed) * Math.PI * 2;
+    return Math.cos(a) * (xf - ox) + Math.sin(a) * (yf - oy);
+  };
+  const a = corner(0, 0);
+  const b = corner(1, 0);
+  const c = corner(0, 1);
+  const d = corner(1, 1);
+  const top = a + (b - a) * sx;
+  const bottom = c + (d - c) * sx;
+  return top + (bottom - top) * sy;
+}
+
+function gradientFbm(u: number, v: number, base: number, octaves: number, seed: number): number {
+  let sum = 0;
+  let amp = 0.5;
+  let f = base;
+  for (let o = 0; o < octaves; o++) {
+    sum += amp * periodicGradient(u * f, v * f, f, f, seed + o);
+    amp *= 0.5;
+    f *= 2;
+  }
+  return sum;
+}
+
+function gradientBillow(u: number, v: number, base: number, octaves: number, seed: number): number {
+  let sum = 0;
+  let amp = 0.5;
+  let f = base;
+  for (let o = 0; o < octaves; o++) {
+    sum += amp * (1 - Math.abs(periodicGradient(u * f, v * f, f, f, seed + o)) * 1.4);
+    amp *= 0.55;
+    f *= 2;
+  }
+  return sum;
+}
+
+/** Replaces `values` with `reference`'s values in `values`' rank order. */
+function matchQuantiles(values: Float32Array, reference: Float32Array): void {
+  const order = Array.from(values.keys()).sort((a, b) => values[a] - values[b]);
+  const sorted = Float32Array.from(reference).sort();
+  for (let i = 0; i < order.length; i++) values[order[i]] = sorted[i];
 }
 
 function billow(u: number, v: number, base: number, octaves: number, seed: number): number {

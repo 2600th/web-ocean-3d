@@ -277,6 +277,9 @@ const FILAMENT_SD = 0.2404;
  */
 const FILAMENT_MID = 2.9;
 const FILAMENT_MID_WEIGHT = 0.95;
+/** The 0.34 m group's weight and stretch on the pixel-drawn path: round holes at that size were leopard spots. */
+const SHARP_MID_WEIGHT = 0.8;
+const SHARP_MID_STRETCH = 1.9;
 const FILAMENT_FINE = 8.4;
 const FILAMENT_FINE_WEIGHT = 0.5;
 const FILAMENT_CM = 25;
@@ -437,11 +440,12 @@ export function foamLace(p: any, amount: any, viewDistance: any, axis?: any, foo
           .select(smoothstepDownClamped(pixel, 0.0035, 0.007), float(0))
           .toVar('foamLaceCmOn')
       : float(0);
-    const midWeight = midOn.mul(FILAMENT_MID_WEIGHT);
+    const midWeight = midOn.mul(sharp ? SHARP_MID_WEIGHT : FILAMENT_MID_WEIGHT);
+    const midQ = sharp ? vec2(frame.x.div(FILAMENT_ACROSS * SHARP_MID_STRETCH), qy).add(warp) : q;
     const fineWeight = fineOn.mul(FILAMENT_FINE_WEIGHT);
     const cmWeight = cmOn.mul(FILAMENT_CM_WEIGHT);
     If(midOn.greaterThan(0.001), () => {
-      z.addAssign(filamentNoise(detailQ.mul(FILAMENT_MID).add(vec2(2.9, 8.3))).mul(midWeight));
+      z.addAssign(filamentNoise(midQ.mul(FILAMENT_MID).add(vec2(2.9, 8.3))).mul(midWeight));
     });
     If(fineOn.greaterThan(0.001), () => {
       z.addAssign(filamentNoise(detailQ.mul(FILAMENT_FINE).add(vec2(6.1, 3.7))).mul(fineWeight));
@@ -477,31 +481,44 @@ export function foamLace(p: any, amount: any, viewDistance: any, axis?: any, foo
 }
 
 /**
- * Bubble froth at the camera: an opacity multiplier, 1 where the foam is
- * thick and down to `1 - FROTH_DEPTH` in the hollows of the bubbles, for the
- * last few metres where a pixel is under about 4 mm and a whitecap seen that
- * close is visibly a mass of bubbles from a few millimetres to a few
- * centimetres (Crest's bubble foam layer, web-ocean's `bubbles` at their two
- * finest scales). Hollows, not holes: the water is only seen through them, so
- * it is the opacity they take, and the lace's coverage is left alone. Clustered
- * by a 30 cm noise, since bubbles of one size burst together. Faded to 1 before
- * the cells fall under a few pixels. Must be called inside a TSL `Fn`.
+ * Bubble froth near the camera: an opacity multiplier, 1 where the foam is
+ * thick and less in the hollows between bubbles. Two scales, 8 cm and 3 cm
+ * cells (web-ocean's `bubbles`; Crest's bubble layer), each drawn only while
+ * its cells cover at least about five pixels, so it comes in from about 10 m in
+ * a deck-height view and never aliases. Hollows, not holes: the water is only
+ * seen through them, so they take opacity and leave the lace's coverage alone.
+ * Clustered by a 30 cm noise, since bubbles of one size burst together.
+ *
+ * Zero-mean: the walls between bubbles gain what the hollows lose, about the
+ * share of the area the hollows cover (`FROTH_*_SHARE`, the Boolean-model
+ * coverage of discs with those radii), so a whitecap seen close is no less
+ * white overall than the same whitecap a few metres further off.
+ *
+ * Round 10's critic read the near foam as "a low-res texture magnified": every
+ * scale the foam had was a smooth noise of 12 cm or more, so at a few metres
+ * nothing in it was sharper than a hand's width.
  */
-const FROTH_DEPTH = 0.45;
+const FROTH_LARGE_DEPTH = 0.4;
+const FROTH_SMALL_DEPTH = 0.3;
+const FROTH_LARGE_SHARE = 0.25;
+const FROTH_SMALL_SHARE = 0.2;
 
 export function foamFroth(p: any, footprint: any): any {
   const pixel = footprint.mul(0.5);
-  const near = foamUniforms.detail
-    .greaterThan(1.5)
-    .select(smoothstepDownClamped(pixel, 0.002, 0.004), float(0))
-    .toVar('foamFrothNear');
+  const high = foamUniforms.detail.greaterThan(1.5);
+  const largeOn = high.select(smoothstepDownClamped(pixel, 0.012, 0.024), float(0)).toVar('foamFrothLargeOn');
+  const smallOn = high.select(smoothstepDownClamped(pixel, 0.0045, 0.009), float(0)).toVar('foamFrothSmallOn');
   const froth = float(1).toVar('foamFroth');
-  If(near.greaterThan(0.001), () => {
-    const cluster = foamNoise(p.mul(3.3).add(vec2(4.7, 1.3))).smoothstep(0.3, 0.75);
-    const large = foamBubbles(p.mul(36).add(vec2(2.3, 7.1)), 61, 0.12, 0.45);
-    const small = foamBubbles(p.mul(90).add(vec2(8.9, 0.7)), 73, 0.1, 0.4);
-    const hollow = large.mul(small.mul(0.5).add(0.5)).oneMinus().mul(cluster.mul(0.6).add(0.4));
-    froth.assign(hollow.mul(near).mul(-FROTH_DEPTH).add(1));
+  If(largeOn.greaterThan(0.001), () => {
+    const cluster = foamNoise(p.mul(3.3).add(vec2(4.7, 1.3))).smoothstep(0.25, 0.75).mul(0.6).add(0.4);
+    const large = foamBubbles(p.mul(12).add(vec2(2.3, 7.1)), 61, 0.12, 0.45).oneMinus();
+    froth.assign(large.sub(FROTH_LARGE_SHARE).mul(cluster).mul(largeOn).mul(-FROTH_LARGE_DEPTH).add(1));
+    If(smallOn.greaterThan(0.001), () => {
+      const small = foamBubbles(p.mul(33).add(vec2(8.9, 0.7)), 73, 0.1, 0.4).oneMinus();
+      froth.mulAssign(
+        small.sub(FROTH_SMALL_SHARE).mul(cluster.oneMinus().mul(0.6).add(0.4)).mul(smallOn).mul(-FROTH_SMALL_DEPTH).add(1),
+      );
+    });
   });
   return froth;
 }

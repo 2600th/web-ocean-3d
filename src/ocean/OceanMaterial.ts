@@ -3560,7 +3560,7 @@ export class OceanMaterial {
         });
         // At the camera, whitecap and wake are a mass of bubbles, and the
         // hollows between them hold less white (`foamFroth`).
-        open.assign(open.mul(foamFroth(foamXZ, foamFootprint)));
+        open.assign(open.mul(foamFroth(foamXZ, foamFootprint)).min(1));
 
         // As the pattern's scales fade to their means, from ~200 m out, its
         // spread collapses and a threshold on it becomes a step: every patch
