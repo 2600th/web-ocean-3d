@@ -5,11 +5,11 @@ import {
   CLASS_CLUSTER,
   CLASS_DROP,
   CLASS_MIST,
-  CLASS_SHEET,
   particleVertex,
   sprayMaterial,
   sprayUniforms,
 } from '../physics/sprayLook';
+import { BowSheet, sheetPoint, sheetStation, type SheetStation } from './BowSheet';
 
 /**
  * The two pieces of gameplay feedback that have to be visible at any range:
@@ -251,14 +251,14 @@ export class Burst {
 }
 
 /** Bow-spray particles in flight at once: a ring, the oldest overwritten. */
-const SPRAY_COUNT = 896;
+const SPRAY_COUNT = 1792;
 /**
- * Particles per second at and above `SPRAY_FULL_SPEED`, before the plunge
- * boost. The ring holds 1.28 s of this, and the longest life (mist) is 1.25 s,
- * so a slot is never reused while its particle is in the air until a plunge
- * pushes the rate past 1.0x — and then only the oldest mist is cut short.
+ * Particles per second at full intensity, before the plunge boost. The ring
+ * holds 1.79 s of this, and the longest life (mist) is 1.7 s, so a slot is
+ * never reused while its particle is in the air until a plunge pushes the rate
+ * past 1.0x — and then only the oldest mist is cut short.
  */
-const SPRAY_RATE = 700;
+const SPRAY_RATE = 1000;
 /** Hull speed, m/s, below which the bow throws nothing, and at which it throws most. */
 const SPRAY_START_SPEED = 2.4;
 const SPRAY_FULL_SPEED = 7;
@@ -267,17 +267,33 @@ const SPRAY_FULL_SPEED = 7;
  * down into a sea throws far more than one riding it.
  */
 const SPRAY_PLUNGE = 1.5;
-/** One period of the class interleave; see `sprayLook` for what each class is. */
+/**
+ * One period of the class interleave; see `sprayLook` for what each class is.
+ * No sheets since round 10b: the sheet is `BowSheet`, one surface, and the
+ * particles are only what it sheds. Particle sheets were the "separate white
+ * chips or petals" however soft they were drawn.
+ */
 const SPRAY_CLASSES = [
   CLASS_DROP,
   CLASS_CLUSTER,
-  CLASS_SHEET,
+  CLASS_DROP,
   CLASS_MIST,
+  CLASS_DROP,
   CLASS_CLUSTER,
-  CLASS_SHEET,
   CLASS_DROP,
   CLASS_MIST,
 ];
+
+/**
+ * How the sheet's intensity follows the bow, per second: fast to build when the
+ * stem digs in, slow to die away when it lifts, as the water already thrown has
+ * to fall back.
+ */
+const INTENSITY_ATTACK = 7;
+const INTENSITY_RELEASE = 1.6;
+/** Stem height above the local sea surface, m, at which the bow throws least, and depth at which it throws most. */
+const STEM_CLEAR = 0.5;
+const STEM_BURIED = 0.9;
 
 /**
  * Water thrown off the stem, in proportion to the ship's speed.
@@ -296,6 +312,15 @@ const SPRAY_CLASSES = [
  * stretch, erosion breakup, soft depth fade, sun and sky lighting with forward
  * scatter, the hull's shadow) and the slam spray's closed-form trajectory.
  *
+ * **The sheet is a surface (round 10b).** Particle sheets, however soft, still
+ * read as "separate white chips or petals". The connected curtain of water is
+ * now `BowSheet`, a hull-attached ribbon mesh; the particles here are what it
+ * sheds — drops and clusters launched from points on the sheet with its own
+ * velocity there (`sheetStation`/`sheetPoint`, the same closed form the mesh
+ * draws), and mist that hangs and drifts downwind for a second or two. Both
+ * follow one `intensity`: the ship's speed, how deep the stem is in the sea,
+ * and how fast it is plunging, quick to build and slow to die away.
+ *
  * **Closed form, like `Spray`.** Each particle is a launch record written once
  * at emission — where, when, how fast — into a ring of instanced attributes;
  * the vertex stage evaluates its position from the clock. The CPU never moves
@@ -312,6 +337,8 @@ export class BowSpray {
   private readonly origin: THREE.InstancedBufferAttribute;
   /** xyz = launch velocity, w = strength 0..1. */
   private readonly launch: THREE.InstancedBufferAttribute;
+  /** The sea's level under the launch point, world y: drops leave the sheet in mid-air now. */
+  private readonly water: THREE.InstancedBufferAttribute;
   private readonly uClock = uniform(0);
   private time = 0;
   private cursor = 0;
@@ -325,6 +352,12 @@ export class BowSpray {
   private readonly starboard = new THREE.Vector3();
   private readonly bow = new THREE.Vector3();
   private readonly point = new THREE.Vector3();
+  private readonly pointVelocity = new THREE.Vector3();
+  private readonly station: SheetStation = { x: 0, y: 0, z: 0, up: 0, out: 0, aft: 0, flight: 0 };
+  private readonly sheet = new BowSheet();
+  /** The sheet's and the spray's strength, 0..~1.3, following speed, immersion and plunge. */
+  private intensity = 0;
+  private speed = 0;
 
   constructor() {
     this.geometry = new THREE.InstancedBufferGeometry();
@@ -346,6 +379,9 @@ export class BowSpray {
     this.geometry.setAttribute('bowOrigin', this.origin);
     this.geometry.setAttribute('bowLaunch', this.launch);
     this.geometry.setAttribute('bowSeed', new THREE.InstancedBufferAttribute(seed, 4));
+    this.water = new THREE.InstancedBufferAttribute(new Float32Array(SPRAY_COUNT), 1);
+    this.water.setUsage(THREE.DynamicDrawUsage);
+    this.geometry.setAttribute('bowWater', this.water);
     this.geometry.setAttribute('bowClass', new THREE.InstancedBufferAttribute(cls, 1));
     this.geometry.instanceCount = SPRAY_COUNT;
     // Placed in the vertex stage; a bound from the unit quad would cull it all.
@@ -370,13 +406,16 @@ export class BowSpray {
     depth.receiveShadow = false;
     depth.renderOrder = 5;
     this.mesh.add(depth);
+    this.mesh.add(this.sheet.mesh);
     this.clear();
   }
 
   /**
-   * @param hull     The ship's root; local +X is the bow and +Z starboard.
-   * @param velocity The hull's velocity, m/s.
-   * @param speed    Speed along the bow, m/s.
+   * @param hull          The ship's root; local +X is the bow and +Z starboard.
+   * @param velocity      The hull's velocity, m/s.
+   * @param speed         Speed along the bow, m/s.
+   * @param surfaceHeight Sea surface height at a world xz, for the stem's
+   *                      immersion; without it the bow is taken as half buried.
    */
   update(
     dt: number,
@@ -386,6 +425,7 @@ export class BowSpray {
     hullLength: number,
     hullBeam: number,
     _camera?: THREE.Camera,
+    surfaceHeight?: (x: number, z: number) => number,
   ): void {
     this.time += dt;
     this.uClock.value = this.time;
@@ -399,15 +439,26 @@ export class BowSpray {
     this.bowPrimed = true;
     const boost = Math.min(1, plunge / SPRAY_PLUNGE);
 
+    // How deep the stem is in the sea right now: a bow lifting clear of a crest
+    // throws almost nothing, one buried in the next throws most.
+    const buried = surfaceHeight
+      ? smooth01((surfaceHeight(this.bow.x, this.bow.z) - this.bow.y + STEM_CLEAR) / (STEM_CLEAR + STEM_BURIED))
+      : 0.5;
     const strength = smooth01((speed - SPRAY_START_SPEED) / (SPRAY_FULL_SPEED - SPRAY_START_SPEED));
-    this.pending += SPRAY_RATE * strength * (0.7 + 0.8 * boost) * dt;
+    const target = strength * (0.45 + 0.55 * buried + 0.45 * boost);
+    const rate = target > this.intensity ? INTENSITY_ATTACK : INTENSITY_RELEASE;
+    this.intensity += (target - this.intensity) * (1 - Math.exp(-rate * dt));
+    this.speed = Math.max(0, speed);
+    this.sheet.update(this.time, hull, this.intensity, this.speed, hullLength * 0.5, hullBeam);
+
+    this.pending += SPRAY_RATE * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
     if (this.pending >= 1) {
       this.forward.set(1, 0, 0).applyQuaternion(hull.quaternion).setY(0);
       if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
       this.forward.normalize();
       this.starboard.set(-this.forward.z, 0, this.forward.x);
     }
-    const effective = Math.min(1, strength * (0.8 + 0.4 * boost));
+    const effective = Math.min(1, this.intensity * (0.8 + 0.4 * boost));
     while (this.pending >= 1) {
       this.pending -= 1;
       this.emit(hull, velocity, effective, hullLength, hullBeam);
@@ -415,6 +466,7 @@ export class BowSpray {
     if (this.dirty) {
       this.origin.needsUpdate = true;
       this.launch.needsUpdate = true;
+      this.water.needsUpdate = true;
       this.dirty = false;
     }
   }
@@ -425,6 +477,7 @@ export class BowSpray {
     for (let i = 0; i < SPRAY_COUNT; i++) this.origin.setW(i, -1000);
     this.origin.needsUpdate = true;
     this.launch.needsUpdate = true;
+    this.water.needsUpdate = true;
     this.time = 0;
     this.uClock.value = 0;
     this.cursor = 0;
@@ -432,12 +485,14 @@ export class BowSpray {
     this.pending = 0;
     this.dirty = false;
     this.bowPrimed = false;
+    this.intensity = 0;
   }
 
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();
     this.depthMaterial.dispose();
+    this.sheet.dispose();
   }
 
   private emit(
@@ -455,36 +510,33 @@ export class BowSpray {
     const r3 = hash(n, 3);
     const r4 = hash(n, 4);
     const cls = SPRAY_CLASSES[i % SPRAY_CLASSES.length];
-    // Alternate sides of the stem. Along the forward fifth of the hull, on the
-    // bow wave's crest: the hull narrows toward the stem, so the crest's offset
-    // from the centreline does too, and the wave climbs the stem as speed rises.
+    // Shed by the sheet (`BowSheet`): drops and clusters from its tearing free
+    // edge, mist from all along its flight, each leaving with the sheet's own
+    // velocity there plus a little scatter. Alternate sides of the stem.
     const sideSign = n % 2 === 0 ? 1 : -1;
-    const along = r1;
-    this.point
-      .set(
-        hullLength * (0.38 + 0.1 * along),
-        -0.1 + (0.3 + 0.7 * r2) * strength,
-        // The crest stands half a metre or so off the planking.
-        sideSign * (hullBeam * 0.5 * (1 - 0.8 * along) + 0.35 + 0.35 * r3),
-      )
-      .applyMatrix4(hull.matrixWorld);
-
-    // Out from the hull and up, at speeds from bow-spray footage of ships of
-    // this size at 6–8 knots: the fan clears the rail by a metre or two. Mist
-    // leaves slower and hangs; a sheet is the crest itself, lower and heavier.
-    const lift = cls === CLASS_MIST ? 0.6 : cls === CLASS_SHEET ? 0.75 : 1;
-    const out = (2.5 + 3 * r3) * (0.45 + 0.55 * strength) * lift;
-    const up = (2.5 + 3.8 * r4) * (0.4 + 0.6 * strength) * lift;
-    const fwd = 0.4 * (r3 - 0.3);
-    // Carried with the hull, mostly: spray leaves a moving bow at the bow's
-    // speed plus its own, and the drag then hands it to the wind — which is
-    // what makes the fan stream aft along the topsides.
+    const isMist = cls === CLASS_MIST;
+    const station = sheetStation(0.03 + 0.6 * r1 * r1, sideSign, this.intensity, this.speed, hullLength * 0.5, hullBeam, this.time, this.station);
+    // Drops leave the tearing edge while it is still in the air, flung on
+    // past it; mist rises off the whole sheet more slowly.
+    const tau = isMist ? 0.2 + 0.5 * r2 : 0.15 + 0.5 * r2;
+    sheetPoint(station, sideSign, tau, this.point, this.pointVelocity);
+    const scatter = isMist ? 0.5 : 1;
+    this.pointVelocity.set(
+      this.pointVelocity.x * scatter + 0.6 * (r4 - 0.5),
+      this.pointVelocity.y * scatter + (isMist ? 0.8 : 1.5 + 2.5 * r3),
+      this.pointVelocity.z * scatter + sideSign * (isMist ? 0.4 : 0.8 + 1.2 * r4),
+    );
+    const localHeight = this.point.y;
+    this.point.applyMatrix4(hull.matrixWorld);
+    this.pointVelocity.applyQuaternion(hull.quaternion);
+    this.water.setX(i, this.point.y - localHeight - 0.1);
+    void hullBeam;
     this.origin.setXYZW(i, this.point.x, this.point.y, this.point.z, this.time);
     this.launch.setXYZW(
       i,
-      velocity.x * 0.85 + this.starboard.x * sideSign * out + this.forward.x * fwd,
-      up,
-      velocity.z * 0.85 + this.starboard.z * sideSign * out + this.forward.z * fwd,
+      velocity.x + this.pointVelocity.x,
+      velocity.y + this.pointVelocity.y,
+      velocity.z + this.pointVelocity.z,
       strength,
     );
     this.dirty = true;
@@ -507,7 +559,8 @@ export class BowSpray {
       .mul(seed.w.mul(0.45).add(0.55))
       .add(isCluster.mul(seed.w.mul(0.4).add(0.6)))
       .add(isSheet.mul(seed.w.mul(0.35).add(0.45)))
-      .add(isMist.mul(seed.w.mul(0.35).add(0.9)))
+      // Mist hangs for a second or two and blows downwind.
+      .add(isMist.mul(seed.w.mul(0.6).add(1.1)))
       .toVar('bowLifeSpan');
     const age: any = this.uClock.sub(origin.w).toVar('bowAge');
     const life: any = age.div(lifeSpan).toVar('bowLife');
@@ -519,7 +572,10 @@ export class BowSpray {
       .toVar('bowAlive');
 
     // Same linear drag toward the wind as `Spray`; see its header.
-    const k: any = isDrop.mul(0.6).add(isCluster.mul(0.8)).add(isSheet.mul(1.6)).add(isMist.mul(2.6)).toVar('bowK');
+    // Mist at 12/s: a tenth of a second to take up the wind, and a fall speed
+    // (g/k) of 0.8 m/s, a ~100 µm drop's, so it hangs and drifts downwind as a
+    // plume instead of dropping back beside the sheet at 3.8 m/s.
+    const k: any = isDrop.mul(0.6).add(isCluster.mul(0.8)).add(isSheet.mul(1.6)).add(isMist.mul(12)).toVar('bowK');
     const wind: any = sprayUniforms.wind;
     const vInf: any = vec3(wind.x, float(-GRAVITY).div(k), wind.z).toVar('bowVInf');
     const decay: any = exp(k.negate().mul(age.max(0))).toVar('bowDecay');
@@ -531,12 +587,12 @@ export class BowSpray {
     const velocity: any = vInf.add(v0.sub(vInf).mul(decay)).toVar('bowVelocity');
 
     const size: any = isDrop
-      .mul(seed.y.mul(0.03).add(0.018))
+      .mul(seed.y.mul(0.04).add(0.025))
       .add(isCluster.mul(seed.y.mul(0.4).add(0.3)))
       // Sheets a third smaller than they were: a metre-wide quad of one sheet
       // is a slab, and slabs were the "ice cubes" (round 10, boat-sea-2).
       .add(isSheet.mul(seed.y.mul(0.35).add(0.35)))
-      .add(isMist.mul(seed.y.mul(1.0).add(1.0)))
+      .add(isMist.mul(seed.y.mul(1.2).add(1.2)))
       .mul(strength.mul(0.4).add(0.6));
     const grow: any = isDrop
       .add(isCluster.mul(life.mul(0.6).add(0.8)))
@@ -554,11 +610,12 @@ export class BowSpray {
       // faint from the chase camera").
       // 0.28 since round 10: the sheets now shed into it rather than holding
       // their shape, and the fan should read as spray breaking into mist.
-      .add(isMist.mul(0.28));
+      .add(isMist.mul(0.34));
     const fadeIn: any = smoothstep(0, 0.06, life);
     const fadeOut: any = smoothstepDown(life, isMist.mul(-0.35).add(0.7), 1);
     // Back into the sea a little below where it left the crest.
-    const submerged: any = smoothstepDown(origin.y.sub(0.3).sub(centre.y), 0.05, 0.4);
+    const water: any = attribute('bowWater', 'float');
+    const submerged: any = smoothstepDown(water.sub(centre.y), 0.05, 0.4);
     const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged).mul(strength.sqrt());
 
     return particleVertex({
@@ -573,7 +630,7 @@ export class BowSpray {
       cls,
       seed: seed.z,
       width,
-      streak: isDrop.mul(0.035).add(isCluster.mul(0.03)).add(isSheet.mul(0.02)).add(isMist.mul(0.04)),
+      streak: isDrop.mul(0.05).add(isCluster.mul(0.03)).add(isSheet.mul(0.02)).add(isMist.mul(0.04)),
       opacity,
       soft: isDrop.mul(0.08).add(isCluster.mul(0.3)).add(isSheet.mul(0.5)).add(isMist.mul(1.2)),
       range: 260,

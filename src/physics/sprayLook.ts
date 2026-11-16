@@ -142,7 +142,7 @@ let depthNode: any = null;
  * against itself to nothing. Sharing one instance, used by the depth passes as
  * well, makes the copy happen before the first core is written.
  */
-function sharedSceneDepth(): any {
+export function sharedSceneDepth(): any {
   if (!depthNode) depthNode = viewportDepthTexture(screenUV);
   return depthNode;
 }
@@ -485,7 +485,7 @@ export function particleFragment(): any {
  * chord length, because the real shadow edge is the hull's curved topsides and
  * the box is only its envelope.
  */
-function hullShadow(world: any): any {
+export function hullShadow(world: any): any {
   const u = sprayUniforms;
   const inv: any = u.hullInverse;
   const local: any = inv.mul(vec4(world, 1)).xyz.sub(u.hullCenter);
