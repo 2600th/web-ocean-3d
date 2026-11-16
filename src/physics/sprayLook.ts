@@ -165,6 +165,8 @@ export function sprayAtlas(): THREE.DataTexture {
   const sheetNew = new Float32Array(n * n);
   const mistOld = new Float32Array(n * n);
   const mistNew = new Float32Array(n * n);
+  const ligamentOld = new Float32Array(n * n);
+  const ligamentNew = new Float32Array(n * n);
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
       const u = x / n;
@@ -174,10 +176,13 @@ export function sprayAtlas(): THREE.DataTexture {
       sheetNew[k] = gradientFbm(u, v, 4, 5, 11);
       mistOld[k] = billow(u, v, 3, 5, 53);
       mistNew[k] = gradientBillow(u, v, 3, 5, 53);
+      ligamentOld[k] = ligaments(u, v, false);
+      ligamentNew[k] = ligaments(u, v, true);
     }
   }
   matchQuantiles(sheetNew, sheetOld);
   matchQuantiles(mistNew, mistOld);
+  matchQuantiles(ligamentNew, ligamentOld);
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
       const u = x / n;
@@ -187,18 +192,10 @@ export function sprayAtlas(): THREE.DataTexture {
       const sheet = sheetNew[y * n + x];
       // B: ligaments — ridged noise three times finer across the velocity than
       // along it, so the strands run the way the water is going. (Six times read
-      // as needles: ice, not water.)
-      let lig = 0;
-      let amp = 0.6;
-      let fx = 6;
-      let fy = 2;
-      for (let o = 0; o < 3; o++) {
-        lig += amp * (1 - Math.abs(2 * periodicNoise(u * fx, v * fy, fx, fy, 23 + o) - 1));
-        amp *= 0.45;
-        fx *= 2;
-        fy *= 2;
-      }
-      lig /= 0.6 + 0.27 + 0.1215;
+      // as needles: ice, not water.) Gradient noise since round 10, like the
+      // sheet: ridges of value noise ran along the lattice and broke at its
+      // corners, which read as crystal facets in a sheet tearing into strands.
+      const lig = ligamentNew[y * n + x];
       // G: droplets — jittered cells, one blob per cell with its own radius, so
       // a rising threshold shrinks drops unevenly and the small ones go first.
       const drops = dropField(u, v, 9, 37);
@@ -349,7 +346,9 @@ export function particleVertex(p: ParticleInputs): any {
     .toVar('sprayDiffuse');
   const sunUp: any = u.sunDirection.y.smoothstep(-0.05, 0.12);
   const shadow: any = hullShadow(p.centre).toVar('sprayHullShadow');
-  const sunTerm: any = diffuse.mul(0.6).add(diffuse.oneMinus().mul(0.25).mul(phase));
+  // 0.8 since round 10 (was 0.6): lit white water, not a grey-blue film, in
+  // a side-lit chase view.
+  const sunTerm: any = diffuse.mul(0.8).add(diffuse.oneMinus().mul(0.25).mul(phase));
   const radiance: any = (u.sunColor as any)
     .mul(sunTerm.mul(sunUp).mul(shadow))
     .add((u.skyColor as any).mul(0.6))
@@ -606,6 +605,24 @@ function matchQuantiles(values: Float32Array, reference: Float32Array): void {
   const order = Array.from(values.keys()).sort((a, b) => values[a] - values[b]);
   const sorted = Float32Array.from(reference).sort();
   for (let i = 0; i < order.length; i++) values[order[i]] = sorted[i];
+}
+
+/** The ligament field: ridged noise, three times finer across than along. */
+function ligaments(u: number, v: number, gradient: boolean): number {
+  let lig = 0;
+  let amp = 0.6;
+  let fx = 6;
+  let fy = 2;
+  for (let o = 0; o < 3; o++) {
+    const ridge = gradient
+      ? 1 - Math.abs(periodicGradient(u * fx, v * fy, fx, fy, 23 + o)) * 1.4
+      : 1 - Math.abs(2 * periodicNoise(u * fx, v * fy, fx, fy, 23 + o) - 1);
+    lig += amp * ridge;
+    amp *= 0.45;
+    fx *= 2;
+    fy *= 2;
+  }
+  return lig / (0.6 + 0.27 + 0.1215);
 }
 
 function billow(u: number, v: number, base: number, octaves: number, seed: number): number {
