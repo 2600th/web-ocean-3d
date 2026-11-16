@@ -317,6 +317,25 @@ const OBJECT_INSCATTER_SHARE = 0.5;
 const OBJECT_INSCATTER_NEUTRAL = 0.5;
 
 /**
+ * [underwater-look-3] Round 10b. The object treatment above, faded out as the
+ * column in front of the object absorbs it: full while the column keeps half
+ * the object's light or more (absorbed luminance under the first value), gone
+ * once it keeps a tenth (over the second).
+ *
+ * The share is a correction for a *short* column — a hull a metre or two down
+ * sees only the near part of the lifted asymptote. Applied at any length, it
+ * printed a half-bright silhouette of whatever the depth buffer held behind
+ * the surface, however much water lay in front of it: from a deck at wind 13,
+ * kelp fifty metres off and four down, its own image absorbed to a few
+ * percent, came through as sharp dark upright strokes — the "ghost rigging"
+ * of ship-underway and boat-sea-2, which stayed with refraction turned off.
+ * Past a tenth the object is gone and the water in front of it is simply
+ * open water, so it glows and tints as open water does. A hull's waterline
+ * (absorbed luminance about 0.35 at 2 m) keeps the treatment in full.
+ */
+const OBJECT_TREATMENT_FADE: readonly [number, number] = [0.5, 0.9];
+
+/**
  * The display level, as a fraction of the white point (`1 / exposure`), that
  * the low-sun glint count is scaled against (see `glintGain`). Under ACES
  * that is about 0.9 of display white.
@@ -2045,7 +2064,19 @@ export class OceanMaterial {
         const allowance = run.mul(0.15).add(0.35);
         return column.sub(drop).smoothstep(allowance, allowance.add(0.85));
       };
-      const objectBehind: any = objectTest(straightThickness).mul(objectTest(bufferThickness)).toVar();
+      const objectFound: any = objectTest(straightThickness).mul(objectTest(bufferThickness)).toVar();
+      // [underwater-look-3] Round 10b: an object only while the water in front
+      // of it still shows it; past that the pixel is open water over the bed,
+      // as if the object were not there. See `OBJECT_TREATMENT_FADE`.
+      const objectAbsorbedLuma: any = this.uExtinction
+        .mul(bufferThickness)
+        .negate()
+        .exp()
+        .oneMinus()
+        .dot(vec3(0.2126, 0.7152, 0.0722));
+      const objectBehind: any = objectFound
+        .mul(smoothstep(float(OBJECT_TREATMENT_FADE[1]), float(OBJECT_TREATMENT_FADE[0]), objectAbsorbedLuma))
+        .toVar();
       // Over the bed, the depth that matters is the column's: the light goes
       // down it and comes back up it, whichever bed pixel refraction happens
       // to show. Over an object, how far under the surface that point is.
