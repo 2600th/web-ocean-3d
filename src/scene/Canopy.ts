@@ -1006,7 +1006,9 @@ export class IslandCanopy {
         geometry.setAttribute(name, base.getAttribute(name));
       }
       const data = new THREE.InstancedInterleavedBuffer(new Float32Array(capacity * 12), 12);
-      data.setUsage(THREE.DynamicDrawUsage);
+      // Static usage: a deal sets `needsUpdate` and the dealt range. Dynamic
+      // made r185 re-upload the whole buffer on every render call that drew
+      // it, main pass and mirror, whether it had changed or not.
       geometry.setAttribute('treeA', new THREE.InterleavedBufferAttribute(data, 4, 0));
       geometry.setAttribute('treeB', new THREE.InterleavedBufferAttribute(data, 4, 4));
       geometry.setAttribute('treeC', new THREE.InterleavedBufferAttribute(data, 4, 8));
