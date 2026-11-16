@@ -12,6 +12,7 @@ import {
   perspectiveDepthToViewZ,
   rtt,
   screenCoordinate,
+  screenSize,
   texture,
   uniform,
   uv,
@@ -253,7 +254,10 @@ const SURFACE_K = 0.9;
 // [underwater-look-2] 0.12, with the veil lowered (`INSCATTER_GAIN`) and the
 // beams widened (`uShaftBlurLod`): abyssal-garden's beams stand well clear of
 // the water around them, ours were within a few levels of it.
-const SHAFT_DENSITY = 0.12;
+// [underwater-look-3] Round 11: 0.12 -> 0.15. The denser kelp forest shades
+// more of the column in kelp-wide, and the review asked for stronger shafts
+// there; the auto-exposure holds the frame's level.
+const SHAFT_DENSITY = 0.15;
 
 /** Ambient kept by a face pointing straight down, near the surface. */
 const UNDERSIDE_AMBIENT = 0.3;
@@ -407,14 +411,26 @@ const RADIAL_TAPS = 48;
 const RADIAL_SPAN = 1.0;
 const RADIAL_DECAY = 0.98;
 const RADIAL_FOCUS = 4;
-const RADIAL_PATTERN_LOD = 3;
+const RADIAL_PATTERN_LOD = 5;
 const RADIAL_PATTERN = 1;
 const RADIAL_FLOOR = 0.05;
 const RADIAL_BLOCK = 0.8;
 const RADIAL_WINDOW: readonly [number, number] = [0.58, 0.7];
-const RADIAL_GAIN = 2.5;
+const RADIAL_GAIN = 3.2;
 const RADIAL_ON_OCCLUDER = 0.15;
 const RADIAL_EDGE: readonly [number, number] = [1.0, 1.7];
+/**
+ * [underwater-look-3] Round 11. Broad rays, not a starburst: the mask at
+ * `RADIAL_MASK_SCALE` of the frame (was 0.5) and the beam pattern at
+ * `RADIAL_PATTERN_LOD` 5 (was 3), with `RADIAL_GAIN` 3.2 (was 2.5) to keep the
+ * light they carry. At half resolution every gap between two kelp leaves and
+ * every bright cell of the surface pattern was its own source, and the radial
+ * blur drew each out into a thin spike: the round-11 review's "blown
+ * starburst" in kelp-sun. At a quarter the mask only resolves the gaps
+ * between whole stands, so the rays come out as a few wide fans, broken where
+ * a column stands across them, as abyssal-garden's are.
+ */
+const RADIAL_MASK_SCALE = 0.25;
 /**
  * [underwater-look-3] Round 9. The same march also carries how much of the
  * way toward the sun is clear water (green in the blur), and the in-scatter's
@@ -519,6 +535,44 @@ const GRADE_CONTRAST_HIGH = 1.04;
 const LAYER_RAY_Y: readonly [number, number] = [-0.2, 0.05];
 const GRADE_CONTRAST_FAR = 1.05;
 const GRADE_FADE: readonly [number, number] = [5, 28];
+/**
+ * [underwater-look-3] Round 11. Silhouette edges, where the depth jumps by
+ * more than `EDGE_DEPTH_RATIO` (fully by its second value) between this pixel
+ * and a neighbour.
+ *
+ * This pass runs after the temporal resolve, on an anti-aliased colour, but
+ * reads the depth of the current frame: one jittered sample per pixel, near
+ * or far. An edge pixel that is part leaf and part open water took all of
+ * one fog or all of the other, so the open water behind it came through
+ * unfogged as a dark one-pixel outline that stepped with the depth: the
+ * round-11 review's "aliased cut-outs" on the near kelp (underwater-1).
+ *
+ * At an edge the pass now reads the nearest and farthest of the four
+ * neighbours, estimates how much of the pixel is the near surface from how
+ * close its resolved colour is to each neighbour's, and fogs it with the
+ * distance whose transmission is that blend of the two — the depth the
+ * anti-aliased colour actually implies. Two colour and four depth taps.
+ */
+const EDGE_DEPTH_RATIO: readonly [number, number] = [0.12, 0.35];
+
+/**
+ * [underwater-look-3] Round 11. The colour at those edges, filtered along the
+ * silhouette: offset in pixels along the edge (across the depth gradient) and
+ * weight, the centre first and each other tap taken on both sides.
+ *
+ * The temporal resolve leaves the near kelp's outline stepped: the frames it
+ * accumulates are read back at the unjittered position (`ScaledTRAA`), and a
+ * still frame of the near leaves measured the same with temporal AA on, off
+ * and with the unjitter off. A filter along the edge, as FXAA's end-of-edge
+ * search does in its simplest form, spreads each step over a few pixels of
+ * the outline without blurring across it. Edge pixels only, four taps.
+ */
+const EDGE_SMOOTH_TAPS: readonly (readonly [number, number])[] = [
+  [0, 0.28],
+  [1, 0.22],
+  [2.25, 0.14],
+];
+
 const MID_HAZE_START = 3;
 // [underwater-look-3] Round 10: 0.03 -> 0.045, the round-10 review's "little
 // depth falloff" on the mound: at 12 m 0.34 of the way to the water's colour
@@ -1067,7 +1121,7 @@ export class UnderwaterPass {
           .add(warp)
           .clamp(vec2(0.001, 0.001), vec2(0.999, 0.999))
           .toVar('uwWarpedUv');
-        const warped = colorNode.sample(warpedUv).toVar('uwWarped');
+        const warped = vec4(colorNode.sample(warpedUv)).toVar('uwWarped');
 
         // --- 2. transmission --------------------------------------------------
         //
@@ -1079,7 +1133,53 @@ export class UnderwaterPass {
         // the kelp shimmered on a moving camera. Only the depth is re-fetched;
         // the ray geometry is smooth in uv and the 0.018 uv warp is about a
         // degree of field, far below the term it would correct.
-        const warpedDist = viewDistance(warpedUv).div(axialCos).toVar('uwDistW');
+        const centreDist = viewDistance(warpedUv).div(axialCos).toVar('uwDistC');
+        // [underwater-look-3] Round 11: the anti-aliased edge; see `EDGE_DEPTH_RATIO`.
+        const texel = vec2(1).div(screenSize).toVar('uwTexel');
+        const nearUv = vec2(warpedUv).toVar('uwNearUv');
+        const farUv = vec2(warpedUv).toVar('uwFarUv');
+        const nearD = float(centreDist).toVar('uwNearD');
+        const farD = float(centreDist).toVar('uwFarD');
+        const tapDs: any[] = [];
+        for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const tapUv = warpedUv.add(texel.mul(vec2(ox, oy))).toVar();
+          const tapD = viewDistance(tapUv).div(axialCos).toVar();
+          tapDs.push(tapD);
+          If(tapD.lessThan(nearD), () => {
+            nearD.assign(tapD);
+            nearUv.assign(tapUv);
+          });
+          If(tapD.greaterThan(farD), () => {
+            farD.assign(tapD);
+            farUv.assign(tapUv);
+          });
+        }
+        const edgeK = farD
+          .sub(nearD)
+          .div(nearD.max(0.1))
+          .smoothstep(EDGE_DEPTH_RATIO[0], EDGE_DEPTH_RATIO[1])
+          .toVar('uwEdgeK');
+        const warpedDist: any = float(centreDist).toVar('uwDistW');
+        If(edgeK.greaterThan(0.001), () => {
+          const self = colorNode.sample(warpedUv).rgb;
+          const toNear = self.sub(colorNode.sample(nearUv).rgb).length();
+          const toFar = self.sub(colorNode.sample(farUv).rgb).length();
+          const cover = toFar.div(toNear.add(toFar).max(1e-4)).toVar('uwCover');
+          const sg = this.uSigma.y.max(1e-3);
+          const tBlend = mix(exp(farD.mul(sg).negate()), exp(nearD.mul(sg).negate()), cover).max(1e-6);
+          const blended = tBlend.log().negate().div(sg).min(farD).max(nearD);
+          warpedDist.assign(mix(centreDist, blended, edgeK));
+
+          // And the colour, smoothed along the silhouette; see `EDGE_SMOOTH_TAPS`.
+          const grad = vec2(tapDs[0].sub(tapDs[1]), tapDs[2].sub(tapDs[3]));
+          const along = normalize(vec2(grad.y.negate(), grad.x).add(vec2(1e-5, 0))).mul(texel).toVar('uwEdgeAlong');
+          const smoothed = vec4(warped).mul(EDGE_SMOOTH_TAPS[0][1]).toVar('uwEdgeSmooth');
+          for (const [offset, weight] of EDGE_SMOOTH_TAPS.slice(1)) {
+            smoothed.addAssign(colorNode.sample(warpedUv.add(along.mul(offset))).mul(weight));
+            smoothed.addAssign(colorNode.sample(warpedUv.sub(along.mul(offset))).mul(weight));
+          }
+          warped.assign(mix(warped, smoothed, edgeK));
+        });
         const warpedStart = mix(warpedDist.min(enters), float(0), eyeUnder).toVar('uwStartW');
         const warpedEnd = mix(warpedDist, warpedDist.min(leaves), eyeUnder).toVar('uwEndW');
         const warpedPath = warpedEnd.sub(warpedStart).max(0).toVar('uwPathW');
@@ -1269,7 +1369,13 @@ export class UnderwaterPass {
           // `mix` weighted by zero does not remove (NaN * 0 is NaN). It drew a
           // black line along the horizon with bloom blowing up around it. So
           // the normal is made safe before anything weights it.
-          const nRaw = vec3(normalNode.sample(warpedUv).xyz).toVar('uwNView');
+          // [underwater-look-3] Round 11: at a silhouette edge the distance
+          // above is the near surface's (or leans to it), so the normal is the
+          // near surface's too. The centre sample's could be the far one: the
+          // surface's underside facing down, which put the upwelling's cyan
+          // on every leaf edge seen against the surface; see `EDGE_DEPTH_RATIO`.
+          const normalUv = edgeK.greaterThan(0.001).select(nearUv, warpedUv);
+          const nRaw = vec3(normalNode.sample(normalUv).xyz).toVar('uwNView');
           const nLen = nRaw.length().toVar('uwNLen');
           const nView = nLen.greaterThan(0.1).select(nRaw.div(nLen.max(0.1)), vec3(0, 0, 1)).toVar('uwNSafe');
           const nWorld = this.uCameraWorld.mul(vec4(nView, 0)).xyz.toVar('uwN');
@@ -1776,7 +1882,7 @@ export class UnderwaterPass {
       return vec4(open.mul(emit), clear, 0, 1);
     })();
     const maskRt: any = rtt(mask as THREE.Node, null, null, { type: THREE.HalfFloatType });
-    maskRt.setResolutionScale(0.5);
+    maskRt.setResolutionScale(RADIAL_MASK_SCALE);
 
     const blur = Fn(() => {
       const suv = vec2(uv()).toVar('urbUv');

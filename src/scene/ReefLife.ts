@@ -186,7 +186,8 @@ interface SpeciesDef {
  * [underwater-look-3] Round 10. Distance over instance radius inside which
  * the massive corals draw their fine level: a 1 m head to 7 m.
  */
-const NEAR_MASSIVE = 7;
+// Round 11: 7 -> 10, so the round outline holds out to the mound-close range.
+const NEAR_MASSIVE = 10;
 
 const SPECIES: readonly SpeciesDef[] = [
   {
@@ -1051,14 +1052,18 @@ export class ReefLife {
     const massive = side === THREE.DoubleSide ? float(0) : select(rigid, float(1), float(0));
     const contact = positionGeometry.y.smoothstep(CONTACT_RANGE[0], CONTACT_RANGE[1]);
     const contactShade = mix(float(1), mix(float(CONTACT_ALBEDO), float(1), contact), massive);
-    material.colorNode = vec4(vec3(pattern.y).mul(contactShade), 1);
+    // [underwater-look-3] Round 11: every piece's foot, sponges included; see `FOOT_HEIGHT`.
+    const foot = positionGeometry.y.smoothstep(FOOT_HEIGHT[0], FOOT_HEIGHT[1]).toVar('reefFoot');
+    const silt = positionGeometry.y.smoothstep(0, SILT_HEIGHT).oneMinus().mul(SILT_COVER);
+    const footAlbedo = mix(vec3(pattern.y).mul(contactShade).mul(mix(float(FOOT_DARK), float(1), foot)), vec3(SILT_COLOR[0], SILT_COLOR[1], SILT_COLOR[2]), silt);
+    material.colorNode = vec4(footAlbedo, 1);
     material.aoNode = Fn(() => {
       const facing = normalWorld.y.mul(0.5).add(0.5).smoothstep(0, 0.9);
       const occl = mix(float(CONTACT_AO), float(1), contact).mul(mix(float(FACING_AO), float(1), facing));
       // The pattern's pits (polyps, meanders) hold less of the ambient.
       // Only on a patterned surface: a plain one reads height 0 everywhere.
       const pits = select(surf.greaterThan(0.5), mix(float(PIT_AO), float(1), pattern.x.clamp(0, 1)), float(1));
-      return mix(float(1), occl.mul(pits), massive);
+      return mix(float(1), occl.mul(pits), massive).mul(mix(float(FOOT_AO), float(1), foot));
     })();
     const bumped = bumpedNormal(pattern.x, 0.012);
     if (side === THREE.DoubleSide) {
@@ -1105,6 +1110,22 @@ const CONTACT_AO = 0.3;
 const FACING_AO = 0.45;
 const PIT_AO = 0.6;
 const MASSIVE = new Set(['brain-coral', 'star-coral', 'reef-rock']);
+/**
+ * [underwater-look-3] Round 11. Grounding, for every piece rather than the
+ * massive ones only: the round-11 review's sponges in mound-close stood on
+ * the sand lit to their very base, as if set down on it. Over the bottom of
+ * the template (`FOOT_HEIGHT`, metres) the albedo falls to `FOOT_DARK` and the
+ * ambient to `FOOT_AO`, the shadow a form casts on itself where it meets the
+ * bed; and below `SILT_HEIGHT` a `SILT_COVER` share of `SILT_COLOR`, the
+ * sediment that settles against a sponge's foot (abyssal-garden's sponges sit
+ * in a sand collar).
+ */
+const FOOT_HEIGHT: readonly [number, number] = [-0.04, 0.22];
+const FOOT_DARK = 0.5;
+const FOOT_AO = 0.35;
+const SILT_HEIGHT = 0.06;
+const SILT_COVER = 0.55;
+const SILT_COLOR: readonly [number, number, number] = [0.42, 0.38, 0.3];
 const MASSIVE_DESAT = 0.35;
 
 /** A point inside a reef site, centre-weighted. */

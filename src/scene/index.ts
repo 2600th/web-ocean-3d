@@ -24,6 +24,7 @@ export {
   Seafloor,
   seafloorDepth,
   seafloorHeight,
+  reefSeeps,
   type SeafloorOptions,
 } from './Seafloor';
 export {

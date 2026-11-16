@@ -63,6 +63,23 @@ const BUBBLE_COLUMNS = 14;
 /** Scatter of a bubble around its column axis, metres. */
 const COLUMN_JITTER = 0.55;
 
+/**
+ * [underwater-look-3] Round 11. Seeps: bubble streams anchored to the reef, the
+ * "few rising bubble streams near the reef" the round-11 review asked for
+ * (abyssal-garden's mound has strings of large, clear bubbles rising past
+ * it). The trains above wrap round the viewer and belong to no place; these
+ * stand at fixed sites on the bed (`setSeeps`), `SEEP_BUBBLES` per stream,
+ * rising at `SEEP_RISE` m/s (a few-millimetre bubble's terminal speed) over
+ * `SEEP_HEIGHT` metres, `SEEP_SIZE` across at the vent and growing by
+ * `SEEP_GROWTH` on the way up as the pressure falls, fading out over the top
+ * fifth (by size). Opaque, unlike the trains; see `buildSeepMaterial`.
+ */
+const SEEP_BUBBLES = 44;
+const SEEP_RISE = 0.32;
+const SEEP_HEIGHT = 7;
+const SEEP_SIZE: readonly [number, number] = [0.035, 0.08];
+const SEEP_GROWTH = 0.8;
+
 /** Fraction of the budget spent on marine snow; the rest becomes bubbles. */
 const SNOW_SHARE = 0.82;
 
@@ -87,6 +104,9 @@ export class UnderwaterParticles {
 
   private readonly snow: THREE.Mesh;
   private readonly bubbles: THREE.Mesh;
+  /** [underwater-look-3] Round 11: see `SEEP_BUBBLES`. Built by `setSeeps`. */
+  private seeps: THREE.Mesh | null = null;
+  private seepMaterial: THREE.SpriteNodeMaterial | null = null;
 
   private count: number;
   private clock = 0;
@@ -157,6 +177,47 @@ export class UnderwaterParticles {
     this.object.visible = v && this.count > 0;
   }
 
+  /**
+   * [underwater-look-3] Round 11. Bubble streams rising from these points on
+   * the bed; see `SEEP_BUBBLES`. Call once, after the seabed is placed.
+   */
+  setSeeps(sites: readonly { x: number; y: number; z: number }[]): void {
+    if (this.seeps) {
+      this.object.remove(this.seeps);
+      this.seeps.geometry.dispose();
+      this.seeps = null;
+    }
+    if (sites.length === 0) return;
+    this.seepMaterial ??= this.buildSeepMaterial();
+    const count = sites.length * SEEP_BUBBLES;
+    const geometry = buildQuad(count);
+    const random = mulberry32(SEEDS.bubbles ^ 0x5ee95);
+    const a = new Float32Array(count * 4);
+    const b = new Float32Array(count * 4);
+    for (let s = 0; s < sites.length; s++) {
+      for (let i = 0; i < SEEP_BUBBLES; i++) {
+        const k = (s * SEEP_BUBBLES + i) * 4;
+        a[k] = sites[s].x;
+        a[k + 1] = sites[s].y;
+        a[k + 2] = sites[s].z;
+        a[k + 3] = random() * 40;
+        // Evenly spaced along the stream with some bunching: a string of pearls.
+        b[k] = (i + random() * 0.6) / SEEP_BUBBLES;
+        b[k + 1] = random();
+        b[k + 2] = random();
+        b[k + 3] = random();
+      }
+    }
+    geometry.setAttribute('seepA', new THREE.InstancedBufferAttribute(a, 4));
+    geometry.setAttribute('seepB', new THREE.InstancedBufferAttribute(b, 4));
+    this.seeps = new THREE.Mesh(geometry, this.seepMaterial);
+    this.seeps.name = 'reef-seeps';
+    this.seeps.frustumCulled = false;
+    this.seeps.renderOrder = 142;
+    this.seeps.layers.mask = this.bubbles.layers.mask;
+    this.object.add(this.seeps);
+  }
+
   /** Opacity of the two populations, so a caller can fade them with submersion. */
   setOpacity(snow: number, bubbles: number): void {
     this.uSnowOpacity.value = Math.max(0, snow);
@@ -185,6 +246,11 @@ export class UnderwaterParticles {
     this.bubbleGeometry.dispose();
     this.snowMaterial.dispose();
     this.bubbleMaterial.dispose();
+    if (this.seeps) {
+      this.object.remove(this.seeps);
+      this.seeps.geometry.dispose();
+    }
+    this.seepMaterial?.dispose();
   }
 
   // -------------------------------------------------------------------------
@@ -328,6 +394,51 @@ export class UnderwaterParticles {
       .mul(this.uBubbleOpacity);
 
     material.colorNode = vec4(this.uBubbleColor, alpha);
+    return material;
+  }
+
+  /** [underwater-look-3] Round 11: the seeps' bubbles; see `SEEP_BUBBLES`. */
+  private buildSeepMaterial(): THREE.SpriteNodeMaterial {
+    // Opaque and depth-writing, as the snow is and for its reason: an additive
+    // bead drawn over open water was fogged by the pass as the water behind it
+    // and vanished. A bubble is a silvered bead under water anyway, the rim
+    // totally reflecting, so a solid disc with a bright rim reads right.
+    const material = new THREE.SpriteNodeMaterial();
+    material.transparent = false;
+    material.depthWrite = true;
+    material.depthTest = true;
+    material.sizeAttenuation = true;
+    material.fog = false;
+
+    const a: any = attribute('seepA', 'vec4');
+    const b: any = attribute('seepB', 'vec4');
+    const rise = b.w.mul(0.4).add(0.8).mul(SEEP_RISE);
+    // 0..1 up the stream, wrapped so the string is continuous.
+    const t: any = mod(b.x.add(this.uTime.mul(rise).div(SEEP_HEIGHT)).add(a.w), 1);
+    const h = t.mul(SEEP_HEIGHT);
+    // The wake's spiral, wider the higher it has come.
+    const phase = b.z.mul(41).add(this.uTime.mul(b.w.mul(1.6).add(2.2)));
+    const amp = t.mul(0.16).add(0.015);
+    const position = vec3n(
+      a.x.add(sin(phase).mul(amp)),
+      a.y.add(h),
+      a.z.add(cos(phase.mul(0.83)).mul(amp)),
+    );
+    material.positionNode = position;
+    const size: any = mix(float(SEEP_SIZE[0]), float(SEEP_SIZE[1]), b.y.mul(b.y))
+      .mul(t.mul(SEEP_GROWTH).add(1))
+      .mul(smoothstepDown(t, 0.8, 1))
+      .mul(smoothstep(0, 0.03, t))
+      .mul(this.nearFade(position));
+    material.scaleNode = vec2(size, size);
+
+    const d = uv().sub(vec2(0.5, 0.5)).length();
+    material.maskNode = d.lessThan(0.48);
+    const rim = smoothstep(0.26, 0.44, d);
+    // A highlight up toward the light, as a lit sphere of air shows one.
+    const spec = smoothstepDown(uv().sub(vec2(0.4, 0.64)).length(), 0.03, 0.11);
+    const bright: any = mix(float(0.45), float(1.5), rim).add(spec.mul(1.6)).mul(this.uBubbleOpacity);
+    material.colorNode = vec4((this.uBubbleColor as any).mul(bright), 1);
     return material;
   }
 }

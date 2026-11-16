@@ -209,6 +209,7 @@ export class Rocks {
   addKelpBedStones(
     columns: readonly { x: number; y: number; z: number; height: number }[],
     forests: readonly { x: number; z: number; radius: number }[],
+    outcrops: readonly { x: number; z: number; radius: number }[] = [],
   ): void {
     if (this.kelpBedDone || this.disposed) return;
     this.kelpBedDone = true;
@@ -298,10 +299,31 @@ export class Rocks {
         }
       }
     }
+    // [underwater-look-3] Round 11: outcrops among the stands, the rock the
+    // round-11 review found missing from the kelp-wide view (abyssal-garden's
+    // forest stands among canyon rock). A pile per site: one or two big blocks
+    // and a skirt of smaller ones, seated like the rest and half buried so
+    // they read as bedrock breaking the sand rather than as dropped boulders.
+    for (const o of outcrops) {
+      const big = 1 + Math.floor(random() * 2);
+      for (let i = 0; i < big; i++) {
+        const a = random() * Math.PI * 2;
+        const r = random() * o.radius * 0.4;
+        place(o.x + Math.cos(a) * r, o.z + Math.sin(a) * r, o.radius * (0.75 + random() * 0.4), random() * 0.1, 0.4);
+      }
+      const skirt = 3 + Math.floor(random() * 5);
+      for (let i = 0; i < skirt; i++) {
+        const a = random() * Math.PI * 2;
+        const r = o.radius * (0.7 + random() * 0.6);
+        place(o.x + Math.cos(a) * r, o.z + Math.sin(a) * r, o.radius * (0.2 + random() * 0.35), random() * 0.4, 0.3);
+      }
+    }
+
     // The bed under a forest is rubble and silt, darker round each stand than
     // between them: the sand's own rubble shading, through the influence map.
     const beds = [
       ...forests.map((f) => ({ x: f.x, z: f.z, r: f.radius * 0.9, k: BED_FOREST })),
+      ...outcrops.map((o) => ({ x: o.x, z: o.z, r: o.radius * 1.5, k: 0.9 })),
       ...columns.map((c) => ({ x: c.x, z: c.z, r: 0.8, k: BED_COLUMN })),
     ];
     const rebuilt = buildInfluence(this.placements, this.fieldSites, beds);
@@ -586,7 +608,7 @@ export class Rocks {
           material: this.material,
           // Distance over radius: a 1 m boulder is at full detail inside 8 m,
           // 320 triangles to 25 m, 80 to 60 m, and a 20-triangle blob past that.
-          switches: [8, 25, 60],
+          switches: [12, 32, 75],
           cullBase: 30,
           cullPerSize: 34,
           cullMax: 160,

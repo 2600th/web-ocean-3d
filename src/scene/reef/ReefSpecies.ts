@@ -75,8 +75,9 @@ export function buildMoundCoral(seed: number, fine = false): MeshBuilder {
       new THREE.Vector3(Math.cos(a) * r, -0.04, Math.sin(a) * r),
       new THREE.Vector3(size, size * (0.75 + random() * 0.4), size),
       // [underwater-look-3] Round 10: the near level, ~4x the triangles; see `buildBrainCoral`.
-      fine ? 14 : 7,
-      fine ? 30 : 14,
+      // Round 11: 14 x 30 -> 20 x 44, the faceted outline the review saw at 6 m.
+      fine ? 20 : 7,
+      fine ? 44 : 14,
       { color: (t) => grey(aoRamp(t, 0.35, 0.6)), surf: SURF_PORES },
       (d) => 0.85 + 0.28 * dirNoise(d.x * 1.6, d.y * 1.6, d.z * 1.6, seed + i * 7),
       -0.1,
