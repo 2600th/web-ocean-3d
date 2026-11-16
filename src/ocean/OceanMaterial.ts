@@ -434,7 +434,21 @@ const SNELL_EDGE_RELAX = 0.97;
  * both backends. Length and beam are the hull's own, as `Ship` measures them,
  * scaled to the hull above the water (no bowsprit, the sides' tumblehome).
  */
-const HULL_MIRROR_LENGTH = 0.86;
+const HULL_MIRROR_LENGTH = 0.95;
+
+/**
+ * [water-reflect round 10] How far toward vertical the normal the hull's
+ * reflection is traced from is pulled.
+ *
+ * Off the true normal (round 9) the band under the hull broke up under the
+ * stern half of clear-day-wide: the water there is the front face of the swell
+ * crest the hull rides, tilted toward the eye, so its rays climbed over the
+ * stern castle and the glitter ran up to the waterline. The planar mirror
+ * makes the same assumption this does (a flat mirror, the ripples' offset
+ * only): with the swell's tilt damped the crest face reflects the hull as
+ * a band under its whole length, still broken by the ripples it keeps.
+ */
+const HULL_MIRROR_FLATTEN = 0.6;
 const HULL_MIRROR_BEAM = 0.85;
 
 /**
@@ -2358,13 +2372,6 @@ export class OceanMaterial {
         );
       }
 
-      if (ssr !== null) {
-        // Layered over both: a screen-space trace attaches the hull's reflection
-        // to the displaced wave it lands on, which one mirror plane at y = 0
-        // cannot. The distance-flattened normal is passed, as before.
-        reflection.assign(ssr(worldPos, n, reflection));
-      }
-
       // --- the hull in the mirror, traced ------------------------------------------
       //
       // See HULL_MIRROR_LENGTH for why. A ray is tested against a box at the
@@ -2374,6 +2381,8 @@ export class OceanMaterial {
       // the sun's direction it is the hull's shadow on the water, which is what
       // takes the glitter away in front of a backlit hull (below).
       const hullHit = float(0).toVar();
+      const hullOver = float(0).toVar();
+      const hullSide = vec3(0, 0, 0).toVar();
       const hullShade = float(0).toVar();
       const traceHull = (dir: any, softBase: any, softGrow: any) => {
         const fwd = this.uHullForward;
@@ -2411,25 +2420,60 @@ export class OceanMaterial {
         const sheer = float(0.5)
           .add(along.smoothstep(-0.45, -0.85).mul(0.5))
           .add(along.smoothstep(0.5, 0.9).mul(0.15))
-          .mul(along.smoothstep(1, 0.72))
-          .mul(along.smoothstep(-1, -0.9))
+          .mul(along.smoothstep(1, 0.75))
+          .mul(along.smoothstep(-1, -0.86))
           .mul(this.uHullProfile.w);
         const entryY = worldPos.y.add(dir.y.mul(tNear)).sub(this.uHullProfile.z);
         const below = sheer.sub(entryY).smoothstep(soft.mul(-0.35), soft.mul(0.35));
-        const hit = span.mul(below).mul(tFar.greaterThan(tNear).select(float(1), float(0)));
+        const inPlan = span.mul(tFar.greaterThan(tNear).select(float(1), float(0)));
         // The side it entered by.
         const sideXZ = tzN.greaterThan(txN).select(right.mul(dz.sign().negate()), fwd.mul(dx.sign().negate()));
-        return { hit, tNear, side: vec3(sideXZ.x, 0, sideXZ.y) };
+        return { hit: inPlan.mul(below), over: inPlan.mul(below.oneMinus()), tNear, side: vec3(sideXZ.x, 0, sideXZ.y) };
       };
       If(this.uHullActive.greaterThan(0.5), () => {
         const sunDir = normalize(this.uSunDirection).toVar();
-        const seen = traceHull(reflectDir, 1, 0.03);
+        // Off a normal with the swell's tilt damped; see HULL_MIRROR_FLATTEN.
+        const nHull = normalize(mix(nReflect, vec3(0, 1, 0), HULL_MIRROR_FLATTEN)).toVar();
+        const rHull = viewDir.negate().reflect(nHull).toVar();
+        // Only the climb is damped: the bearing keeps the full facet's sideways
+        // swing, so the band's ends and edges wobble with the waves instead of
+        // falling as straight vertical cuts.
+        const rFull = viewDir.negate().reflect(nReflect).toVar();
+        const bearing = vec2(rFull.x, rFull.z).normalize().mul(vec2(rHull.x, rHull.z).length());
+        const hullRay = normalize(vec3(bearing.x, rHull.y.abs().mul(0.4).add(rHull.y.max(0).mul(0.6)), bearing.y));
+        const seen = traceHull(hullRay, 2, 0.08);
         // Beyond a few hull lengths the facet's ray is metres off any waterline
         // the swell has not already hidden; fade rather than draw a long column.
         const reach = float(1).sub(seen.tNear.smoothstep(HULL_MIRROR_REACH[0], HULL_MIRROR_REACH[1]));
         hullHit.assign(seen.hit.mul(reach));
+        hullOver.assign(seen.over.mul(reach));
+        hullSide.assign(seen.side);
+        // The sun below the horizon casts nothing the glitter would show.
+        If(sunDir.y.greaterThan(0), () => {
+          hullShade.assign(traceHull(sunDir, HULL_SHADE_SOFT[0], HULL_SHADE_SOFT[1]).hit);
+        });
+      });
+
+      if (ssr !== null) {
+        // Layered over both: a screen-space trace attaches the hull's reflection
+        // to the displaced wave it lands on, which one mirror plane at y = 0
+        // cannot. The distance-flattened normal is passed, as before.
+        //
+        // [water-reflect round 10] Not where the ray crosses the hull's plan
+        // above its sheer: all it can find there is rigging, spars and sail,
+        // and the march finds them in fragments (a rope a pixel wide passes or
+        // fails the thickness test from one step to the next). The planar
+        // mirror keeps the rig whole where it reaches. (The mast-like ghosts in
+        // ship-underway's foreground are not this: they go with the kelp
+        // hidden and stay with SSR, the mirror and refraction all off.)
+        const beforeSsr = vec3(0, 0, 0).toVar();
+        beforeSsr.assign(reflection);
+        reflection.assign(mix(ssr(worldPos, n, reflection) as any, beforeSsr, hullOver));
+      }
+
+      If(this.uHullActive.greaterThan(0.5), () => {
         // Lit by the sky and, on the side facing the sun, the sun.
-        const sunOn = seen.side.dot(sunDir).max(0);
+        const sunOn = hullSide.dot(normalize(this.uSunDirection)).max(0);
         const hullColor = vec3(...HULL_MIRROR_ALBEDO).mul(
           mix(this.uHorizonColor, this.uSkyColor, 0.35).add((this.uSunColor as any).mul(sunOn).mul(0.3)),
         );
@@ -2437,10 +2481,6 @@ export class OceanMaterial {
         // planking, the sunlit side) is the better one: this fills only where
         // the mirror has nothing, which is the strip SSR and the flat mirror miss.
         reflection.assign(mix(reflection, hullColor, hullHit.mul(objectCover.oneMinus())));
-        // The sun below the horizon casts nothing the glitter would show.
-        If(sunDir.y.greaterThan(0), () => {
-          hullShade.assign(traceHull(sunDir, HULL_SHADE_SOFT[0], HULL_SHADE_SOFT[1]).hit);
-        });
       });
 
       // --- sun glitter: anisotropic Gaussian slope distribution ----------------
