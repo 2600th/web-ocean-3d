@@ -123,7 +123,8 @@ class ExposureAdaptNode extends THREE.TempNode {
       // [underwater-look-2] Below the surface the eye adapts around its own
       // anchor, more fully and further. See `setSubmerged`.
       const sub = u.submerged;
-      const anchor = mix(u.anchorLog, u.uwAnchorLog, sub);
+      // [underwater-look-3] Round 12c: lower looking up; see `setLookUp`.
+      const anchor = mix(u.anchorLog, u.uwAnchorLog.sub(u.uwLookUp.mul(UW_LOOK_UP_EV)), sub);
       const deadZone = mix(u.deadZone, u.uwDeadZone, sub);
       const strength = mix(u.strength, u.uwStrength, sub);
       const maxEv = mix(u.maxEv, u.uwMaxEv, sub);
@@ -200,6 +201,14 @@ export const EXPOSURE_ANCHORS: Record<string, number> = {
   foggy: -1.52,
 };
 const DEFAULT_ANCHOR = -1.76;
+/**
+ * [underwater-look-3] Round 12c. Stops the submerged anchor drops by when the
+ * eye looks up toward the surface (`setLookUp`). Looking up, the meter sees
+ * mostly bright open water and the frame was held at kelp-sun's pale cyan
+ * (luma 125); this lets it settle darker, so the water round the sun reads a
+ * deeper blue and the shafts stand out of it. Level views are untouched.
+ */
+const UW_LOOK_UP_EV = 0.4;
 
 export class AutoExposure {
   readonly uniforms = {
@@ -246,6 +255,7 @@ export class AutoExposure {
     // 30 below abyssal-garden's mean luma, while looking up-sun was within
     // ten; the cap lets the reef reach its target, the anchor lifts the rest.
     uwAnchorLog: uniform(-0.15),
+    uwLookUp: uniform(0),
     uwStrength: uniform(0.9),
     uwDeadZone: uniform(0.25),
     uwMaxEv: uniform(3.6),
@@ -308,6 +318,15 @@ export class AutoExposure {
    */
   setSubmerged(amount: number): void {
     this.uniforms.submerged.value = Math.min(1, Math.max(0, amount));
+  }
+
+  /**
+   * [underwater-look-3] Round 12c. How far the eye looks up, 0..1 (see
+   * `UnderwaterPass`'s `OPEN_UP_PITCH`); lowers the submerged anchor by up to
+   * `UW_LOOK_UP_EV`. A uniform write; call per frame.
+   */
+  setLookUp(amount: number): void {
+    this.uniforms.uwLookUp.value = Math.min(1, Math.max(0, amount));
   }
 
   setEnabled(on: boolean): void {
