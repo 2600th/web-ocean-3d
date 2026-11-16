@@ -33,6 +33,7 @@ import { FOOTPRINT_SPACINGS } from './meshSampling';
 import {
   featherFoam,
   foamBubbleCloud,
+  foamFroth,
   foamLace,
   foamPatchiness,
   foamPattern,
@@ -3521,7 +3522,10 @@ export class OceanMaterial {
           .mul(mix(float(AGED_SPREAD), float(1), breaking))
           .min(mix(float(AGED_SHAPE_CAP), float(FRESH_SHAPE_CAP), breaking))
           .toVar();
-        const soft = cover.clamp(0, 1).oneMinus().mul(0.2).add(0.08);
+        // Narrowed near the camera, in proportion to the pixel: at a few metres
+        // the full margin was centimetres of blur on every patch's edge, the
+        // "soft, blurry smear" of round 10's waves-4.
+        const soft = cover.clamp(0, 1).oneMinus().mul(0.2).add(0.08).mul(foamFootprint.mul(25).clamp(0.3, 1));
         const edge = shapeCover.oneMinus();
         const film = pattern.smoothstep(edge.sub(foamRamp).sub(soft), edge.add(foamRamp).add(soft));
         // Seen edge-on a raft is thicker than seen from above. Bubbles stand
@@ -3533,7 +3537,7 @@ export class OceanMaterial {
         // It changes how foam looks, not how much there is.
         const graze = smoothstepDownClamped(viewDir.y.abs(), 0.04, 0.3).toVar();
         const lace = mix(
-          foamLace(foamXZ.add(vec2(37.1, 11.9)), cover.mul(0.8).max(breaking), viewDistance),
+          foamLace(foamXZ.add(vec2(37.1, 11.9)), cover.mul(0.8).max(breaking), viewDistance, undefined, foamFootprint),
           float(1),
           graze.mul(0.45),
         ).toVar();
@@ -3613,7 +3617,13 @@ export class OceanMaterial {
           // on a gentle ramp both read as the same white.
           // Its strands run along the ship's track, not the wind: a wake is
           // drawn out astern by the hull that made it.
-          const hullLace = foamLace(foamXZ, hullCover.mul(hullCover).max(hullFresh), viewDistance, this.uHullForward);
+          const hullLace = foamLace(
+            foamXZ,
+            hullCover.mul(hullCover).max(hullFresh),
+            viewDistance,
+            this.uHullForward,
+            foamFootprint,
+          );
           const hullMask = hullLace
             .mul(hullEdge.max(hullFresh))
             .mul(hullCover.smoothstep(0, 0.4))
@@ -3621,6 +3631,9 @@ export class OceanMaterial {
             .mul(patternN.mul(0.35).add(0.65));
           open.assign(open.max(hullMask));
         });
+        // At the camera, whitecap and wake are a mass of bubbles, and the
+        // hollows between them hold less white (`foamFroth`).
+        open.assign(open.mul(foamFroth(foamXZ, foamFootprint)).min(1));
 
         // As the pattern's scales fade to their means, from ~200 m out, its
         // spread collapses and a threshold on it becomes a step: every patch

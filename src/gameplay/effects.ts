@@ -533,8 +533,10 @@ export class BowSpray {
     const size: any = isDrop
       .mul(seed.y.mul(0.03).add(0.018))
       .add(isCluster.mul(seed.y.mul(0.4).add(0.3)))
-      .add(isSheet.mul(seed.y.mul(0.5).add(0.55)))
-      .add(isMist.mul(seed.y.mul(0.9).add(0.9)))
+      // Sheets a third smaller than they were: a metre-wide quad of one sheet
+      // is a slab, and slabs were the "ice cubes" (round 10, boat-sea-2).
+      .add(isSheet.mul(seed.y.mul(0.35).add(0.35)))
+      .add(isMist.mul(seed.y.mul(1.0).add(1.0)))
       .mul(strength.mul(0.4).add(0.6));
     const grow: any = isDrop
       .add(isCluster.mul(life.mul(0.6).add(0.8)))
@@ -550,7 +552,9 @@ export class BowSpray {
       // camera when the individual drops are under a pixel. At 0.07 a mist
       // quad was invisible past twenty metres (boat-sea-1: "the bow spray is
       // faint from the chase camera").
-      .add(isMist.mul(0.2));
+      // 0.28 since round 10: the sheets now shed into it rather than holding
+      // their shape, and the fan should read as spray breaking into mist.
+      .add(isMist.mul(0.28));
     const fadeIn: any = smoothstep(0, 0.06, life);
     const fadeOut: any = smoothstepDown(life, isMist.mul(-0.35).add(0.7), 1);
     // Back into the sea a little below where it left the crest.
