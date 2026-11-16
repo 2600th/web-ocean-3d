@@ -265,12 +265,39 @@ const FILAMENT_SD = 0.2404;
 
 /**
  * The finer octave groups, as frequency ratio and weight: 0.34 m strands that
- * tear the metre ones (Medium and up), 12 cm fibres in those (High and up).
+ * tear the metre ones (Medium and up), 12 cm fibres in those and 4 cm lace at
+ * the camera (High and up). Read in a frame stretched only `DETAIL_STRETCH`
+ * along the axis: the strands' shape is the coarse octave's business, and a
+ * stretched fine grain was half of round 10's "near foam smeared and
+ * stretched" (waves-4).
+ *
+ * Each fades out by the pixel's footprint on the water, not by distance, when
+ * its cells fall under about six pixels: a footprint is what aliasing depends
+ * on, and at a grazing angle it is several times what the distance suggests.
  */
 const FILAMENT_MID = 2.9;
 const FILAMENT_MID_WEIGHT = 0.95;
+/** The 0.34 m group's weight and stretch on the pixel-drawn path: round holes at that size were leopard spots. */
+const SHARP_MID_WEIGHT = 0.8;
+const SHARP_MID_STRETCH = 1.9;
 const FILAMENT_FINE = 8.4;
 const FILAMENT_FINE_WEIGHT = 0.5;
+const FILAMENT_CM = 25;
+const FILAMENT_CM_WEIGHT = 0.4;
+const DETAIL_STRETCH = 1.3;
+
+/**
+ * Gradient of the normalised field per metre with each group fully on,
+ * measured on the replica (rms): 4 for the metre octave alone, and about 4, 6
+ * and 20 more as the 0.34 m, 12 cm and 4 cm groups come in. The band's edge is
+ * one pixel's worth of that, so it is as sharp as the screen allows at every
+ * range: round 8's fixed edge, a fifth of the spread, was 6–11 cm of blur, and
+ * at the camera that is twenty pixels of it.
+ */
+const GRAD_COARSE = 4;
+const GRAD_MID = 4;
+const GRAD_FINE = 6;
+const GRAD_CM = 20;
 
 /**
  * Warp of the strand frame, in noise cells, by a noise about two cells along
@@ -343,10 +370,20 @@ function bandCoverage(t: any): any {
  * tier-gated; the whole field fades to its analytic coverage (`bandCoverage`)
  * far off. Must be called inside a TSL `Fn`.
  *
- * @param axis Unit xz direction the filaments run along; the wind by default.
+ * @param axis      Unit xz direction the filaments run along; the wind by default.
+ * @param footprint World metres per pixel at `p` (the larger screen axis). When
+ *                  given, the detail is drawn to the pixel: the finer groups
+ *                  are read nearly unstretched, fade by footprint, a 4 cm group
+ *                  is added at the camera, and the strand edge is one pixel
+ *                  wide. Without it, round 8b's distance-faded lace with a fixed
+ *                  edge, which the surf's froth (`surfLace`) is tuned on.
  */
-export function foamLace(p: any, amount: any, viewDistance: any, axis?: any): any {
+export function foamLace(p: any, amount: any, viewDistance: any, axis?: any, footprint?: any): any {
   const a = amount.clamp(0, 1).toVar('foamLaceAmount');
+  // Half the larger axis: the band edge and the octave fades want the pixel's
+  // size, and the larger axis alone overstates it by the foreshortening.
+  const sharp = footprint !== undefined;
+  const pixel = (footprint ?? viewDistance.mul(0.0011)).mul(0.5).toVar('foamLacePixel');
   const along = axis ?? vec2(foamUniforms.windAxis.x, foamUniforms.windAxis.y);
   const across = vec2(along.y.negate(), along.x);
   const frame = vec2(p.dot(along), p.dot(across)).toVar('foamLaceFrame');
@@ -386,30 +423,104 @@ export function foamLace(p: any, amount: any, viewDistance: any, axis?: any): an
       const fresh = aged.oneMinus();
       z.assign(mix(z, filamentNoise(qAged), aged).div(fresh.mul(fresh).add(aged.mul(aged)).sqrt()));
     });
-    const midWeight = foamUniforms.detail
+    const detailQ = sharp
+      ? vec2(frame.x.div(FILAMENT_ACROSS * DETAIL_STRETCH), qy).add(warp).toVar('foamLaceDetailQ')
+      : q;
+    const midOn = foamUniforms.detail
       .greaterThan(0.5)
-      .select(smoothstepDownClamped(viewDistance, 18, 45).mul(FILAMENT_MID_WEIGHT), float(0))
-      .toVar('foamLaceMidWeight');
-    const fineWeight = foamUniforms.detail
+      .select(sharp ? smoothstepDownClamped(pixel, 0.03, 0.06) : smoothstepDownClamped(viewDistance, 18, 45), float(0))
+      .toVar('foamLaceMidOn');
+    const fineOn = foamUniforms.detail
       .greaterThan(1.5)
-      .select(smoothstepDownClamped(viewDistance, 7, 18).mul(FILAMENT_FINE_WEIGHT), float(0))
-      .toVar('foamLaceFineWeight');
-    If(midWeight.greaterThan(0.001), () => {
-      z.addAssign(filamentNoise(q.mul(FILAMENT_MID).add(vec2(2.9, 8.3))).mul(midWeight));
+      .select(sharp ? smoothstepDownClamped(pixel, 0.01, 0.02) : smoothstepDownClamped(viewDistance, 7, 18), float(0))
+      .toVar('foamLaceFineOn');
+    const cmOn = sharp
+      ? foamUniforms.detail
+          .greaterThan(1.5)
+          .select(smoothstepDownClamped(pixel, 0.0035, 0.007), float(0))
+          .toVar('foamLaceCmOn')
+      : float(0);
+    const midWeight = midOn.mul(sharp ? SHARP_MID_WEIGHT : FILAMENT_MID_WEIGHT);
+    const midQ = sharp ? vec2(frame.x.div(FILAMENT_ACROSS * SHARP_MID_STRETCH), qy).add(warp) : q;
+    const fineWeight = fineOn.mul(FILAMENT_FINE_WEIGHT);
+    const cmWeight = cmOn.mul(FILAMENT_CM_WEIGHT);
+    If(midOn.greaterThan(0.001), () => {
+      z.addAssign(filamentNoise(midQ.mul(FILAMENT_MID).add(vec2(2.9, 8.3))).mul(midWeight));
     });
-    If(fineWeight.greaterThan(0.001), () => {
-      z.addAssign(filamentNoise(q.mul(FILAMENT_FINE).add(vec2(6.1, 3.7))).mul(fineWeight));
+    If(fineOn.greaterThan(0.001), () => {
+      z.addAssign(filamentNoise(detailQ.mul(FILAMENT_FINE).add(vec2(6.1, 3.7))).mul(fineWeight));
     });
-    const spread = midWeight.mul(midWeight).add(fineWeight.mul(fineWeight)).add(1).sqrt().mul(FILAMENT_SD);
+    if (sharp) {
+      If(cmOn.greaterThan(0.001), () => {
+        z.addAssign(filamentNoise(detailQ.mul(FILAMENT_CM).add(vec2(1.3, 9.9))).mul(cmWeight));
+      });
+    }
+    const spread = midWeight
+      .mul(midWeight)
+      .add(fineWeight.mul(fineWeight))
+      .add(cmWeight.mul(cmWeight))
+      .add(1)
+      .sqrt()
+      .mul(FILAMENT_SD);
     const t = t0
       .mul(foamNoise(q.mul(vec2(1.6, 0.9)).add(vec2(2.2, 5.5))).mul(STRAND_WIDTH_SPAN).add(STRAND_WIDTH_LOW))
       .toVar('foamLaceWidth');
-    // The strand's edge drains over a fifth of the spread either side, so no
-    // strand has a cut outline.
-    const band = z.abs().div(spread).smoothstep(t.sub(0.22), t.add(0.22)).oneMinus();
+    // The strand's edge: one pixel of the field's gradient, so a strand is as
+    // crisp as the screen allows near the camera; never wider than round 8's
+    // fifth of the spread far off, where that was what kept it from shimmering.
+    const gradient = midOn
+      .mul(GRAD_MID)
+      .add(fineOn.mul(GRAD_FINE))
+      .add(cmOn.mul(GRAD_CM))
+      .add(GRAD_COARSE);
+    const edge = sharp ? gradient.mul(pixel).mul(1.5).clamp(0.03, 0.22) : float(0.22);
+    const band = z.abs().div(spread).smoothstep(t.sub(edge), t.add(edge)).oneMinus();
     strands.assign(mix(mean, band, near));
   });
   return strands;
+}
+
+/**
+ * Bubble froth near the camera: an opacity multiplier, 1 where the foam is
+ * thick and less in the hollows between bubbles. Two scales, 8 cm and 3 cm
+ * cells (web-ocean's `bubbles`; Crest's bubble layer), each drawn only while
+ * its cells cover at least about five pixels, so it comes in from about 10 m in
+ * a deck-height view and never aliases. Hollows, not holes: the water is only
+ * seen through them, so they take opacity and leave the lace's coverage alone.
+ * Clustered by a 30 cm noise, since bubbles of one size burst together.
+ *
+ * Zero-mean: the walls between bubbles gain what the hollows lose, about the
+ * share of the area the hollows cover (`FROTH_*_SHARE`, the Boolean-model
+ * coverage of discs with those radii), so a whitecap seen close is no less
+ * white overall than the same whitecap a few metres further off.
+ *
+ * Round 10's critic read the near foam as "a low-res texture magnified": every
+ * scale the foam had was a smooth noise of 12 cm or more, so at a few metres
+ * nothing in it was sharper than a hand's width.
+ */
+const FROTH_LARGE_DEPTH = 0.4;
+const FROTH_SMALL_DEPTH = 0.3;
+const FROTH_LARGE_SHARE = 0.25;
+const FROTH_SMALL_SHARE = 0.2;
+
+export function foamFroth(p: any, footprint: any): any {
+  const pixel = footprint.mul(0.5);
+  const high = foamUniforms.detail.greaterThan(1.5);
+  const largeOn = high.select(smoothstepDownClamped(pixel, 0.012, 0.024), float(0)).toVar('foamFrothLargeOn');
+  const smallOn = high.select(smoothstepDownClamped(pixel, 0.0045, 0.009), float(0)).toVar('foamFrothSmallOn');
+  const froth = float(1).toVar('foamFroth');
+  If(largeOn.greaterThan(0.001), () => {
+    const cluster = foamNoise(p.mul(3.3).add(vec2(4.7, 1.3))).smoothstep(0.25, 0.75).mul(0.6).add(0.4);
+    const large = foamBubbles(p.mul(12).add(vec2(2.3, 7.1)), 61, 0.12, 0.45).oneMinus();
+    froth.assign(large.sub(FROTH_LARGE_SHARE).mul(cluster).mul(largeOn).mul(-FROTH_LARGE_DEPTH).add(1));
+    If(smallOn.greaterThan(0.001), () => {
+      const small = foamBubbles(p.mul(33).add(vec2(8.9, 0.7)), 73, 0.1, 0.4).oneMinus();
+      froth.mulAssign(
+        small.sub(FROTH_SMALL_SHARE).mul(cluster.oneMinus().mul(0.6).add(0.4)).mul(smallOn).mul(-FROTH_SMALL_DEPTH).add(1),
+      );
+    });
+  });
+  return froth;
 }
 
 /**
