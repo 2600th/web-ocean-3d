@@ -151,6 +151,23 @@ const _smokeSky = new THREE.Color();
 const FLASH_GRADE_SHARE = 0.55;
 /** Night multiplier on the sea's key-light glint, so the moon path reads (see `water.setSun`). */
 const MOON_GLINT_BOOST = 3;
+/**
+ * The tour's sky overcast at the squall's peak rain, scaled by the rain.
+ *
+ * The squall raised the coverage and the rain but left the atmosphere's
+ * overcast at the preset's 0, so at dusk the dome between the clouds kept its
+ * clear twilight, lavender and starry, and the sea mirrored it purple
+ * (`cinematic-squall` at 72 s). Rain is the air filling with water; the
+ * overcast term is what desaturates and flattens the dome, hides the stars and
+ * the disc, and pulls the haze toward the deck's grey.
+ *
+ * Rain times 1.4, capped at 0.9 (the storm preset's 0.88): 0.59 at 72 s, the
+ * cap from 76 s. Swept at 0.9, 1.4 and 1.8 on `cinematic-squall` at 72 s: the
+ * sky's top quarter went from 37/33/53 (sRGB, violet) to 29/32/47 (slate) at
+ * 1.4, with the stars gone; 0.9 left it violet.
+ */
+const TOUR_RAIN_OVERCAST = 1.4;
+const TOUR_RAIN_OVERCAST_MAX = 0.9;
 /** Scratch for the sky colours lifted by a lightning flash before the water reads them. */
 const _flashZenith = new THREE.Color();
 const _flashHorizon = new THREE.Color();
@@ -2947,6 +2964,19 @@ class App {
   }
 
   /**
+   * The tour's sky at an hour and a rain amount: the sun and moon from the
+   * clock, and the squall's rain greying the sky (`TOUR_RAIN_OVERCAST`) over
+   * the preset's own overcast, which is the floor, so a tour flown under the
+   * storm preset keeps its 0.88. Leaving the tour re-applies the preset.
+   */
+  private tourSky(hours: number, rain: number): ReturnType<App['sunFromClock']> & { overcast: number } {
+    const floor = getPreset(this.state.preset).atmosphere.overcast;
+    return {
+      ...this.sunFromClock(hours),
+      overcast: Math.max(floor, Math.min(TOUR_RAIN_OVERCAST_MAX, rain * TOUR_RAIN_OVERCAST)),
+    };
+  }
+  /**
    * Sun elevation, azimuth and night blend for a clock time.
    *
    * A simple diurnal arc rather than a real ephemeris: no latitude, no season,
@@ -3331,7 +3361,7 @@ class App {
      */
     if (this.state.cameraMode === 'cinematic') {
       const env = this.director.cinematicEnvironment();
-      this.atmosphere.setParams(this.sunFromClock(env.hours));
+      this.atmosphere.setParams(this.tourSky(env.hours, env.rain));
       this.clouds.setParams({ coverage: env.cloudCoverage });
       // Kind *and* intensity. Setting the intensity alone produces no weather
       // at all under a clear preset: `Weather` will not draw while its kind is
@@ -3588,6 +3618,9 @@ class App {
     // Measured first: the water and the haze below are both given the dome's
     // own brightness after sunset, and the clouds further down read it too.
     this.measureSkyRadiance(_skyRadiance, _skyHorizon, _skyTypical, _skyZenith);
+    // The far deck's colour (`Clouds.setSkyColors` fades to it), for the
+    // capture's horizon under a deck, which the sea mirrors at grazing.
+    this.atmosphere.setDeckHorizon(_skyHorizon);
     const sunDown = 1 - THREE.MathUtils.smoothstep(this.atmosphere.sunDirection.y, -0.1, 0.02);
     seenSky(this.atmosphere.horizonColor, _skyTypical, sunDown, _seenHorizon);
     seenSky(this.atmosphere.zenithColor, _skyZenith, sunDown, _seenZenith);
@@ -4393,8 +4426,8 @@ class App {
           // rewind would otherwise be lit by whichever hour the previous shot
           // left in the cube. For a night capture taken after a daylight one
           // that is the whole difference between the shot and a bug.
-          if (this.state.cameraMode === 'cinematic') {
-            this.atmosphere.setParams(this.sunFromClock(this.director.cinematicEnvironment(cinematicStart).hours));
+          if (this.state.cameraMode === 'cinematic' && tour) {
+            this.atmosphere.setParams(this.tourSky(tour.hours, tour.rain));
             this.atmosphere.update(0);
             this.refreshTourEnvironment(true);
           }

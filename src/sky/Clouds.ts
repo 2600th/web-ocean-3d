@@ -411,6 +411,38 @@ const WEATHER_SCALE = 1 / 16000;
  */
 const WEATHER_AMOUNT = 0.9;
 /**
+ * Large-scale structure in a continuous deck, from the weather map.
+ *
+ * The weather map's job is to put regions into a *broken* sky, and it is
+ * tapered to nothing by a deck (`uWeatherAmount`), because holes in a storm
+ * ceiling lit up white in the sun's forward lobe (round 6). That left the storm
+ * deck one even grey toward the sun: moody, but with no structure at the scale
+ * the eye reads weather at. Under a deck (`uDeckHold`) the map is free, so it
+ * is reused, one sample per step as before, at a finer scale
+ * (`DECK_WEATHER_SCALE`: cells of about 1.5 to 5 km rather than 4 to 16) and
+ * drawn out along the wind (`DECK_ROLL_STRETCH`) into rolls:
+ *
+ * - where it is low, the deck is denser (`DECK_ROLL_DENSITY`) and darker
+ *   (`DECK_ROLL_SHADE`): the rolls;
+ * - where it is high, thinner (`DECK_THIN_DENSITY`) and lit through toward
+ *   the sun (`DECK_THIN_LIGHT`, times the march's bearing to the sun), which is
+ *   what a thin patch of stratocumulus with the sun behind it does;
+ * - at the very top, the coverage threshold rises (`DECK_BREAK`), opening
+ *   partial breaks inside the thin patches only, so a break is always framed
+ *   by lit cloud rather than punched through a dark one.
+ *
+ * Swept on `storm-sun`: the top 45 % of the frame went from mean 98, std 22
+ * (sRGB) to 107, 25 at these values; 1.5 on the light washed the sun side out
+ * (mean 112). Zero below 0.6 coverage, so no broken sky changes.
+ */
+const DECK_WEATHER_SCALE = 3;
+const DECK_ROLL_STRETCH = 2.5;
+const DECK_ROLL_DENSITY = 0.5;
+const DECK_THIN_DENSITY = 0.75;
+const DECK_THIN_LIGHT = 0.9;
+const DECK_ROLL_SHADE = 0.5;
+const DECK_BREAK = 0.3;
+/**
  * Lowest cloud top, as a fraction of the layer, where the weather map is
  * thinnest. Sparse cells stay flat and small, as fair-weather cumulus do; where
  * the map is high they build to the full thickness. Two cloud types in one
@@ -855,6 +887,9 @@ export class Clouds {
   private readonly uHaze: any = uniform(new THREE.Color(0.6, 0.7, 0.8));
   /** 0 for broken cloud, 1 for a continuous deck; from the coverage. */
   private readonly uDeckHold = uniform(0);
+  /** `DECK_ROLL_STRETCH` and `DECK_WEATHER_SCALE`, faded in by `uDeckHold`. */
+  private readonly uDeckRollStretch = uniform(0);
+  private readonly uDeckWeatherScale = uniform(1);
   /**
    * Ambient reaching the *top* of the layer.
    *
@@ -1226,6 +1261,8 @@ export class Clouds {
     const c = this.params.coverage;
     const t = Math.min(1, Math.max(0, (c - 0.6) / 0.25));
     this.uDeckHold.value = t * t * (3 - 2 * t);
+    this.uDeckRollStretch.value = this.uDeckHold.value * (1 / DECK_ROLL_STRETCH - 1);
+    this.uDeckWeatherScale.value = 1 + this.uDeckHold.value * (DECK_WEATHER_SCALE - 1);
 
     // How bright the sky actually is, relative to a clear noon. See
     // `Atmosphere.skyRadiance`, and `DAY_SKY_LUMA` for the reference.
@@ -1627,8 +1664,32 @@ export class Clouds {
    * The weather map at a point, about 0.5 +- 0.2. See `weatherFbm`.
    */
   private weatherAt(p: any): any {
-    const q = vec2(p.x.sub(this.uWindOffset.x), p.z.sub(this.uWindOffset.z)).mul(WEATHER_SCALE);
-    return weatherFbm(q).mul(0.5).add(0.5);
+    const q = vec2(p.x.sub(this.uWindOffset.x), p.z.sub(this.uWindOffset.z))
+      .mul(this.uDeckWeatherScale.mul(WEATHER_SCALE))
+      .toVar('cloudWeatherQ');
+    const axis = vec2(this.uWindAxis.x, this.uWindAxis.z);
+    const along = q.dot(axis).mul(this.uDeckRollStretch);
+    return weatherFbm(q.add(axis.mul(along))).mul(0.5).add(0.5);
+  }
+
+  /**
+   * Deck structure from the weather map: rolls denser, thin patches thinner.
+   * 1 for broken cloud. See `DECK_WEATHER_SCALE`.
+   */
+  private deckDensity(weather: any): any {
+    const roll = smoothstep(0.47, 0.32, weather);
+    const thinPatch = smoothstep(0.52, 0.68, weather);
+    return float(1).add(this.uDeckHold.mul(roll.mul(DECK_ROLL_DENSITY).sub(thinPatch.mul(DECK_THIN_DENSITY))));
+  }
+
+  /**
+   * Deck light from the weather map: thin patches lit through toward the sun
+   * (`towardSun`, the march's bearing weight), rolls shaded. 1 for broken cloud.
+   */
+  private deckLight(weather: any, towardSun: any): any {
+    const roll = smoothstep(0.47, 0.32, weather);
+    const thinPatch = smoothstep(0.52, 0.68, weather);
+    return float(1).add(this.uDeckHold.mul(thinPatch.mul(DECK_THIN_LIGHT).mul(towardSun).sub(roll.mul(DECK_ROLL_SHADE))));
   }
 
   /**
@@ -1659,6 +1720,7 @@ export class Clouds {
     return this.uThreshold
       .add(float(1).sub(profile).mul(0.22))
       .add(weather.sub(0.5).mul(this.uWeatherAmount))
+      .add(smoothstep(0.6, 0.72, weather).mul(this.uDeckHold).mul(DECK_BREAK))
       .add(COVERAGE_BIAS)
       .add(bias);
   }
@@ -1802,7 +1864,8 @@ export class Clouds {
     // wisps; eroding by the creases leaves rounded lumps. The first is used low
     // in the column and the second above (`WISP_LOW`).
     const shape = smoothstep(edge, edge.add(width).add(SHAPE_WIDTH), base);
-    if (detail === null) return shape.mul(profile).mul(this.uDensity);
+    const deck = this.deckDensity(weather);
+    if (detail === null) return shape.mul(profile).mul(this.uDensity).mul(deck);
 
     // |n| with its crease rounded over `DETAIL_CREASE`: sqrt(n^2 + k^2) - k.
     const nAbs = detail.mul(detail).add(DETAIL_CREASE * DETAIL_CREASE).sqrt().sub(DETAIL_CREASE);
@@ -1817,7 +1880,7 @@ export class Clouds {
     const body = float(1).sub(float(0.5).sub(detail.mul(2)).clamp(0, 1).mul(INTERIOR_VARIATION).mul(detailFade));
     const shaped = smoothstep(0, EDGE_CRISP, remapped).mul(body);
 
-    return shaped.mul(profile).mul(this.uDensity);
+    return shaped.mul(profile).mul(this.uDensity).mul(deck);
   }
 
   /**
@@ -2042,6 +2105,7 @@ export class Clouds {
                   .add(this.uColor.mul(this.uLightColor).mul(sunTerm))
                   .add(underGlow)
                   .add(this.uColor.mul(this.uDeckGlow).div(opticalDepth.mul(DECK_GLOW_RATE).add(1)))
+                  .mul(this.deckLight(weather, glowView))
                   .toVar('cloudLum');
 
                 const sampleT = exp(d.mul(stepSize).mul(this.uExtinction).mul(this.uViewGain).negate());
