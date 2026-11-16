@@ -36,6 +36,21 @@ import {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;
 
+/**
+ * [underwater-look-3] Round 11. The polyp pores were Worley cells at 34 per
+ * unit with their centres at 0.65 of the tint: on the reef's rigid pieces,
+ * read in world space at 0.4, a star coral head carried 7 cm dark dots, the
+ * round-11 review's "leopard-spot pit pattern" in mound-close. Now
+ * `PORE_FREQ` per unit (3.6 cm on a rigid piece, a grain rather than spots)
+ * at `PORE_TINT` depth, with cracks along the cells of the 7-per-unit field
+ * where the smooth field is high (darkened by `CRACK_TINT`), and patches of
+ * crust where the pores fill in and the surface is `CRUST_LIFT` paler.
+ */
+const PORE_FREQ = 70;
+const PORE_TINT = 0.24;
+const CRACK_TINT = 0.32;
+const CRUST_LIFT = 0.18;
+
 /** `vec2(height, tint)` for a surface selector and a template-space position. */
 export function lifePattern(surf: Node, pg: Node): Node {
   return Fn(() => {
@@ -48,11 +63,18 @@ export function lifePattern(surf: Node, pg: Node): Node {
     const field = mx_noise_float(pg.mul(4.2));
     const groove = sin(field.mul(26)).abs().toVar('lifeGroove');
 
-    const cell = mx_worley_noise_float(pg.mul(34));
+    // [underwater-look-3] Round 11: finer polyps, with cracks and crust; see `PORE_FREQ`.
+    const cell = mx_worley_noise_float(pg.mul(PORE_FREQ));
     const pore = cell.smoothstep(0.05, 0.42).toVar('lifePore');
 
     const f = mx_worley_noise_vec2(pg.mul(7));
     const edge = f.y.sub(f.x).smoothstep(0.02, 0.14).toVar('lifeEdge');
+    const crack = edge.oneMinus().mul(field.smoothstep(0.0, 0.35)).toVar('lifeCrack');
+    const crust = mx_noise_float(pg.mul(1.7).add(vec3(4.1, 1.3, 2.7))).smoothstep(0.15, 0.55).toVar('lifeCrust');
+    const poreDepth = float(PORE_TINT).mul(float(1).sub(crust.mul(0.7)));
+    const poreTint = pore.sub(1).mul(poreDepth).add(1)
+      .mul(float(1).sub(crack.mul(CRACK_TINT)))
+      .mul(crust.mul(CRUST_LIFT).add(1));
 
     const dots = mx_worley_noise_float(pg.mul(16)).smoothstep(0.12, 0.22).oneMinus().toVar('lifeDots');
 
@@ -72,14 +94,14 @@ export function lifePattern(surf: Node, pg: Node): Node {
     const height = isBrain.select(
       groove,
       isPores.select(
-        pore,
+        pore.mul(float(1).sub(crust.mul(0.6))).sub(crack.mul(0.5)),
         isScute.select(edge, isSpots.select(dots.mul(0.4), isScales.select(seam.mul(0.6), float(0)))),
       ),
     );
     const tint = isBrain.select(
       groove.smoothstep(0.1, 0.7).mul(0.5).add(0.5),
       isPores.select(
-        pore.mul(0.35).add(0.65),
+        poreTint,
         isScute.select(
           plate,
           isSpots.select(dots.mul(2.2).add(1), isScales.select(seam.mul(-0.8).add(1.55), float(1))),

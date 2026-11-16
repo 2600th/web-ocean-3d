@@ -76,6 +76,8 @@ export interface GroundCoverOptions {
   /** The kelp forests, for their understorey. */
   forests?: readonly Forest[];
   columns?: readonly { x: number; y: number; z: number; height: number }[];
+  /** [underwater-look-3] Round 11: rock outcrops among the kelp; sea rods and Halimeda grow round them. */
+  outcrops?: readonly { x: number; z: number; radius: number }[];
   /** Reef sites: no grass inside, gorgonians on the apron. */
   clearings?: readonly Clearing[];
   shading?: LeafShading;
@@ -101,6 +103,7 @@ export class GroundCover {
     plantGorgonians(leaves, random, floor, reefSites, options.forests ?? []);
     plantUnderstorey(leaves, random, floor, options.columns ?? [], reefSites);
     plantKelpBed(leaves, mulberry32(BED_SEED), floor, options.forests ?? [], options.columns ?? [], reefSites);
+    plantOutcropCover(leaves, mulberry32(BED_SEED ^ 0x0c0ffe), floor, options.outcrops ?? []);
 
     this.field = new LeafField(leaves, options.uniforms, {
       name: 'seabed-cover',
@@ -380,6 +383,37 @@ function plantUnderstorey(
       } else {
         tuft(leaves, rnd, x, y, z, 4 + Math.floor(rnd() * 3), LeafType.SARGASSUM,
           [0.2, 0.45], [0.05, 0.085], [0.2, 0.85], [0.4, 0.85], 0.55);
+      }
+    }
+  }
+}
+
+/**
+ * [underwater-look-3] Round 11. Cover at the foot of the kelp beds' outcrops:
+ * sea rods, the purple-to-tan accent abyssal-garden puts at the foot of its
+ * forest rock, and Halimeda, in a ring round each pile.
+ */
+function plantOutcropCover(
+  leaves: Leaf[],
+  rnd: () => number,
+  floor: FloorCache,
+  outcrops: readonly { x: number; z: number; radius: number }[],
+): void {
+  for (const o of outcrops) {
+    const n = 6 + Math.floor(rnd() * 6);
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * Math.PI * 2;
+      const r = o.radius * (0.9 + rnd() * 0.8);
+      const x = o.x + Math.cos(a) * r;
+      const z = o.z + Math.sin(a) * r;
+      const ground = floor.height(x, z);
+      if (ground > -2) continue;
+      const y = ground - 0.05;
+      if (rnd() < 0.65) {
+        tuft(leaves, rnd, x, y, z, 6 + Math.floor(rnd() * 5), LeafType.SEA_ROD,
+          [0.5, 1.3], [0.032, 0.05], [0.05, 0.42], [0.3, 0.42], 0.8, 0.16);
+      } else {
+        halimeda(leaves, rnd, x, y, z, 0.7);
       }
     }
   }

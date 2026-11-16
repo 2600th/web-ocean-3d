@@ -1,6 +1,21 @@
 import * as THREE from 'three/webgpu';
 import GTAONode from 'three/addons/tsl/display/GTAONode.js';
-import { Fn, float, floor, mix, perspectiveDepthToViewZ, reference, smoothstep, uniform, uv, vec2, vec4 } from 'three/tsl';
+import {
+  Fn,
+  float,
+  floor,
+  max,
+  min,
+  mix,
+  perspectiveDepthToViewZ,
+  reference,
+  screenSize,
+  smoothstep,
+  uniform,
+  uv,
+  vec2,
+  vec4,
+} from 'three/tsl';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -118,6 +133,22 @@ export interface AoSettings {
 /** [underwater-look-3] GTAO with the eye under water; see `setSubmerged`. */
 const UW_AO = { radius: 1.8, thickness: 3, strength: 1 };
 
+/**
+ * [underwater-look-3] Round 11. Silhouettes keep none of the occlusion under
+ * water: where the depth jumps between neighbours by more than this ratio of
+ * the nearer (fully by the second value), the AO fades out, by how submerged
+ * the eye is.
+ *
+ * GTAO runs at half resolution and its texels straddle a silhouette: the far
+ * surface behind a kelp blade is occluded by the blade, and the upsample
+ * carried that onto the blade's own edge pixels as a dark one-pixel rim, two
+ * pixels per step. Against the bright surface it outlined every leaf in a
+ * stepped dark line, the round-11 review's "aliased cut-outs" (underwater-1).
+ * Contact between a sponge and its rock is a small depth step and keeps all
+ * of it.
+ */
+const UW_EDGE_RATIO: readonly [number, number] = [0.12, 0.35];
+
 export class AmbientOcclusion {
   private readonly node: SequencedGTAO;
   private readonly uStrength = uniform(0.75);
@@ -127,6 +158,8 @@ export class AmbientOcclusion {
   /** Metres. AO fades out across this range; see `build`. */
   private readonly fadeStart = uniform(35);
   private readonly fadeEnd = uniform(90);
+  /** [underwater-look-3] Round 11: see `UW_EDGE_RATIO`. */
+  private readonly uEdgeRelief = uniform(0);
 
   constructor(
     private readonly depth: any,
@@ -179,7 +212,18 @@ export class AmbientOcclusion {
       // angle does. `|n.z|` is the view-space facing ratio, close enough to
       // n.v inside a 55-degree frustum.
       const facing: any = this.normal === null ? float(1) : this.normal.sample(p).z.abs().smoothstep(0.12, 0.4);
-      const k: any = this.uStrength.mul(float(1).sub(water)).mul(fade).mul(facing);
+      // [underwater-look-3] Round 11: silhouettes under water; see `UW_EDGE_RATIO`.
+      const texel = vec2(1).div(screenSize);
+      const viewD = (q: any): any => perspectiveDepthToViewZ(depth.sample(q).r, near, far).negate();
+      const dx0 = viewD(p.add(vec2(texel.x, 0)));
+      const dx1 = viewD(p.sub(vec2(texel.x, 0)));
+      const dy0 = viewD(p.add(vec2(0, texel.y)));
+      const dy1 = viewD(p.sub(vec2(0, texel.y)));
+      const dMin = min(min(dx0, dx1), min(dy0, dy1)).min(distance);
+      const dMax = max(max(dx0, dx1), max(dy0, dy1)).max(distance);
+      const silhouette = dMax.sub(dMin).div(dMin.max(0.1)).smoothstep(UW_EDGE_RATIO[0], UW_EDGE_RATIO[1]);
+      const relief = float(1).sub(silhouette.mul(this.uEdgeRelief));
+      const k: any = this.uStrength.mul(float(1).sub(water)).mul(fade).mul(facing).mul(relief);
       return vec4(c.rgb.mul(mix(float(1), a, k)), c.a);
     })();
   }
@@ -219,6 +263,7 @@ export class AmbientOcclusion {
   private submergedRadius(a: number): void {
     this.node.radius.value = 0.6 + (UW_AO.radius - 0.6) * a;
     this.node.thickness.value = 1.5 + (UW_AO.thickness - 1.5) * a;
+    this.uEdgeRelief.value = a;
     const strength = this.strength + (UW_AO.strength - this.strength) * a;
     this.uStrength.value = this.settings.enabled ? strength : 0;
   }
