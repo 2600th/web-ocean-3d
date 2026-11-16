@@ -416,6 +416,51 @@ const WATER_IOR = 1.333;
 const SNELL_EDGE_RELAX = 0.97;
 
 /**
+ * [water-reflect round 9] The hull's reflection, traced against a box.
+ *
+ * In `reflections-3` (clear-day-wide) the glitter ran straight up to the keel
+ * with no dark reflection under the hull. Neither existing source puts one
+ * there:
+ *  - the planar mirror reflects about y = 0, so the hull's image lands where a
+ *    flat sea would show it; the swell crest in front of the hull stands above
+ *    that plane, so the strip directly under the hull samples the mirror
+ *    below the hull's image and finds nothing. Its `facing` gate
+ *    (`smoothstep(0.02, 0.22, n.v)`) also thins what coverage there is at the
+ *    3-degree view of a hull 75 m off;
+ *  - SSR traces the true ray, but on the crest face, tilted toward the eye,
+ *    the ray climbs steeply and finds the sails and rigging, not the hull;
+ *  - WebGL2 has neither, so its glitter reached the keel unmasked.
+ * The box needs no texture (the fragment stage is at its 16) and runs on
+ * both backends. Length and beam are the hull's own, as `Ship` measures them,
+ * scaled to the hull above the water (no bowsprit, the sides' tumblehome).
+ */
+const HULL_MIRROR_LENGTH = 0.86;
+const HULL_MIRROR_BEAM = 0.85;
+
+/**
+ * Distance from the hull, metres, over which its traced reflection fades out.
+ * Past a few hull lengths the swell has broken any reflection of a 4-8 m
+ * freeboard into specks; 30-100 m left too little under clear-day-wide's
+ * hull, 40-140 m drew bands almost to the camera.
+ */
+const HULL_MIRROR_REACH: [number, number] = [35, 120];
+
+/**
+ * The hull's side as the mirror shows it: dark wood, lit by the sky and, on
+ * the side facing it, a share of the sun. Over the sky colours, so it follows
+ * the preset and the time of day.
+ */
+const HULL_MIRROR_ALBEDO: [number, number, number] = [0.09, 0.06, 0.04];
+
+/**
+ * Softness of the hull's shadow in the glitter: metres at the hull, and
+ * metres more per metre from it, as a penumbra widens. At 1 m the box's stern
+ * corner cut a straight vertical edge into the glitter under the stern
+ * castle; at 3 m it still read; at 6 m it is a soft boundary.
+ */
+const HULL_SHADE_SOFT: [number, number] = [6, 0.4];
+
+/**
  * [underwater-look-2] Share of the wave cascades' deviation the projected
  * refraction follows to the bed; the rest is the flat surface's. See `bent`.
  */
@@ -859,6 +904,11 @@ export class OceanMaterial {
   /** 1 while there is a hull to draw contact foam round, else 0. */
   private readonly uHullActive = uniform(0);
   /**
+   * The hull as the mirror sees it: half-length and half-beam of its box,
+   * waterline height, freeboard at the stern. See `HULL_MIRROR_LENGTH`.
+   */
+  private readonly uHullProfile = uniform(new THREE.Vector4(1, 1, 0, 0));
+  /**
    * Multiplier on the wake's elevation channel, 0..1.
    *
    * A tier knob rather than an art knob: the wake displacement costs two extra
@@ -1127,7 +1177,19 @@ export class OceanMaterial {
    * them; the waterline is taken as 0.84 of the length (no bowsprit) and the
    * full beam. `null` switches the band off.
    */
-  setHull(hull: { x: number; z: number; heading: number; length: number; beam: number } | null): void {
+  setHull(
+    hull: {
+      x: number;
+      z: number;
+      heading: number;
+      length: number;
+      beam: number;
+      /** Waterline height (the ship's heave), metres. For the hull's reflection. */
+      y?: number;
+      /** Highest point of the hull above the waterline, metres. */
+      freeboard?: number;
+    } | null,
+  ): void {
     if (hull === null) {
       this.uHullActive.value = 0;
       return;
@@ -1135,6 +1197,12 @@ export class OceanMaterial {
     (this.uHullCentre.value as THREE.Vector2).set(hull.x, hull.z);
     (this.uHullForward.value as THREE.Vector2).set(Math.cos(hull.heading), Math.sin(hull.heading));
     (this.uHullHalf.value as THREE.Vector2).set(Math.max(0.5, hull.length * 0.42), Math.max(0.3, hull.beam * 0.5));
+    (this.uHullProfile.value as THREE.Vector4).set(
+      Math.max(0.5, hull.length * 0.5 * HULL_MIRROR_LENGTH),
+      Math.max(0.3, hull.beam * 0.5 * HULL_MIRROR_BEAM),
+      hull.y ?? 0,
+      hull.freeboard ?? 0,
+    );
     this.uHullActive.value = 1;
   }
 
@@ -2274,6 +2342,84 @@ export class OceanMaterial {
         reflection.assign(ssr(worldPos, n, reflection));
       }
 
+      // --- the hull in the mirror, traced ------------------------------------------
+      //
+      // See HULL_MIRROR_LENGTH for why. A ray is tested against a box at the
+      // hull's pose whose top follows its sheer (waist, forecastle, stern
+      // castle): it meets the hull if it enters the box below that line.
+      // Traced twice. Along the reflected ray it is the hull's reflection; along
+      // the sun's direction it is the hull's shadow on the water, which is what
+      // takes the glitter away in front of a backlit hull (below).
+      const hullHit = float(0).toVar();
+      const hullShade = float(0).toVar();
+      const traceHull = (dir: any, softBase: any, softGrow: any) => {
+        const fwd = this.uHullForward;
+        const right = vec2(fwd.y.negate(), fwd.x);
+        const rel = worldPos.xz.sub(this.uHullCentre).toVar();
+        const ox = rel.dot(fwd).toVar();
+        const oz = rel.dot(right).toVar();
+        const rxz = dir.xz.toVar();
+        const dx = rxz.dot(fwd).toVar();
+        const dz = rxz.dot(right).toVar();
+        const halfL = this.uHullProfile.x;
+        const halfB = this.uHullProfile.y;
+        const invX = float(1).div(dx.add(dx.greaterThanEqual(0).select(float(1e-5), float(-1e-5)))).toVar();
+        const invZ = float(1).div(dz.add(dz.greaterThanEqual(0).select(float(1e-5), float(-1e-5)))).toVar();
+        const tx1 = halfL.negate().sub(ox).mul(invX);
+        const tx2 = halfL.sub(ox).mul(invX);
+        const tz1 = halfB.negate().sub(oz).mul(invZ);
+        const tz2 = halfB.sub(oz).mul(invZ);
+        const txN = tx1.min(tx2).toVar();
+        const tzN = tz1.min(tz2).toVar();
+        const tNear = txN.max(tzN).max(0).toVar();
+        const tFar = tx1.max(tx2).min(tz1.max(tz2)).toVar();
+        // The edges soften with distance from the hull, as a penumbra does and
+        // as the swell's own distortion of the hull's outline does. A box's
+        // straight edge kept sharp at forty metres reads as a box.
+        const soft: any = float(softGrow).mul(tNear).add(softBase).toVar();
+        // Metres of the box's plan the ray crosses: a soft side edge.
+        const span = tFar.sub(tNear).mul(rxz.length()).smoothstep(0, soft.mul(0.6));
+        // The sheer: the waist at half the freeboard, the forecastle at two
+        // thirds, the stern castle at all of it. `along` is +1 at the bow. The
+        // box's ends are not the hull's: the bow runs in to a stem and the
+        // stern to a transom, so the line comes down at both rather than the
+        // box showing as square corners past the hull.
+        const along = ox.add(dx.mul(tNear)).div(halfL).toVar();
+        const sheer = float(0.5)
+          .add(along.smoothstep(-0.45, -0.85).mul(0.5))
+          .add(along.smoothstep(0.5, 0.9).mul(0.15))
+          .mul(along.smoothstep(1, 0.72))
+          .mul(along.smoothstep(-1, -0.9))
+          .mul(this.uHullProfile.w);
+        const entryY = worldPos.y.add(dir.y.mul(tNear)).sub(this.uHullProfile.z);
+        const below = sheer.sub(entryY).smoothstep(soft.mul(-0.35), soft.mul(0.35));
+        const hit = span.mul(below).mul(tFar.greaterThan(tNear).select(float(1), float(0)));
+        // The side it entered by.
+        const sideXZ = tzN.greaterThan(txN).select(right.mul(dz.sign().negate()), fwd.mul(dx.sign().negate()));
+        return { hit, tNear, side: vec3(sideXZ.x, 0, sideXZ.y) };
+      };
+      If(this.uHullActive.greaterThan(0.5), () => {
+        const sunDir = normalize(this.uSunDirection).toVar();
+        const seen = traceHull(reflectDir, 1, 0.03);
+        // Beyond a few hull lengths the facet's ray is metres off any waterline
+        // the swell has not already hidden; fade rather than draw a long column.
+        const reach = float(1).sub(seen.tNear.smoothstep(HULL_MIRROR_REACH[0], HULL_MIRROR_REACH[1]));
+        hullHit.assign(seen.hit.mul(reach));
+        // Lit by the sky and, on the side facing the sun, the sun.
+        const sunOn = seen.side.dot(sunDir).max(0);
+        const hullColor = vec3(...HULL_MIRROR_ALBEDO).mul(
+          mix(this.uHorizonColor, this.uSkyColor, 0.35).add((this.uSunColor as any).mul(sunOn).mul(0.3)),
+        );
+        // Where the planar mirror already has the hull, its image (rigging,
+        // planking, the sunlit side) is the better one: this fills only where
+        // the mirror has nothing, which is the strip SSR and the flat mirror miss.
+        reflection.assign(mix(reflection, hullColor, hullHit.mul(objectCover.oneMinus())));
+        // The sun below the horizon casts nothing the glitter would show.
+        If(sunDir.y.greaterThan(0), () => {
+          hullShade.assign(traceHull(sunDir, HULL_SHADE_SOFT[0], HULL_SHADE_SOFT[1]).hit);
+        });
+      });
+
       // --- sun glitter: anisotropic Gaussian slope distribution ----------------
       //
       // web-ocean's glitter (ocean.js, "sun glitter"), replacing the anisotropic
@@ -2450,6 +2596,11 @@ export class OceanMaterial {
       // above shows instead. The sun's shadow map would be the exact test, but
       // it is a seventeenth texture; the mirror's coverage is already read.
       specular.mulAssign(objectCover.oneMinus());
+      // [water-reflect round 9] And where the traced hull takes the reflected
+      // ray, or stands between this facet and the sun (its shadow on the water),
+      // which the mirror's coverage misses under a hull on a swell and does not
+      // exist on WebGL2 at all; see HULL_MIRROR_LENGTH.
+      specular.mulAssign(hullHit.max(hullShade).oneMinus());
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
