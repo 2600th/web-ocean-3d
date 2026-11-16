@@ -44,6 +44,13 @@ shader and its world layout:
 - `src/scene/Kelp.ts`
 - `src/scene/GroundCover.ts`
 
+The kelp forest's density follows abyssal-garden's `world.js` layout: holdfasts
+on a minimum-spacing occupancy grid where a thresholded fbm field says the
+forest is solid (`tryColumn`, `kelpDens`), outlying stands past the rim, and
+viewpoints kept clear of columns. Its canopy shade is a per-leaf stand-in for
+abyssal's skylight bake (each column's absorption propagated down through the
+cells below it), in `src/scene/Kelp.ts`.
+
 The seabed geology and its reef dressing are adapted from abyssal-garden's
 world builder: icosphere rock chunks, naive surface nets and layered-rock
 shading (`src/scene/reef/RockKit.ts`), the outcrop density profile of segment

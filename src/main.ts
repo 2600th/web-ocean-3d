@@ -29,6 +29,7 @@ import {
   SEAFLOOR_EXTENT,
   Seafloor,
   seafloorHeight,
+  reefSeeps,
   ISLAND,
   Ship,
   SurfaceWetness,
@@ -986,6 +987,19 @@ class App {
     this.seafloor.setRockInfluence(this.rocks.influence);
     this.reefLife = new ReefLife(quality.reefLife, { shading: seabedShading, gardens: this.rocks.gardens });
     this.scene.add(this.reefLife.object);
+    // [underwater-look-3] Round 11: bubble streams on the reef; see `reefSeeps`.
+    // A vent under an outcrop rises from the rock's top, not from inside it.
+    {
+      const ray = new THREE.Raycaster();
+      const down = new THREE.Vector3(0, -1, 0);
+      this.rocks.object.updateMatrixWorld(true);
+      const seeps = reefSeeps().map((site) => {
+        ray.set(new THREE.Vector3(site.x, 0, site.z), down);
+        const hit = ray.intersectObject(this.rocks.object, true)[0];
+        return hit && hit.point.y > site.y ? { ...site, y: hit.point.y - 0.05 } : site;
+      });
+      this.particles.setSeeps(seeps);
+    }
 
     // The animals that live on it, homed on the same sites.
     this.creatures = new SeaCreatures(quality.seaCreatures, {
@@ -1018,13 +1032,14 @@ class App {
         uniforms: this.kelp.uniforms,
         forests: this.kelp.forests,
         columns: this.kelp.columns,
+        outcrops: this.kelp.outcrops,
         clearings: [...sites.plateau, ...sites.island],
         shading,
         range: quality.vegetationRange * 0.65,
       });
       this.scene.add(this.seabedCover.object);
       // [underwater-look-3] Round 10: stones at the holdfasts and between the stands.
-      this.rocks.addKelpBedStones(this.kelp.columns, this.kelp.forests);
+      this.rocks.addKelpBedStones(this.kelp.columns, this.kelp.forests, this.kelp.outcrops);
     }
 
     // Everything that lives under the surface goes on its own layer, kept out of

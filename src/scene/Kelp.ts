@@ -164,6 +164,67 @@ const FILL_RANGE: readonly [number, number] = [0.7, 1.3];
 /** Holdfast haptera: count and reach grow with the plant's age. */
 const HOLDFAST_COUNT: readonly [number, number] = [8, 17];
 const HOLDFAST_REACH: readonly [number, number] = [0.55, 1.25];
+
+/**
+ * [underwater-look-3] Round 11. A denser forest, from its own generators so
+ * every existing column keeps its place and its leaves.
+ *
+ * The round-11 review read the kelp-wide view as stands against an empty
+ * cyan void; abyssal-garden's is a forest of walls. Its `tryColumn` keeps
+ * holdfasts 2.3 m apart on an occupancy grid and its `kelpDens` field (an fbm
+ * threshold under hand-placed zones of density up to one) decides where the
+ * forest is solid. Ported: inside every forest, `DENSE_SPACING` apart, where
+ * a thresholded fbm (`DENSE_FIELD`) says the forest is a wall, at
+ * `DENSE_TRIES` darts per square spacing. And past the rim, `FAR_STANDS`
+ * stands of `FAR_STAND_COLUMNS` per forest between `FAR_STAND_REACH` radii,
+ * so the forest recedes into the haze in overlapping masses instead of
+ * stopping at a line.
+ */
+const DENSE_SPACING = 1.75;
+const DENSE_FIELD: readonly [number, number] = [0.38, 0.54];
+const DENSE_TRIES = 1.6;
+const FAR_STANDS = 9;
+const FAR_STAND_REACH: readonly [number, number] = [1.1, 1.9];
+const FAR_STAND_RADIUS: readonly [number, number] = [4, 8];
+const FAR_STAND_COLUMNS: readonly [number, number] = [6, 14];
+
+/**
+ * [underwater-look-3] Round 11. Canopy shade, abyssal-garden's skylight bake
+ * in miniature: there every column adds 0.17 of absorption to the cells of
+ * its height and the skylight is propagated down through them, so a dense
+ * stand is dark inside and lit at its edges. Here, per leaf, the leaf mass of
+ * the neighbouring columns standing above it within `CANOPY_REACH` metres
+ * (each weighted by how near it is and how much of it is overhead) takes the
+ * leaf's light down by `exp(-CANOPY_K * mass)`, floored at `CANOPY_FLOOR`.
+ * A leaf on the open side of a stand has few columns over it and keeps its
+ * light: the lit edges.
+ */
+const CANOPY_REACH = 4.5;
+const CANOPY_K = 0.5;
+const CANOPY_FLOOR = 0.2;
+
+/**
+ * [underwater-look-3] Round 11. Rock outcrops among the stands: sites in the
+ * gaps of every forest, at least `OUTCROP_GAP` metres from any holdfast, for
+ * `Rocks.addKelpBedStones` to pile boulders on and `GroundCover` to grow sea
+ * rods round. Up to `OUTCROPS_PER_FOREST` per forest.
+ */
+const OUTCROPS_PER_FOREST = 9;
+const OUTCROP_GAP = 2.4;
+
+/**
+ * [underwater-look-3] Round 11. Viewpoints the added columns keep clear of, as
+ * abyssal-garden keeps its fly-through points clear of columns within 5 m and
+ * frames them with the columns it places by hand. Per forest, offsets from its
+ * centre in metres, `[dx, dz, dxPerRadius, dzPerRadius, clear]`: the glade
+ * under the canopy looking up at the sun (kelp-up, kelp-sun) and the approach
+ * from outside the rim looking in (kelp-wide). Only the new walls and far
+ * stands keep out; every existing column stands where it stood.
+ */
+const VIEWPOINTS: readonly (readonly [number, number, number, number, number])[] = [
+  [-6, -5, 0, 0, 9],
+  [-8, -4, -0.75, -0.75, 11],
+];
 /** Steepest floor a holdfast takes, as a gradient. */
 const MAX_SLOPE = 0.5;
 
@@ -218,6 +279,8 @@ export class KelpForest {
   readonly forests: readonly Forest[];
   /** Column holdfasts, for the ground cover's understorey and for a harness. */
   readonly columns: readonly { x: number; y: number; z: number; height: number }[];
+  /** [underwater-look-3] Round 11: rock outcrop sites among the stands; see `OUTCROPS_PER_FOREST`. */
+  readonly outcrops: readonly { x: number; z: number; radius: number }[];
 
   private readonly field: LeafField;
   private disposed = false;
@@ -228,8 +291,9 @@ export class KelpForest {
     const clearings = [...(options.clearings ?? []), ...defaultClearings()];
     const forests = placeForests(random, clearings);
     this.forests = forests;
-    const { leaves, columns } = growForests(random, floor, forests, clearings, options.reefs ?? []);
+    const { leaves, columns, outcrops } = growForests(random, floor, forests, clearings, options.reefs ?? []);
     this.columns = columns;
+    this.outcrops = outcrops;
 
     this.field = new LeafField(leaves, this.uniforms, {
       name: 'kelp-forest',
@@ -414,7 +478,11 @@ function growForests(
   forests: Forest[],
   clearings: readonly Clearing[],
   reefs: readonly Clearing[],
-): { leaves: Leaf[]; columns: { x: number; y: number; z: number; height: number }[] } {
+): {
+  leaves: Leaf[];
+  columns: { x: number; y: number; z: number; height: number }[];
+  outcrops: { x: number; z: number; radius: number }[];
+} {
   const columns: Column[] = [];
   const grid = new Map<number, Column[]>();
   const gridKey = (x: number, z: number) => (Math.floor(x / 6) + 8192) * 16384 + (Math.floor(z / 6) + 8192);
@@ -570,15 +638,116 @@ function growForests(
     }
   }
 
+  // [underwater-look-3] Round 11: the walls and the far stands. See
+  // `DENSE_SPACING`. Their own generators, after every existing column.
+  const existing = columns.length;
+  const views = forests.flatMap((f) =>
+    VIEWPOINTS.map(([dx, dz, kx, kz, clear]) => ({ x: f.x + dx + kx * f.radius, z: f.z + dz + kz * f.radius, clear })),
+  );
+  const plant = (x: number, z: number, h01: number, kind: number, fill: number, spacing: number): boolean => {
+    if (inClearing(x, z, clearings, 3)) return false;
+    if (views.some((v) => Math.hypot(v.x - x, v.z - z) < v.clear)) return false;
+    if (near(x, z, spacing).length > 0) return false;
+    const depth = -seafloorPlacementHeight(x, z);
+    const ground = floor.height(x, z);
+    if (depth < 5 || depth > 28 || floor.slope(x, z) > MAX_SLOPE) return false;
+    const maxH = Math.min(MAX_COLUMN, Math.min(depth, -ground) - TOP_CLEARANCE);
+    if (maxH < MIN_COLUMN) return false;
+    const column: Column = {
+      x,
+      y: ground - HOLDFAST_SINK,
+      z,
+      height: Math.max(MIN_COLUMN, maxH * (0.6 + 0.4 * h01)),
+      kind,
+      fill,
+      crowd: 0,
+    };
+    columns.push(column);
+    const key = gridKey(x, z);
+    let list = grid.get(key);
+    if (!list) grid.set(key, (list = []));
+    list.push(column);
+    return true;
+  };
+  for (const forest of forests) {
+    const rng = mulberry32((hash2(forest.x * 0.61 + 5.5, forest.z * 0.47 - 2.5) * 4294967296) >>> 0);
+    const tries = Math.ceil(((Math.PI * forest.radius * forest.radius) / (DENSE_SPACING * DENSE_SPACING)) * DENSE_TRIES);
+    for (let i = 0; i < tries; i++) {
+      const a = rng() * Math.PI * 2;
+      const rr = Math.sqrt(rng()) * 1.1;
+      const x = forest.x + Math.cos(a) * rr * forest.radius;
+      const z = forest.z + Math.sin(a) * rr * forest.radius;
+      const h01 = rng();
+      const kind = rng() < 0.12 ? 2 : 0;
+      const fill = 0.6 + 0.6 * rng();
+      const wall = smoothstep(DENSE_FIELD[0], DENSE_FIELD[1], fbm(x * 0.045, z * 0.045, 0x7a11, 3));
+      const dens = wall * (1 - smoothstep(0.88, 1.1, rr));
+      if (rng() > dens) continue;
+      plant(x, z, h01, kind, fill, DENSE_SPACING);
+    }
+    for (let k = 0; k < FAR_STANDS; k++) {
+      const bearing = rng() * Math.PI * 2;
+      const reach = forest.radius * (FAR_STAND_REACH[0] + rng() * (FAR_STAND_REACH[1] - FAR_STAND_REACH[0]));
+      const cx = forest.x + Math.cos(bearing) * reach;
+      const cz = forest.z + Math.sin(bearing) * reach;
+      const radius = FAR_STAND_RADIUS[0] + rng() * (FAR_STAND_RADIUS[1] - FAR_STAND_RADIUS[0]);
+      const want = FAR_STAND_COLUMNS[0] + Math.floor(rng() * (FAR_STAND_COLUMNS[1] - FAR_STAND_COLUMNS[0] + 1));
+      let planted = 0;
+      for (let t = 0; t < want * 4 && planted < want; t++) {
+        const a = rng() * Math.PI * 2;
+        const r = Math.sqrt(rng()) * radius;
+        const h01 = rng();
+        const kind = rng() < 0.12 ? 2 : 0;
+        const fill = 0.6 + 0.5 * rng();
+        if (plant(cx + Math.cos(a) * r, cz + Math.sin(a) * r, h01, kind, fill, DENSE_SPACING)) planted++;
+      }
+    }
+  }
+  // Outcrop sites in the gaps; see `OUTCROPS_PER_FOREST`.
+  const outcrops: { x: number; z: number; radius: number }[] = [];
+  for (const forest of forests) {
+    const rng = mulberry32((hash2(forest.z * 0.73 - 9.1, forest.x * 0.29 + 3.3) * 4294967296) >>> 0);
+    let placed = 0;
+    for (let k = 0; k < OUTCROPS_PER_FOREST * 4 && placed < OUTCROPS_PER_FOREST; k++) {
+      const a = rng() * Math.PI * 2;
+      const r = Math.sqrt(rng()) * forest.radius * 1.2;
+      const x = forest.x + Math.cos(a) * r;
+      const z = forest.z + Math.sin(a) * r;
+      const want = 1.2 + rng() * 2.2;
+      if (inClearing(x, z, clearings, 2)) continue;
+      if (near(x, z, want + OUTCROP_GAP).length > 0) continue;
+      if (outcrops.some((o) => Math.hypot(o.x - x, o.z - z) < o.radius + want + 3)) continue;
+      const depth = -seafloorPlacementHeight(x, z);
+      if (depth < 6 || depth > 28) continue;
+      outcrops.push({ x, z, radius: want });
+      placed++;
+    }
+  }
+
   // Crowding: how much of the sky a column's neighbours take. Drives the baked
   // occlusion, standing in for abyssal's skylight volume.
   for (const c of columns) c.crowd = Math.min(1, (near(c.x, c.z, 6).length - 1) / 6);
 
+  // [underwater-look-3] Round 11: canopy shade; see `CANOPY_K`.
+  const canopy = (x: number, z: number, y: number): number => {
+    let mass = 0;
+    for (const o of near(x, z, CANOPY_REACH)) {
+      const d = Math.hypot(o.x - x, o.z - z);
+      if (d < 0.9) continue; // its own column
+      const over = Math.min(1, Math.max(0, (o.y + o.height - y) / 6));
+      mass += (1 - smoothstep(1, CANOPY_REACH, d)) * over * o.fill;
+    }
+    return Math.max(CANOPY_FLOOR, Math.exp(-CANOPY_K * mass));
+  };
+
   const leaves: Leaf[] = [];
-  for (const c of columns) growColumn(leaves, random, c);
+  for (let i = 0; i < existing; i++) growColumn(leaves, random, columns[i], canopy);
+  const rngGrow = mulberry32(0x0b5e55ed);
+  for (let i = existing; i < columns.length; i++) growColumn(leaves, rngGrow, columns[i], canopy);
   return {
     leaves,
     columns: columns.map((c) => ({ x: c.x, y: c.y, z: c.z, height: c.height })),
+    outcrops,
   };
 }
 
@@ -637,7 +806,12 @@ function clumpColumns(columns: Column[], floor: FloorCache): void {
  * nearly horizontal low and lifting toward vertical near the top, which is the
  * silhouette in `kelp-forest.jpg`.
  */
-function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
+function growColumn(
+  leaves: Leaf[],
+  rnd: () => number,
+  c: Column,
+  canopy: (x: number, z: number, y: number) => number = () => 1,
+): void {
   const rr = (a: number, b: number) => a + (b - a) * rnd();
   const TAU = Math.PI * 2;
   // [underwater-look-3] Round 10: the plant's own character; see `YOUNG_HEIGHT`.
@@ -725,7 +899,7 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
       leaves.push({
         x: p[0], y: c.y + h, z: p[1], len: Math.min(2.1, top - h + 0.2), yaw: p[2] + Math.PI / 2, tilt: 0.1,
         width: 0.17 * mix(0.75, 1.1, grown * (0.6 + 0.4 * gSize)), hA: h,
-        type: LeafType.STIPE, s1: rnd(), s2: rnd(), bend: 0.3, ao: occlusion(h / H) * darkK, keep: true,
+        type: LeafType.STIPE, s1: rnd(), s2: rnd(), bend: 0.3, ao: occlusion(h / H) * darkK * canopy(p[0], p[1], c.y + h), keep: true,
       });
     }
   }
@@ -748,7 +922,7 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
     if (old > 0 && hash2(p[0] * 3.7 + h, p[1] * 2.9 - h) < OLD_YELLOW * old) s2 = 0.87 + 0.13 * s2;
     leaves.push({
       x: p[0], y: c.y + h, z: p[1], len: L, yaw: rnd() * TAU, tilt, width: L * rr(0.15, 0.21) + 0.03, hA: h,
-      type, s1, s2, bend, ao: occlusion(t) * darkK,
+      type, s1, s2, bend, ao: occlusion(t) * darkK * canopy(p[0], p[1], c.y + h),
     });
   }
 

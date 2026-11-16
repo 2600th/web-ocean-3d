@@ -914,6 +914,31 @@ export function reefPatches(): readonly { x: number; z: number }[] {
 }
 
 /**
+ * [underwater-look-3] Round 11. Vents for `UnderwaterParticles.setSeeps`:
+ * `SEEPS_PER_PATCH` per reef patch, between `SEEP_REACH` of its radius from
+ * the centre, on the bed. Its own generator, so nothing else moves.
+ */
+const SEEPS_PER_PATCH = 3;
+const SEEP_REACH: readonly [number, number] = [0.25, 0.8];
+
+export function reefSeeps(): { x: number; y: number; z: number }[] {
+  const random = mulberry32(REEF_PATCH_SEED ^ 0x5ee95);
+  const out: { x: number; y: number; z: number }[] = [];
+  for (const patch of reefPatches()) {
+    for (let i = 0; i < SEEPS_PER_PATCH; i++) {
+      const a = random() * Math.PI * 2;
+      const r = REEF_BAND.patchRadius * (SEEP_REACH[0] + random() * (SEEP_REACH[1] - SEEP_REACH[0]));
+      const x = patch.x + Math.cos(a) * r;
+      const z = patch.z + Math.sin(a) * r;
+      const y = seafloorPlacementHeight(x, z);
+      if (y > -4) continue;
+      out.push({ x, y, z });
+    }
+  }
+  return out;
+}
+
+/**
  * The two world periods the sand normal is sampled at, metres.
  *
  * 13 and 47 are coprime enough that the pair does not visibly repeat inside the

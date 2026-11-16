@@ -547,6 +547,35 @@ const MACRO_RANGE: readonly [number, number] = [0.72, 1.22];
 const SEAM_WARP = 0.45;
 const SEAM_WIDTH = 0.07;
 const SEAM_DARK = 0.3;
+/**
+ * [underwater-look-3] Round 11. Grain, cracks and crust instead of spots.
+ *
+ * The detail texture's height carries a cellular term (`rockDetailTexture`'s
+ * pebble domes, 24 to a tile), and the albedo was multiplied by that height
+ * over a 0.22..1.52 range at the 2.6 m scale and the grain's pits over
+ * 0.35..1.65: every boulder in mound-close came out in 11 cm dark dots, the
+ * round-11 review's "leopard-spot pit pattern". The texture is shared with
+ * the seabed's rubble, so it is left alone and the rock reads it differently:
+ *
+ * - tone: the broad height, the 2.6 m scale's *colour* field (fractal, no
+ *   cells) and the fine height, over `TONE_RANGE`, so the stone has grain and
+ *   mottling without a lattice of dots;
+ * - the grain scale's colour field rather than its pits, over `GRAIN_RANGE`;
+ * - cracks: where the 2.6 m colour field crosses its middle, a line
+ *   `CRACK_WIDTH` wide in field units, broken up by the broad colour field
+ *   and darkened by `CRACK_DARK`, inside the fine scale's fade;
+ * - the mid scale's bump at `MID_BUMP` (was 0.65), and the ambient's cavities
+ *   from the broad height and the mid colour field, so the domes no longer
+ *   shade as pebbles either;
+ * - crust (`CRUST_GAIN`): the coralline and pale crusts spread wider over
+ *   the upper faces, the encrusting growth the review asked for.
+ */
+const TONE_RANGE: readonly [number, number] = [0.3, 1.45];
+const GRAIN_RANGE: readonly [number, number] = [0.7, 1.25];
+const CRACK_WIDTH = 0.018;
+const CRACK_DARK = 0.55;
+const MID_BUMP = 0.35;
+const CRUST_GAIN = 1.2;
 
 /**
  * The rock material: one for every outcrop, boulder and pebble, so the shelf
@@ -655,7 +684,15 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
       ),
     );
     // Coralline encrustation: crimson to ochre crusts in warm patches.
-    const enc = big2.mul(0.6).add(B.hc.y.mul(0.5)).smoothstep(0.4, 0.55).mul(height.smoothstep(0.25, 0.55));
+    // [underwater-look-3] Round 11: wider, on the upper faces; see `CRUST_GAIN`.
+    const enc = big2
+      .mul(0.6)
+      .add(B.hc.y.mul(0.5))
+      .smoothstep(0.36, 0.52)
+      .mul(height.smoothstep(0.22, 0.5))
+      .mul(n0.y.smoothstep(-0.3, 0.5).mul(0.5).add(0.5))
+      .mul(CRUST_GAIN)
+      .min(1);
     const crust = mix(vec3(0.34, 0.06, 0.08), vec3(0.4, 0.22, 0.06), A.hc.y.smoothstep(0.45, 0.6)).mul(
       B.hc.x.mul(0.8).add(0.5),
     );
@@ -670,10 +707,23 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     // Cavities of the height field, with the fine scale breaking it up close.
     // [underwater-look-3] Round 7: the fine scale at 1.1 from 0.76 (0.45..1.55
     // across its range rather than 0.62..1.38); see `SCALE_GRAIN`.
-    albedo.mulAssign(height.mul(1.3).add(0.22).mul(mix(float(1), C.hc.x.mul(1.1).add(0.45), fine)));
-    // [underwater-look-3] Round 7: the grain's pits, and the macro field; see
-    // `SCALE_GRAIN` and `MACRO_METRES`.
-    albedo.mulAssign(mix(float(1), D.hc.x.mul(1.3).add(0.35), grain.mul(crisp).min(1.3)));
+    // [underwater-look-3] Round 11: tone without the cellular domes; see `TONE_RANGE`.
+    const tone = A.hc.x.mul(0.55).add(B.hc.y.mul(0.3)).add(C.hc.x.mul(0.15));
+    albedo.mulAssign(mix(float(TONE_RANGE[0]), float(TONE_RANGE[1]), tone).mul(mix(float(1), C.hc.y.mul(0.8).add(0.6), fine)));
+    // [underwater-look-3] Round 7: the grain, and the macro field; see
+    // `SCALE_GRAIN` and `MACRO_METRES`. Round 11: its colour field, not its
+    // pits; see `GRAIN_RANGE`.
+    albedo.mulAssign(mix(float(1), mix(float(GRAIN_RANGE[0]), float(GRAIN_RANGE[1]), D.hc.y), grain.mul(crisp).min(1.3)));
+    // [underwater-look-3] Round 11: cracks; see `CRACK_WIDTH`.
+    const crack = B.hc.y
+      .sub(0.5)
+      .abs()
+      .smoothstep(0, CRACK_WIDTH)
+      .oneMinus()
+      .mul(A.hc.y.smoothstep(0.42, 0.58))
+      .mul(fine)
+      .mul(float(1).sub(enc.mul(0.8)));
+    albedo.mulAssign(float(1).sub(crack.mul(CRACK_DARK)));
     albedo.mulAssign(mix(float(MACRO_RANGE[0]), float(MACRO_RANGE[1]), macro));
     return vec4(albedo, 1);
   })();
@@ -682,7 +732,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     // Seam grooves bend the normal down into the bed line on the steep faces.
     const groove = seam.mul(-0.8);
     const n = n0
-      .add(A.bump.mul(0.85).add(B.bump.mul(0.65)).add(C.bump.mul(fine.mul(0.5).mul(crisp))).add(D.bump.mul(grain.mul(0.45).mul(crisp))).mul(1.6))
+      .add(A.bump.mul(0.85).add(B.bump.mul(MID_BUMP)).add(C.bump.mul(fine.mul(0.5).mul(crisp))).add(D.bump.mul(grain.mul(0.45).mul(crisp))).mul(1.6))
       .add(vec3(0, groove, 0));
     return cameraViewMatrix.mul(vec4(n.normalize(), 0)).xyz.normalize();
   })();
@@ -694,7 +744,10 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     // Under water the ambient is in-scattered light from every side, not a
     // sky dome, so a wall keeps most of it; only a true underside loses it.
     const sky = n0.y.mul(0.5).add(0.5).smoothstep(0, 0.6).mul(0.45).add(0.55);
-    return baked.mul(0.7).add(0.3).mul(sky).mul(height.smoothstep(0.12, 0.6).mul(0.35).add(0.65));
+    // [underwater-look-3] Round 11: cavities from the broad height and the mid
+    // colour field, not the cellular domes; see `TONE_RANGE`.
+    const cavity = A.hc.x.mul(0.6).add(B.hc.y.mul(0.4));
+    return baked.mul(0.7).add(0.3).mul(sky).mul(cavity.smoothstep(0.2, 0.65).mul(0.35).add(0.65));
   })();
   return material;
 }
