@@ -405,10 +405,48 @@ const OBJECT_TREATMENT_FADE: readonly [number, number] = [0.5, 0.9];
  * this keeps the deck view's kelp from returning as dark strokes
  * (ship-underway; see `OBJECT_TREATMENT_FADE`).
  */
-const BED_SHARE = 0.42;
+const BED_SHARE = 0.52;
 const BED_LEGIBLE_DEPTH: readonly [number, number, number, number] = [5, 10, 24, 32];
 const BED_LEGIBLE_SLOPE: readonly [number, number] = [0.28, 0.5];
 const BED_REFERENCE_RADIUS = 0.09;
+/**
+ * [underwater-look-3] Round 12b. The bed's image softened before it darkens
+ * the water: in round 12 the ratio read the sharp refracted backdrop, so at
+ * seventeen metres the reef came out as hard-edged dark cut-outs stamped on the
+ * bed. Light coming back up through that much water is spread by forward
+ * scattering, and the moving surface bends it, so a deep bed shows as soft
+ * tonal patches that wobble with the waves.
+ * - Blur: the bed's luminance is the mean of `BED_BLUR_TAPS`, two rings (plus the centre),
+ *   over a footprint of radius `BED_BLUR_PER_M` of the column (0.8 m at 17 m),
+ *   projected to the screen at the bed's distance (`BED_BLUR_UV` caps it).
+ * - Wobble: the footprint's centre is pushed by the waves' slope,
+ *   `BED_WOBBLE` of the screen per unit slope, on top of the refraction the
+ *   backdrop already has, so the patches' edges move with the surface.
+ * - Feather: the darkening ramps in over `BED_FEATHER` of the bed's relative
+ *   darkness (sand ripples and caustic cells stay out; a reef head comes in
+ *   smoothly) instead of following the ratio one for one.
+ * Taps that land in front of the water are skipped, as the reference's are.
+ */
+const BED_BLUR_PER_M = 0.045;
+const BED_BLUR_UV: readonly [number, number] = [0.002, 0.05];
+const BED_WOBBLE = 0.03;
+const BED_FEATHER: readonly [number, number] = [0.04, 0.3];
+const BED_BLUR_TAPS: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [0.5, 0.866],
+  [-0.5, 0.866],
+  [-1, 0],
+  [-0.5, -0.866],
+  [0.5, -0.866],
+  // The inner ring, half as wide and turned 30 degrees: six taps alone printed
+  // six offset copies of every head and left the patches mottled.
+  [0.433, 0.25],
+  [0, 0.5],
+  [-0.433, 0.25],
+  [-0.433, -0.25],
+  [0, -0.5],
+  [0.433, -0.25],
+];
 const BED_REFERENCE_TAPS: readonly (readonly [number, number])[] = [
   [1, 0.35],
   [-0.35, 1],
@@ -2302,12 +2340,40 @@ export class OceanMaterial {
         bedReference.addAssign(refractedSample.sample(tapUv).rgb.dot(lumaW).mul(tapValid));
         bedReferenceWeight.addAssign(tapValid);
       }
-      const refractedLuma: any = refracted.dot(lumaW).toVar();
+      // Round 12b: the bed's own luminance, scattered and wobbled; see `BED_BLUR_PER_M`.
+      const bedDistance: any = backdropZ.mul(this.uDepthRange).max(1).toVar();
+      const blurUv: any = column
+        .mul(BED_BLUR_PER_M * 0.96)
+        .div(bedDistance)
+        .clamp(BED_BLUR_UV[0], BED_BLUR_UV[1])
+        .toVar();
+      const blurCentre: any = sampleUv
+        .add(refractNormal.xz.mul(BED_WOBBLE))
+        .clamp(0.002, 0.998)
+        .toVar();
+      const centreZ: any = linearDepth(behindDepth.sample(blurCentre)) as any;
+      const centreValid = centreZ.greaterThan(surfaceZ).select(1, 0);
+      const bedBlur: any = refracted.dot(lumaW).mul(0.5).toVar();
+      const bedBlurWeight: any = float(0.5).toVar();
+      bedBlur.addAssign(refractedSample.sample(blurCentre).rgb.dot(lumaW).mul(centreValid));
+      bedBlurWeight.addAssign(centreValid);
+      for (const [tx, ty] of BED_BLUR_TAPS) {
+        const tapUv = blurCentre.add(vec2(tx, ty).mul(blurUv)).clamp(0.002, 0.998).toVar();
+        const tapZ: any = linearDepth(behindDepth.sample(tapUv)) as any;
+        const tapValid = tapZ.greaterThan(surfaceZ).select(1, 0);
+        bedBlur.addAssign(refractedSample.sample(tapUv).rgb.dot(lumaW).mul(tapValid));
+        bedBlurWeight.addAssign(tapValid);
+      }
+      const refractedLuma: any = bedBlur.div(bedBlurWeight).toVar();
       const bedMean: any = bedReferenceWeight
         .greaterThan(0.5)
         .select(bedReference.div(bedReferenceWeight.max(1)), refractedLuma)
         .toVar();
-      const bedRatio: any = refractedLuma.div(bedMean.max(1e-5)).clamp(0, 1).toVar();
+      const bedDark: any = refractedLuma.div(bedMean.max(1e-5)).clamp(0, 1).oneMinus().toVar();
+      const bedRatio: any = bedDark
+        .mul(smoothstep(float(BED_FEATHER[0]), float(BED_FEATHER[1]), bedDark))
+        .oneMinus()
+        .toVar();
       const bedLegible: any = smoothstep(float(BED_LEGIBLE_SLOPE[0]), float(BED_LEGIBLE_SLOPE[1]), viewDir.y.abs())
         .mul(smoothstep(float(BED_LEGIBLE_DEPTH[0]), float(BED_LEGIBLE_DEPTH[1]), column))
         .mul(smoothstep(float(BED_LEGIBLE_DEPTH[3]), float(BED_LEGIBLE_DEPTH[2]), column))
