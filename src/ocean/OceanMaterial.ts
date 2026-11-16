@@ -259,6 +259,22 @@ const DETAIL_MIP_BIAS = 2;
  * grey horizon band the critic marked against Water Pro.
  */
 const SKY_REFLECTION_GAIN = 1.3;
+/**
+ * Where the gain above hands back to 1, as the sine of the view's elevation
+ * over the surface: 1 below 0.0015 (beyond about 2 km from a 3 m eye), the
+ * full gain above 0.012 (inside about 250 m).
+ *
+ * The gain makes up for an environment capture darker than the sky the frame
+ * shows, which holds for the near sea's mirror rays, aimed well up into the
+ * sky. At grazing the mirror ray is the horizon, the capture there matches
+ * the horizon the frame draws just above it, and Fresnel is near one: the far
+ * sea came out 1.3 times the horizon sky, a line brighter than both sky and
+ * sea that was the "bright horizon band" of the night and storm frames
+ * (measured in `storm`: sky 130, that line 149, sea below 118, sRGB; with the
+ * reflection removed the line went and the sky did not change, so neither
+ * the dome nor the haze drew it).
+ */
+const REFLECTION_GAIN_GRAZE = [0.0015, 0.012] as const;
 
 /**
  * Fresnel's flattening of the normal toward vertical, at a grazing view.
@@ -2358,8 +2374,11 @@ export class OceanMaterial {
       const skyBlend = reflectDir.y.clamp(0, 1).sqrt().toVar();
       const analyticSky = mix(this.uHorizonColor, this.uSkyColor, skyBlend);
       // Lifted toward the sky the frame shows: see SKY_REFLECTION_GAIN.
+      // Not at grazing, though (`REFLECTION_GAIN_GRAZE`): there the mirror ray
+      // is the horizon the frame itself shows just above, and lifting it drew a
+      // line brighter than both the sky and the sea along the horizon.
       const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
-        .mul(SKY_REFLECTION_GAIN)
+        .mul(mix(float(1), float(SKY_REFLECTION_GAIN), smoothstep(REFLECTION_GAIN_GRAZE[0], REFLECTION_GAIN_GRAZE[1], viewDir.y)))
         .toVar();
       /** How much of this pixel's mirror ray an object (hull, island) takes. */
       const objectCover = float(0).toVar();
