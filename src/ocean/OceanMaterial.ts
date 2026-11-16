@@ -385,6 +385,27 @@ const GLITTER_CEILING = 0.8;
 const BODY_NIGHT_FLOOR = 0.1;
 
 /**
+ * The sky luminance (the mean of the zenith and horizon the water reflects,
+ * scene-linear) at and above which the sky lights the column as fully as
+ * daylight does.
+ *
+ * The skylight share of the body's light, its night floor and the crest's
+ * sideways glow were fixed: a white skylight and a floor of a tenth of
+ * daylight whatever the sky was doing. At night the sky the water reflects
+ * falls to about 0.02-0.04 of this, but the body did not follow it: under the
+ * skyPro grade at 01:00 it drew the column at a quarter of its noon display
+ * level, ten times the sky it sat under, and the night sea was a self-lit teal
+ * sheet (night-deck, cinematic-night, the squall at t76). Those terms now
+ * scale with the measured sky against this reference instead.
+ *
+ * Every daylight preset's sky sits above it (measured from the clear-day-wide
+ * camera: dusk 0.434, storm 0.463, foggy 0.494, sunset 0.493, the rest 0.507),
+ * so in daylight the ratio clamps to exactly 1 and nothing changes; moonlit and
+ * the tour's night sit at 0.023-0.036.
+ */
+const BODY_SKY_DAYLIGHT = 0.4;
+
+/**
  * The body's radiance under full daylight, per unit of the authored
  * `deepColor`, in display-referred terms (it multiplies the white point).
  * The body was previously lit in scene units against a 0.42 exposure, so the
@@ -2238,6 +2259,13 @@ export class OceanMaterial {
       // `THIN_CREST_METRES`, and it grows toward `THICK_BODY_METRES` down the
       // face. Normalising by the sea state matters — a 0.4 m chop and a 6 m swell
       // have different crests, and a fixed metre scale makes one of them wrong.
+      // How fully the sky is lighting the water, against daylight's: 1 by day,
+      // a few hundredths under a night sky. See BODY_SKY_DAYLIGHT.
+      const skyLight = mix(this.uHorizonColor, this.uSkyColor, 0.5)
+        .dot(vec3(0.2126, 0.7152, 0.0722))
+        .div(BODY_SKY_DAYLIGHT)
+        .clamp(0, 1)
+        .toVar();
       const seaScale = this.uWaveScale.max(0.35).toVar();
       const heightAboveMean = worldPos.y.div(seaScale).clamp(0, 1).max(surfThin).toVar();
       const thickness = mix(
@@ -2325,7 +2353,9 @@ export class OceanMaterial {
           .mul(across.mul(0.6).add(0.4))
           .mul(awayFromSun.mul(0.6).add(0.4))
           .mul(this.uCrestGlow)
-          .mul(this.uLightLevel.min(1.2)),
+          .mul(this.uLightLevel.min(1.2))
+          // Mostly skylight through the thin water: it goes as the sky does.
+          .mul(skyLight),
       );
       // The breaker's backlit face (`surfFace`): skylight and sunlight through
       // a sheet of water a few tens of centimetres thick. Beer–Lambert through
@@ -2346,7 +2376,8 @@ export class OceanMaterial {
           .mul(awayFromSun.mul(0.5).add(0.5))
           .mul(across.mul(0.4).add(0.6))
           .mul(FACE_GLOW)
-          .mul(this.uLightLevel.min(1.2)),
+          .mul(this.uLightLevel.min(1.2))
+          .mul(skyLight),
       );
 
       // --- reflection ----------------------------------------------------------
@@ -2752,13 +2783,17 @@ export class OceanMaterial {
       // reaching the column is the sun's, tinted a third of the way to its
       // colour (the rest is skylight), and falls as the sun drops, toward the
       // night floor.
+      // The skylight share and the night floor are the measured sky's, not a
+      // fixed white and a fixed tenth: under a night sky they fall with it, and
+      // what is left is the moon's light, in the moon's colour (`skyLight`; see
+      // BODY_SKY_DAYLIGHT). In daylight `skyLight` is exactly 1.
       const sunLift = sunDirEarly.y.mul(2.2).clamp(0, 1).toVar();
       const upwelling = mix(
-        float(BODY_NIGHT_FLOOR),
+        skyLight.mul(BODY_NIGHT_FLOOR),
         float(1),
         this.uLightLevel.mul(sunLift.mul(0.7).add(0.3)),
       ).toVar();
-      const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
+      const bodyLight = mix(vec3(skyLight), this.uSunColor, 0.35)
         .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
         .toVar();
       // The body's facing is the swell's, not the ripples'. The light comes up
