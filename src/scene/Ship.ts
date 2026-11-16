@@ -48,6 +48,8 @@ export class Ship {
 
   readonly hullLength: number;
   readonly hullBeam: number;
+  /** Highest point of the hull above the waterline (the stern castle), metres. */
+  readonly hullFreeboard: number;
 
   /** Unit vector, in `object` space, that the bow points along. */
   readonly forwardLocal = new THREE.Vector3(1, 0, 0);
@@ -92,6 +94,7 @@ export class Ship {
 
     this.hullLength = size.x * scale;
     this.hullBeam = size.z * scale;
+    this.hullFreeboard = size.y * (1 - WATERLINE_FRACTION) * scale;
 
     const halfL = (this.hullLength / 2) * PROBE_LONGITUDINAL;
     const halfB = (this.hullBeam / 2) * PROBE_LATERAL;
