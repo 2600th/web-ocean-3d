@@ -2734,7 +2734,7 @@ export class OceanMaterial {
           // painted stripes", foam-4, round 8).
           const ragged = valueNoise(fieldXZ.mul(0.18).add(vec2(4.1, 2.7)))
             .sub(0.5)
-            .mul(0.035)
+            .mul(0.05)
             .add(valueNoise(fieldXZ.mul(0.6).add(vec2(9.2, 5.3))).sub(0.5).mul(0.02))
             .add(valueNoise(fieldXZ.mul(1.7).add(vec2(2.6, 13.1))).sub(0.5).mul(0.008));
           const sr = s.add(ragged).toVar();
@@ -2767,18 +2767,36 @@ export class OceanMaterial {
             .div(surfUniforms.height.max(0.2))
             .clamp(0.25, 2)
             .toVar();
+          //
+          // **Peeling.** A crest does not go white along its whole length at
+          // once: its peaks break first, and the white spreads along it to the
+          // shoulders as the wave runs into shallower water. So the share of
+          // the crest that is broken grows with how far inside its break line
+          // the water is. At the break only the strongest third is white; a
+          // bore that has run half way in is broken along most of its length,
+          // and its weakest stretches never go (round 9: the bands were still
+          // continuous, ruler-straight lines along the whole beach, because the
+          // threshold here broke nine tenths of every crest from the start).
+          // Even well inside, a third or so of each crest stays thin or
+          // unbroken.
+          const inward = d.div(surfBreak.max(0.05)).oneMinus().clamp(0, 1).toVar();
+          const peelAt = mix(float(0.62), float(0.47), inward.smoothstep(0, 0.55)).toVar();
           const crestSection = valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(waveNumber)))
             .mul(0.65)
             .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(waveNumber.add(7)))).mul(0.35))
             .add(heightRatio.sub(1).mul(0.15))
-            .smoothstep(0.28, 0.5)
-            .mul(0.96)
-            .add(0.04)
+            .smoothstep(peelAt.sub(0.1), peelAt.add(0.1))
+            .toVar();
+          // And the broken stretches are not one width: the roll is thicker
+          // where the section broke hardest, on top of the set's own scale.
+          const sectionWidth = valueNoise(fieldXZ.mul(1 / 26).add(waveOffset(waveNumber.add(3))))
+            .mul(0.75)
+            .add(0.62)
             .toVar();
           // The roller is as wide as the wave is tall: a set wave's broken
           // crest is a white roll metres across, and a small one between sets
           // is a thin line.
-          const rollerScale = mix(float(0.9), float(2.2), heightRatio.smoothstep(0.5, 1.5)).toVar();
+          const rollerScale = mix(float(0.9), float(2.2), heightRatio.smoothstep(0.5, 1.5)).mul(sectionWidth).toVar();
           const rollerFront = float(-0.055).mul(rollerScale).toVar();
           const rollerBack = float(0.12).mul(rollerScale).toVar();
           const roller = sr
@@ -2948,10 +2966,17 @@ export class OceanMaterial {
           // swell's field.
           const chopBroken = smoothstepDownClamped(d, chopBreak.mul(0.86), chopBreak.mul(1.04));
           const chopR = chopS.add(ragged.mul(0.7)).toVar();
+          // Broken in sections like the swell's, keyed to its own crest
+          // number: ungated, each of these was a thin white line the length of
+          // the beach just outside the swash (beach-swash, round 9).
+          const chopSection = valueNoise(fieldXZ.mul(1 / 16).add(waveOffset(chopPhase.add(0.5).floor().add(29))))
+            .smoothstep(0.38, 0.62)
+            .toVar();
           const chopRoller = chopR
             .smoothstep(-0.05, -0.012)
             .mul(smoothstepDownClamped(chopR, 0.02, 0.08))
             .mul(chopBroken)
+            .mul(chopSection)
             .mul(d.smoothstep(0.05, 0.25))
             .mul(0.85)
             .toVar();
@@ -2970,7 +2995,9 @@ export class OceanMaterial {
             .exp()
             .mul(0.92)
             .mul(lastBroke)
-            .mul(age.lessThan(0.5).select(crestSection.mul(heightRatio.sqrt().clamp(0.85, 1.25)), float(1)))
+            // The sections the bore broke in stay in its wake: the gaps fill
+            // only slowly, as the foam spreads, over the next period.
+            .mul(mix(crestSection, float(1), age.smoothstep(0.35, 1).mul(0.3)).mul(heightRatio.sqrt().clamp(0.85, 1.25)))
             .max(denseAt(age.add(1)).mul(previousBroke))
             .max(chopDense);
           // The lace is the foam lines and nothing else: aged foam has torn all
@@ -3001,10 +3028,21 @@ export class OceanMaterial {
           // Centimetres of water: the waterline and the front of the swash. The
           // depth buffer knows how thin the water in front of the sand is,
           // including over the sheet the vertex stage ran up the beach.
+          //
+          // Broken along the shore every few metres, like the edge line below:
+          // unbroken, it was one of the ruled lines running the length of the
+          // beach in beach-surf (round 9).
+          const thinBreaks = valueNoise(fieldXZ.mul(1 / 7).add(vec2(31.3, 8.8)))
+            .mul(0.6)
+            .add(valueNoise(fieldXZ.mul(1 / 19).add(vec2(5.5, 27.1))).mul(0.4))
+            .smoothstep(0.3, 0.62)
+            .mul(0.85)
+            .add(0.15);
           const thin = straightThickness
             .smoothstep(0.004, 0.025)
             .mul(smoothstepDownClamped(straightThickness, 0.03, 0.1))
             .mul(smoothstepDownClamped(seabedSigned, 0.5, 1.4))
+            .mul(thinBreaks)
             .mul(0.75)
             .toVar();
 
@@ -3025,9 +3063,9 @@ export class OceanMaterial {
           // up, fading over the period.
           const edgeReach = valueNoise(fieldXZ.mul(1 / 23).add(vec2(6.2, 1.4))).mul(0.42).add(0.06).toVar();
           const edgeBreaks = valueNoise(fieldXZ.mul(1 / 12).add(waveOffset(surfPhaseValue.floor()).add(vec2(23.7, 4.6))))
-            .smoothstep(0.25, 0.65)
-            .mul(0.8)
-            .add(0.2)
+            .smoothstep(0.32, 0.68)
+            .mul(0.88)
+            .add(0.12)
             .toVar();
           const edgePulse = surfPhaseValue.fract().mul(-1.6).exp().mul(0.5).add(0.5);
           const edgeLine = smoothstepDownClamped(straightThickness, 0.02, edgeReach)
@@ -3065,7 +3103,7 @@ export class OceanMaterial {
               .max(crestWhite)
               .max(whitewater)
               .max(thin)
-              .max(band.mul(far).mul(mix(float(0.35), float(1.1), lanes)).mul(sections))
+              .max(band.mul(far).mul(mix(float(0.35), float(1.1), lanes)).mul(sections).mul(crestSection.mul(0.6).add(0.4)))
               .max(edgeLine)
               .clamp(0, 1)
               .mul(strength),

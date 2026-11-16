@@ -788,7 +788,13 @@ export function swashOnSand(h: any, xz: any): any {
 
   // Behind the front, the sheet carries what is left of the bore's foam: thick
   // as it lands, bursting over a second or so, a thin scatter after that.
-  const sheetFoam = under.mul(u0.div(-0.16).exp().mul(0.55).add(0.12));
+  //
+  // No floor. A constant 0.12 under the whole sheet, thresholded through the
+  // feather, drew hard-edged pale patches on the bed that the water then tinted
+  // blue: the posterised "camouflage" across the swash (beach-transparency-1
+  // and foam-4, round 9). What is left of the bore's foam is gone within a
+  // second or so; after that the sheet is clear and the lace is at its edge.
+  const sheetFoam = under.mul(u0.div(-0.11).exp().mul(0.5));
 
   // And the wet sand the backwash has just left keeps a few bubbles for as long
   // as it shines.
@@ -865,10 +871,15 @@ export function applySwashToGround(color: any, position: any, state: any = null)
   // Reflectance falls steeply with the first moisture and then flattens
   // (Nolet et al. 2014), so damp sand is most of the way to wet: a cubic ease
   // out of the dry end.
-  const dampness = swash.x.mul(strength).oneMinus().pow(3).oneMinus();
-  const darkened = color.mul(dampness.mul(-SWASH_DARKEN).add(1));
-  // The sheet itself adds a little of the sea's colour.
-  const sheeted = mix(darkened, darkened.mul(vec3(0.8, 0.95, 1.02)), swash.z);
+  //
+  // Not under the sheet. Sand the sheet covers is under water, and the ground
+  // draws it in its in-water reflectance (`Seafloor`); the water's own
+  // optics, drawn by the ocean over it, are what tint and dim it. Darkening it
+  // here as wet sand in air, and tinting it as well, put the bed of the swash
+  // at a quarter of the dry sand's value, and the sheet over it read as opaque
+  // blue-grey water with no sand in it (beach-transparency-1, round 9).
+  const dampness = swash.x.mul(swash.z.oneMinus()).mul(strength).oneMinus().pow(3).oneMinus();
+  const sheeted = color.mul(dampness.mul(-SWASH_DARKEN).add(1));
   // Foam, through the same pattern and feather as the sea's, so the swash edge
   // and the lace on the water beside it are one material.
   const coverage = float(0).toVar();
@@ -876,7 +887,10 @@ export function applySwashToGround(color: any, position: any, state: any = null)
     const pattern = foamPattern(vec2(position.x, position.z), cameraPosition.distance(position));
     coverage.assign(featherFoam(swash.w, pattern));
   });
-  return mix(sheeted, vec3(SAND_FOAM_ALBEDO), coverage);
+  // Thin foam is translucent as well as sparse: the last of a bore's foam on
+  // the sheet is a veil of bubbles, not white paint with a hard rim.
+  const opacity: any = swash.w.smoothstep(0.02, 0.45).mul(0.6).add(0.4);
+  return mix(sheeted, vec3(SAND_FOAM_ALBEDO), coverage.mul(opacity) as any);
 }
 
 /**
