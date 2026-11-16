@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { dequantiseGeometry, fetchWithDeadline, type AssetLoader } from './AssetLoader';
 import { FLORA_KEYS, buildFlora, type FloraKey } from './flora';
 import { IslandDetail, applyTideline } from './islandDetail';
-import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
+import { ISLAND, REEF_BAND, reefPatches, seafloorPlacementHeight } from './Seafloor';
 import { SEEDS, mulberry32 } from '../core/random';
 import { LIGHTHOUSE_BEARING, inLighthouseClearing, lighthouseSite } from './props/site';
 import {
@@ -1210,7 +1210,7 @@ export class Props {
 
       // Sunk into the floor by a fraction of their size, so they read as
       // outcrops rather than as boulders resting on a plane.
-      position.set(x, seafloorHeight(x, z) - s * 0.28, z);
+      position.set(x, seafloorPlacementHeight(x, z) - s * 0.28, z);
       euler.set((random() - 0.5) * 0.7, random() * Math.PI * 2, (random() - 0.5) * 0.7);
       quaternion.setFromEuler(euler);
       scale.set(s, s * (0.5 + random() * 0.7), s);
@@ -1406,7 +1406,7 @@ export class Props {
           x: colony.x + Math.cos(bearing) * spread,
           z: colony.z + Math.sin(bearing) * spread,
         };
-        const floor = seafloorHeight(site.x, site.z);
+        const floor = seafloorPlacementHeight(site.x, site.z);
         // Nothing is planted where the plateau has fallen away past the light,
         // and nothing above the waterline: this is a reef, not a rock pool.
         if (floor > -3 || floor < -30) continue;
@@ -1486,7 +1486,7 @@ export class Props {
         const z = ISLAND.z + Math.sin(angle) * radius;
         const s = 9 + random() * 16;
 
-        position.set(x, seafloorHeight(x, z) - s * 0.02, z);
+        position.set(x, seafloorPlacementHeight(x, z) - s * 0.02, z);
         euler.set((random() - 0.5) * 0.3, random() * Math.PI * 2, (random() - 0.5) * 0.3);
         quaternion.setFromEuler(euler);
         scale.set(s, s * (0.7 + random() * 0.7), s);
@@ -2195,7 +2195,7 @@ export class Props {
     const aimX = ISLAND.x + Math.cos(COVE_BEARING) * aim;
     const aimZ = ISLAND.z + Math.sin(COVE_BEARING) * aim;
 
-    fort.position.set(x, seafloorHeight(x, z) - FORT_SINK, z);
+    fort.position.set(x, seafloorPlacementHeight(x, z) - FORT_SINK, z);
     fort.rotation.y = yawAlignZ(aimX - x, aimZ - z);
 
     if (walls) fort.add(walls);
@@ -2288,7 +2288,7 @@ export class Props {
       // 0.25 m shells drawn 1.3-2x: the scan was drawn at 2.2-4.2x of 14 cm.
       const s = 1.3 + random() * 0.7;
 
-      position.set(x, seafloorHeight(x, z) + 0.12 * s, z);
+      position.set(x, seafloorPlacementHeight(x, z) + 0.12 * s, z);
       groundNormal(x, z, 3, normal);
       quaternion.setFromUnitVectors(UP, normal);
       quaternion.multiply(spinAbout(UP, random() * TAU));
@@ -2328,7 +2328,7 @@ export class Props {
     let ground = -Infinity;
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * TAU;
-      ground = Math.max(ground, seafloorHeight(x + Math.cos(a) * 3, z + Math.sin(a) * 3));
+      ground = Math.max(ground, seafloorPlacementHeight(x + Math.cos(a) * 3, z + Math.sin(a) * 3));
     }
 
     const site = new THREE.Group();
@@ -2347,7 +2347,7 @@ export class Props {
     // The cottage, inland of the door, turned square to the tower.
     const hutLocal = new THREE.Vector3(-3.5, 0, -10.5);
     const hutWorld = hutLocal.clone().applyEuler(site.rotation).add(site.position);
-    const hutGround = seafloorHeight(hutWorld.x, hutWorld.z);
+    const hutGround = seafloorPlacementHeight(hutWorld.x, hutWorld.z);
     const hut = this.library.lod('lighthouse-cottage', (pb, lod) => buildKeepersHut(pb, PM.identity(), lod), [0, 150, 500]);
     hut.position.set(hutLocal.x, hutGround - site.position.y - 0.25, hutLocal.z);
     hut.rotation.y = 0.2;
@@ -3027,8 +3027,8 @@ function randomLean(random: () => number, amount: number): THREE.Quaternion {
  * far `contourYaw` can see, which is the same argument for the same reason.
  */
 function groundNormal(x: number, z: number, span: number, out: THREE.Vector3): THREE.Vector3 {
-  const dx = (seafloorHeight(x + span, z) - seafloorHeight(x - span, z)) / (2 * span);
-  const dz = (seafloorHeight(x, z + span) - seafloorHeight(x, z - span)) / (2 * span);
+  const dx = (seafloorPlacementHeight(x + span, z) - seafloorPlacementHeight(x - span, z)) / (2 * span);
+  const dz = (seafloorPlacementHeight(x, z + span) - seafloorPlacementHeight(x, z - span)) / (2 * span);
   return out.set(-dx, 1, -dz).normalize();
 }
 
@@ -3058,7 +3058,7 @@ function contourYaw(normal: THREE.Vector3): number | null {
 
 /** Fills `out` with (x, ground height, z). */
 function groundPoint(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
-  return out.set(x, seafloorHeight(x, z), z);
+  return out.set(x, seafloorPlacementHeight(x, z), z);
 }
 
 /**
@@ -3082,7 +3082,7 @@ function shorelineRadius(bearing: number): number {
   let outer = ISLAND.radius * SHORE_SEARCH_OUT;
   for (let i = 0; i < SHORE_SEARCH_STEPS; i++) {
     const mid = (inner + outer) * 0.5;
-    if (seafloorHeight(ISLAND.x + dx * mid, ISLAND.z + dz * mid) > 0) inner = mid;
+    if (seafloorPlacementHeight(ISLAND.x + dx * mid, ISLAND.z + dz * mid) > 0) inner = mid;
     else outer = mid;
   }
   return (inner + outer) * 0.5;
@@ -3126,7 +3126,7 @@ function recentreShift(box: THREE.Box3, out: THREE.Vector3): THREE.Vector3 {
 function acceptPoint(x: number, z: number, spec: ScatterSpec, out: THREE.Vector3): boolean {
   // Nothing grows through the lighthouse or its cottage.
   if (inLighthouseClearing(x, z)) return false;
-  const y = seafloorHeight(x, z);
+  const y = seafloorPlacementHeight(x, z);
   if (y < spec.minHeight || y > spec.maxHeight) return false;
   if (spec.maxSlope !== undefined) {
     groundNormal(x, z, spec.slopeSpan ?? 6, seatNormal);

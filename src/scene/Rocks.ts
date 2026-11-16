@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mulberry32 } from '../core/random';
-import { ISLAND, reefPatches, REEF_BAND, seafloorHeight, seafloorMeshHeight } from './Seafloor';
+import { ISLAND, reefPatches, REEF_BAND, seafloorPlacementHeight, seafloorPlacementMeshHeight } from './Seafloor';
 import { applyGroundShading, type GroundShadingInputs } from './groundShading';
 import { InstanceField } from './reef/InstanceField';
 import {
@@ -318,7 +318,7 @@ export class Rocks {
       let options = lib[kind];
       // Where the water is shallow for the clearance, only something low fits;
       // a tall sculpt squashed to fit reads as a stub.
-      const room = ceiling - seafloorHeight(x, z);
+      const room = ceiling - seafloorPlacementHeight(x, z);
       if (room < 11) options = lib.mesa.filter((m) => m.top < 8);
       if (options.length === 0) return false;
       const s = options[Math.floor(random() * options.length)];
@@ -328,11 +328,11 @@ export class Rocks {
       let k = scale;
       // Seat on the lowest point of the rendered floor under the footprint.
       const seat = (k: number): number => {
-        let base = seafloorMeshHeight(x, z);
+        let base = seafloorPlacementMeshHeight(x, z);
         const r = s.reach * k * 0.65;
         for (let a = 0; a < 6; a++) {
           const ang = (a / 6) * Math.PI * 2;
-          base = Math.min(base, seafloorMeshHeight(x + Math.cos(ang) * r, z + Math.sin(ang) * r));
+          base = Math.min(base, seafloorPlacementMeshHeight(x + Math.cos(ang) * r, z + Math.sin(ang) * r));
         }
         return base - 0.4;
       };
@@ -384,7 +384,7 @@ export class Rocks {
       const t = 0.92 + random() * 1.1;
       const x = ISLAND.x + Math.cos(a) * ISLAND.radius * t;
       const z = ISLAND.z + Math.sin(a) * ISLAND.radius * t;
-      const depth = -seafloorHeight(x, z);
+      const depth = -seafloorPlacementHeight(x, z);
       if (depth < 6 || depth > 60) continue;
       if (near(x, z, 32)) continue;
       const { slope: g } = slope(x, z);
@@ -488,11 +488,11 @@ export class Rocks {
       const sz = size * (0.85 + random() * 0.3);
       // Seat on the lowest point of the rendered floor under the footprint, so
       // the uphill side is buried rather than the downhill side floating.
-      let floor = seafloorMeshHeight(x, z);
+      let floor = seafloorPlacementMeshHeight(x, z);
       const reach = Math.max(sx, sz) * 0.7;
       for (let a = 0; a < 4; a++) {
         const ang = (a / 4) * Math.PI * 2 + 0.4;
-        floor = Math.min(floor, seafloorMeshHeight(x + Math.cos(ang) * reach, z + Math.sin(ang) * reach));
+        floor = Math.min(floor, seafloorPlacementMeshHeight(x + Math.cos(ang) * reach, z + Math.sin(ang) * reach));
       }
       const y = floor + sy * (-0.2 + random() * 0.45);
       if (y + sy > ceiling) return;
@@ -541,7 +541,7 @@ export class Rocks {
       const t = 0.92 + random() * 1.05;
       const x = ISLAND.x + Math.cos(a) * ISLAND.radius * t;
       const z = ISLAND.z + Math.sin(a) * ISLAND.radius * t;
-      const depth = -seafloorHeight(x, z);
+      const depth = -seafloorPlacementHeight(x, z);
       if (depth < 4 || depth > 60) continue;
       centres.push({ x, z, r: 6 + random() * 12, ceiling: -SURFACE_CLEARANCE });
     }
@@ -550,7 +550,7 @@ export class Rocks {
       const r = 60 + random() * 250;
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
-      if (-seafloorHeight(x, z) < 12) continue;
+      if (-seafloorPlacementHeight(x, z) < 12) continue;
       centres.push({ x, z, r: 5 + random() * 9, ceiling: -laneClearance(x, z) });
     }
     for (const c of centres) {
@@ -578,7 +578,7 @@ export class Rocks {
         } else {
           p = sample();
         }
-        const depth = -seafloorHeight(p.x, p.z);
+        const depth = -seafloorPlacementHeight(p.x, p.z);
         if (depth < 2.5 || depth > 70) continue;
         place(p.x, p.z, size(0.1, 0.5, 2.0), random(), -2);
       }
@@ -614,8 +614,8 @@ function gauss(random: () => number): number {
 /** Floor gradient magnitude and downhill bearing at a point. */
 function slope(x: number, z: number): { slope: number; downhill: number } {
   const h = 3;
-  const dx = (seafloorHeight(x + h, z) - seafloorHeight(x - h, z)) / (2 * h);
-  const dz = (seafloorHeight(x, z + h) - seafloorHeight(x, z - h)) / (2 * h);
+  const dx = (seafloorPlacementHeight(x + h, z) - seafloorPlacementHeight(x - h, z)) / (2 * h);
+  const dz = (seafloorPlacementHeight(x, z + h) - seafloorPlacementHeight(x, z - h)) / (2 * h);
   return { slope: Math.hypot(dx, dz), downhill: Math.atan2(-dz, -dx) };
 }
 
