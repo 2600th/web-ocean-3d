@@ -104,18 +104,20 @@ export class Reflections {
    * someone who starts on Low and switches to Max gets the reflection they paid
    * for instead of a quarter-resolution one.
    *
-   * Dropping the old targets is the point rather than a side effect. `reflector`
-   * keys its targets by camera, and changing `resolutionScale` alone leaves the
-   * existing entry at its old size, so the scale would apply only to a camera
-   * the reflector had not seen before — which, in a session with one camera, is
-   * never.
+   * **The targets are kept, not dropped.** The reflector sizes its target to
+   * `resolutionScale` on every `updateBefore` (`ReflectorNode._updateResolution`
+   * in r185), so the new scale lands on the next frame by an in-place resize,
+   * which three releases and re-creates itself. Dropping them instead put a
+   * fresh 0x0 target in front of the tier change's `compileReflection`; three
+   * built that target a depth texture at zero size, and once the frame resized
+   * it, that depth texture was never released: one per tier change, at each
+   * tier's reflection size, measured by diffing `renderer.info` across tier
+   * cycles.
    */
   setQuality(scale: number): void {
     const next = Math.max(0.1, Math.min(1, scale));
     if (next === this.base.resolutionScale) return;
     this.base.resolutionScale = next;
-    for (const target of this.base.renderTargets.values()) target.dispose();
-    this.base.renderTargets.clear();
   }
 
   /**
