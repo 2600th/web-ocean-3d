@@ -212,8 +212,7 @@ function foamBubbles(p: any, salt: number, rMin: number, rMax: number): any {
 
 /**
  * Distance to the nearest bubble's centre in units of its radius: below 1
- * inside a bubble. `foamBubbles` thresholds it at 1; `foamLace` moves the
- * threshold with the foam's age, so the bubbles grow and merge as it thins.
+ * inside a bubble. `foamBubbles` thresholds it at 1.
  */
 function bubbleDistance(p: any, salt: number, rMin: number, rMax: number): any {
   const half = p.mul(0.5);
@@ -236,157 +235,130 @@ function bubbleDistance(p: any, salt: number, rMin: number, rMax: number): any {
 }
 
 /**
- * How far the lace is stretched along the wind, as a ratio. A raft lying in a
- * wind is combed downwind: its holes and the strands between them run along
- * the wind (Beaufort 7, "foam blown in streaks"). Kept under `FOAM_WIND_STRETCH`
- * territory (about 2), past which a stretched cell field reads as hatching.
+ * The filament field's frame: noise cells `FILAMENT_ACROSS` metres across the
+ * axis and `FILAMENT_STRETCH` times that along it. 5 nominal is about 4:1 in
+ * what survives the threshold, since gradient noise has little structure past
+ * a cell along the stretch.
  */
-const LACE_STRETCH = 1.45;
+const FILAMENT_STRETCH = 5;
+const FILAMENT_ACROSS = 1;
 
 /**
- * One scale of the lace: 1 in the foam, 0 in a hole, faded to its mean with
- * distance. `open` is the hole threshold in units of each bubble's radius: holes
- * are wherever the distance to a bubble centre is under `open` radii.
- *
- * The mean is analytic rather than measured, so it follows `open`: discs of
- * radius `r * open` at one per cell cover the plane as a Boolean model,
- * `1 - exp(-pi * open^2 * E[r^2])` of it, overlaps included, with `E[r^2]` over
- * the per-cell radius drawn uniformly in `[rMin, rMax]`. Fading to it rather
- * than to 1 keeps a raft's brightness when its holes go under a pixel.
+ * Standard deviation of `filamentNoise`, measured with a JS replica over a
+ * 700² grid (0.2404). The field is near enough normal that `|z| < t sd` covers
+ * `erf(t / sqrt 2)` of the plane to within 0.02 at every threshold used here:
+ * the replica's figures for t = 0.4, 0.8, 1.25 and 1.7 are 0.31, 0.58, 0.78
+ * and 0.90.
  */
-function laceScale(
-  q: any,
-  salt: number,
-  rMin: number,
-  rMax: number,
-  open: any,
-  near: any,
-  enabled: any,
-  floor = 0,
-): any {
-  const meanR2 = (rMax ** 3 - rMin ** 3) / (3 * (rMax - rMin));
-  const covered = open.mul(open).mul(-Math.PI * meanR2 * LACE_PRESENCE).exp();
-  const mean = mix(float(floor), float(1), covered).toVar();
-  const value = mean.toVar();
-  If(enabled.and(near.greaterThan(0.001)), () => {
-    const d = laceDistance(q, salt, rMin, rMax);
-    // A rim, not a cut: the film thins over the last third of a radius into
-    // the hole, the way a bubble wall drains, so no hole has a hard outline.
-    const hole = d.smoothstep(open.mul(0.7), open.mul(1.15));
-    value.assign(mix(mean, mix(float(floor), float(1), hole), near));
-  });
-  return value;
+const FILAMENT_SD = 0.2404;
+
+/**
+ * The finer octave groups, as frequency ratio and weight: 0.34 m strands that
+ * fray the metre ones (Medium and up), 12 cm fibres in those (High and up).
+ */
+const FILAMENT_MID = 2.9;
+const FILAMENT_MID_WEIGHT = 0.85;
+const FILAMENT_FINE = 8.4;
+const FILAMENT_FINE_WEIGHT = 0.5;
+
+/** Two octaves of gradient noise, the filament field's raw value. */
+function filamentNoise(q: any): any {
+  return gradNoise(q).add(gradNoise(q.mul(2.03).add(vec2(5.1, 1.7))).mul(0.5));
 }
 
 /**
- * Share of lattice cells that hold a hole at all.
- *
- * One hole per cell, every cell, is a jittered grid, and a jittered grid is
- * what the eye reads as a repeating texture however its radii vary: round 6's
- * critic still called the whitecaps in waves-4 "repeating foam", the
- * "Swiss-cheese texture" (120-730, 750-1050). Leaving a third of the cells
- * empty turns the grid into a Poisson-like scatter, with clusters of holes
- * beside unbroken film, which has no period to find.
+ * `P(|z| < t)` for a unit normal `z`: `erf(t / sqrt 2)`, by Winitzki's
+ * approximation (good to 1e-3), so the far field's coverage follows the
+ * threshold the near field draws.
  */
-const LACE_PRESENCE = 0.62;
-
-/**
- * `bubbleDistance` for the lace, with the two things a jittered disc grid lacks
- * to stop it reading as one tiled hole pattern: empty cells (`LACE_PRESENCE`),
- * and a second, finer warp at the cell's own scale, so a hole is a drained
- * blob with a lopsided outline rather than a punched disc. The foam pattern
- * keeps `bubbleDistance`, since the surf and the swash draw through it.
- */
-function laceDistance(p: any, salt: number, rMin: number, rMax: number): any {
-  const half = p.mul(0.5);
-  const warp = vec2(gradNoise(half.add(vec2(salt, 0))), gradNoise(half.add(vec2(17 + salt, 17))))
-    .mul(0.9)
-    .add(vec2(gradNoise(p.mul(1.7).add(vec2(5.3 + salt, 2.1))), gradNoise(p.mul(1.7).add(vec2(9.7, 4.4 + salt)))).mul(0.32));
-  const q = p.add(warp).toVar();
-  const cell = q.floor().toVar();
-  const local = fract(q).toVar();
-  const v = float(9).toVar();
-  for (let j = -1; j <= 1; j++) {
-    for (let i = -1; i <= 1; i++) {
-      const o = vec2(i, j);
-      const c = cell.add(o).add(vec2(salt, 0));
-      const jitter = vec2(latticeHash(c, vec2(127.1, 311.7)), latticeHash(c, vec2(269.5, 183.3)));
-      const radius = mix(float(rMin), float(rMax), latticeHash(c, vec2(419.2, 371.9)));
-      const present = latticeHash(c, vec2(91.7, 53.3)).lessThan(LACE_PRESENCE);
-      const r = o.add(jitter.mul(0.9)).add(0.05).sub(local);
-      v.assign(v.min(present.select(r.length().div(radius), float(9))));
-    }
-  }
-  return v;
+function bandCoverage(t: any): any {
+  const x2 = t.mul(t).mul(0.5);
+  const a = 0.147;
+  return x2
+    .mul(x2.mul(a).add(4 / Math.PI))
+    .div(x2.mul(a).add(1))
+    .negate()
+    .exp()
+    .oneMinus()
+    .max(0)
+    .sqrt();
 }
 
 /**
- * Bubble lace: 1 in the foam, 0 in a hole, at world point `p` for a foam
+ * Foam lace: 1 in the foam, 0 in the gaps, at world point `p` for a foam
  * `amount` 0..1. Every open-sea foam and the wake are drawn through it.
  *
- * Three.js Water Pro's whitecaps and wake (the critic's references for foam-3
- * and boat-sea-1) are a translucent film riddled with holes from a few
- * centimetres to half a metre — "cellular, Voronoi-like aerated" foam. It is
- * how a bubble raft dies: the smallest bubbles burst first and their
- * neighbours drain into the gaps, so holes open, grow and merge until the raft
- * is a lace of rims and then shreds. Here that is web-ocean's swiss-cheese
- * bubble field (`bubbles` in `FOAM_TEX`, MIT) at three scales — 0.55 m,
- * 0.2 m and 7 cm cells — with the hole radius tied to the amount: at 1 only
- * pinholes are open; as the amount falls they widen and merge.
+ * **Filaments, not holes.** Until round 8 this was web-ocean's swiss-cheese
+ * bubble field (`bubbles` in `FOAM_TEX`) at three scales: holes punched into a
+ * film, widening as it aged. However their sizes and spacing were varied,
+ * round holes of a similar size in a white sheet are what the critic kept
+ * reading as "leopard spots" (waves-4, foam-1, foam-3, boat-sea-1); the
+ * smallest, 7 cm, were the worst, since every one of them came out the same
+ * size on screen. A whitecap does not die that way. Its foam decays into
+ * streaks and ragged filaments drawn out along the wind, with a few irregular
+ * voids, and a wake's are drawn out along the ship's track.
  *
- * **What it replaces.** The previous lace punched two scales of holes, the
- * larger up to 0.5 m across, into foam drawn 0.95 opaque. A few big clean holes
- * in flat white are what the critic read as "leopard-spot oval holes" (waves-4,
- * foam-1): perspective flattens every round hole into an ellipse, and with no
- * smaller holes beside them each one reads as a printed spot. Holes at three
- * scales, many more of them and with drained rims, read as a bubble structure
- * instead, and the material now draws the film translucent.
+ * So the foam is now where a gradient-noise field, read in a frame stretched
+ * about 4:1 along `axis` and bent by a 7–14 m meander, is near zero:
+ * `|z| < t`. The zero set of such a field is a web of strands running along
+ * the axis. The band's half-width `t` grows with the amount: thick foam is
+ * nearly solid, with a few long ragged voids where the field peaks; thin foam
+ * is the strands alone. A patch therefore thins from its crest outward into
+ * filaments rather than opening holes in a solid sheet.
  *
- * Sampled in a frame stretched along the wind (`LACE_STRETCH`), so the lace
- * streaks downwind. Each scale fades to its mean before its holes fall under
- * a pixel, and the finest are High and up only. Must be called inside a TSL
- * `Fn`.
+ * Three octave groups, 1 m, 0.34 m and 12 cm across the axis, summed into one
+ * field and divided by its spread (`FILAMENT_SD`), so the finer groups fray
+ * the strands' outlines into fibres without changing how much water they
+ * cover. Each finer group fades out with distance before its strands fall
+ * under a pixel, and is tier-gated; the whole field fades to its analytic
+ * coverage (`bandCoverage`) far off. Must be called inside a TSL `Fn`.
+ *
+ * @param axis Unit xz direction the filaments run along; the wind by default.
  */
-export function foamLace(p: any, amount: any, viewDistance: any): any {
+export function foamLace(p: any, amount: any, viewDistance: any, axis?: any): any {
   const a = amount.clamp(0, 1).toVar('foamLaceAmount');
-  const along = vec2(foamUniforms.windAxis.x, foamUniforms.windAxis.y);
-  const across = vec2(foamUniforms.windAxis.y.negate(), foamUniforms.windAxis.x);
-  const q = vec2(p.dot(along).div(LACE_STRETCH), p.dot(across)).toVar('foamLaceQ');
-  // Normalised-radius threshold: pinholes at 1, merged holes below about 0.3.
-  //
-  // **Varied by region**, at 8–15 m. With one hole scale and one threshold for
-  // a given amount, every raft and the whole wake were the same swiss cheese —
-  // round 4's commonest note on our side, "one repeated leopard-spot hole
-  // pattern" (foam-1, waves-4, boat-sea-1). A real raft's bubbles are not
-  // uniform: patches of fine froth sit beside patches where the big bubbles
-  // have burst. So the threshold wanders by ±25% over a few metres, and the
-  // coarse holes are present in some regions and absent in others, leaving
-  // only the fine froth there. Both fields are smooth and world-anchored, and
-  // `laceScale`'s analytic mean follows the threshold, so the far field's
-  // brightness still tracks the amount.
+  const along = axis ?? vec2(foamUniforms.windAxis.x, foamUniforms.windAxis.y);
+  const across = vec2(along.y.negate(), along.x);
+  const frame = vec2(p.dot(along), p.dot(across)).toVar('foamLaceFrame');
+  // The band's half-width, in units of the field's spread: the strands alone
+  // (about half the water) at 0, nearly solid at 1. Varied by ±20% over
+  // 8–15 m, so one raft is not one texture: in places it has already gone to
+  // strands, in others it still holds together.
   const region = foamNoise(p.mul(1 / 9).add(vec2(7.3, 2.1))).toVar('foamLaceRegion');
-  const open = mix(float(1.25), float(0.5), a).mul(region.mul(0.5).add(0.75)).toVar('foamLaceOpen');
-  const coarseRegion = foamNoise(p.mul(1 / 14).add(vec2(1.7, 9.4))).smoothstep(0.3, 0.65).toVar('foamLaceCoarseRegion');
-  const always = float(1).greaterThan(0);
-  const coarse = mix(
-    float(1),
-    // The largest holes are not empty: a burst bubble's neighbours drain
-    // into it as a thinner film, so the water shows through a veil.
-    laceScale(
-      q.mul(1.8).add(vec2(11.3, 4.7)), 53, 0.12, 0.38, open,
-      smoothstepDownClamped(viewDistance, 55, 130), always, 0.3,
-    ),
-    coarseRegion,
-  );
-  const mid = laceScale(
-    q.mul(5).add(vec2(2.9, 8.3)), 71, 0.18, 0.5, open.mul(0.92),
-    smoothstepDownClamped(viewDistance, 22, 55), foamUniforms.detail.greaterThan(0.5),
-  );
-  const fine = laceScale(
-    q.mul(13).add(vec2(6.1, 3.7)), 89, 0.2, 0.5, open.mul(0.85),
-    smoothstepDownClamped(viewDistance, 8, 22), foamUniforms.detail.greaterThan(1.5),
-  );
-  return coarse.mul(mid).mul(fine);
+  const t = mix(float(0.65), float(2), a).mul(region.mul(0.4).add(0.8)).toVar('foamLaceBand');
+  const mean = bandCoverage(t).toVar('foamLaceMean');
+  const strands = mean.toVar('foamLaceStrands');
+  const near = smoothstepDownClamped(viewDistance, 60, 140).toVar('foamLaceNear');
+  If(near.greaterThan(0.001), () => {
+    // A strand meanders, as a streak follows the Langmuir cells rather than
+    // a ruling; without it the stretched field reads as hatching.
+    const bend = gradNoise(frame.mul(vec2(1 / 14, 1 / 7)).add(vec2(3.1, 7.7))).mul(1.6);
+    const q = vec2(
+      frame.x.div(FILAMENT_ACROSS * FILAMENT_STRETCH),
+      frame.y.add(bend).div(FILAMENT_ACROSS),
+    ).toVar('foamLaceQ');
+    const midWeight = foamUniforms.detail
+      .greaterThan(0.5)
+      .select(smoothstepDownClamped(viewDistance, 18, 45).mul(FILAMENT_MID_WEIGHT), float(0))
+      .toVar('foamLaceMidWeight');
+    const fineWeight = foamUniforms.detail
+      .greaterThan(1.5)
+      .select(smoothstepDownClamped(viewDistance, 7, 18).mul(FILAMENT_FINE_WEIGHT), float(0))
+      .toVar('foamLaceFineWeight');
+    const z = filamentNoise(q).toVar('foamLaceZ');
+    If(midWeight.greaterThan(0.001), () => {
+      z.addAssign(filamentNoise(q.mul(FILAMENT_MID).add(vec2(2.9, 8.3))).mul(midWeight));
+    });
+    If(fineWeight.greaterThan(0.001), () => {
+      z.addAssign(filamentNoise(q.mul(FILAMENT_FINE).add(vec2(6.1, 3.7))).mul(fineWeight));
+    });
+    const spread = midWeight.mul(midWeight).add(fineWeight.mul(fineWeight)).add(1).sqrt().mul(FILAMENT_SD);
+    // The strand's edge drains over a fifth of the spread either side, so no
+    // strand has a cut outline.
+    const band = z.abs().div(spread).smoothstep(t.sub(0.22), t.add(0.22)).oneMinus();
+    strands.assign(mix(mean, band, near));
+  });
+  return strands;
 }
 
 /**

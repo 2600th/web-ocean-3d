@@ -491,8 +491,8 @@ const FOAM_WIND_STRETCH = 1.6;
  * The turbulent band behind a transom holds about 0.85 in `Wake`'s hull channel
  * at the transom (see `DEPOSIT_RATE` there) and thins astern. A wake is the
  * most aerated water a ship makes, so the amount is lifted a little before
- * `foamLace` decides how open its holes are: at the transom they are pinholes,
- * a ship length astern a lace.
+ * `foamLace` decides how far it has gone to strands: at the transom it is
+ * nearly solid, a ship length astern filaments drawn out along the track.
  */
 const HULL_FOAM_GAIN = 1;
 
@@ -3137,8 +3137,8 @@ export class OceanMaterial {
         //    but on an amount capped below the pattern's floor for aged foam
         //    (`AGED_SHAPE_CAP`), so its ragged sheets always keep their gaps,
         //    and with a margin twice as soft;
-        //  - its *holes* (`foamLace`): pinholes in fresh water, widening and
-        //    merging as the raft thins;
+        //  - its *lace* (`foamLace`): nearly solid where it is breaking,
+        //    decaying into strands drawn out along the wind as the raft thins;
         //  - its *opacity*: `FRESH_FOAM_OPACITY` in the breaking core,
         //    `AGED_FOAM_OPACITY` in the raft and less as it thins, varied by
         //    the pattern's own density so the film is thicker in some places
@@ -3220,10 +3220,11 @@ export class OceanMaterial {
           .max(seaCore)
           .toVar();
 
-        // The wake: not a whitecap and not lanes, but Water Pro's "cellular,
-        // Voronoi-like aerated" foam (boat-sea-1) — a milky film punched with
-        // round holes that widen as it ages (`foamLace`), its edge torn by the
-        // same pattern as every other foam.
+        // The wake: not a whitecap and not lanes, but a milky film that goes
+        // to strands along the ship's track as it ages (`foamLace`), its edge
+        // torn by the same pattern as every other foam. Round 8's critic read
+        // the round holes it used to be punched with as "leopard" holes with
+        // "no stretching along the wake" (boat-sea-1).
         If(hullCover.greaterThan(0.01), () => {
           const hullEdge = pattern.smoothstep(
             hullCover.oneMinus().sub(0.2).sub(foamRamp),
@@ -3236,10 +3237,10 @@ export class OceanMaterial {
           //
           // The churn being made now — at the transom, the stem and on the bow
           // break, where `Wake` marks the water fresh — is the wake's dense
-          // white core: pinholes only, nearly opaque. Everything else is
+          // white core: nearly solid and nearly opaque. Everything else is
           // trail, and the trail is drawn by its amount, which `Wake` has
           // already shaped into a streaked band that fades astern and arms that
-          // dissolve within a couple of seconds: its holes open and it goes
+          // dissolve within a couple of seconds: it goes to strands and
           // translucent as it thins, so the amount's gradients — core to
           // trail, band to edge, streak to streak — are what the eye reads
           // rather than one texture (round 4's boat-sea-1).
@@ -3247,7 +3248,9 @@ export class OceanMaterial {
           // The trail's response is steep on purpose: the band's core holds
           // 0.8 and up, the quarter waves' and arms' trails 0.2–0.6, and drawn
           // on a gentle ramp both read as the same white.
-          const hullLace = foamLace(foamXZ, hullCover.mul(hullCover).max(hullFresh), viewDistance);
+          // Its strands run along the ship's track, not the wind: a wake is
+          // drawn out astern by the hull that made it.
+          const hullLace = foamLace(foamXZ, hullCover.mul(hullCover).max(hullFresh), viewDistance, this.uHullForward);
           const hullMask = hullLace
             .mul(hullEdge.max(hullFresh))
             .mul(hullCover.smoothstep(0, 0.4))
