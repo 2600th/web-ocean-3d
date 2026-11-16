@@ -308,7 +308,11 @@ range, the water film's normal flattened toward the beach plane, and the
 wet/dry edge perturbed by multi-scale seepage noise. The surf's second, wind-sea
 wave train follows the secondary train in its `source/src/CoastalWaves.js`, at
 about two thirds of the swell's period, and the surf foam's long-tail wake
-behind each bore follows that file's roller envelope. Ported to three.js TSL;
+behind each bore follows that file's roller envelope. The surf white water's
+relief shading follows its `source/src/FoamShader.js`: a foam height field
+whose gradient tilts the foam normal, one sample toward the sun for the lumps'
+self-shadow, a multiple-scattering transmission term, and three albedos for
+shadowed folds, lace and sunlit crests. Ported to three.js TSL;
 the surf's closed form, the foam and the wetting state are this project's own.
 Affected files:
 

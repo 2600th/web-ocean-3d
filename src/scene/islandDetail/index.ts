@@ -14,6 +14,7 @@ import {
   tileQuadUv,
 } from './parts';
 import { buildArch, buildRock, buildSkullRock, createRockMaterial } from './rock';
+import { BEACHROCK_HEAD_SIZE, BEACHROCK_SLAB_SIZE, beachrockPieces, shoreRadius, yawToward } from './beachrock';
 
 export { applyTideline } from './rock';
 
@@ -53,20 +54,6 @@ const UP = new THREE.Vector3(0, 1, 0);
  */
 const VIEWPOINT = new THREE.Vector2(ISLAND.x + Math.cos(0.6) * 1500, ISLAND.z + Math.sin(0.6) * 1500);
 
-/** Bisects for the shoreline radius on a bearing. */
-function shoreRadius(bearing: number): number {
-  const dx = Math.cos(bearing);
-  const dz = Math.sin(bearing);
-  let inner = ISLAND.radius * 0.4;
-  let outer = ISLAND.radius * 1.7;
-  for (let i = 0; i < 22; i++) {
-    const mid = (inner + outer) / 2;
-    if (seafloorHeight(ISLAND.x + dx * mid, ISLAND.z + dz * mid) > 0) inner = mid;
-    else outer = mid;
-  }
-  return (inner + outer) / 2;
-}
-
 /** Radius on a bearing where the ground first falls to `y`, searching inward from the shore. */
 function radiusAtHeight(bearing: number, y: number, shore: number): number | null {
   const dx = Math.cos(bearing);
@@ -95,11 +82,6 @@ function onBearing(bearing: number, radius: number): THREE.Vector3 {
   return new THREE.Vector3(x, seafloorHeight(x, z), z);
 }
 
-/** Yaw that turns local +z toward world (dx, dz). */
-function yawToward(dx: number, dz: number): number {
-  return Math.atan2(dx, dz);
-}
-
 export class IslandDetail {
   readonly object = new THREE.Group();
   private readonly clock = new DetailClock();
@@ -120,6 +102,8 @@ export class IslandDetail {
     const rocks = new PartBuilder();
     this.landmarks(rocks, rng);
     this.outcrops(rocks, rng);
+    // Its own stream (`beachrock.ts`), so nothing drawn from `rng` after this moves.
+    this.beachrock(rocks);
     const woodParts = new PartBuilder();
     const clothParts = new PartBuilder();
     const emberParts = new PartBuilder();
@@ -331,6 +315,49 @@ export class IslandDetail {
       placed++;
     }
     for (const v of variants) v.dispose();
+  }
+
+  /**
+   * Beachrock: low slabs of cemented limestone lying along the waterline, a
+   * few heads of it standing in the inner surf, and a reef of older blocks
+   * further out. Where they lie is `beachrock.ts`, which the sea's surf reads
+   * too, so the bores pile up white against them and leave a gap in their lee.
+   *
+   * Pale, as beachrock is (the tint lifts the rock material's dark volcanic
+   * palette toward grey-tan limestone); the material's own waterline does the
+   * wet band, the barnacle crust and the weed.
+   */
+  private beachrock(out: PartBuilder): void {
+    const limestone: [number, number, number] = [1.55, 1.5, 1.38];
+    const slabShapes = [0, 1, 2].map((i) =>
+      buildRock({
+        detail: 6,
+        size: BEACHROCK_SLAB_SIZE,
+        rough: 0.07,
+        roughScale: 0.3,
+        terrace: 0.06,
+        terraceStrength: 0.7,
+        base: 0.2,
+        seed: 0xbe0 + i * 131,
+      }),
+    );
+    const headShapes = [0, 1].map((i) =>
+      buildRock({
+        detail: 6,
+        size: BEACHROCK_HEAD_SIZE,
+        rough: 0.14,
+        roughScale: 0.32,
+        terrace: 0.12,
+        terraceStrength: 0.5,
+        base: 0.35,
+        seed: 0xbe7 + i * 59,
+      }),
+    );
+    for (const piece of beachrockPieces()) {
+      const shapes = piece.kind === 'slab' ? slabShapes : headShapes;
+      out.add(shapes[piece.shape], piece.matrix, limestone);
+    }
+    for (const g of [...slabShapes, ...headShapes]) g.dispose();
   }
 
   /**
