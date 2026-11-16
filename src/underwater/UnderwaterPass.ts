@@ -259,6 +259,22 @@ const SURFACE_K = 0.9;
 // there; the auto-exposure holds the frame's level.
 const SHAFT_DENSITY = 0.15;
 
+/**
+ * [underwater-look-3] Round 12c. The open water seen looking up, graded toward
+ * a deeper blue: the final blind round lost kelp-sun to "blown-out cyan", the
+ * upper half of the frame a pale wash the shafts could not stand out against
+ * (abyssal-garden's is a deep blue with the beams bright across it). Only the
+ * view's open water (rays that end at the surface or in the far water, not on
+ * a submerged surface),
+ * only as the camera looks up (`OPEN_UP_PITCH`, the forward vector's height:
+ * kelp-sun's is 0.56, kelp-wide's and mound-close's 0.1 and below), and not
+ * the sun's core. Graded after the shafts are added, since the march's glow
+ * is most of the wash; `OPEN_UP_GRADE` per channel: the cyan's red and green
+ * go down more than its blue, so the water is bluer as well as darker.
+ */
+const OPEN_UP_PITCH: readonly [number, number] = [0.3, 0.5];
+const OPEN_UP_GRADE = new THREE.Vector3(0.55, 0.68, 0.86);
+
 /** Ambient kept by a face pointing straight down, near the surface. */
 const UNDERSIDE_AMBIENT = 0.3;
 
@@ -694,6 +710,13 @@ export class UnderwaterPass {
 
   // --- volumetric shafts ---------------------------------------------------
   private readonly uGodRayStrength = uniform(0.9);
+  /** [underwater-look-3] Round 12c: how far the camera looks up; see `OPEN_UP_PITCH`. */
+  private readonly uLookUp = uniform(0);
+  /** [underwater-look-3] Round 12c: `uLookUp`, for the exposure; see `AutoExposure.setLookUp`. */
+  get lookUp(): number {
+    return this.uLookUp.value as number;
+  }
+  private readonly uOpenUpGrade = uniform(OPEN_UP_GRADE.clone());
   // Loosely typed: a uniform used as a dynamic `Loop` bound is not modelled by
   // the TSL typings.
   private readonly uSteps: any = uniform(24, 'int');
@@ -1501,6 +1524,13 @@ export class UnderwaterPass {
           this.uSunBurst.mul(burst).mul(exp(this.uSigma.mul(leaves.min(200).negate()))),
         );
 
+        const openUp = isSubmergedSurface
+          .oneMinus()
+          .mul(eyeUnder)
+          .mul(this.uLookUp)
+          .mul(mu64.mul(0.8).oneMinus())
+          .toVar('uwOpenUp2');
+
         // [underwater-look-3] Round 8b: the rays from the sun, half resolution
         // and smooth, so a plain bilinear read. Dimmed on blocked pixels so a
         // blade in front of them stays dark; see `RADIAL_ON_OCCLUDER`.
@@ -1561,6 +1591,10 @@ export class UnderwaterPass {
         // a shaft beside a hull is lit past the hull, not through it.
         const shaftVis = mix(float(1), sunVis, muSun.smoothstep(SUN_KNEE_CONE[0], SUN_KNEE_CONE[1]));
         const lit = fogged.add(rays.mul(shaftVis)).toVar('uwLit');
+        // [underwater-look-3] Round 12c: the open water looking up, deeper; see
+        // `OPEN_UP_GRADE`. On the shafts as well as the water: most of that wash
+        // is the march's own glow.
+        lit.mulAssign(mix(vec3(1, 1, 1), this.uOpenUpGrade, openUp));
         // [underwater-look-3] Round 9: the surface round the sun rolls off
         // instead of clipping; see `SUN_KNEE`.
         const kneePivot = luminance(medium).max(1e-4);
@@ -2017,6 +2051,11 @@ export class UnderwaterPass {
     (this.uInvProjection.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (this.uCameraWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
     (this.uCameraPos.value as THREE.Vector3).setFromMatrixPosition(camera.matrixWorld);
+    {
+      const fy = -camera.matrixWorld.elements[9];
+      const t = Math.min(1, Math.max(0, (fy - OPEN_UP_PITCH[0]) / (OPEN_UP_PITCH[1] - OPEN_UP_PITCH[0])));
+      this.uLookUp.value = t * t * (3 - 2 * t);
+    }
 
     // [underwater-look-3] Round 8b: where the refracted sun is on screen, and
     // how much of the rays to draw; see `RADIAL_TAPS`. A direction, so w = 0.

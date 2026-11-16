@@ -5,6 +5,8 @@ import {
   cameraPosition,
   cameraViewMatrix,
   cos,
+  dFdx,
+  dFdy,
   faceDirection,
   float,
   mix,
@@ -281,6 +283,37 @@ const ACROSS_DIFFUSE_TR = 1;
  */
 const ACROSS_AMBIENT = 8;
 const CONTRE_EDGES: readonly [number, number] = [0.35, 0.8];
+
+/**
+ * [underwater-look-3] Round 12c. Relief on the near kelp blades, which the
+ * final blind round read as flat cards in kelp-sun. Macrocystis blades are
+ * bullate (blistered and wrinkled) with a raised midrib, and curl across their
+ * width; all of it is a height field in metres, turned into a normal from its
+ * screen derivatives (Mikkelsen's surface-gradient bump, as three's
+ * `perturbNormalArb`), on kelp and Sargassum blades only, faded out between `BLADE_RELIEF_RANGE`
+ * metres, past which it would only alias.
+ * - `BULLATE_FREQ` along and across the half-width, `BULLATE_DEPTH` deep;
+ * - the midrib `MIDRIB_HEIGHT` proud, veins `VEIN_HEIGHT`;
+ * - a cross-blade curl, `BLADE_CURL` at the margin.
+ * The same veins thicken the tissue the sun shines through (`VEIN_SHADOW` less
+ * transmission) and the blisters vary its thickness by `BULLATE_THICKNESS`,
+ * so a backlit blade shows its venation and wrinkles; in shade the hollows
+ * and veins darken the blade by `BULLATE_SHADE` and `VEIN_SHADE`; the folded margin is
+ * thicker and darker (`MARGIN_DARK`); and a soft sheen, `BLADE_SHEEN`, rides
+ * the wrinkles.
+ */
+const BLADE_RELIEF_RANGE: readonly [number, number] = [5, 14];
+const BULLATE_FREQ: readonly [number, number] = [34, 7];
+const BULLATE_DEPTH = 0.007;
+const MIDRIB_HEIGHT = 0.004;
+const VEIN_HEIGHT = 0.0012;
+const BLADE_CURL = 0.009;
+const VEIN_SHADOW = 0.6;
+const BULLATE_THICKNESS = 0.35;
+const BULLATE_SHADE = 0.3;
+const VEIN_SHADE = 0.22;
+const MARGIN_DARK = 0.35;
+const BLADE_SHEEN = 0.1;
 /**
  * [underwater-look-3] Round 6. The ambient a submerged blade takes is the
  * water's light, not the sky's: blue-green rather than the sky cube's blue.
@@ -756,6 +789,30 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     const dist = toEye.length();
     const V = toEye.div(dist.max(1e-4));
     const n = vNormal.normalize().mul(faceDirection).toVar();
+    // [underwater-look-3] Round 12c: a near blade's relief; see `BLADE_RELIEF_RANGE`.
+    // Kelp and the golden Sargassum fronds on the columns (the near blades).
+    const isKelp = vSeed.w.lessThan(0.5).or(vSeed.w.sub(4).abs().lessThan(0.5));
+    const relief = select(isKelp, ss(BLADE_RELIEF_RANGE[1], BLADE_RELIEF_RANGE[0], dist), float(0)).toVar();
+    const vein = ss(0.82, 1, sin(vv.mul(40).sub(uvx.mul(7)).add(seed1.mul(40)))).toVar();
+    const midrib = ss(0.1, 0, uvx);
+    const bullate: any = sin(vv.mul(BULLATE_FREQ[0]).add(seed2.mul(31))).mul(
+      sin(uvx.mul(BULLATE_FREQ[1]).add(vv.mul(17)).add(seed1.mul(13))),
+    );
+    const height = bullate
+      .mul(BULLATE_DEPTH)
+      .add(midrib.mul(MIDRIB_HEIGHT))
+      .add(vein.mul(VEIN_HEIGHT))
+      .add(uvx.mul(uvx).mul(BLADE_CURL))
+      .mul(relief)
+      .toVar();
+    const dpdx: any = dFdx(wp);
+    const dpdy: any = dFdy(wp);
+    const g1 = dpdy.cross(n);
+    const g2 = n.cross(dpdx);
+    const det = dpdx.dot(g1);
+    const grad = g1.mul(dFdx(height)).add(g2.mul(dFdy(height))).mul(det.sign());
+    n.assign(n.mul(det.abs().max(1e-12)).sub(grad).normalize());
+    const margin = ss(0.86, 1, uvx).mul(select(isKelp, float(1), float(0))).toVar();
     // [underwater-look-3] Below the surface the sun stands where Snell puts
     // it, not where it is in the sky: 47 degrees up rather than 24 under
     // the skyPro sun, so the through-blade glow peaks where the burst is.
@@ -790,6 +847,14 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
       .mul(0.5)
       .add(0.5);
     alb.assign(mix(alb, alb.mul(0.5).add(ir.mul(vec3(0.15, 0.13, 0.3))), vPr.z.mul(ndv.oneMinus()).mul(0.8)));
+    alb.mulAssign(float(1).sub(margin.mul(MARGIN_DARK)));
+    // Round 12c: the wrinkles' hollows and the veins in the blade's own colour,
+    // so a blade in the canopy's shade, lit by ambient alone, keeps its relief.
+    alb.mulAssign(
+      float(1).sub(
+        relief.mul(bullate.mul(0.5).add(0.5).mul(BULLATE_SHADE).add(vein.mul(VEIN_SHADE)).add(midrib.mul(VEIN_SHADE))),
+      ),
+    );
 
     // Caustics ride the key light, and fade with depth as they do on the sand.
     let caustic: Node = float(1);
@@ -806,7 +871,10 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     // [underwater-look-3] A thickness falloff: light crosses less tissue at
     // the thin margin than at the midrib, so the edges glow and the rib
     // reads as a darker line through the backlit blade.
-    const thin = mix(float(0.55), float(1.3), ss(0.05, 0.85, uvx));
+    const thin = mix(float(0.55), float(1.3), ss(0.05, 0.85, uvx))
+      .mul(float(1).sub(vein.mul(relief).mul(VEIN_SHADOW)))
+      .mul(float(1).add(bullate.mul(relief).mul(BULLATE_THICKNESS)))
+      .mul(float(1).sub(margin.mul(0.5)));
     // Under water a little less gold in the transmitted tint (round 5b).
     const trTint = mix(vec3(1.5, 1.4, 0.75), vec3(1.25, 1.4, 0.85), underK);
     const trc = alb.mul(mix(vec3(1), trTint, translucency.mul(vPr.z.oneMinus()))).mul(thin);
@@ -828,6 +896,8 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     const H = V.add(L).normalize();
     const nh = n.dot(H).clamp(0, 1);
     c.addAssign(E.mul(nh.pow(40).mul(ir.mul(vPr.z).mul(2).add(0.45)).add(nh.pow(9).mul(0.07))).mul(0.25));
+    // Round 12c: the blade's soft sheen; see `BLADE_SHEEN`.
+    c.addAssign(E.mul(nh.pow(8).mul(relief).mul(BLADE_SHEEN)).mul(aoTerm));
     // Looking toward the key through a blade: the glow kelp is photographed for.
     // [underwater-look-3] Under water, a narrower lobe scaled back up (see
     // `BACKLIT`): only the blades between the eye and the sun glow, and the

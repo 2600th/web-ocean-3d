@@ -3862,6 +3862,8 @@ class App {
     // [underwater-look-2] The submerged eye's own exposure target; see
     // `AutoExposure.setSubmerged`. A uniform write.
     this.postChain.exposure?.setSubmerged(submersion);
+    // [underwater-look-3] Round 12c: see `AutoExposure.setLookUp`.
+    this.postChain.exposure?.setLookUp(this.underwater.lookUp);
     // [underwater-look-2] And its tone curve; see `OutputTransform.setSubmerged`.
     this.outputTransform.setSubmerged(submersion);
     // [underwater-look-3] And the occlusion radius; see `AmbientOcclusion.setSubmerged`.
