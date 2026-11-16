@@ -87,6 +87,32 @@ const COLUMN_SPACING = 2.9;
 const LEAVES_PER_METRE = 26;
 /** Sparkling specks per metre of column (abyssal's 13-16). */
 const GLINTS_PER_METRE = 7;
+/**
+ * [underwater-look-3] Round 6. A share of the glints actually planted; the
+ * rest are drawn and dropped so every other leaf keeps its place. See
+ * `LeafField.UNDER_SPARKLE`.
+ */
+const GLINT_KEEP = 0.25;
+/**
+ * [underwater-look-3] Round 6. Single columns and small clumps standing out
+ * past a forest's edge, to `OUTLIER_REACH` of its radius, at `OUTLIER_SHARE`
+ * of the interior's tries. Seen from outside, a forest whose density falls
+ * off inside its radius has a clean rim, and the rim read as a rank of
+ * columns side by side. Drawn from their own generator after every other
+ * column, and not counted in `Forest.columns`, so the forests, their order
+ * in `focusPoints` and every existing column's leaves are unchanged.
+ */
+const OUTLIER_REACH = 1.35;
+const OUTLIER_SHARE = 0.35;
+/**
+ * [underwater-look-3] Round 6, `clumpColumns`: the noise field's frequency
+ * (features of about ten metres), the gain from its slope to a move, the
+ * longest move, and the closest two holdfasts may end up.
+ */
+const CLUMP_FREQ = 0.1;
+const CLUMP_GAIN = 14;
+const CLUMP_PULL = 1.4;
+const CLUMP_MIN_GAP = 1.1;
 /** Water kept over a column's top leaves: wave troughs plus the leaf reach. */
 const TOP_CLEARANCE = 2.0;
 /** Tallest column, metres. */
@@ -404,6 +430,53 @@ function growForests(
     }
   }
 
+  // [underwater-look-3] Round 6: stragglers past the edge. See `OUTLIER_REACH`.
+  for (const forest of forests) {
+    const rng = mulberry32((hash2(forest.x * 0.37, forest.z * 0.53) * 4294967296) >>> 0);
+    const ring = Math.PI * forest.radius * forest.radius * (OUTLIER_REACH * OUTLIER_REACH - 0.8 * 0.8);
+    const tries = Math.ceil((ring / (COLUMN_SPACING * COLUMN_SPACING)) * OUTLIER_SHARE);
+    for (let i = 0; i < tries; i++) {
+      const a = rng() * Math.PI * 2;
+      const rr = Math.sqrt(0.64 + rng() * (OUTLIER_REACH * OUTLIER_REACH - 0.64));
+      const x = forest.x + Math.cos(a) * rr * forest.radius;
+      const z = forest.z + Math.sin(a) * rr * forest.radius;
+      const h01 = rng();
+      const kind = rng() < 0.12 ? 2 : 0;
+      const fill = 0.45 + 0.6 * rng();
+      if (inClearing(x, z, clearings, 3)) continue;
+      if (near(x, z, COLUMN_SPACING * 1.3).length > 0) continue;
+      const depth = -seafloorPlacementHeight(x, z);
+      const ground = floor.height(x, z);
+      if (depth < 5 || depth > 28 || floor.slope(x, z) > MAX_SLOPE) continue;
+      const maxH = Math.min(MAX_COLUMN, Math.min(depth, -ground) - TOP_CLEARANCE);
+      if (maxH < MIN_COLUMN) continue;
+      const column: Column = {
+        x,
+        y: ground - HOLDFAST_SINK,
+        z,
+        height: Math.max(MIN_COLUMN, maxH * (0.5 + 0.45 * h01)),
+        kind,
+        fill,
+        crowd: 0,
+      };
+      columns.push(column);
+      const key = gridKey(x, z);
+      let list = grid.get(key);
+      if (!list) grid.set(key, (list = []));
+      list.push(column);
+    }
+  }
+
+  // [underwater-look-3] Round 6: clumps and gaps. See `CLUMP_PULL`.
+  clumpColumns(columns, floor);
+  grid.clear();
+  for (const c of columns) {
+    const key = gridKey(c.x, c.z);
+    let list = grid.get(key);
+    if (!list) grid.set(key, (list = []));
+    list.push(c);
+  }
+
   // Crowding: how much of the sky a column's neighbours take. Drives the baked
   // occlusion, standing in for abyssal's skylight volume.
   for (const c of columns) c.crowd = Math.min(1, (near(c.x, c.z, 6).length - 1) / 6);
@@ -414,6 +487,52 @@ function growForests(
     leaves,
     columns: columns.map((c) => ({ x: c.x, y: c.y, z: c.z, height: c.height })),
   };
+}
+
+/**
+ * [underwater-look-3] Round 6. Moves every column part of the way up the slope
+ * of a smooth noise field, so the forest gathers into clumps with open water
+ * between them. Dart-throwing at a fixed spacing, run to saturation, packs the
+ * columns almost evenly, and from outside the forest they lined up in ranks:
+ * the round-6 review's "monochrome grid of kelp". Giant kelp grows in clumps
+ * where the holdfasts found rock. No draws from the layout stream, so every
+ * forest and column keeps its identity; a move that would land a column on a
+ * neighbour, a slope or out of its depth band is not made.
+ */
+function clumpColumns(columns: Column[], floor: FloorCache): void {
+  const field = (x: number, z: number) => fbm(x * CLUMP_FREQ, z * CLUMP_FREQ, 0x6b1d, 2);
+  const e = 0.5;
+  const moved = columns.map((c) => {
+    const gx = field(c.x + e, c.z) - field(c.x - e, c.z);
+    const gz = field(c.x, c.z + e) - field(c.x, c.z - e);
+    const g = Math.hypot(gx, gz);
+    if (g < 1e-6) return null;
+    const step = Math.min(CLUMP_PULL, (g / (2 * e)) * CLUMP_GAIN);
+    return { x: c.x + (gx / g) * step, z: c.z + (gz / g) * step };
+  });
+  for (let i = 0; i < columns.length; i++) {
+    const m = moved[i];
+    if (!m) continue;
+    const c = columns[i];
+    let clash = false;
+    for (let j = 0; j < columns.length && !clash; j++) {
+      if (j === i) continue;
+      const o = columns[j];
+      if (Math.abs(o.x - m.x) < CLUMP_MIN_GAP && Math.abs(o.z - m.z) < CLUMP_MIN_GAP && Math.hypot(o.x - m.x, o.z - m.z) < CLUMP_MIN_GAP) clash = true;
+    }
+    if (clash) continue;
+    // Accepted on the layout floor (`seafloorPlacementHeight`), seated on the
+    // rendered one, like every other placement in the scene.
+    const depth = -seafloorPlacementHeight(m.x, m.z);
+    const ground = floor.height(m.x, m.z);
+    if (depth < 5 || depth > 28 || floor.slope(m.x, m.z) > MAX_SLOPE) continue;
+    const maxH = Math.min(MAX_COLUMN, Math.min(depth, -ground) - TOP_CLEARANCE);
+    if (maxH < MIN_COLUMN) continue;
+    c.x = m.x;
+    c.z = m.z;
+    c.y = ground - HOLDFAST_SINK;
+    c.height = Math.min(c.height, maxH);
+  }
 }
 
 /**
@@ -435,7 +554,9 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
   const sr = rr(0.2, 0.55);
   const sc = rr(0.75, 1.25);
   const la = rnd() * TAU;
-  const lm = rr(0, 0.11);
+  // [underwater-look-3] Round 6: 0.11 -> 0.17, the same draw scaled, so each
+  // column's own curve stands out more against the current's common lean.
+  const lm = rr(0, 0.17);
   const stem = (s: number, h: number): [number, number, number] => {
     const a = ph + (s * TAU) / strands + h * tw;
     const r = sr * (1 - (0.6 * h) / H);
@@ -504,16 +625,23 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
     });
   }
 
+  // [underwater-look-3] See `GLINT_KEEP`: its own hash, not the stream.
+  let glintSeed = (hash2(c.x * 0.71, c.z * 1.37) * 4294967296) >>> 0;
   for (let i = Math.floor(H * GLINTS_PER_METRE); i > 0; i--) {
     const h = rnd() * H;
     const a = rnd() * TAU;
     const r = rr(0.15, 0.8) * (1 - (0.5 * h) / H);
     const ln = (lm * h * h) / H;
+    glintSeed = (Math.imul(glintSeed ^ (glintSeed >>> 15), 0x2c1b3c6d) + 0x297a2d39) >>> 0;
+    const keep = ((glintSeed ^ (glintSeed >>> 12)) >>> 0) / 4294967296 < GLINT_KEEP;
+    const s1 = c.kind === 2 ? rnd() * 0.6 : rnd();
+    const s2 = rnd();
+    if (!keep) continue;
     leaves.push({
       x: c.x + Math.cos(a) * r + Math.cos(la) * ln, y: c.y + h, z: c.z + Math.sin(a) * r + Math.sin(la) * ln,
       len: rr(0.018, 0.05), yaw: 0, tilt: 0, width: 0, hA: h,
       // s1 picks the palette entry: kelp specks gold-to-cyan, sargassum's gold-green.
-      type: LeafType.GLINT, s1: c.kind === 2 ? rnd() * 0.6 : rnd(), s2: rnd(), bend: 0, ao: 1,
+      type: LeafType.GLINT, s1, s2, bend: 0, ao: 1,
     });
   }
 }

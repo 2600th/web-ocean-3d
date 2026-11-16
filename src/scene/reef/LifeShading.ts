@@ -152,7 +152,14 @@ export function submergedLight(inputs: SubmergedLightInputs): Node {
       const reach = float(1)
         .sub(depth.smoothstep(CAUSTIC_SHALLOW, CAUSTIC_DEEP))
         .mul(float(1).sub(wp.y.smoothstep(-1.2, 1.2)));
-      caustic = mix(float(1), inputs.caustics(wp), reach);
+      // [underwater-look-3] Round 6: only on the side the refracted sun
+      // reaches (`Caustics.facingNode`, inlined: this model's key is the sun
+      // in air and wraps round to the back at 0.4, which drew the web on the
+      // shaded flank of every creature).
+      const kh = vec2(inputs.sunDirection.x, inputs.sunDirection.z).div(1.333);
+      const below = vec3(kh.x, float(1).sub(kh.dot(kh)).max(1e-4).sqrt(), kh.y);
+      const facing = n.dot(below).smoothstep(0.2, 0.7);
+      caustic = mix(float(1), inputs.caustics(wp), reach.mul(facing as unknown as typeof reach));
     }
     return inputs.ambient
       .mul(sky.mul(0.6).add(0.4))

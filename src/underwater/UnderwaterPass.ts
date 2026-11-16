@@ -276,8 +276,16 @@ const SIDE_LIGHT = 0.35;
  * returns of the water's own scattered light.
  */
 const UPWELL = 0.5;
-/** How much of the caustic web the upwelling carries, 0..1. */
-const UPWELL_WEB = 0.7;
+/**
+ * How much of the caustic web the upwelling carries, 0..1.
+ * [underwater-look-3] Round 6: 0.7 -> 0. The upwelling reaches side faces too
+ * (`SIDE_LIGHT`), and there the web, read through a shear meant for a level
+ * bed, drew long cyan streaks down the shaded wall of the mound: the round-6
+ * review's "caustics across every face". The same review marked the web on a
+ * hull's underside as caustics ignoring `n.l`. Upwelled light is diffuse; at
+ * 0 the read is not built.
+ */
+const UPWELL_WEB: number = 0;
 
 /**
  * [underwater-look-3] Scale on the light submerged surfaces carry, relative to
@@ -308,8 +316,13 @@ const SURFACE_LIGHT = 0.35;
  */
 const NEAR_LIGHT = 0.5;
 const NEAR_WARM = 0.45;
-const NEAR_START = 4;
-const NEAR_END = 14;
+// [underwater-look-3] Round 6: 4-14 m -> 1.2-4 m. Over the old span the
+// near-field kelp three to eight metres off kept its gold as though lit in
+// air (the round-6 review's "foreground kelp lit as if in air"); a blade at
+// arm's length keeps its colour, at three metres most of it has gone, and at
+// four the column's blue-green has it.
+const NEAR_START = 1.2;
+const NEAR_END = 4;
 /**
  * [underwater-look-3] The sun seen from below, as abyssal-garden draws it in
  * its surface's window: `pow(sd, 60) * 1.3 + pow(sd, 500) * 12` around the
@@ -421,8 +434,13 @@ export class UnderwaterPass {
   private readonly uUnderside = uniform(UNDERSIDE_AMBIENT);
   /** See `FLUORESCENCE`. */
   private readonly uFluorescence = uniform(FLUORESCENCE);
-  /** Strength of the chromatic caustic recolour on lit submerged surfaces. */
-  private readonly uCausticRelight = uniform(0.55);
+  /**
+   * Strength of the chromatic caustic recolour on lit submerged surfaces.
+   * [underwater-look-3] Round 6: 0.55 -> 0.25, with a third of the dispersion
+   * (`Caustics.uDispersion`): the review read the red and blue edges on every
+   * filament as RGB fringing. What is left is a faint warm/cool edge.
+   */
+  private readonly uCausticRelight = uniform(0.25);
   private normalNode: unknown = null;
   private chromaticCaustics: ((worldPosition: unknown) => unknown) | null = null;
 
@@ -1021,9 +1039,10 @@ export class UnderwaterPass {
           // The web as the bed shows it, read as if from 12 m further down so
           // the field's own depth blur and contrast loss soften it: reflected
           // caustics have crossed the column twice and are never crisp.
-          const upwellWeb = mix(float(1), float(caustics(hitP.sub(vec3(0, 12, 0))) as any), UPWELL_WEB).toVar(
-            'uwUpwellWeb',
-          );
+          const upwellWeb: any =
+            UPWELL_WEB > 0
+              ? mix(float(1), float(caustics(hitP.sub(vec3(0, 12, 0))) as any), UPWELL_WEB).toVar('uwUpwellWeb')
+              : float(1);
           const upwell = this.uScatterColor
             .mul(exp(this.uScatterK.mul(hitDepth).negate()))
             .mul(downFace.mul(0.8).add(side))
@@ -1038,7 +1057,9 @@ export class UnderwaterPass {
           // around 1 so it adds fringes and contrast without adding light, and
           // only where the sun can reach: facing it, and out of its shadow.
           if (chromaticCaustics !== null) {
-            const nDotL = nWorld.dot(this.uSunUnder).smoothstep(0.05, 0.45).toVar('uwNdotL');
+            // [underwater-look-3] Round 6: the edges `Caustics.facingNode` uses,
+            // so the hue goes where the web does and nowhere else.
+            const nDotL = nWorld.dot(this.uSunUnder).smoothstep(0.2, 0.7).toVar('uwNdotL');
             // Hue only. The field is centred on 1 and the materials already
             // took its luminance through their key light (`groundShading`), so
             // dividing by the channel mean leaves just the dispersion: red on
