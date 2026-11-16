@@ -138,10 +138,8 @@ export class Caustics {
    * heavily blurred levels the march reads (`UnderwaterPass.uShaftBlurLod`),
    * where the web has averaged to within about half of its mean of 1.
    */
-  // [underwater-look-3] Round 5b: higher and narrower, from (0.95, 1.35) and
-  // (0.85, 1.25): fewer beams with harder edges. See `UnderwaterPass.uShaftBlurLod`.
-  readonly uShaftA = uniform(new THREE.Vector2(1.0, 1.15));
-  readonly uShaftB = uniform(new THREE.Vector2(0.9, 1.05));
+  readonly uShaftA = uniform(new THREE.Vector2(0.95, 1.35));
+  readonly uShaftB = uniform(new THREE.Vector2(0.85, 1.25));
   /** [underwater-look-2] 1 with the eye above water, 0 below; see `setViewer`. */
   private readonly uAbove = uniform(0);
   /** [underwater-look-2] Blur growth per metre of depth seen from above. */

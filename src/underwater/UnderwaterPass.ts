@@ -329,16 +329,17 @@ const SUN_HALO = 0.15;
  */
 const SHAFT_LOBE = 0.5;
 /** [underwater-look-3] The in-scatter's phase: `PHASE_ISO + PHASE_FWD mu^3 + 0.3 mu^4`. Was 1.22 and 0. */
-const PHASE_ISO = 0.45;
-const PHASE_FWD = 2.5;
+const PHASE_ISO = 0.65;
+const PHASE_FWD = 1.8;
 
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
-// [underwater-look-3] Round 5b: 1.4 -> 1.65. The kelp frame was high-key
+// [underwater-look-3] Round 5c: 1.4 -> 1.5. The kelp frame was high-key
 // next to abyssal-garden's: dark masses against bright water. Darkening the
 // kelp at its source alone did little, because the submerged exposure
 // re-centres the frame and lifted it straight back; the curve below the
-// water's own level is what moves the distribution and leaves the mean.
-const GRADE_CONTRAST = 1.65;
+// water's own level is what moves the distribution. 1.65 (round 5b) crushed
+// the shadows of the reef and the kelp-wide frame.
+const GRADE_CONTRAST = 1.5;
 /** The same curve's exponent above the pivot. */
 const GRADE_CONTRAST_HIGH = 1.04;
 
@@ -440,7 +441,7 @@ export class UnderwaterPass {
    */
   private readonly uShaftBase = uniform(0.05);
   /** Gain on the 0..1 beam pattern. abyssal-garden's `pat * 6`. */
-  private readonly uShaftGain = uniform(8);
+  private readonly uShaftGain = uniform(6);
   /**
    * Extra mips of blur on the beam pattern. The caustics module reads the
    * tile eight and three times larger for the shafts, so level 0 there is
@@ -453,13 +454,7 @@ export class UnderwaterPass {
    * abyssal-garden's frames show. The thresholds moved with it; see
    * `Caustics.uShaftA`.
    */
-  // [underwater-look-3] Round 5b: 5 -> 5.5 with sparser thresholds
-  // (`Caustics.uShaftA/B`) and a gain of 8: fewer, wider, crisper-edged beams
-  // like abyssal-garden's, in place of many soft patches that, seen end-on
-  // near the sun, read as arched bands. Below 5 the reads keep the web's
-  // lines and the shafts become curved curtains again (tried at 4: the
-  // kelp-wide frame filled with them).
-  private readonly uShaftBlurLod = uniform(5.5);
+  private readonly uShaftBlurLod = uniform(5);
   /** How far along the view ray shafts are integrated, metres. abyssal-garden: 120. */
   private readonly uShaftRange = uniform(90);
   /** `K / cos` of the refracted sun: attenuation down the light's own path. */
