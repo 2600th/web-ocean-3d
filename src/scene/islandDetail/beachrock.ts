@@ -288,117 +288,338 @@ export function beachrockFootprints(): readonly BeachrockFootprint[] {
 
 // ------------------------------------------------------------ geometry
 
-const SEGMENTS = 96;
+const SEGMENTS = 128;
 
-/** A periodic wobble of the outline: a few low harmonics with random phases. */
+/** A periodic wobble: a few harmonics with random phases. */
 function harmonics(rnd: () => number, from: number, to: number, fall: number): (t: number) => number {
   const terms: [number, number, number][] = [];
   for (let k = from; k <= to; k++) terms.push([k, rnd() * Math.PI * 2, (rnd() * 0.6 + 0.7) / Math.pow(k, fall)]);
   return (t) => terms.reduce((s, [k, ph, amp]) => s + amp * Math.sin(k * t + ph), 0);
 }
 
+/** Lattice value noise in [-1, 1], smooth, CPU only. */
+function valueNoise2(x: number, z: number, seed: number): number {
+  const ix = Math.floor(x);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uz = fz * fz * (3 - 2 * fz);
+  const h = (i: number, j: number) => {
+    let v = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(seed, 144665);
+    v = Math.imul(v ^ (v >>> 13), 1274126177);
+    return (((v ^ (v >>> 16)) >>> 0) / 4294967296) * 2 - 1;
+  };
+  const p = h(ix, iz) + (h(ix + 1, iz) - h(ix, iz)) * ux;
+  const q = h(ix, iz + 1) + (h(ix + 1, iz + 1) - h(ix, iz + 1)) * ux;
+  return p + (q - p) * uz;
+}
+
+/** Noise at the 0.3-2 m scales the sea bites a rock's plan to: metres of radius. */
+function planNoise(x: number, z: number, seed: number): number {
+  return (
+    valueNoise2(x / 2, z / 2, seed) * 0.2 +
+    valueNoise2(x / 0.8 + 17.1, z / 0.8 + 3.3, seed + 1) * 0.09 +
+    valueNoise2(x / 0.33 + 5.7, z / 0.33 + 29.2, seed + 2) * 0.04
+  );
+}
+
+/** Arc distance between two angles, radians. */
+function arc(p: number, q: number): number {
+  const d = Math.abs(p - q) % (Math.PI * 2);
+  return Math.min(d, Math.PI * 2 - d);
+}
+
+/** A ring as built: its nominal height and scale, and how it is worn. */
+interface BuiltRing {
+  y: number;
+  s: number;
+  /** A bed's outer top edge, worn round: the shoulder below it and the crown drawn in. */
+  bevel: 'none' | 'shoulder' | 'crown';
+  /** The inner ring of a step back, and the scale it steps back from. */
+  stepFrom: number | null;
+  /** Start a fresh row of vertices: a hard, concave corner. */
+  split: boolean;
+  /** Which bed it belongs to, for the bed's own wander. */
+  bed: number;
+}
+
 /**
- * Builds a piece in its own frame (anchor at the origin, metres): the outline
- * swept through its rings, each band between two rings with its own vertices
- * so steps and the notch keep hard edges, and a flat top.
+ * The profile as built: each bed's outer top edge worn round (a shoulder ring
+ * a little below it, the edge itself drawn in, sharing normals), the concave
+ * inner corners of the steps kept hard, and the beds numbered.
+ */
+function wearProfile(rings: Ring[]): BuiltRing[] {
+  const out: BuiltRing[] = [];
+  let bed = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const r = rings[i];
+    const next = rings[i + 1];
+    const prev = rings[i - 1];
+    const isTop = i === rings.length - 1;
+    const ledgeOuter = next !== undefined && next.y === r.y && next.s < r.s;
+    const ledgeInner = prev !== undefined && prev.y === r.y && prev.s > r.s;
+    if (isTop || ledgeOuter) {
+      const drop = Math.min(0.14, Math.max(0.03, (r.y - (prev?.y ?? r.y - 0.3)) * 0.45));
+      out.push({ y: r.y - drop, s: r.s, bevel: 'shoulder', stepFrom: null, split: false, bed });
+      out.push({ y: r.y, s: r.s, bevel: 'crown', stepFrom: null, split: false, bed });
+    } else if (ledgeInner) {
+      out.push({ y: r.y, s: r.s, bevel: 'none', stepFrom: prev.s, split: false, bed });
+      out.push({ y: r.y, s: r.s, bevel: 'none', stepFrom: prev.s, split: true, bed });
+      bed++;
+    } else {
+      out.push({ y: r.y, s: r.s, bevel: 'none', stepFrom: null, split: false, bed });
+    }
+  }
+  return out;
+}
+
+interface MeshData {
+  pos: number[];
+  col: number[];
+  idx: number[];
+}
+
+/**
+ * Builds a piece in its own frame (anchor at the origin, metres).
  *
- * The vertex colour carries large-scale occlusion: under the lip and in the
- * notch dark, cracks dark, ledges and the top open.
+ * Round 11b's blocks read as "stacked concrete or a man-made pier": every bed
+ * the same thickness all round, ruled edges, right-angled continuous steps,
+ * evenly spaced V cuts and a crisp flat top. Beachrock is a cemented beach
+ * the sea is taking apart, so here:
+ *
+ *  - the plan is noise at 2, 0.8 and 0.33 m over a few broad lobes, shifting
+ *    a little with height so the faces are not extrusions;
+ *  - the edge is bitten into scallops, most and deepest seaward and at the
+ *    still water, where the waves work;
+ *  - each bed's top edge is worn round, wider seaward; the concave inner
+ *    corners stay sharp;
+ *  - each bed's thickness wanders round the rock, and how far each step sets
+ *    back does too, down to almost nothing, so ledges come and go;
+ *  - the top tips and undulates;
+ *  - fissures are few, uneven and branching, opening toward the top;
+ *  - broken slabs and chunks lie about the foot.
+ *
+ * The vertex colour carries large-scale occlusion: under overhangs, at the
+ * buried foot and down the fissures.
  */
 export function buildBeachrockGeometry(piece: BeachrockPiece): THREE.BufferGeometry {
+  const mesh: MeshData = { pos: [], col: [], idx: [] };
   const rnd = mulberry32(piece.seed);
-  const coarse = harmonics(rnd, 2, 7, 0.9);
-  const fine = harmonics(rnd, 9, 20, 0.6);
-  // Joints: V notches down the sides, two to four of them.
-  const cracks: [number, number, number][] = [];
-  const nCracks = 2 + Math.floor(rnd() * 3);
-  for (let i = 0; i < nCracks; i++) cracks.push([rnd() * Math.PI * 2, 0.035 + rnd() * 0.03, 0.08 + rnd() * 0.12]);
-  const crackAt = (t: number) => {
-    let cut = 0;
-    for (const [c, w, d] of cracks) {
-      let dt = Math.abs(t - c);
-      dt = Math.min(dt, Math.PI * 2 - dt);
-      cut = Math.max(cut, d * Math.max(0, 1 - dt / w));
+  const inv = piece.rotation.clone().invert();
+  const toSea = new THREE.Vector3(piece.anchor.x - ISLAND.x, 0, piece.anchor.z - ISLAND.z).normalize().applyQuaternion(inv);
+  const seawardAngle = Math.atan2(toSea.z, toSea.x);
+  buildPart(mesh, { a: piece.a, b: piece.b, rings: piece.rings, seed: piece.seed, seawardAngle, water: -piece.anchor.y, full: true }, rnd);
+  scatterChunks(mesh, piece, seawardAngle, rnd);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(mesh.pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(mesh.col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array((mesh.pos.length / 3) * 2), 2));
+  g.setIndex(mesh.idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+interface PartSpec {
+  a: number;
+  b: number;
+  rings: Ring[];
+  seed: number;
+  seawardAngle: number;
+  /** The still water's height in this part's frame: where the bites are deepest. */
+  water: number;
+  /** A whole rock (noise, bites, fissures, full resolution) or a chunk. */
+  full: boolean;
+  transform?: THREE.Matrix4;
+}
+
+function buildPart(mesh: MeshData, spec: PartSpec, rnd: () => number): void {
+  const { a, b, rings, seed, seawardAngle, water, full } = spec;
+  const segments = full ? SEGMENTS : 32;
+  const lobes = harmonics(rnd, 2, 5, 0.9);
+  const seawardness = (t: number) => Math.max(0, Math.cos(t - seawardAngle));
+
+  // Bites: scallops out of the edge, more and deeper seaward.
+  const bites: { at: number; width: number; depth: number }[] = [];
+  // Fissures: one to three, most with a narrower branch beside them.
+  const fissures: { at: number; width: number; depth: number; from: number }[] = [];
+  if (full) {
+    const nb = 7 + Math.floor(rnd() * 6);
+    for (let i = 0; i < nb; i++) {
+      const at = rnd() * Math.PI * 2;
+      const sw = seawardness(at);
+      const keep = rnd() < 0.45 + 0.55 * sw;
+      const width = 0.35 + rnd() * 0.8;
+      const depth = (0.1 + rnd() * 0.25) * (0.6 + 0.8 * sw);
+      if (keep) bites.push({ at, width, depth });
     }
-    return cut;
+    const nf = 1 + Math.floor(rnd() * 3);
+    for (let i = 0; i < nf; i++) {
+      const at = rnd() * Math.PI * 2;
+      const width = 0.12 + rnd() * 0.2;
+      fissures.push({ at, width, depth: 0.25 + rnd() * 0.45, from: rnd() * 0.3 });
+      const branch = rnd() < 0.6;
+      const off = (rnd() - 0.5) * 0.5;
+      const bd = 0.12 + rnd() * 0.2;
+      const bf = 0.35 + rnd() * 0.3;
+      if (branch) fissures.push({ at: at + off, width: width * 0.5, depth: bd, from: bf });
+    }
+  }
+  const built = wearProfile(rings);
+  const bottom = rings[0].y;
+  const top = rings[rings.length - 1].y;
+  const span = Math.max(0.2, top - bottom);
+  const beds = built[built.length - 1].bed + 1;
+  const bedWander = Array.from({ length: beds }, () => harmonics(rnd, 2, 9, 0.6));
+  const stepWander = Array.from({ length: beds }, () => harmonics(rnd, 1, 6, 0.5));
+  const wanderAmp = full ? Math.min(0.09, span * 0.06) : 0;
+  const bevelSize = full ? 0.06 + rnd() * 0.04 : 0.035;
+  const tiltX = (rnd() - 0.5) * 0.08;
+  const tiltZ = (rnd() - 0.5) * 0.08;
+  const topRelief = (x: number, z: number) =>
+    tiltX * x + tiltZ * z + (full ? valueNoise2(x / 1.4, z / 1.4, seed + 7) * 0.05 + valueNoise2(x / 0.5, z / 0.5, seed + 8) * 0.015 : 0);
+
+  const v = new THREE.Vector3();
+  const push = (x: number, y: number, z: number, k: number) => {
+    v.set(x, y, z);
+    if (spec.transform) v.applyMatrix4(spec.transform);
+    mesh.pos.push(v.x, v.y, v.z);
+    mesh.col.push(k, k, k);
   };
-  const ringJitter = piece.rings.map(() => harmonics(rnd, 5, 14, 0.5));
-  const outline = (t: number, ring: number, s: number) => {
+
+  /** The worn outline at angle `t` on a ring: radius and height, metres, and occlusion. */
+  const at = (t: number, r: BuiltRing): { radius: number; y: number; k: number } => {
+    const c = Math.cos(t);
+    const sn = Math.sin(t);
+    const e = (1 / Math.sqrt((c / a) ** 2 + (sn / b) ** 2)) * (1 + 0.08 * lobes(t));
+    const h = (r.y - bottom) / span;
+    let radius = e + (full ? planNoise(c * e + r.y * 0.6, sn * e - r.y * 0.4, seed) : 0);
+    const atWater = Math.exp(-(((r.y - water) / 0.5) ** 2)) * 0.5 + 0.5;
+    for (const bite of bites) {
+      const d = (arc(t, bite.at) * e) / bite.width;
+      if (d < 1) radius -= bite.depth * atWater * Math.pow(1 - d * d, 1.5);
+    }
+    let fissure = 0;
+    for (const f of fissures) {
+      if (h < f.from) continue;
+      const open = (h - f.from) / (1 - f.from);
+      const w = f.width * (0.5 + open) * (0.8 + 0.4 * valueNoise2(r.y * 6, f.at * 9, seed + 3));
+      const d = (arc(t, f.at) * e) / w;
+      if (d < 1) fissure = Math.max(fissure, f.depth * open * (1 - d));
+    }
+    radius -= fissure;
+    let s = r.s;
+    if (r.stepFrom !== null) {
+      const m = THREE.MathUtils.smoothstep(stepWander[r.bed](t), -0.35, 0.45);
+      s = r.stepFrom - (r.stepFrom - r.s) * (0.08 + 0.92 * m);
+    }
+    radius *= s;
+    const wear = bevelSize * (1 + seawardness(t));
+    if (r.bevel === 'crown') radius -= wear;
+    let y = r.y;
+    if (r.bevel === 'shoulder') y -= wear * 0.6;
+    if (r.y > bottom + 0.01) y += bedWander[r.bed](t) * wanderAmp;
+    radius = Math.max(0.05, radius);
+    if (r.y >= top - 1e-6) y += topRelief(c * radius, sn * radius);
+    let k = r.y <= bottom + 0.01 ? 0.6 : 1;
+    k *= 1 - Math.min(0.5, fissure * 2);
+    return { radius, y, k };
+  };
+
+  // The sides: rows shared across worn edges, a fresh row at each concave corner.
+  let prevRow = -1;
+  let prevY: number[] = [];
+  for (let i = 0; i < built.length; i++) {
+    const r = built[i];
+    const row = mesh.pos.length / 3;
+    const ys: number[] = [];
+    const overhang = i > 0 && r.s > built[i - 1].s + 0.01 && r.y > built[i - 1].y;
+    for (let j = 0; j <= segments; j++) {
+      const t = (j / segments) * Math.PI * 2;
+      const p = at(t, r);
+      const y = prevY.length ? Math.max(p.y, prevY[j]) : p.y;
+      ys.push(y);
+      push(Math.cos(t) * p.radius, y, Math.sin(t) * p.radius, p.k * (overhang ? 0.55 : 1));
+    }
+    if (prevRow >= 0 && !r.split) {
+      for (let j = 0; j < segments; j++) {
+        const a0 = prevRow + j;
+        const c0 = row + j;
+        mesh.idx.push(a0, c0, a0 + 1, a0 + 1, c0, c0 + 1);
+      }
+    }
+    prevRow = row;
+    prevY = ys;
+  }
+
+  // The top: rings in from the crown to a centre, on the top's tilt and relief.
+  const crown = built[built.length - 1];
+  let last = prevRow;
+  for (const f of [0.85, 0.62, 0.4, 0.2]) {
+    const row = mesh.pos.length / 3;
+    for (let j = 0; j <= segments; j++) {
+      const t = (j / segments) * Math.PI * 2;
+      const p = at(t, crown);
+      const x = Math.cos(t) * p.radius * f;
+      const z = Math.sin(t) * p.radius * f;
+      push(x, top + bedWander[crown.bed](t) * wanderAmp * f + topRelief(x, z), z, 1);
+    }
+    for (let j = 0; j < segments; j++) mesh.idx.push(last + j, row + j, last + j + 1, last + j + 1, row + j, row + j + 1);
+    last = row;
+  }
+  const centre = mesh.pos.length / 3;
+  push(0, top + topRelief(0, 0), 0, 1);
+  for (let j = 0; j < segments; j++) mesh.idx.push(last + j, centre, last + j + 1);
+}
+
+/**
+ * Broken slabs and chunks about a rock's foot, most on its seaward side where
+ * the waves pull them off: two to five round a block, up to two by a slab.
+ * Each sits on the bed where it lands, tipped, with its own worn profile.
+ */
+function scatterChunks(mesh: MeshData, piece: BeachrockPiece, seawardAngle: number, rnd: () => number): void {
+  const n = piece.kind === 'block' ? 2 + Math.floor(rnd() * 4) : Math.floor(rnd() * 3);
+  const local = new THREE.Vector3();
+  const world = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const tipQ = new THREE.Quaternion();
+  for (let i = 0; i < n; i++) {
+    const t = seawardAngle + (rnd() - 0.5) * 3.2;
     const c = Math.cos(t);
     const sn = Math.sin(t);
     const e = 1 / Math.sqrt((c / piece.a) ** 2 + (sn / piece.b) ** 2);
-    const r = e * (1 + 0.09 * coarse(t) + 0.025 * fine(t) + 0.018 * ringJitter[ring](t)) * (1 - crackAt(t)) * s;
-    return [c * r, sn * r];
-  };
-
-  const pos: number[] = [];
-  const col: number[] = [];
-  const idx: number[] = [];
-  const bandStart: number[] = [];
-  const rings = piece.rings;
-  for (let i = 0; i + 1 < rings.length; i++) {
-    const r0 = rings[i];
-    const r1 = rings[i + 1];
-    const base = pos.length / 3;
-    bandStart.push(base);
-    for (const [ri, r] of [
-      [i, r0],
-      [i + 1, r1],
-    ] as [number, Ring][]) {
-      for (let j = 0; j <= SEGMENTS; j++) {
-        const t = (j / SEGMENTS) * Math.PI * 2;
-        const [x, z] = outline(t, ri, r.s);
-        pos.push(x, r.y, z);
-        // Occlusion: faces under an overhang and the buried foot are dark,
-        // cracks darker toward their root.
-        const under = r1.s > r0.s + 0.01 ? 0.55 : 1;
-        const foot = i === 0 ? 0.6 : 1;
-        const crack = 1 - Math.min(0.55, crackAt(t) * 4);
-        const k = Math.min(under, foot) * crack;
-        col.push(k, k, k);
-      }
-    }
-    for (let j = 0; j < SEGMENTS; j++) {
-      const a = base + j;
-      const b = base + j + 1;
-      const c = base + SEGMENTS + 1 + j;
-      const d = base + SEGMENTS + 2 + j;
-      idx.push(a, c, b, b, c, d);
-    }
+    const dist = e * (0.95 + rnd() * 0.3) + 0.25;
+    const size = 0.3 + rnd() * 0.5;
+    const h = 0.12 + rnd() * 0.28;
+    local.set(c * dist, 0, sn * dist);
+    world.copy(local).applyQuaternion(piece.rotation).add(piece.anchor);
+    local.y = seafloorHeight(world.x, world.z) - piece.anchor.y - 0.06;
+    q.setFromAxisAngle(UP, rnd() * Math.PI * 2);
+    const tipAt = rnd() * Math.PI * 2;
+    tipQ.setFromAxisAngle(new THREE.Vector3(Math.cos(tipAt), 0, Math.sin(tipAt)), 0.05 + rnd() * 0.3);
+    q.premultiply(tipQ);
+    const transform = new THREE.Matrix4().compose(local, q, new THREE.Vector3(1, 1, 1));
+    const chunkSeed = piece.seed * 31 + i * 7;
+    buildPart(
+      mesh,
+      {
+        a: size,
+        b: size * (0.5 + rnd() * 0.4),
+        rings: [
+          { y: -0.12, s: 0.9 },
+          { y: h - 0.04, s: 1 },
+          { y: h, s: 0.95 },
+        ],
+        seed: chunkSeed,
+        seawardAngle: 0,
+        water: 99,
+        full: false,
+        transform,
+      },
+      mulberry32(chunkSeed),
+    );
   }
-  // The top: concentric rings to a centre, a few centimetres of relief.
-  const topY = rings[rings.length - 1].y;
-  const topS = rings[rings.length - 1].s;
-  const capBase = pos.length / 3;
-  const fractions = [1, 0.82, 0.6, 0.38, 0.18];
-  for (let k = 0; k < fractions.length; k++) {
-    for (let j = 0; j <= SEGMENTS; j++) {
-      const t = (j / SEGMENTS) * Math.PI * 2;
-      const [x, z] = outline(t, rings.length - 1, topS * fractions[k]);
-      const relief = k === 0 ? 0 : 0.02 * Math.sin(x * 2.3 + z * 1.7 + piece.seed) * Math.cos(z * 2.9 - x * 1.1);
-      pos.push(x, topY + relief, z);
-      const kc = 1 - Math.min(0.4, crackAt(t) * 2 * (1 - fractions[k]));
-      col.push(kc, kc, kc);
-    }
-  }
-  pos.push(0, topY, 0);
-  col.push(1, 1, 1);
-  const centre = pos.length / 3 - 1;
-  for (let k = 0; k + 1 < fractions.length; k++) {
-    const r0 = capBase + k * (SEGMENTS + 1);
-    const r1 = r0 + SEGMENTS + 1;
-    for (let j = 0; j < SEGMENTS; j++) idx.push(r0 + j, r1 + j, r0 + j + 1, r0 + j + 1, r1 + j, r1 + j + 1);
-  }
-  const last = capBase + (fractions.length - 1) * (SEGMENTS + 1);
-  for (let j = 0; j < SEGMENTS; j++) idx.push(last + j, centre, last + j + 1);
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
-  g.setIndex(idx);
-  g.computeVertexNormals();
-  return g;
 }
 
 /** A piece's placement: its anchor and rotation, no scale (the geometry is in metres). */
