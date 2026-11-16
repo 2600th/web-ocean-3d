@@ -170,6 +170,29 @@ const SUN_DISC_SCALE = 1.8;
 const SUN_DISC_PEAK = 14;
 
 /**
+ * Solar aureole: a forward-scattering halo a few degrees round the disc,
+ * drawn after the highlight knee as the disc is, at `AUREOLE_PEAK` in the
+ * same tone-mapper input units at the limb and at the reference haze.
+ *
+ * The round-8 critic called the sunset sun (`sky-4`) "flat with no bloom": a
+ * clean disc on a flat glow. The sky-view LUT already holds the Mie lobe, but
+ * its texels are a degree or more wide and the knee then compresses what it
+ * has, so nothing brightened in the last few degrees round the disc, where a
+ * hazy sun's aureole is brightest. Measured aureoles fall steeply over the
+ * first degree or two and slowly after (roughly as the inverse square of
+ * angle out to ~10 degrees): here a 1-degree and a 4-degree exponential from
+ * the limb, 60/40. Single scattering by aerosol scales with the aerosol, so the
+ * level goes with the haze over `AUREOLE_REFERENCE_HAZE` (the clear-day
+ * presets' 2.5). Swept at 2, 5, 8, 10 and 12: 5 barely reads, 12 starts to
+ * wash the clouds next to the sun.
+ */
+const AUREOLE_PEAK = 10;
+const AUREOLE_CORE = (1 * Math.PI) / 180;
+const AUREOLE_WIDE = (4 * Math.PI) / 180;
+const AUREOLE_WIDE_SHARE = 0.4;
+const AUREOLE_REFERENCE_HAZE = 2.5;
+
+/**
  * Soft knee on the sky's own luminance, in the same tone-mapper input units:
  * untouched below `SKY_KNEE_START`, rolled off toward `SKY_KNEE_MAX` above.
  *
@@ -453,6 +476,8 @@ export class Atmosphere {
   private sunOccluder: ((dir: any) => any) | null = null;
   /** The disc's drawn radiance over `T / max(T)`, scene units; see `SUN_DISC_PEAK`. */
   private readonly uDiscLevel = uniform(0);
+  /** The aureole's level at the limb over `T / max(T)`, scene units; see `AUREOLE_PEAK`. */
+  private readonly uAureoleLevel = uniform(0);
   /** `SKY_KNEE_START` / `SKY_KNEE_MAX` in scene units at the current display exposure. */
   private readonly uKneeStart = uniform(SKY_KNEE_START * ACES_INPUT_SCALE);
   private readonly uKneeMax = uniform(SKY_KNEE_MAX * ACES_INPUT_SCALE);
@@ -1027,6 +1052,16 @@ export class Atmosphere {
     const physical = (peakT / (Math.PI * drawnR * drawnR)) * MODEL_SCALE * (this.uDayRadiance.value as number);
     const cap = SUN_DISC_PEAK * toScene * (1 - 0.95 * night);
     this.uDiscLevel.value = peakT > 1e-6 ? Math.min(physical, cap) / peakT : 0;
+    // The aureole: `AUREOLE_PEAK` at the limb, in proportion to the haze, gone
+    // as the sun sets (so no halo rises over the horizon from a sun below it),
+    // over the same peak transmittance as the disc so it carries the sun's colour.
+    {
+      const s = Math.min(1, Math.max(0, (this._sunDirection.y + 0.03) / 0.05));
+      const risen = s * s * (3 - 2 * s);
+      const hazeScale = this.model.currentHaze / AUREOLE_REFERENCE_HAZE;
+      this.uAureoleLevel.value =
+        peakT > 1e-6 ? (AUREOLE_PEAK * toScene * (1 - 0.95 * night) * risen * hazeScale) / peakT : 0;
+    }
 
     // Published for the aerial perspective, which takes its *hue* from these.
     // web-ocean's own ocean fog uses exactly this sum (`fogExt`).
@@ -1375,7 +1410,7 @@ export class Atmosphere {
       const over = raw.sub(this.uKneeStart).max(0);
       const kneed = this.uKneeStart.add(over.div(over.div(this.uKneeMax.sub(this.uKneeStart)).add(1)));
       color.mulAssign(select(raw.greaterThan(this.uKneeStart), kneed.div(raw.max(1e-6)), float(1)));
-      color.addAssign(disc.mul(belowness.oneMinus()));
+      color.addAssign(disc.add(this.aureoleRadiance(dir)).mul(belowness.oneMinus()));
 
       const luma = dot(color, vec3(LUMA.x, LUMA.y, LUMA.z));
       const graded = mix(vec3(luma, luma, luma), color, SKY_CHROMA);
@@ -1391,6 +1426,21 @@ export class Atmosphere {
       .mul(this.uDiscLevel)
       .mul(this.uSunDiscVisible);
     return this.sunOccluder === null ? disc : disc.mul(this.sunOccluder(dir));
+  }
+
+  /**
+   * The solar aureole round the disc (`AUREOLE_PEAK`), off with the disc: by
+   * overcast (`uSunDiscVisible`, which the environment capture also zeroes) and
+   * by the cloud in front of the sun, read once at the sun's own direction, so
+   * a cloud over the disc takes the whole halo with it rather than leaving a
+   * ring round the cloud's edge.
+   */
+  private aureoleRadiance(dir: any): any {
+    const halo = this.model
+      .sunAureole(dir, SUN_ANG_R * SUN_DISC_SCALE, float(AUREOLE_CORE), float(AUREOLE_WIDE), float(AUREOLE_WIDE_SHARE))
+      .mul(this.uAureoleLevel)
+      .mul(this.uSunDiscVisible);
+    return this.sunOccluder === null ? halo : halo.mul(this.sunOccluder(this.model.uSunDir));
   }
 
   /**
