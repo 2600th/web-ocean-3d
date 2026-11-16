@@ -79,6 +79,29 @@ const OVERCAST_DESATURATION = 0.74;
 
 /** How far a full cloud deck darkens the sky the environment capture sees. */
 const CLOUD_ENV_DARKEN = 0.62;
+/**
+ * Under a continuous deck, the environment capture's horizon band is the
+ * deck's own far colour up to `ENV_DECK_HORIZON_FULL` and faded out by
+ * `ENV_DECK_HORIZON_TOP` (sines of the elevation: 3 and 17 degrees).
+ *
+ * The sea mirrors the capture, and at grazing its mirror ray is the horizon,
+ * with Fresnel near one. The capture's horizon was the dome's, graded toward a
+ * dimmed deck but still brighter than the far deck the frame draws, which
+ * converges on the dome's measured radiance a few degrees up
+ * (`Clouds.setSkyColors`): under the storm the farthest sea came out a line
+ * brighter than both the deck above it and the sea below it. A deck seen edge
+ * on is what any mirror at the horizon reflects, so that is what the capture
+ * holds there. Off below 0.6 coverage, where the horizon is open sky.
+ *
+ * Measured in `storm` (sRGB, sky just above the horizon 129): the line was
+ * 149; 140 with the band to 9 degrees, which the far sea's blurred lookup
+ * reaches past; 137 with this one. It costs the near sea about a sixth of its
+ * brightness (mean of the lower third 58 to 48), since it now mirrors the
+ * deck the frame shows rather than a dome brighter than it. All-deck (the
+ * whole upper capture) took the line to 134 and the sea to 44.
+ */
+const ENV_DECK_HORIZON_FULL = 0.05;
+const ENV_DECK_HORIZON_TOP = 0.3;
 
 /**
  * How far the key light has to move before the environment is re-captured.
@@ -489,6 +512,13 @@ export class Atmosphere {
    */
   private readonly uEnvCloudAmount = uniform(0);
   private cloudCoverage = 0;
+  /**
+   * What a continuous deck looks like at the horizon (`setDeckHorizon`), and how
+   * continuous it is: the second only while the environment is captured, like
+   * `uEnvCloudAmount`. See `ENV_DECK_HORIZON_TOP`.
+   */
+  private readonly uEnvDeckHorizon: any = uniform(new THREE.Color(0.5, 0.55, 0.6));
+  private readonly uEnvDeckHold = uniform(0);
   /** Key direction at the last capture, for the throttle. */
   private readonly envCapturedDir = new THREE.Vector3(0, -2, 0);
   private readonly uMoonDiscCos = uniform(0.9995);
@@ -901,6 +931,15 @@ export class Atmosphere {
     this.envForce = true;
   }
 
+  /**
+   * The radiance a continuous deck shows at the horizon: `Clouds`' far-deck
+   * colour (`setSkyColors`' horizon), which the capture's horizon band takes
+   * under a deck. A uniform write; it reaches the cube at the next capture.
+   */
+  setDeckHorizon(radiance: THREE.Color): void {
+    (this.uEnvDeckHorizon.value as THREE.Color).copy(radiance);
+  }
+
   updateEnvironment(renderer: THREE.WebGPURenderer, scene: THREE.Scene): void {
     if (!this.envDirty && this.envScene3D === scene) return;
     // Throttled on how far the key light has actually moved. `setParams` marks
@@ -927,6 +966,8 @@ export class Atmosphere {
       this.uSunDiscVisible.value = 0;
       // And the deck goes *on* for the capture only: see the note in the sky node.
       this.uEnvCloudAmount.value = this.cloudCoverage;
+      const t = Math.min(1, Math.max(0, (this.cloudCoverage - 0.6) / 0.25));
+      this.uEnvDeckHold.value = t * t * (3 - 2 * t);
       this.envCamera.update(renderer, this.envScene);
     } finally {
       // `finally`, because a cube update that threw would otherwise leave the
@@ -935,6 +976,7 @@ export class Atmosphere {
       // a shading bug rather than like a lost frame.
       this.uSunDiscVisible.value = disc;
       this.uEnvCloudAmount.value = 0;
+      this.uEnvDeckHold.value = 0;
     }
 
     // Force the PMREM chain used by PBR materials to be rebuilt from the new faces.
@@ -1404,6 +1446,12 @@ export class Atmosphere {
         .add(nightSky.mul(this.uNightRadiance))
         .add(twilight)
         .toVar('skyColor');
+
+      // Under a continuous deck, the capture's horizon is the deck's own far
+      // colour (`ENV_DECK_HORIZON_TOP`). Zero in the view.
+      color.assign(
+        mix(color, this.uEnvDeckHorizon, smoothstepDown(dir.y, ENV_DECK_HORIZON_FULL, ENV_DECK_HORIZON_TOP).mul(this.uEnvDeckHold)),
+      );
 
       // Highlight knee (`SKY_KNEE_START`): luminance rolled off, hue kept.
       const raw = dot(color, vec3(LUMA.x, LUMA.y, LUMA.z));

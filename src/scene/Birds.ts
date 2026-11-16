@@ -129,8 +129,44 @@ const TAKEOFF_TIME = 1.8;
 const LAND_TIME = 4.5;
 /** Height of the hop arc between the perch and the circuit, metres. */
 const HOP_HEIGHT = 3.5;
-/** Height of a perched bird's centre above its perch point, at scale 1. */
-const PERCH_LIFT = 0.07;
+/**
+ * Height of a perched bird's centre above its perch point, at scale 1: the
+ * feet (`LEG_FOOT_Y`) on the spar. It was 0.07, the belly on the spar, before
+ * the bird had legs.
+ */
+const PERCH_LIFT = 0.12;
+
+/**
+ * Plumage: a laughing gull (*Leucophaeus atricilla*), the common gull of the
+ * Caribbean and the one a ship there would carry on its yards. Summer adult:
+ * black hood, dark slate mantle and upper wing, black wingtips, a white
+ * trailing edge to the wing, white body and tail, dark red bill, dark legs.
+ * Linear albedo, chosen against field-guide plates rather than measured.
+ *
+ * Painted from one float per vertex (`shape.w`): the wing's chord (0 leading
+ * edge, 1 trailing) on the wing sheets, `PAINT_BILL` and `PAINT_LEG` on those
+ * parts, `PAINT_PLUMAGE` everywhere else. No texture and no extra attribute.
+ */
+const PAINT_PLUMAGE = 0;
+const PAINT_BILL = 2;
+const PAINT_LEG = 3;
+const GULL_WHITE = [0.86, 0.87, 0.88] as const;
+const GULL_MANTLE = [0.15, 0.16, 0.185] as const;
+const GULL_HOOD = [0.03, 0.03, 0.035] as const;
+const GULL_TIPS = [0.025, 0.025, 0.03] as const;
+const GULL_BILL = [0.36, 0.05, 0.035] as const;
+const GULL_LEGS = [0.07, 0.03, 0.03] as const;
+/**
+ * Where the legs fold to in flight, and how low the feet reach on the perch,
+ * in the authored frame (metres at scale 1). The belly is at y = -0.066.
+ */
+const LEG_HIP = [0, -0.05, -0.01] as const;
+const LEG_FOOT_Y = -0.115;
+/**
+ * Soft shading under the bird: how much of the shade light the underwing near
+ * the body and the belly lose to the body and wings over them.
+ */
+const UNDER_OCCLUSION = 0.35;
 
 /**
  * Lag of the anchor the `ship` flock circles, seconds.
@@ -576,7 +612,7 @@ export class Birds {
     const bodyShading: any = varying(
       Fn(() => {
         const vertex = this.buildVertex();
-        return vec4(vertex.part, vertex.upness, vertex.head, 0);
+        return vec4(vertex.part, vertex.upness, vertex.head, vertex.paint);
       })(),
     );
 
@@ -603,18 +639,51 @@ export class Birds {
     const through: any = ndl.negate().max(0).mul(TRANSMISSION).mul(this.uSunGain);
     const lit: any = direct.add(through).clamp(0, 1);
 
-    // Grey mantle above, white below — the countershading that makes a gull read
+    /** `shape.w`: the wing's chord, or `PAINT_BILL` / `PAINT_LEG`. See `PAINT_PLUMAGE`. */
+    const paint: any = bodyShading.w;
+    /** 1 on the wings; the tail sheet is the one sheet with no span. */
+    const wing: any = outboard.step(0.02);
+    const white = vec3(...GULL_WHITE);
+
+    // Dark mantle above, white below — the countershading that makes a gull read
     // as a gull the instant it banks and shows the other side. On the body the
-    // mantle is the back, and the head stays white.
-    const sheetTop: any = facing.mul(0.5).add(0.5);
+    // mantle is the back; the tail is white both sides.
+    const sheetTop: any = facing.mul(0.5).add(0.5).mul(wing);
     const bodyTop: any = upness.smoothstep(0.15, 0.75).mul(head.oneMinus());
     const topness: any = mix(sheetTop, bodyTop, part);
-    const plumage: any = mix(vec3(0.95, 0.96, 0.97), vec3(0.6, 0.66, 0.72), topness);
+    const mantled: any = mix(white, vec3(...GULL_MANTLE), topness);
+    // The white trailing edge of the inner wing, on top: the line that shows
+    // the wing's shape against the dark mantle.
+    const trailing: any = paint
+      .smoothstep(0.72, 0.95)
+      .mul(wing)
+      .mul(part.oneMinus())
+      .mul(outboard.smoothstep(0.5, 0.65).oneMinus());
+    const edged: any = mix(mantled, white, trailing.mul(sheetTop));
+    // The black hood: the whole head, crown to throat.
+    const hooded: any = mix(edged, vec3(...GULL_HOOD), head.smoothstep(0.35, 0.8));
     // Black primaries, on the hand only.
-    const tipped: any = mix(plumage, vec3(0.1, 0.11, 0.13), outboard.smoothstep(0.62, 0.95));
+    const tipped: any = mix(hooded, vec3(...GULL_TIPS), outboard.smoothstep(0.62, 0.95));
+    // Bill and legs: exact per triangle, since every vertex of one carries the
+    // same code.
+    const bill: any = paint.step(PAINT_BILL - 0.5).mul(paint.step(PAINT_LEG - 0.5).oneMinus());
+    const legs: any = paint.step(PAINT_LEG - 0.5);
+    const albedo: any = mix(mix(tipped, vec3(...GULL_BILL), bill), vec3(...GULL_LEGS), legs);
 
-    const light: any = mix(this.uShadeColor, this.uSunColor, lit);
-    material.colorNode = vec4(tipped.mul(light), 1) as any;
+    // Soft shading under the bird (`UNDER_OCCLUSION`): the underwing toward the
+    // body, which the body and the other wing hide part of the sky from, and the
+    // belly, which the wings do. Without it the underside was one flat tone, and
+    // a flat white underside is most of what read as a cut-out.
+    const underWing: any = facing
+      .negate()
+      .max(0)
+      .mul(wing)
+      .mul(outboard.smoothstep(0.15, 0.6).oneMinus());
+    const underBody: any = upness.negate().smoothstep(0.1, 0.8).mul(part);
+    const occlusion: any = underWing.max(underBody).mul(UNDER_OCCLUSION);
+
+    const light: any = mix(this.uShadeColor.mul(occlusion.oneMinus()), this.uSunColor.mul(occlusion.mul(0.5).oneMinus()), lit);
+    material.colorNode = vec4(albedo.mul(light), 1) as any;
 
     return material;
   }
@@ -635,6 +704,7 @@ export class Birds {
     part: any;
     upness: any;
     head: any;
+    paint: any;
   } {
     const orbit: any = attribute('orbit', 'vec4');
     const harmonics: any = attribute('harmonics', 'vec4');
@@ -643,7 +713,7 @@ export class Birds {
     const role: any = attribute('role', 'vec4');
     const perch: any = attribute('perch', 'vec4');
     const perched: any = attribute('perchState', 'float');
-    const shape: any = attribute('shape', 'vec3');
+    const shape: any = attribute('shape', 'vec4');
     const span: any = shape.x;
     const hand: any = shape.y;
     const part: any = shape.z;
@@ -817,7 +887,9 @@ export class Birds {
       fromShoulder.abs().mul(0.05).add(0.03),
       rest.z.sub(fromShoulder.abs().mul(0.42)),
     );
-    const shaped = mixn(flying, folded, tuck).toVar();
+    // Legs fold up into the belly in flight; see LEG_HIP.
+    const leg = shape.w.step(PAINT_LEG - 0.5).mul(perched.smoothstep(0.6, 1.0).oneMinus());
+    const shaped = mixn(mixn(flying, folded, tuck), vec3(0, LEG_HIP[1], LEG_HIP[2]), leg).toVar();
 
     // --- placement -----------------------------------------------------------
     // See `NEAR_HIDE`. Scaling to zero costs no fragments; an alpha fade would.
@@ -845,7 +917,7 @@ export class Birds {
     // Head: the forward third of the body, which stays white.
     const head = rest.z.smoothstep(0.1, 0.18).mul(part);
 
-    return { world, normal, outboard, part, upness: localNormal.y, head };
+    return { world, normal, outboard, part, upness: localNormal.y, head, paint: shape.w };
   }
 }
 
@@ -921,11 +993,47 @@ function buildFlockGeometry(): THREE.InstancedBufferGeometry {
   const mirror = (v: V): V => [-v[0], v[1], v[2]];
   const leftWing: V[][] = rightWing.map((t) => t.map(mirror));
 
+  // Bill: a short wedge from the face, in front of the hood.
+  const billTop: V = [0, 0.03, 0.27];
+  const billLeft: V = [-0.012, 0.012, 0.27];
+  const billRight: V = [0.012, 0.012, 0.27];
+  const billChin: V = [0, -0.004, 0.27];
+  const billTip: V = [0, 0.004, 0.365];
+  const billTris: V[][] = [
+    [billTop, billRight, billTip],
+    [billRight, billChin, billTip],
+    [billChin, billLeft, billTip],
+    [billLeft, billTop, billTip],
+  ];
+
+  // Legs: a thin blade from the belly to the foot, and a webbed foot, each
+  // side. Drawn on the perch only; in flight they fold into the belly (the
+  // vertex stage collapses them onto `LEG_HIP`).
+  const legTris: V[][] = [];
+  for (const sx of [1, -1]) {
+    const hipA: V = [sx * 0.02, LEG_HIP[1], LEG_HIP[2] + 0.008];
+    const hipB: V = [sx * 0.02, LEG_HIP[1], LEG_HIP[2] - 0.008];
+    const ankle: V = [sx * 0.022, LEG_FOOT_Y + 0.004, 0.004];
+    const heel: V = [sx * 0.022, LEG_FOOT_Y + 0.004, -0.008];
+    legTris.push([hipA, ankle, heel], [hipA, heel, hipB]);
+    legTris.push([
+      [sx * 0.022, LEG_FOOT_Y, -0.01],
+      [sx * 0.04, LEG_FOOT_Y, 0.045],
+      [sx * 0.004, LEG_FOOT_Y, 0.045],
+    ]);
+  }
+
+  // Wing chord, 0 on the leading edge and 1 on the trailing (and the tip), for
+  // the white trailing edge. The leading-edge vertices are the only ones forward
+  // of the body's centre.
+  const chordOf = (v: V): number => (v[2] > 0.05 ? 0 : 1);
+
   const positions: number[] = [];
   const normals: number[] = [];
   const spans: number[] = [];
   const hands: number[] = [];
   const parts: number[] = [];
+  const paints: number[] = [];
 
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
@@ -933,7 +1041,7 @@ function buildFlockGeometry(): THREE.InstancedBufferGeometry {
   const n = new THREE.Vector3();
   const out = new THREE.Vector3();
 
-  const push = (tri: V[], kind: 'body' | 'sheet' | 'wing'): void => {
+  const push = (tri: V[], kind: 'body' | 'sheet' | 'wing', paint: number | null = null): void => {
     a.fromArray(tri[0]);
     b.fromArray(tri[1]);
     c.fromArray(tri[2]);
@@ -957,10 +1065,13 @@ function buildFlockGeometry(): THREE.InstancedBufferGeometry {
       spans.push(wing ? v[0] / HALF_SPAN : 0);
       hands.push(wing && Math.abs(v[0]) > WRIST_X + 1e-4 ? 1 : 0);
       parts.push(kind === 'body' ? 1 : 0);
+      paints.push(paint ?? (wing ? chordOf(v) : PAINT_PLUMAGE));
     }
   };
 
   for (const t of bodyTris) push(t, 'body');
+  for (const t of billTris) push(t, 'body', PAINT_BILL);
+  for (const t of legTris) push(t, 'body', PAINT_LEG);
   for (const t of tailTris) push(t, 'sheet');
   for (const t of rightWing) push(t, 'wing');
   for (const t of leftWing) push(t, 'wing');
@@ -969,8 +1080,8 @@ function buildFlockGeometry(): THREE.InstancedBufferGeometry {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   const shape: number[] = [];
-  for (let i = 0; i < spans.length; i++) shape.push(spans[i], hands[i], parts[i]);
-  geometry.setAttribute('shape', new THREE.Float32BufferAttribute(shape, 3));
+  for (let i = 0; i < spans.length; i++) shape.push(spans[i], hands[i], parts[i], paints[i]);
+  geometry.setAttribute('shape', new THREE.Float32BufferAttribute(shape, 4));
 
   // The six static per-bird vectors share one interleaved buffer. Separate
   // attributes were a vertex buffer each, and with the per-vertex ones and the
