@@ -86,6 +86,22 @@ Sources, and what each one gave:
   bright cream beach under white surf. The talks say what it does, but give
   no formulas.
 
+## Scoreboard against the reference demos (2026-11-16)
+
+**Look.** Twelve blind A/B rounds of 32 pairs, judged by an art-director critic with sides randomised per pair (`docs/AAA_PLAN.md` section Q). Final round: **30 of 32**. All pairs won in waves, refraction, caustics, beach transparency, foam, boat-sea, sky and clouds; three of four reflections; two of three underwater (against abyssal-garden).
+
+**Performance.** Same Chrome, 1920x1080, cold cache, each demo's default view, three runs each, on a ~100 Hz display with nothing else on the GPU. Ours is the production build at High, sailing at the start position; the references are single-feature demos with no ship, island or gameplay.
+
+| Demo | Drawn fps | p99 frame | Hitches in 12 s | Download | Ready |
+|---|---|---|---|---|---|
+| Ours (High, full scene) | 50.4 (steady half rate) | 21.7 ms | 0-3 | 36.9 MB | 23.5 s to playable |
+| web-ocean | 101 | 10.5 ms | 0 | ~0 (procedural) | 0.4 s |
+| Three.js Water Pro | 101 | 10.5 ms | 0 | 19.4 MB | ~4 s |
+| NeuralSpecOcean | 101 | 10.5 ms | 0 | 0.6 MB | ~1 s |
+| abyssal-garden | 104 | 10.4 ms | 0 | ~0 | ~5 s |
+
+Pacing now matches (the 28-32 fps judder came from re-uploading every instance buffer on every draw, fixed). Frame rate and start-up do not: the frame is CPU-bound at 8-11 ms of render submission (three r185's per-object overhead), and start-up is dominated by pipeline compilation. Both are the next performance work. Method: `perf-compare.mjs` in the session scratchpad (rAF intervals for references, the app's own render calls for ours).
+
 ## Using this
 
 - An agent changing a look attaches a frame of ours beside the row it is aiming
