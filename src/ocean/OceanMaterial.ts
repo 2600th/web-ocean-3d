@@ -38,6 +38,8 @@ import {
   foamPattern,
   foamStreaks,
   foamUniforms,
+  SHELTER_DEPTH_FULL,
+  SHELTER_DEPTH_NONE,
   setFoamDetail,
   setFoamWind,
 } from './FoamPattern';
@@ -2441,7 +2443,14 @@ export class OceanMaterial {
       // the band. Widening band-limits the edge, not the field. What does
       // band-limit the field is fading each scale where it stops being resolved,
       // which `perturb` above and the foam pattern's own scales do.
-      const crestAmount = biased.add(perturb.mul(0.45)).smoothstep(0.12, 0.78).clamp(0, 1).toVar();
+      // Sheltered shallows take no whitecaps; see `SHELTER_DEPTH_FULL` in
+      // `Wake`, whose deposit is gated the same way.
+      const crestAmount = biased
+        .add(perturb.mul(0.45))
+        .smoothstep(0.12, 0.78)
+        .clamp(0, 1)
+        .mul(seabedSigned.smoothstep(SHELTER_DEPTH_FULL, SHELTER_DEPTH_NONE))
+        .toVar();
 
       // --- accumulated foam ---------------------------------------------------
       // Wake, whitecaps and the shore's standing foam, read from the
