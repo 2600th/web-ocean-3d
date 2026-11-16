@@ -449,12 +449,36 @@ const INTERIOR_VARIATION = 0.3;
  * flat grey as the base of a thin one: "smooth, plain undersides". A deep
  * column is darker underneath than a shallow one because less of the sky's
  * light reaches its base, and the march already has a measure of how deep the
- * cloud is above a sample, the optical depth toward the sun. Up to 45 % of the
+ * cloud is above a sample, the optical depth toward the sun. Up to 30 % of the
  * ambient goes with `exp(-0.5 * depth)`; the rest stays as the light the sea
- * and the surrounding deck bounce in.
+ * and the surrounding sky send in.
+ *
+ * 30 % for broken cloud, 45 % for a continuous deck (`AMBIENT_SHADOW_DECK`,
+ * by `uDeckHold`). It was 45 % everywhere until round 8, and on fair-weather
+ * cumulus that tipped too far: the bases of `clouds-1` and `clouds-2` read as
+ * uniform dark slate grey, not as shaded white. A cumulus base in open sky is
+ * lit by the whole blue dome around it; under an unbroken deck there is no
+ * such sky, which is why the storm keeps the deeper value.
  */
-const AMBIENT_SHADOW = 0.45;
+const AMBIENT_SHADOW = 0.3;
+const AMBIENT_SHADOW_DECK = 0.45;
 const AMBIENT_SHADOW_RATE = 0.5;
+/**
+ * Sky fill on the underside of broken cloud: the average of the zenith and the
+ * dimmest horizon bearing, times this, added to the base end of the ambient
+ * (`uAmbientBottom`), and faded out for a continuous deck (`uDeckHold`).
+ *
+ * The base ambient was the preset's `shadowColor` alone, a fixed fraction of a
+ * grey-blue, so a fair-weather base was a grey whatever the sky around it; the
+ * round-8 critic's note on both clouds pairs was "no blue ambient light from
+ * the sky". The light that reaches a cumulus base from the side is the sky's
+ * own blue, so the fill is taken from the sky's radiance and follows it through
+ * the day. Measured on `clouds-1` (darkest fifth of the cloud pixels, sRGB):
+ * 76/85/100 before, 111/129/150 at 0.35; the reference's bases are 128/149/172.
+ * Sun-side bearing excluded: at sunset it is orange and would paint the
+ * shaded sides the same peach as the lit ones.
+ */
+const BASE_SKY_FILL = 0.35;
 /**
  * The erosion octave's working range: `|detail|` is clamped to this and
  * normalised by it, so 0 is a crease of the billow noise and 1 a lump.
@@ -818,7 +842,8 @@ export class Clouds {
   private readonly uSunGain = uniform(SUN_GAIN);
   /**
    * Ambient reaching the *base* of the layer: the preset's shadow colour at
-   * `AMBIENT_GAIN`, scaled by how bright the sky is. Written by `setSkyColors`.
+   * `AMBIENT_GAIN`, scaled by how bright the sky is, plus the sky's own blue
+   * for broken cloud (`BASE_SKY_FILL`). Written by `setSkyColors`.
    */
   private readonly uAmbientBottom: any = uniform(new THREE.Color(0.14, 0.16, 0.2));
   /** Sky brightness relative to a clear noon; see `setSkyColors`. */
@@ -835,7 +860,7 @@ export class Clouds {
    *
    * Written from the atmosphere's zenith colour, so the light a cloud top
    * receives is the sky that is actually over it. The base keeps
-   * `shadowColor * ambientGain`, which is the darker, sea-facing end.
+   * `shadowColor * ambientGain` and the sky fill, the darker, sea-facing end.
    */
   private readonly uAmbientTop: any = uniform(new THREE.Color(0.62, 0.72, 0.86));
   /** How far the weather field is allowed to move the coverage threshold. */
@@ -1237,6 +1262,16 @@ export class Clouds {
     (this.uAmbientBottom.value as THREE.Color)
       .copy(this.params.shadowColor)
       .multiplyScalar(AMBIENT_GAIN * this.skyLevel);
+    // The base's sky fill (`BASE_SKY_FILL`): the blue of the sky around and
+    // above the cloud, the zenith and the dimmest horizon bearing averaged,
+    // which is the anti-sun side at sunset, so it stays lavender, not peach.
+    if (horizonRadiance !== undefined) {
+      _neutral
+        .copy(zenith)
+        .add(horizonRadiance)
+        .multiplyScalar(0.5 * BASE_SKY_FILL * (1 - this.uDeckHold.value));
+      (this.uAmbientBottom.value as THREE.Color).add(_neutral);
+    }
   }
 
   setSunDirection(dir: THREE.Vector3): void {
@@ -1984,7 +2019,13 @@ export class Clouds {
                   this.uAmbientBottom,
                   this.uAmbientTop,
                   height.mul(height).mul(float(3).sub(height.mul(2))),
-                ).mul(mix(float(1), exp(opticalDepth.mul(-AMBIENT_SHADOW_RATE)), AMBIENT_SHADOW)).toVar('cloudAmbient');
+                ).mul(
+                  mix(
+                    float(1),
+                    exp(opticalDepth.mul(-AMBIENT_SHADOW_RATE)),
+                    mix(float(AMBIENT_SHADOW), float(AMBIENT_SHADOW_DECK), this.uDeckHold),
+                  ),
+                ).toVar('cloudAmbient');
 
                 // The low sun under the deck. Strongest at the very base and gone
                 // by half way up; and attenuated by how much cloud lies between
