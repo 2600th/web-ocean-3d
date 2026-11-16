@@ -328,9 +328,17 @@ const SUN_HALO = 0.15;
  * burst and brighten into it; across the sun they are unchanged.
  */
 const SHAFT_LOBE = 0.5;
+/** [underwater-look-3] The in-scatter's phase: `PHASE_ISO + PHASE_FWD mu^3 + 0.3 mu^4`. Was 1.22 and 0. */
+const PHASE_ISO = 0.45;
+const PHASE_FWD = 2.5;
 
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
-const GRADE_CONTRAST = 1.4;
+// [underwater-look-3] Round 5b: 1.4 -> 1.65. The kelp frame was high-key
+// next to abyssal-garden's: dark masses against bright water. Darkening the
+// kelp at its source alone did little, because the submerged exposure
+// re-centres the frame and lifted it straight back; the curve below the
+// water's own level is what moves the distribution and leaves the mean.
+const GRADE_CONTRAST = 1.65;
 /** The same curve's exponent above the pivot. */
 const GRADE_CONTRAST_HIGH = 1.04;
 
@@ -432,7 +440,7 @@ export class UnderwaterPass {
    */
   private readonly uShaftBase = uniform(0.05);
   /** Gain on the 0..1 beam pattern. abyssal-garden's `pat * 6`. */
-  private readonly uShaftGain = uniform(6);
+  private readonly uShaftGain = uniform(8);
   /**
    * Extra mips of blur on the beam pattern. The caustics module reads the
    * tile eight and three times larger for the shafts, so level 0 there is
@@ -445,7 +453,13 @@ export class UnderwaterPass {
    * abyssal-garden's frames show. The thresholds moved with it; see
    * `Caustics.uShaftA`.
    */
-  private readonly uShaftBlurLod = uniform(5);
+  // [underwater-look-3] Round 5b: 5 -> 5.5 with sparser thresholds
+  // (`Caustics.uShaftA/B`) and a gain of 8: fewer, wider, crisper-edged beams
+  // like abyssal-garden's, in place of many soft patches that, seen end-on
+  // near the sun, read as arched bands. Below 5 the reads keep the web's
+  // lines and the shafts become curved curtains again (tried at 4: the
+  // kelp-wide frame filled with them).
+  private readonly uShaftBlurLod = uniform(5.5);
   /** How far along the view ray shafts are integrated, metres. abyssal-garden: 120. */
   private readonly uShaftRange = uniform(90);
   /** `K / cos` of the refracted sun: attenuation down the light's own path. */
@@ -511,6 +525,9 @@ export class UnderwaterPass {
   private readonly uSunHalo = uniform(SUN_HALO);
   /** [underwater-look-3] See `SHAFT_LOBE`. */
   private readonly uShaftLobe = uniform(SHAFT_LOBE);
+  /** [underwater-look-3] See `PHASE_ISO`. */
+  private readonly uPhaseIso = uniform(PHASE_ISO);
+  private readonly uPhaseFwd = uniform(PHASE_FWD);
 
   // --- refractive distortion -----------------------------------------------
   /**
@@ -884,7 +901,15 @@ export class UnderwaterPass {
         // abyssal-garden's `1.22 + 0.3 mu^4`: mostly isotropic, with a broad
         // brightening toward the refracted sun. The tight forward peak is the
         // shafts' business.
-        const fogPhase = float(1.22).add(mu2.mul(mu2).mul(0.3)).toVar('uwFogPhase');
+        // [underwater-look-3] Round 5b: more strongly forward. abyssal's lobe
+        // is nearly isotropic, but its kelp frame is low-key away from the sun
+        // and bright only around it, and ours read bright cyan in every
+        // direction. `PHASE_ISO + PHASE_FWD mu^3`; the exposure re-centres
+        // the frame, so this moves the distribution, not the mean.
+        const fogPhase = this.uPhaseIso
+          .add(mu2.mul(muSun).mul(this.uPhaseFwd))
+          .add(mu2.mul(mu2).mul(0.3))
+          .toVar('uwFogPhase');
         const inscatter = this.uScatterColor
           .mul(this.uSigma)
           .mul(exp(this.uScatterK.mul(roDepth).negate()))
