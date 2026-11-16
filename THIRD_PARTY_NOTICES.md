@@ -110,8 +110,9 @@ cut-off and band gains from `js/wgsl/sim.js`), and the foam model (the
 foam-freshness channel, and the foam buffer's injection: breaking on the
 surface's total Jacobian, `max(previous, inject)` with growth and a 1.6 cap,
 and the 0.22 / s decay, from `FOAM_UPDATE`; and the swiss-cheese `bubbles` of
-`FOAM_TEX`, now also the multi-scale bubble lace every open-sea foam and wake
-is drawn through) are ported from `js/wgsl/ocean.js` and `js/wgsl/sim.js`:
+`FOAM_TEX`; and the gradient noise, `gnoise` / `pfbm` in `js/wgsl/common.js`,
+that the filament lace every open-sea foam and wake is drawn through is built
+on) are ported from `js/wgsl/ocean.js` and `js/wgsl/sim.js`:
 
 - `src/ocean/OceanMaterial.ts`
 - `src/ocean/FoamPattern.ts`
