@@ -158,6 +158,26 @@ const SEA_FOAM_CAP = 1.6;
 const WAKE_FOAM_TAU = 9;
 
 /**
+ * Lifetime of the foam the Kelvin arms leave behind them, seconds.
+ *
+ * The arms are a standing pattern dragged sideways across the water at
+ * `V * KELVIN_SLOPE`, so every texel inside the wedge is crossed by an arm once.
+ * Kept for `WAKE_FOAM_TAU` like the turbulent band, that crossing left foam on
+ * the whole interior of the V: round 4's critic read the wake as "one tiled
+ * leopard-spot texture covering (0-1920, 640-1080) ... no turbulent white core
+ * and no thinning diverging arms" (boat-sea-1). A real wake's V is clean water
+ * between two lines of broken crest; the arms' white is the bow wave breaking,
+ * and it dissolves within a couple of seconds like any whitecap, while the
+ * band behind the transom, driven metres down, lasts. So foam inside the wedge
+ * but outside the band decays at this rate instead, which leaves each arm a
+ * short trail of feathers and the band a long one.
+ */
+const ARM_FOAM_TAU = 1.6;
+
+/** E-fold of the arms' foam deposit along the run from the stem, in beams. */
+const ARM_FOAM_BEAMS = 6;
+
+/**
  * Decay time constant of foam *freshness*, seconds: how long a texel still
  * counts as "just broken".
  *
@@ -631,6 +651,8 @@ export class Wake {
   private readonly uElevationDecay = uniform(1);
   /** Per-frame decay multiplier for the hull-foam channel. See `WAKE_FOAM_TAU`. */
   private readonly uWakeFoamDecay = uniform(1);
+  /** Extra per-frame decay inside the wedge and outside the band. See `ARM_FOAM_TAU`. */
+  private readonly uArmFoamDecay = uniform(1);
   /** Per-frame decay multiplier for foam freshness. See `FRESH_TAU`. */
   private readonly uFreshDecay = uniform(1);
   private readonly uCenter = uniform(new THREE.Vector2());
@@ -1012,6 +1034,7 @@ export class Wake {
     this.uDecay.value = Math.exp(-step / DECAY_TAU);
     this.uElevationDecay.value = Math.exp(-step / ELEVATION_DECAY_TAU);
     this.uWakeFoamDecay.value = Math.exp(-step / WAKE_FOAM_TAU);
+    this.uArmFoamDecay.value = Math.exp(-step / ARM_FOAM_TAU + step / WAKE_FOAM_TAU);
     this.uFreshDecay.value = Math.exp(-step / FRESH_TAU);
     this.uStep.value = step;
     setVec2(this.uCenter.value as THREE.Vector2, this.centerX_, this.centerZ_);
@@ -1358,6 +1381,8 @@ export class Wake {
         });
       }
 
+      /** 0..1: how far this texel is the arms' history rather than the band's. */
+      const armWake = float(0).toVar();
       for (let i = 0; i < MAX_EMITTERS; i++) {
         const slot = this.emitters[i];
         const amount = slot.params.x;
@@ -1382,7 +1407,11 @@ export class Wake {
         // V at the quarters and made the arms look like they were being emitted by
         // the middle of the ship rather than cut by the stem.
         const arm = width.mul(0.25).add(fromStem.mul(KELVIN_SLOPE)).toVar();
-        const armWidth = width.mul(0.22).add(fromStem.mul(0.045)).max(0.4).toVar();
+        // Narrower than it was (0.22 beam + 0.045 of the run): an arm's foam is
+        // the bow wave's crest line breaking, a few metres across, and at that
+        // width two arms plus their trails filled the chase camera's whole
+        // foreground with white.
+        const armWidth = width.mul(0.14).add(fromStem.mul(0.022)).max(0.4).toVar();
         const armOffset = lateral.sub(arm).div(armWidth).toVar();
         const armFoam = armOffset.mul(armOffset).min(24).negate().exp().toVar();
 
@@ -1473,7 +1502,9 @@ export class Wake {
         // `WAKE_FOAM_TAU`. Depositing along the whole visible length instead would
         // integrate to white over a hundred metres of water, which is the
         // saturation this file has twice been burnt by.
-        const bandHalfWidth = width.mul(0.4).add(fromTransom.max(0).mul(0.035)).toVar();
+        // Spreading at 0.022 of the distance astern (it was 0.035): the band
+        // was wider than Water Pro's by about half at three ship lengths.
+        const bandHalfWidth = width.mul(0.4).add(fromTransom.max(0).mul(0.022)).toVar();
         const bandOffset = lateral.div(bandHalfWidth).toVar();
         const bandSq = bandOffset.mul(bandOffset).min(8).toVar();
         // exp(-x⁴) rather than exp(-x²): the churn at a transom has a flat white
@@ -1485,7 +1516,21 @@ export class Wake {
         // band tapers rather than ending.
         const bandFade = fromTransom.max(0).div(width.mul(1.6)).min(12).negate().exp().toVar();
         const bandStart = fromTransom.smoothstep(width.mul(-0.75), width.mul(-0.05)).toVar();
-        const sternFoam = bandProfile.mul(bandFade).mul(bandStart).mul(boil).toVar();
+        // Streaked along the track. The band is laid at the transom and left
+        // behind, so a deposit that varies *across* the band and not along it
+        // draws lines down the trail — the propeller race and the quarter
+        // eddies, which is what makes a wake read as a wake rather than a
+        // texture. Its across-track phase drifts slowly with the hull's run
+        // (`world . forward`), so the lines wander over a few hundred metres
+        // instead of being ruled.
+        const signedLateral = delta.dot(vec2(forward.y.negate(), forward.x)).toVar();
+        const trackStreak = wakeBoil(vec2(signedLateral.mul(1.7), world.dot(forward).mul(0.021)))
+          .mul(wakeBoil(vec2(signedLateral.mul(4.1).add(3.7), world.dot(forward).mul(0.047))).mul(0.5).add(0.5))
+          .smoothstep(0.15, 0.75)
+          .mul(0.75)
+          .add(0.35)
+          .toVar();
+        const sternFoam = bandProfile.mul(bandFade).mul(bandStart).mul(boil).mul(trackStreak).toVar();
 
         // The waterline collar. The hull's waterplane is taken as a
         // superellipse, `|x|³ + |y|² = 1` over the half-length and half-beam:
@@ -1514,10 +1559,29 @@ export class Wake {
         const churn = wakeBoil(world.mul(1.9).add(vec2(13.1, 7.3))).mul(0.9).add(0.35).toVar();
         const collar = collarLine.mul(collarSpan).mul(collarWeight).max(stemKnot).mul(churn).toVar();
 
+        // Where the arms' history lies: inside the wedge, abaft the transom,
+        // clear of the band. See `ARM_FOAM_TAU`.
+        const insideWedge = arm.sub(armWidth.mul(0.5)).sub(lateral).smoothstep(0, armWidth).toVar();
+        const clearOfBand = lateral.smoothstep(bandHalfWidth.mul(1.15), bandHalfWidth.mul(1.9)).toVar();
+        armWake.assign(
+          armWake.max(
+            insideWedge
+              .mul(clearOfBand)
+              .mul(fromTransom.smoothstep(0, width))
+              .mul(lengthFade.greaterThan(0).select(float(1), float(0)))
+              .mul(amount.greaterThan(0).select(float(1), float(0))),
+          ),
+        );
+
+        // The arm's white is the bow wave still breaking, and it stops breaking
+        // within a few ship lengths; the arm's *wave* runs on (the elevation
+        // below keeps `lengthFade`), its foam does not.
+        const armBreaking = fromStem.div(width.mul(ARM_FOAM_BEAMS)).min(12).negate().exp();
         wakeDeposit.addAssign(
           armFoam
             .mul(feather)
             .mul(lengthFade)
+            .mul(armBreaking)
             .mul(behind)
             .mul(ARM_FOAM)
             .add(bowBreak)
@@ -1667,7 +1731,8 @@ export class Wake {
         .add(deposit)
         .min(SEA_FOAM_CAP);
 
-      return vec4(sea, elevation, previousWake.add(wakeDeposit).clamp(0, 1), fresh);
+      const keptWake = previousWake.mul(mix(float(1), this.uArmFoamDecay, armWake));
+      return vec4(sea, elevation, keptWake.add(wakeDeposit).clamp(0, 1), fresh);
     })();
 
     return material;
