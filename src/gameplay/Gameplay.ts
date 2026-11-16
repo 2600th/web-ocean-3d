@@ -207,6 +207,12 @@ export interface GameplayOptions {
   seed?: number;
   /** Where key events come from. Defaults to `window`. */
   keyTarget?: EventTarget;
+  /**
+   * Something hitting the water at (x, z), the surface at `y`: the anchor let
+   * go, cargo hauled out. See `physics/Splash`. Without it the anchor throws
+   * the old white burst.
+   */
+  splash?: ((x: number, y: number, z: number, options: { radius: number; speed: number; mass: number }) => void) | null;
 }
 
 export interface GameplaySnapshot {
@@ -510,7 +516,20 @@ export class Gameplay {
     this.o.audio?.playAnchorChain(1.8);
     this.o.audio?.playSplash(0.5);
     this.tmp.set(this.bow.x, this.o.sampler.ready ? this.o.sampler.height(this.bow.x, this.bow.z) : 0, this.bow.z);
-    this.burst.fire(this.tmp, 0.45, false);
+    if (this.o.splash) {
+      // It falls from the cathead, which juts out over the windward bow, so the
+      // splash is a metre or so clear of the planking rather than under the stem.
+      const cat = this.o.hullBeam * 0.3 + 0.9;
+      this.tmp.x += sx * cat * windward - this.forward.x;
+      this.tmp.z += sz * cat * windward - this.forward.z;
+      this.tmp.y = this.o.sampler.ready ? this.o.sampler.height(this.tmp.x, this.tmp.z) : 0;
+      // A period bower: about 300 kg of iron let go from the cathead, some
+      // three metres above the water, so it hits at sqrt(2 g h) ≈ 7.7 m/s with
+      // the flukes half a metre across. A heavy splash: crown, jet and mist.
+      this.o.splash(this.tmp.x, this.tmp.y, this.tmp.z, { radius: 0.5, speed: 7.7, mass: 300 });
+    } else {
+      this.burst.fire(this.tmp, 0.45, false);
+    }
     this.ui.toast("Anchor down. She'll swing to the wind", 'info');
     this.pushTelemetry();
   }
@@ -762,6 +781,10 @@ export class Gameplay {
     this.cargo += 1;
     this.gold += this.lootValue;
     this.burst.fire(this.tmp2.set(lp.x, lp.y + 0.4, lp.z), 1, true);
+    // The cask dropped back as it is swung aboard, or the water it leaves: a
+    // small splash where it floated.
+    const surface = this.o.sampler.ready ? this.o.sampler.height(lp.x, lp.z) : lp.y;
+    this.o.splash?.(lp.x, surface, lp.z, { radius: 0.35, speed: 3, mass: 40 });
     this.o.audio?.playSplash(0.7);
     this.o.audio?.playChime();
     this.addTrauma(0.18);

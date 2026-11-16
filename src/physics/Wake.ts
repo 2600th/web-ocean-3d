@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { Fn, If, float, mix, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { Fn, If, float, mix, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
 import { seafloorDepth } from '../scene/Seafloor';
 import { breaker } from '../ocean/Surf';
@@ -97,6 +97,13 @@ const MAX_EMITTERS = 4;
  * dropped rather than overwriting one already queued.
  */
 const MAX_SPLASHES = 6;
+
+/**
+ * Ring waves from impacts (`physics/Splash`) evaluated at once. Each is an
+ * annulus of foam and a short train of ripples on the elevation channel, set
+ * every frame by its owner while it spreads.
+ */
+export const MAX_RINGS = 4;
 
 /**
  * Exponential decay time constant for the *sea's* own foam, seconds.
@@ -736,6 +743,9 @@ export class Wake {
   private splashQueued = 0;
   /** Any splash this frame; gates the whole term behind one compare. */
   private readonly uSplashActive = uniform(0);
+  /** Per ring: (x, z, radius, width) and (foam per second, amplitude, wavelength, 0). */
+  private readonly rings: { a: any; b: any }[] = [];
+  private readonly uRingActive = uniform(0);
 
   private driftX = 0;
   private driftZ = 0;
@@ -790,6 +800,9 @@ export class Wake {
       });
     }
     for (let i = 0; i < MAX_SPLASHES; i++) this.splashes.push(uniform(new THREE.Vector4()));
+    for (let i = 0; i < MAX_RINGS; i++) {
+      this.rings.push({ a: uniform(new THREE.Vector4(0, 0, 1, 1)), b: uniform(new THREE.Vector4()) });
+    }
 
     this.accumulate = [
       this.createAccumulateMaterial(this.buffers[0].texture),
@@ -1000,6 +1013,33 @@ export class Wake {
     this.splashQueued++;
   }
 
+  /**
+   * Sets ring `index` for this frame: a ring wave spreading from an impact.
+   * Its owner (`Splash`) calls this every frame while the ring lives and with
+   * zero foam and amplitude once it has died.
+   *
+   * @param radius     Current radius of the ring's crest, metres.
+   * @param width      Half-width of the foam band and of the ripple envelope.
+   * @param foam       Foam deposited per second on the band, 0..~1.
+   * @param amplitude  Crest height of the ripple, metres.
+   * @param wavelength Ripple wavelength, metres; the buffer resolves ~1.5 m.
+   */
+  setRing(
+    index: number,
+    x: number,
+    z: number,
+    radius: number,
+    width: number,
+    foam: number,
+    amplitude: number,
+    wavelength: number,
+  ): void {
+    const ring = this.rings[index];
+    if (!ring) return;
+    (ring.a.value as THREE.Vector4).set(x, z, Math.max(0, radius), Math.max(0.2, width));
+    (ring.b.value as THREE.Vector4).set(Math.max(0, foam), amplitude, Math.max(0.5, wavelength), 0);
+  }
+
   setDebugVisible(v: boolean): void {
     this.debugObject.visible = v;
   }
@@ -1104,6 +1144,12 @@ export class Wake {
     }
     this.uSplashActive.value = this.splashQueued > 0 ? 1 : 0;
     this.splashQueued = 0;
+    let ringActive = 0;
+    for (const ring of this.rings) {
+      const b = ring.b.value as THREE.Vector4;
+      if (b.x > 0 || b.y !== 0) ringActive = 1;
+    }
+    this.uRingActive.value = ringActive;
 
     const previous = renderer.getRenderTarget();
 
@@ -1740,6 +1786,27 @@ export class Wake {
           const rr = r.mul(r).oneMinus().max(0);
           const disc = rr.mul(rr).toVar();
           wakeDeposit.addAssign(disc.mul(boil).mul(splash.w).mul(2));
+        }
+      });
+
+      // Ring waves from impacts (`Splash`): a band of foam on the spreading
+      // crest, broken by the same boil, and a short ripple train stamped on the
+      // elevation, so the surface heaves and its normals ring where the light
+      // catches it. Behind one compare: off on every frame without an impact.
+      If(this.uRingActive.greaterThan(0.5), () => {
+        for (let i = 0; i < MAX_RINGS; i++) {
+          const a = this.rings[i].a;
+          const b = this.rings[i].b;
+          const d = world.sub(vec2(a.x, a.y)).length();
+          const x = d.sub(a.z).div(a.w).toVar();
+          const band = x.mul(x).negate().exp();
+          wakeDeposit.addAssign(band.mul(boil).mul(b.x).mul(this.uStep));
+          // Three or four crests: the envelope spans a wavelength and a half
+          // either side of the leading crest, the inner ones a little lower.
+          const y = d.sub(a.z).div(b.z).toVar();
+          const train = y.mul(y).mul(0.45).negate().exp().mul(smoothstep(-2.2, 0.2, y.negate()).mul(0.4).add(0.6));
+          stamped.addAssign(y.mul(Math.PI * 2).cos().mul(b.y).mul(train));
+          stampWeight.addAssign(train.mul(b.y.abs().mul(40).clamp(0, 1)));
         }
       });
 

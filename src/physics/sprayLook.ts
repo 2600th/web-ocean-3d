@@ -9,6 +9,7 @@ import {
   mix,
   perspectiveDepthToViewZ,
   positionGeometry,
+  positionWorld,
   screenUV,
   smoothstep,
   texture,
@@ -500,6 +501,37 @@ export function particleFragment(): any {
     .mul(quadMask)
     .clamp(0, 1);
   return vec4((vShade as any).xyz.mul(tint), alpha);
+}
+
+/**
+ * Light on a sheet of thrown water — the bow sheet (`gameplay/BowSheet`), a
+ * splash's crown and its jet (`physics/Splash`) — at this fragment, so they all
+ * read as the same water.
+ *
+ * Thin water transmits forward (a Henyey–Greenstein lobe, g = 0.75, as for the
+ * particles); aerated water scatters many times and is near-Lambertian and
+ * white, and sees the whole sky. `aerated` is 0 for clear water, 1 for white
+ * water; `mottle` multiplies the tint, for the sheet's own breakup pattern.
+ */
+export function sheetRadiance(aerated: any, mottle: any): any {
+  const u = sprayUniforms;
+  const toEye: any = cameraPosition.sub(positionWorld).normalize();
+  const cosTheta: any = toEye.negate().dot(u.sunDirection);
+  const g: any = float(0.75);
+  const g2: any = g.mul(g);
+  const phase: any = float(1)
+    .sub(g2)
+    .div(float(1).add(g2).sub(g.mul(2).mul(cosTheta)).max(1e-3).pow(1.5))
+    .min(12);
+  const diffuse: any = mix(float(0.6), float(0.9), aerated);
+  const sunUp: any = u.sunDirection.y.smoothstep(-0.05, 0.12);
+  const shadow: any = hullShadow(positionWorld);
+  const sunTerm: any = diffuse.mul(0.8).add(diffuse.oneMinus().mul(0.3).mul(phase));
+  const tint: any = mix(vec3(0.8, 0.92, 0.94), vec3(0.95, 0.97, 0.98), aerated).mul(mottle);
+  return (u.sunColor as any)
+    .mul(sunTerm.mul(sunUp).mul(shadow))
+    .add((u.skyColor as any).mul(mix(float(0.6), float(0.95), aerated)))
+    .mul(tint);
 }
 
 /**
