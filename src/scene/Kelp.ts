@@ -103,6 +103,24 @@ const GLINT_KEEP = 0.25;
  * in `focusPoints` and every existing column's leaves are unchanged.
  */
 const OUTLIER_REACH = 1.35;
+/**
+ * [underwater-look-3] Round 7. Small stands of kelp round every plateau reef:
+ * `STANDS_PER_REEF` of them at even bearings (jittered), `STAND_REACH` metres
+ * past the reef's edge, each `STAND_RADIUS` across with `STAND_COLUMNS`
+ * columns at least `STAND_SPACING` apart. The round-7 review lost the reef
+ * frame to abyssal-garden's "depth layering": behind our mound there was only
+ * open water, where abyssal's has canyon walls and kelp fading into the
+ * blue. A stand thirty to fifty metres off is a silhouette in the water, and
+ * at even bearings one stands behind a reef from wherever it is seen. Drawn
+ * from each reef's own generator after every other column, not counted in
+ * `Forest.columns`, and kept off every clearing (the reefs themselves, the
+ * meadows and the spawn).
+ */
+const STANDS_PER_REEF = 5;
+const STAND_REACH: readonly [number, number] = [10, 26];
+const STAND_RADIUS: readonly [number, number] = [3, 6.5];
+const STAND_COLUMNS: readonly [number, number] = [4, 9];
+const STAND_SPACING = 1.8;
 const OUTLIER_SHARE = 0.35;
 /**
  * [underwater-look-3] Round 6, `clumpColumns`: the noise field's frequency
@@ -161,6 +179,8 @@ export interface KelpForestOptions {
   shading?: LeafShading;
   /** Metres; the tier's `vegetationRange`. */
   range?: number;
+  /** [underwater-look-3] Reef sites that get stands of kelp around them; see `STANDS_PER_REEF`. */
+  reefs?: readonly Clearing[];
 }
 
 export class KelpForest {
@@ -183,7 +203,7 @@ export class KelpForest {
     const clearings = [...(options.clearings ?? []), ...defaultClearings()];
     const forests = placeForests(random, clearings);
     this.forests = forests;
-    const { leaves, columns } = growForests(random, floor, forests, clearings);
+    const { leaves, columns } = growForests(random, floor, forests, clearings, options.reefs ?? []);
     this.columns = columns;
 
     this.field = new LeafField(leaves, this.uniforms, {
@@ -368,6 +388,7 @@ function growForests(
   floor: FloorCache,
   forests: Forest[],
   clearings: readonly Clearing[],
+  reefs: readonly Clearing[],
 ): { leaves: Leaf[]; columns: { x: number; y: number; z: number; height: number }[] } {
   const columns: Column[] = [];
   const grid = new Map<number, Column[]>();
@@ -475,6 +496,53 @@ function growForests(
     let list = grid.get(key);
     if (!list) grid.set(key, (list = []));
     list.push(c);
+  }
+
+  // [underwater-look-3] Round 7: stands round the reefs. See `STANDS_PER_REEF`.
+  // After the clumping, so every existing column lands where it did.
+  for (const reef of reefs) {
+    const rng = mulberry32((hash2(reef.x * 0.91, reef.z * 0.29) * 4294967296) >>> 0);
+    const base = rng() * Math.PI * 2;
+    for (let k = 0; k < STANDS_PER_REEF; k++) {
+      const bearing = base + (k * Math.PI * 2) / STANDS_PER_REEF + (rng() - 0.5) * 0.6;
+      const reach = reef.radius + STAND_REACH[0] + rng() * (STAND_REACH[1] - STAND_REACH[0]);
+      const cx = reef.x + Math.cos(bearing) * reach;
+      const cz = reef.z + Math.sin(bearing) * reach;
+      const standRadius = STAND_RADIUS[0] + rng() * (STAND_RADIUS[1] - STAND_RADIUS[0]);
+      const want = STAND_COLUMNS[0] + Math.floor(rng() * (STAND_COLUMNS[1] - STAND_COLUMNS[0] + 1));
+      let planted = 0;
+      for (let t = 0; t < want * 4 && planted < want; t++) {
+        const a = rng() * Math.PI * 2;
+        const r = Math.sqrt(rng()) * standRadius;
+        const x = cx + Math.cos(a) * r;
+        const z = cz + Math.sin(a) * r;
+        const h01 = rng();
+        const kind = rng() < 0.12 ? 2 : 0;
+        const fill = 0.5 + 0.6 * rng();
+        if (inClearing(x, z, clearings, 3)) continue;
+        if (near(x, z, STAND_SPACING).length > 0) continue;
+        const depth = -seafloorPlacementHeight(x, z);
+        const ground = floor.height(x, z);
+        if (depth < 5 || depth > 28 || floor.slope(x, z) > MAX_SLOPE) continue;
+        const maxH = Math.min(MAX_COLUMN, Math.min(depth, -ground) - TOP_CLEARANCE);
+        if (maxH < MIN_COLUMN) continue;
+        const column: Column = {
+          x,
+          y: ground - HOLDFAST_SINK,
+          z,
+          height: Math.max(MIN_COLUMN, maxH * (0.55 + 0.4 * h01)),
+          kind,
+          fill,
+          crowd: 0,
+        };
+        columns.push(column);
+        const key = gridKey(x, z);
+        let list = grid.get(key);
+        if (!list) grid.set(key, (list = []));
+        list.push(column);
+        planted++;
+      }
+    }
   }
 
   // Crowding: how much of the sky a column's neighbours take. Drives the baked

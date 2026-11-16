@@ -285,6 +285,18 @@ const UPWELL = 0.5;
  * hull's underside as caustics ignoring `n.l`. Upwelled light is diffuse; at
  * 0 the read is not built.
  */
+/**
+ * [underwater-look-3] Round 7. How much the upwelling follows the brightness
+ * the surface already has (`UPWELL_ALBEDO_REF` counts as a mid albedo). It is
+ * added light the scene never put on the surface, so it carried no texture:
+ * on a mound's undercut, lit by nothing else, the rock's bedding and pits
+ * vanished under a flat cyan sheet with the bed's web across it, which the
+ * round-7 review read as "the big rock is blurry and smeared". The pixel's own
+ * value before the pass is that face's albedo times its ambient, so its
+ * cavities and beds come back through it.
+ */
+const UPWELL_ALBEDO = 0.85;
+const UPWELL_ALBEDO_REF = 0.05;
 const UPWELL_WEB: number = 0.5;
 // [lead] Round 6 follow-up: 0 left a hull seen from below as a flat dark slab,
 // the very thing the critic marked the other renderer down for in refraction-3.
@@ -350,6 +362,28 @@ const SHAFT_LOBE = 0.5;
 /** [underwater-look-3] The in-scatter's phase: `PHASE_ISO + PHASE_FWD mu^3 + 0.3 mu^4`. Was 1.22 and 0. */
 const PHASE_ISO = 0.65;
 const PHASE_FWD = 1.8;
+/**
+ * [underwater-look-3] Round 7. The in-scatter from water further than
+ * `FAR_SCATTER_START` metres, on rays running level or down, at
+ * `FAR_SCATTER_SATURATION` of the medium's saturation and times
+ * `FAR_SCATTER_TINT`. The round-7 review read the reef frame as "a flat
+ * saturated cyan aquarium": behind and around the mound every ray ends in open
+ * water, and the closed form's far limit is the medium colour itself, the
+ * same bright cyan at thirty metres as at three hundred and in every level
+ * direction (the directional lobe does nothing there, with the sun off to the
+ * side). abyssal-garden's open water is a greyer teal, with its depth carried
+ * by the dark masses in front of it. The deep water a level ray looks into is
+ * lit by light that has crossed a long column sideways and been scattered many
+ * times, which greys it; rays climbing toward the surface keep the medium's
+ * colour, which is what the kelp frames look into.
+ */
+const FAR_SCATTER_START = 10;
+// A quarter of the saturation and a little darker, most in the blue: the
+// output came out at abyssal's teal-grey (its open water is (93, 206, 224),
+// ours was (42, 167, 204)). Darkening alone, tried first, kept every channel's
+// ratio and so kept the cyan.
+const FAR_SCATTER_SATURATION = 0.25;
+const FAR_SCATTER_TINT: readonly [number, number, number] = [0.95, 0.85, 0.78];
 
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
 // [underwater-look-3] Round 5c: 1.4 -> 1.5. The kelp frame was high-key
@@ -547,6 +581,13 @@ export class UnderwaterPass {
   /** [underwater-look-3] See `PHASE_ISO`. */
   private readonly uPhaseIso = uniform(PHASE_ISO);
   private readonly uPhaseFwd = uniform(PHASE_FWD);
+  /** [underwater-look-3] See `UPWELL_ALBEDO`. */
+  private readonly uUpwellAlbedo = uniform(UPWELL_ALBEDO);
+  private readonly uUpwellRef = uniform(UPWELL_ALBEDO_REF);
+  /** [underwater-look-3] See `FAR_SCATTER_TINT`. */
+  private readonly uFarStart = uniform(FAR_SCATTER_START);
+  private readonly uFarSaturation = uniform(FAR_SCATTER_SATURATION);
+  private readonly uFarTint = uniform(new THREE.Vector3(...FAR_SCATTER_TINT));
 
   // --- refractive distortion -----------------------------------------------
   /**
@@ -929,10 +970,27 @@ export class UnderwaterPass {
           .add(mu2.mul(muSun).mul(this.uPhaseFwd))
           .add(mu2.mul(mu2).mul(0.3))
           .toVar('uwFogPhase');
+        // [underwater-look-3] Round 7: the water past `FAR_SCATTER_START`
+        // metres scatters in a darker, greyer blue-green, on rays running level
+        // or down; see `FAR_SCATTER_TINT`. The first stretch keeps the medium's
+        // colour, so the near field is unchanged; it is the same closed form
+        // over the shorter path.
+        const nearPathS = warpedPath.min(this.uFarStart).toVar('uwNearPathS');
+        const integralNear = float(1)
+          .sub(exp(aCoef.mul(nearPathS).negate().min(30)))
+          .div(aCoef)
+          .toVar('uwINear');
+        const farLevel = float(1).sub(worldRay.y.smoothstep(0.35, 0.8)).toVar('uwFarLevel');
+        const scatterLum = this.uScatterColor.dot(vec3(0.2126, 0.7152, 0.0722));
+        const farColor = mix(vec3(scatterLum, scatterLum, scatterLum), this.uScatterColor, this.uFarSaturation)
+          .mul(this.uFarTint)
+          .toVar('uwFarColor');
+        const scatterFar = mix(this.uScatterColor, farColor, farLevel).toVar('uwScatterFar');
         const inscatter = this.uScatterColor
+          .mul(integralNear)
+          .add(scatterFar.mul(integral.sub(integralNear)))
           .mul(this.uSigma)
           .mul(exp(this.uScatterK.mul(roDepth).negate()))
-          .mul(integral)
           .mul(fogPhase)
           .toVar('uwInscatter');
 
@@ -1049,10 +1107,15 @@ export class UnderwaterPass {
             UPWELL_WEB > 0
               ? mix(float(1), float(caustics(hitP.sub(vec3(0, 12, 0))) as any), UPWELL_WEB).toVar('uwUpwellWeb')
               : float(1);
+          // [underwater-look-3] Round 7: by the surface's own brightness,
+          // relative to `UPWELL_ALBEDO_REF`; see `UPWELL_ALBEDO`.
+          const ownLum = vec3(warped.rgb).dot(vec3(0.2126, 0.7152, 0.0722));
+          const ownAlbedo = ownLum.div(this.uUpwellRef).clamp(0.15, 1.8).toVar('uwOwnAlbedo');
           const upwell = this.uScatterColor
             .mul(exp(this.uScatterK.mul(hitDepth).negate()))
             .mul(downFace.mul(0.8).mul(upwellWeb).add(side))
             .mul(UPWELL * 1.22)
+            .mul(mix(float(1), ownAlbedo, this.uUpwellAlbedo))
             .mul(submergedHit)
             .toVar('uwUpwell');
           waterLight.addAssign(upwell);
