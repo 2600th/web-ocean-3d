@@ -527,6 +527,15 @@ const GRAIN_FADE_FAR = 22;
  */
 const MACRO_METRES = 37;
 const MACRO_RANGE: readonly [number, number] = [0.72, 1.22];
+/**
+ * [underwater-look-3] Round 8. Bedding seams: how many beds the broad height
+ * warps the strata by (was 1.6), the seam's half-width as a fraction of a bed,
+ * and how dark its floor is (was 0.45, one-sided). See the strata in
+ * `createRockMaterial`.
+ */
+const SEAM_WARP = 0.45;
+const SEAM_WIDTH = 0.07;
+const SEAM_DARK = 0.3;
 
 /**
  * The rock material: one for every outcrop, boulder and pebble, so the shelf
@@ -605,9 +614,22 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
   // Strata: beds about 1.8 m thick, warped by the broad field so they dip and
   // pinch, and a per-bed tone read from a texel row (deterministic on every
   // backend, which a sine hash of the bed index is not).
-  const strata: Node = wp.y.mul(0.55).add(A.hc.x.mul(1.6)).add(big.mul(5)).add(big2.mul(3)).toVar('rockSt');
+  //
+  // [underwater-look-3] Round 8: the broad height's warp 1.6 -> `SEAM_WARP`,
+  // and the seam a soft, broken groove on both sides of the bed line. The
+  // 11 m height varies over a metre or two on a steep face, and at 1.6 beds of
+  // warp the seam followed it into tight loops: the round-8 review's "dark
+  // scribble lines on the boulder". The seam was also one-sided, a dark ramp
+  // ending in a hard edge where `fract` wraps, so each loop was an inked line.
+  const strata: Node = wp.y.mul(0.55).add(A.hc.x.mul(SEAM_WARP)).add(big.mul(5)).add(big2.mul(3)).toVar('rockSt');
   const bed: Node = texture(detail, vec2(strata.floor().mul(1 / 61.0), 0.5)).b.toVar('rockBed');
-  const seam: Node = strata.fract().toVar('rockSeam');
+  const seamFract: Node = strata.fract();
+  const seam: Node = seamFract
+    .min(seamFract.oneMinus())
+    .smoothstep(SEAM_WIDTH, 0)
+    .mul(B.hc.x.smoothstep(0.3, 0.62))
+    .mul(n0.y.abs().oneMinus())
+    .toVar('rockSeam');
 
   material.colorNode = Fn(() => {
     const albedo = mix(vec3(0.13, 0.13, 0.125), vec3(0.34, 0.31, 0.25), A.hc.y.mul(1.5).sub(0.25).clamp(0, 1)).toVar();
@@ -617,7 +639,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     // Bedding seams cut dark lines into the steep faces only.
     albedo.mulAssign(
       mix(float(0.72), float(1.15), bed).mul(
-        float(1).sub(seam.smoothstep(0.12, 0).mul(0.45).mul(n0.y.abs().oneMinus())),
+        float(1).sub(seam.mul(SEAM_DARK)),
       ),
     );
     // Coralline encrustation: crimson to ochre crusts in warm patches.
@@ -646,7 +668,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
 
   material.normalNode = Fn(() => {
     // Seam grooves bend the normal down into the bed line on the steep faces.
-    const groove = seam.smoothstep(0.14, 0).mul(n0.y.abs().oneMinus()).mul(-1.2);
+    const groove = seam.mul(-0.8);
     const n = n0
       .add(A.bump.mul(0.85).add(B.bump.mul(0.65)).add(C.bump.mul(fine.mul(0.5))).add(D.bump.mul(grain.mul(0.45))).mul(1.6))
       .add(vec3(0, groove, 0));

@@ -6,6 +6,7 @@ import {
   float,
   mix,
   mx_noise_float,
+  normalWorld,
   positionGeometry,
   positionLocal,
   positionWorld,
@@ -937,6 +938,7 @@ export class ReefLife {
     const yaw = new THREE.Quaternion();
     const euler = new THREE.Euler();
     const color = new THREE.Color();
+    const desatGrey = new THREE.Color();
 
     for (const p of placements) {
       const s = def.scale[0] + (def.scale[1] - def.scale[0]) * Math.pow(random(), 1.6);
@@ -957,6 +959,12 @@ export class ReefLife {
       color.setHex(def.palette[Math.floor(random() * def.palette.length)]);
       // Per-instance brightness jitter, so a colony is not one swatch.
       color.multiplyScalar(0.82 + random() * 0.36);
+      // [underwater-look-3] Round 8; see `MASSIVE_DESAT`. After the draws, so
+      // every other piece keeps its colour and the random stream is unchanged.
+      if (MASSIVE.has(def.name)) {
+        const grey = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722;
+        color.lerp(desatGrey.setScalar(grey), MASSIVE_DESAT);
+      }
       field.add(matrix, color, def.size * s, random());
     }
     field.seal();
@@ -1026,7 +1034,21 @@ export class ReefLife {
       mix(float(1), raw.y, strength).mul(mix(float(MACRO_SHADE[0]), float(MACRO_SHADE[1]), shade)),
       0,
     );
-    material.colorNode = vec4(pattern.y, pattern.y, pattern.y, 1);
+    // [underwater-look-3] Round 8: occlusion on the rigid solid pieces (boulder
+    // corals, reef rock); see `CONTACT_ALBEDO`. Thin life keeps none: a blade
+    // or a fan is lit through, and the bommie's template is not a mound.
+    const massive = side === THREE.DoubleSide ? float(0) : select(rigid, float(1), float(0));
+    const contact = positionGeometry.y.smoothstep(CONTACT_RANGE[0], CONTACT_RANGE[1]);
+    const contactShade = mix(float(1), mix(float(CONTACT_ALBEDO), float(1), contact), massive);
+    material.colorNode = vec4(vec3(pattern.y).mul(contactShade), 1);
+    material.aoNode = Fn(() => {
+      const facing = normalWorld.y.mul(0.5).add(0.5).smoothstep(0, 0.9);
+      const occl = mix(float(CONTACT_AO), float(1), contact).mul(mix(float(FACING_AO), float(1), facing));
+      // The pattern's pits (polyps, meanders) hold less of the ambient.
+      // Only on a patterned surface: a plain one reads height 0 everywhere.
+      const pits = select(surf.greaterThan(0.5), mix(float(PIT_AO), float(1), pattern.x.clamp(0, 1)), float(1));
+      return mix(float(1), occl.mul(pits), massive);
+    })();
     const bumped = bumpedNormal(pattern.x, 0.012);
     if (side === THREE.DoubleSide) {
       // Thin, flexible life (blades, fan lattices, tentacles) stands edge-on
@@ -1054,6 +1076,25 @@ const WORLD_PATTERN_SCALE = 0.4;
 const MACRO_FREQ = 0.45;
 const MACRO_FAINT = 0.3;
 const MACRO_SHADE: readonly [number, number] = [0.82, 1.14];
+/**
+ * [underwater-look-3] Round 8. The round-8 review read the boulders in front
+ * of the reef mound as "flat, cartoon-lit": hard, saturated, evenly lit faces.
+ * Each piece was one swatch lit by a sun and an ambient that reached its foot
+ * as fully as its crown. Now, on the rigid solid pieces:
+ * - the albedo falls to `CONTACT_ALBEDO` toward the foot (template height
+ *   `CONTACT_RANGE`), so the direct light grades down the form too;
+ * - the ambient falls to `CONTACT_AO` at the foot, to `FACING_AO` on faces
+ *   turned down, and to `PIT_AO` in the pattern's pits;
+ * - the palettes of the massive species (`MASSIVE`) lose `MASSIVE_DESAT` of
+ *   their saturation.
+ */
+const CONTACT_RANGE: readonly [number, number] = [-0.12, 0.4];
+const CONTACT_ALBEDO = 0.62;
+const CONTACT_AO = 0.3;
+const FACING_AO = 0.45;
+const PIT_AO = 0.6;
+const MASSIVE = new Set(['brain-coral', 'star-coral', 'reef-rock']);
+const MASSIVE_DESAT = 0.35;
 
 /** A point inside a reef site, centre-weighted. */
 function colonySample(random: () => number, site: Site): { x: number; z: number } {

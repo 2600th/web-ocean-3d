@@ -402,6 +402,20 @@ const surfaceUv = /*@__PURE__*/ varyingProperty('vec2', 'oceanSurfaceUv');
 const WATER_IOR = 1.333;
 
 /**
+ * [water-reflect round 8] How far toward vertical the normal that decides
+ * where Snell's window ends is held. The mirror and the window's ripple
+ * shading keep the distance-relaxed normal (0.85 near, 0.97 far).
+ *
+ * At 0.85 the centimetre ripples moved the rim by several degrees, so in
+ * `underwater-1`, with the sun about six degrees inside the critical angle,
+ * the rim beside the sun was ragged and broke into dark mirror patches. With
+ * the shafts over them they read as the critic's "smeared dark mass". At 0.97
+ * the rim is a smooth curve with a soft edge, as the far field's already was.
+ * The ripples still texture the window through `ripple`.
+ */
+const SNELL_EDGE_RELAX = 0.97;
+
+/**
  * [underwater-look-2] Share of the wave cascades' deviation the projected
  * refraction follows to the bed; the rest is the flat surface's. See `bent`.
  */
@@ -3443,7 +3457,10 @@ export class OceanMaterial {
       If(this.uEyeSubmerged.greaterThan(0.5), () => {
         const relax = viewDistance.smoothstep(8, 120).mul(0.12).add(0.85).toVar();
         const nUp = normalize(mix(n, vec3(0, 1, 0), relax)).toVar();
-        const cosI = nUp.dot(viewDir).abs().clamp(0, 1).toVar();
+        // Where the window ends is read off a normal held closer to vertical
+        // than the one the mirror uses; see SNELL_EDGE_RELAX.
+        const nEdge = normalize(mix(n, vec3(0, 1, 0), SNELL_EDGE_RELAX)).toVar();
+        const cosI = nEdge.dot(viewDir).abs().clamp(0, 1).toVar();
 
         // Snell: sin(t) = ior * sin(i). Past sin(t) = 1 there is no transmitted
         // ray and everything is reflected. `k` is cos^2 of the air-side angle.
@@ -3473,13 +3490,16 @@ export class OceanMaterial {
           .add(fine.x.mul(2.4).sub(fine.y.mul(3.2)))
           .clamp(0.45, 1.9)
           .toVar();
-        // The refracted sun, from the air-side ray: a broad glow and a disc.
-        const airRay = normalize(vec3(viewDir.x.negate(), cosT, viewDir.z.negate())).toVar();
-        const sd = airRay.dot(normalize(this.uSunDirection)).max(0).toVar();
-        const sd2 = sd.mul(sd).toVar();
-        const sd8 = sd2.mul(sd2).mul(sd2).mul(sd2).toVar();
-        const sd64 = sd8.mul(sd8).mul(sd8).mul(sd8).mul(sd8).mul(sd8).mul(sd8).mul(sd8).toVar();
-        const sunGlow = sd64.mul(1.1).add(sd64.pow(8).mul(9)).toVar();
+        // [water-reflect round 8] No sun here. abyssal's window sun
+        // (`pow(sd, 60) * 1.3 + pow(sd, 500) * 12`) was drawn twice: here, and
+        // as the underwater pass's burst (`SUN_GLOW`, `SUN_CORE` in
+        // UnderwaterPass.ts), which covers every ray that reaches the surface,
+        // is occluded by kelp and fish, and is fogged by the column. Stacked,
+        // the two blew `underwater-1` out to milky white round the sun, and
+        // this copy, clipped by the window's rippled rim six degrees away,
+        // was a ragged white patch with a hard edge. Measured on kelp-sun
+        // with the pass's burst and shafts off: this term alone drew the
+        // patch; without it the window round the sun is the smooth tinted sky.
         // Seen through the water above it the sky is already the water's
         // colour at its rim (abyssal draws its window cyan, `(.30, .78, 1)`):
         // half way toward the medium's hue at the same brightness.
@@ -3488,7 +3508,6 @@ export class OceanMaterial {
         const windowColor = tintedSky
           .mul(ripple)
           .mul(1.1)
-          .add((this.uSunColor as any).mul(sunGlow))
           .mul(this.uLightLevel.mul(0.85).add(0.15))
           .mul(fr.oneMinus())
           .toVar();
