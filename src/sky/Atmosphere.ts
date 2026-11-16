@@ -441,6 +441,14 @@ export class Atmosphere {
   // colour uniform to a float-ish node, which blocks legitimate vec3 chaining.
   private readonly uGround: any = uniform(new THREE.Color(0.05, 0.09, 0.13));
   private readonly uSunDiscVisible = uniform(1);
+  /**
+   * How much of the stars and the moon an overcast leaves: the disc's own
+   * `clear * clear`, kept apart from `uSunDiscVisible` because the environment
+   * capture zeroes that one and has no reason to lose the stars. The storm
+   * (overcast 0.88, `nightIntensity` 0.1) drew its star field into every gap
+   * in the deck.
+   */
+  private readonly uNightClear = uniform(1);
   /** See `setSunOccluder`. */
   private sunOccluder: ((dir: any) => any) | null = null;
   /** The disc's drawn radiance over `T / max(T)`, scene units; see `SUN_DISC_PEAK`. */
@@ -992,6 +1000,7 @@ export class Atmosphere {
     // a storm. Gone by three-quarters overcast, eased on the way.
     const clear = Math.max(0, 1 - overcast / 0.75);
     this.uSunDiscVisible.value = clear * clear;
+    this.uNightClear.value = clear * clear;
 
     this.nightAmount = Math.min(1, Math.max(0, p.nightIntensity));
     const night = this.nightAmount;
@@ -1491,10 +1500,14 @@ export class Atmosphere {
 
     // The galaxy and the faintest stars wash out near a bright moon.
     const moonWash = float(1).sub(pow(halo, 12.0).mul(0.85));
-    return base
-      .add(stars)
-      .add(galaxy.mul(moonWash))
-      .add(moonBody.add(glow).add(ring).mul(aboveHorizon));
+    // Stars, galaxy and moon go behind an overcast the way the sun's disc does
+    // (`uNightClear`); only the night sky's own gradient stays.
+    return base.add(
+      stars
+        .add(galaxy.mul(moonWash))
+        .add(moonBody.add(glow).add(ring).mul(aboveHorizon))
+        .mul(this.uNightClear),
+    );
   }
 }
 
