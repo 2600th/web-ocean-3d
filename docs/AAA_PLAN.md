@@ -174,8 +174,8 @@ User direction 2026-11-13: make the language more interesting, engaging and user
 - [x] Night/dusk clouds no longer outshine the sky (lit by measured sky radiance; moon as key)
 - [x] Sea sun glint fades with overcast on the sky's disc curve
 - [ ] Bright horizon band at night/storm (clear dome sky between the deck's far edge and the sea); dusk squall sea reads purple (sky agent)
-- [ ] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface
-- [ ] Bommie LOD (12k triangles each) for Ultra/Max triangle budget
+- [x] Underwater: jellyfish read as opaque blobs at distance; god rays faint; island shelf sparse; reef 17 m down not visible from just above the surface — round 12: moon jellies are translucent bells (rim-dense, water-tinted transmission, forward sun through the bell, tentacles fading to their tips, thinner with distance); the shelf has 34 more grass beds cut by sand channels plus scattered coral heads, rubble, sea rods, sponges and urchins, all from new generators; a deep bed reads from above as darker patches where it is darker than the sand round it (`BED_SHARE`); a small chromis school over the nearest reef at High and up. Kelp-wide's shafts measured unchanged in the open water (the frame round them is brighter since the denser forest)
+- [x] Bommie LOD (12k triangles each) for Ultra/Max triangle budget — the 12k/3k/0.9k chain at 7 and 18 radii now dissolves between levels over half a second instead of swapping in one frame (`LOD_FADE_SECONDS`)
 - [ ] Unexplained striped light column on the water in a helm view — recheck once the GPU is quiet
 
 ### Follow-ups found while verifying

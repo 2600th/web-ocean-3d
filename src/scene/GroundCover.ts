@@ -63,6 +63,23 @@ const BED_PATCHES_PER_M2 = 0.05;
 const WRACK_PER_COLUMN = 1.6;
 const EXTRA_UNDERSTOREY = 2;
 
+/**
+ * [underwater-look-3] Round 12. The island's shallow shelf, which the review
+ * found bare sand between twelve small meadows: `SHELF_MEADOWS` more turtle
+ * and manatee grass beds between `SHELF_DEPTH` metres, `SHELF_RADIUS` across,
+ * from their own generator (`SHELF_SEED`) so every existing tuft keeps its
+ * place. Each is cut by sand channels, where a low-frequency field crosses its
+ * middle within `SHELF_CHANNEL` (the sinuous bare runs current scours through
+ * a Caribbean grass bed), and is holed by the same patchiness field the other
+ * meadows use. Tufts at `SHELF_SPACING`, a little sparser than a reef ring.
+ */
+const SHELF_SEED = 0x5e1f5ea;
+const SHELF_MEADOWS = 34;
+const SHELF_DEPTH: readonly [number, number] = [1.6, 8];
+const SHELF_RADIUS: readonly [number, number] = [12, 24];
+const SHELF_CHANNEL: readonly [number, number] = [0.03, 0.065];
+const SHELF_SPACING = 0.3;
+
 /** Levels for short cover: seven rows near (Halimeda's joints need them), three beyond, half far out. */
 const COVER_LEVELS = [
   { rows: 7, thin: 1, until: 0.35 },
@@ -89,6 +106,7 @@ export class GroundCover {
   readonly object: THREE.Object3D;
   private readonly field: LeafField;
   private readonly meadowList: readonly Clearing[];
+  private readonly shelfList: readonly Clearing[];
 
   constructor(density: number, options: GroundCoverOptions) {
     const random = mulberry32(options.seed ?? COVER_SEED);
@@ -104,6 +122,7 @@ export class GroundCover {
     plantUnderstorey(leaves, random, floor, options.columns ?? [], reefSites);
     plantKelpBed(leaves, mulberry32(BED_SEED), floor, options.forests ?? [], options.columns ?? [], reefSites);
     plantOutcropCover(leaves, mulberry32(BED_SEED ^ 0x0c0ffe), floor, options.outcrops ?? []);
+    this.shelfList = plantShelfMeadows(leaves, mulberry32(SHELF_SEED), floor, reefSites, this.meadowList);
 
     this.field = new LeafField(leaves, options.uniforms, {
       name: 'seabed-cover',
@@ -119,6 +138,11 @@ export class GroundCover {
   /** Meadow centres, for a harness to frame one. */
   meadows(): readonly Clearing[] {
     return this.meadowList;
+  }
+
+  /** [underwater-look-3] Round 12: the shelf's beds, for a harness; see `SHELF_MEADOWS`. */
+  shelfMeadows(): readonly Clearing[] {
+    return this.shelfList;
   }
 
   /** Density 0..1, as the kelp's. */
@@ -386,6 +410,61 @@ function plantUnderstorey(
       }
     }
   }
+}
+
+/** [underwater-look-3] Round 12: the shelf's grass beds; see `SHELF_MEADOWS`. */
+function plantShelfMeadows(
+  leaves: Leaf[],
+  rnd: () => number,
+  floor: FloorCache,
+  reef: readonly Clearing[],
+  meadows: readonly Clearing[],
+): Clearing[] {
+  const sites: Clearing[] = [];
+  for (let i = 0; i < SHELF_MEADOWS; i++) {
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const a = rnd() * Math.PI * 2;
+      const rr = ISLAND.radius * (0.7 + rnd() * 0.75);
+      const x = ISLAND.x + Math.cos(a) * rr;
+      const z = ISLAND.z + Math.sin(a) * rr;
+      const depth = -seafloorPlacementHeight(x, z);
+      if (depth < SHELF_DEPTH[0] || depth > SHELF_DEPTH[1]) continue;
+      const r = SHELF_RADIUS[0] + rnd() * (SHELF_RADIUS[1] - SHELF_RADIUS[0]);
+      if (inside(x, z, reef, r * 0.5)) continue;
+      if (sites.concat(meadows).some((m) => Math.hypot(m.x - x, m.z - z) < m.radius + r)) continue;
+      sites.push({ x, z, radius: r });
+      break;
+    }
+  }
+  for (const m of sites) {
+    const n = Math.ceil((m.radius * 2) / SHELF_SPACING);
+    for (let i = 0; i <= n; i++) {
+      for (let j = 0; j <= n; j++) {
+        const x = m.x - m.radius + (i + rnd()) * SHELF_SPACING;
+        const z = m.z - m.radius + (j + rnd()) * SHELF_SPACING;
+        const rr = Math.hypot(x - m.x, z - m.z) / m.radius;
+        if (rr > 1) continue;
+        const channel = smoothstep(SHELF_CHANNEL[0], SHELF_CHANNEL[1], Math.abs(fbm(x * 0.03, z * 0.03, 0x5e1f) - 0.5));
+        const patch = smoothstep(0.15, 0.32, fbm(x * 0.11, z * 0.11, 0x5e20));
+        if (rnd() > (1 - smoothstep(0.6, 1, rr)) * patch * channel) continue;
+        if (inside(x, z, reef, 0.5)) continue;
+        const ground = floor.height(x, z);
+        if (ground > -1.2) continue;
+        const y = ground - 0.04;
+        const u = rnd();
+        if (u < 0.05) {
+          halimeda(leaves, rnd, x, y, z, 0.85);
+        } else if (u < 0.7) {
+          tuft(leaves, rnd, x, y, z, 4 + Math.floor(rnd() * 3), LeafType.TURTLE_GRASS,
+            [0.2, 0.44], [0.036, 0.056], [0.04, 0.38], [0.3, 0.5], 0.85);
+        } else {
+          tuft(leaves, rnd, x, y, z, 3 + Math.floor(rnd() * 2), LeafType.MANATEE_GRASS,
+            [0.3, 0.6], [0.018, 0.026], [0.05, 0.5], [0.35, 0.7], 0.85);
+        }
+      }
+    }
+  }
+  return sites;
 }
 
 /**
