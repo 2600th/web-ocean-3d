@@ -173,6 +173,9 @@ export class Rocks {
 
   /** Milliseconds the constructor took: sculpting, layout and the map. */
   readonly buildMs: number;
+  /** [underwater-look-3] Round 10. The loose shapes' LOD chains, for `addKelpBedStones`. */
+  private readonly looseLevels: THREE.BufferGeometry[][] = [];
+  private kelpBedDone = false;
 
   constructor(detail: number, options: RocksOptions = {}) {
     const started = performance.now();
@@ -191,6 +194,128 @@ export class Rocks {
     this.influence = buildInfluence(this.placements, this.fieldSites);
     this.setDetail(detail);
     this.buildMs = performance.now() - started;
+  }
+
+  /**
+   * [underwater-look-3] Round 10. Stones in the kelp beds: a few cobbles and
+   * a boulder or two at every holdfast — giant kelp settles on hard ground,
+   * and a holdfast on bare sand read as a pole stuck in it — and a sparse
+   * scatter over the open floor between the stands, so the bed under a forest
+   * is not one flat sheet of sand. Its own fields sharing the loose shapes and
+   * the material (the others are sealed by now), seeded from the columns so
+   * nothing else moves. Seated as the other loose rock is, on the lowest
+   * rendered floor under the footprint.
+   */
+  addKelpBedStones(
+    columns: readonly { x: number; y: number; z: number; height: number }[],
+    forests: readonly { x: number; z: number; radius: number }[],
+  ): void {
+    if (this.kelpBedDone || this.disposed) return;
+    this.kelpBedDone = true;
+    const random = mulberry32(ROCK_SEED ^ 0x6b31d);
+    const fields = this.looseLevels.map(
+      (levels, i) =>
+        new InstanceField({
+          name: `kelp-bed-stones-${i}`,
+          levels,
+          material: this.material,
+          // Small stones: full detail to 10 m, 320 triangles to 28 m.
+          switches: [10, 28, 60],
+          cullBase: 24,
+          cullPerSize: 34,
+          cullMax: 110,
+          refresh: 4,
+        }),
+    );
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const euler = new THREE.Euler();
+    const color = new THREE.Color();
+    const place = (x: number, z: number, size: number, rank: number, bury: number): void => {
+      const r = random();
+      const kind = r < 0.36 ? 0 : r < 0.7 ? 1 : r < 0.9 ? 2 : 3;
+      const field = fields[kind];
+      const sy = size * (kind === 3 ? 0.7 + random() * 0.4 : 0.55 + random() * 0.5);
+      const sx = size * (0.85 + random() * 0.35);
+      const sz = size * (0.85 + random() * 0.35);
+      let floor = seafloorPlacementMeshHeight(x, z);
+      const reach = Math.max(sx, sz) * 0.7;
+      for (let a = 0; a < 4; a++) {
+        const ang = (a / 4) * Math.PI * 2 + 0.4;
+        floor = Math.min(floor, seafloorPlacementMeshHeight(x + Math.cos(ang) * reach, z + Math.sin(ang) * reach));
+      }
+      if (floor > -3) return;
+      position.set(x, floor - sy * bury, z);
+      if (kind === 3) euler.set((random() - 0.5) * 0.5, random() * Math.PI * 2, (random() - 0.5) * 0.5);
+      else euler.set(random() * Math.PI * 2, random() * Math.PI * 2, random() * Math.PI * 2);
+      quaternion.setFromEuler(euler);
+      scale.set(sx, sy, sz);
+      matrix.compose(position, quaternion, scale);
+      // Paler than the shelf's rubble: limestone cobbles crusted with coralline
+      // algae, which the contact shade and the canopy's shadow would otherwise
+      // take to black.
+      const k = BED_STONE_TINT[0] + random() * (BED_STONE_TINT[1] - BED_STONE_TINT[0]);
+      const pink = random() < 0.35 ? 1 : 0;
+      color.setRGB(k * (1.0 + 0.06 * pink), k * (0.98 - 0.04 * pink), k * (0.95 + 0.02 * pink));
+      field.add(matrix, color, Math.max(sx, sy, sz), rank);
+    };
+    const size = (lo: number, hi: number, p: number): number => lo + (hi - lo) * Math.pow(random(), p);
+    for (const c of columns) {
+      // The stone the holdfast grips, half buried beside it, and a few
+      // cobbles round it.
+      const a0 = random() * Math.PI * 2;
+      const big = size(0.45, 1.5, 1.3);
+      place(c.x + Math.cos(a0) * (0.35 + big * 0.4), c.z + Math.sin(a0) * (0.35 + big * 0.4), big, random() * 0.3, 0.35);
+      const n = 2 + Math.floor(random() * 4);
+      for (let i = 0; i < n; i++) {
+        const a = random() * Math.PI * 2;
+        const r = 0.5 + Math.abs(gauss(random)) * 1.6;
+        place(c.x + Math.cos(a) * r, c.z + Math.sin(a) * r, size(0.08, 0.38, 2.2), random(), 0.25);
+      }
+    }
+    for (const f of forests) {
+      // Between the stands: gravel spreads and a lone boulder now and then.
+      const n = Math.round(f.radius * f.radius * 0.12);
+      for (let i = 0; i < n; i++) {
+        const a = random() * Math.PI * 2;
+        const r = Math.sqrt(random()) * f.radius * 1.15;
+        const cx = f.x + Math.cos(a) * r;
+        const cz = f.z + Math.sin(a) * r;
+        if (random() < 0.3) {
+          // A boulder or a small cluster of them: what reads through the haze
+          // from across the bed.
+          const b = 1 + Math.floor(random() * 3);
+          for (let j = 0; j < b; j++) {
+            place(cx + gauss(random) * 1.2, cz + gauss(random) * 1.2, size(0.5, 1.8, 1.5), random() * 0.3, 0.3);
+          }
+          continue;
+        }
+        const k = 2 + Math.floor(random() * 4);
+        for (let j = 0; j < k; j++) {
+          place(cx + gauss(random) * 0.9, cz + gauss(random) * 0.9, size(0.07, 0.3, 2.4), random(), 0.25);
+        }
+      }
+    }
+    // The bed under a forest is rubble and silt, darker round each stand than
+    // between them: the sand's own rubble shading, through the influence map.
+    const beds = [
+      ...forests.map((f) => ({ x: f.x, z: f.z, r: f.radius * 0.9, k: BED_FOREST })),
+      ...columns.map((c) => ({ x: c.x, z: c.z, r: 0.8, k: BED_COLUMN })),
+    ];
+    const rebuilt = buildInfluence(this.placements, this.fieldSites, beds);
+    (this.influence.texture.image.data as Uint8Array).set(rebuilt.texture.image.data as Uint8Array);
+    this.influence.texture.needsUpdate = true;
+    rebuilt.texture.dispose();
+
+    for (const field of fields) {
+      field.seal();
+      field.setDetail(this.detail <= 0 ? 0 : 0.25 + 0.75 * this.detail);
+      field.setRangeMultiplier(0.7 + 0.3 * this.detail);
+      for (const mesh of field.meshes) this.object.add(mesh);
+      this.fields.push(field);
+    }
   }
 
   /** Detail fraction 0..1: how much loose rock, and how far the fine meshes reach. */
@@ -453,6 +578,7 @@ export class Rocks {
       // Four tessellations of one shape: 1280, 320, 80 and 20 triangles.
       const levels = [3, 2, 1, 0].map((sub) => buildChunkGeometry(ROCK_SEED ^ k.seed, sub, k.kind));
       this.geometries.push(...levels);
+      this.looseLevels.push(levels);
       this.fields.push(
         new InstanceField({
           name: `rocks-${k.kind}-${k.seed}`,
@@ -902,6 +1028,10 @@ function shuffleAnchors(a: Float32Array, seed: number): Float32Array {
 // --------------------------------------------------------------- influence
 
 const INFLUENCE_SIZE = 512;
+/** [underwater-look-3] Round 10. Rubble weight of a kelp forest's floor, and round each holdfast. */
+const BED_FOREST = 0.5;
+const BED_COLUMN = 0.95;
+const BED_STONE_TINT: readonly [number, number] = [1.25, 1.75];
 const INFLUENCE_MIN_X = -2250;
 const INFLUENCE_MIN_Z = -2000;
 const INFLUENCE_EXTENT = 2600;
@@ -915,7 +1045,11 @@ const INFLUENCE_EXTENT = 2600;
  * The seabed is one mesh shaded by one material over 16 km², and it has no
  * other way to know that a twelve-metre outcrop is standing on it.
  */
-function buildInfluence(placements: Placement[], fields: { x: number; z: number; r: number }[]): RockInfluence {
+function buildInfluence(
+  placements: Placement[],
+  fields: { x: number; z: number; r: number }[],
+  beds: readonly { x: number; z: number; r: number; k: number }[] = [],
+): RockInfluence {
   const N = INFLUENCE_SIZE;
   const texel = INFLUENCE_EXTENT / N;
   const scree = new Float32Array(N * N);
@@ -939,6 +1073,8 @@ function buildInfluence(placements: Placement[], fields: { x: number; z: number;
   };
   for (const p of placements) splat(p.x, p.z, p.sculpt.reach * p.scale * 0.8, 24, 6, 1);
   for (const s of fields) splat(s.x, s.z, s.r, 12, 3, 0.7);
+  // [underwater-look-3] Round 10: kelp beds, rubble and a silty skirt; see `addKelpBedStones`.
+  for (const b of beds) splat(b.x, b.z, b.r, 4, 2, b.k);
 
   const data = new Uint8Array(N * N * 4);
   for (let i = 0; i < N * N; i++) {

@@ -50,6 +50,13 @@ export class MeshBuilder {
   readonly idx: number[] = [];
   /** Optional per-vertex scalar channel for animals (part id, span, ...). */
   readonly aux: number[] = [];
+  /**
+   * [underwater-look-3] Round 10. Groups of vertices that are one point of the
+   * surface split for the seam or the pole of a blob; `build` gives each group
+   * one normal. Without it a blob's crown was a pinch of mismatched normals and
+   * its seam a crease, which the round-10 review read as faceting.
+   */
+  readonly welds: number[][] = [];
 
   get vertexCount(): number {
     return this.pos.length / 3;
@@ -305,6 +312,10 @@ export class MeshBuilder {
         this.idx.push(a, a + 1, c, a + 1, c + 1, c);
       }
     }
+    const pole: number[] = [];
+    for (let j = 0; j <= segments; j++) pole.push(base + j);
+    this.welds.push(pole);
+    for (let i = 1; i <= rings; i++) this.welds.push([base + i * (segments + 1), base + i * (segments + 1) + segments]);
   }
 
   /** Multiplies every vertex colour by `tint` — for composites, where the hue is baked. */
@@ -327,6 +338,7 @@ export class MeshBuilder {
     this.surf.push(...other.surf);
     this.aux.push(...other.aux);
     for (const i of other.idx) this.idx.push(i + offset);
+    for (const w of other.welds) this.welds.push(w.map((i) => i + offset));
     if (m) this.transformFrom(mark, m);
   }
 
@@ -343,6 +355,18 @@ export class MeshBuilder {
     if (options.aux) g.setAttribute('reefAux', new THREE.Float32BufferAttribute(this.aux, 1));
     g.setIndex(this.idx);
     g.computeVertexNormals();
+    if (this.welds.length > 0) {
+      const n = g.getAttribute('normal') as THREE.BufferAttribute;
+      const sum = new THREE.Vector3();
+      for (const w of this.welds) {
+        sum.set(0, 0, 0);
+        for (const i of w) sum.x += n.getX(i), sum.y += n.getY(i), sum.z += n.getZ(i);
+        if (sum.lengthSq() < 1e-12) continue;
+        sum.normalize();
+        for (const i of w) n.setXYZ(i, sum.x, sum.y, sum.z);
+      }
+      n.needsUpdate = true;
+    }
     g.computeBoundingSphere();
     return g;
   }

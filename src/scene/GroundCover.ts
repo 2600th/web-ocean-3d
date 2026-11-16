@@ -49,6 +49,19 @@ const GORGONIANS_INSIDE = 34;
 const GORGONIANS_PER_FOREST = 6;
 /** Understorey tufts per kelp column. */
 const UNDERSTOREY_PER_COLUMN = 2.2;
+/**
+ * [underwater-look-3] Round 10. The floor of a kelp bed, from its own
+ * generator so every other tuft keeps its place: `BED_PATCHES_PER_M2` patches
+ * of low cover per square metre of forest (turtle grass, Halimeda, a sea rod
+ * now and then) over the open floor between the stands, `WRACK_PER_COLUMN`
+ * fallen fronds lying on the sand round each holdfast, and
+ * `EXTRA_UNDERSTOREY` more shaded tufts at each foot. The review read the bed
+ * as kelp over a featureless floor.
+ */
+const BED_SEED = 0x5eabed;
+const BED_PATCHES_PER_M2 = 0.05;
+const WRACK_PER_COLUMN = 1.6;
+const EXTRA_UNDERSTOREY = 2;
 
 /** Levels for short cover: seven rows near (Halimeda's joints need them), three beyond, half far out. */
 const COVER_LEVELS = [
@@ -87,6 +100,7 @@ export class GroundCover {
     this.meadowList = plantMeadows(leaves, random, floor, reefSites);
     plantGorgonians(leaves, random, floor, reefSites, options.forests ?? []);
     plantUnderstorey(leaves, random, floor, options.columns ?? [], reefSites);
+    plantKelpBed(leaves, mulberry32(BED_SEED), floor, options.forests ?? [], options.columns ?? [], reefSites);
 
     this.field = new LeafField(leaves, options.uniforms, {
       name: 'seabed-cover',
@@ -367,6 +381,74 @@ function plantUnderstorey(
         tuft(leaves, rnd, x, y, z, 4 + Math.floor(rnd() * 3), LeafType.SARGASSUM,
           [0.2, 0.45], [0.05, 0.085], [0.2, 0.85], [0.4, 0.85], 0.55);
       }
+    }
+  }
+}
+
+/** [underwater-look-3] Round 10: see `BED_PATCHES_PER_M2`. */
+function plantKelpBed(
+  leaves: Leaf[],
+  rnd: () => number,
+  floor: FloorCache,
+  forests: readonly Forest[],
+  columns: readonly { x: number; y: number; z: number; height: number }[],
+  reef: readonly Clearing[],
+): void {
+  for (const f of forests) {
+    const n = Math.round(Math.PI * f.radius * f.radius * BED_PATCHES_PER_M2);
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * Math.PI * 2;
+      const r = Math.sqrt(rnd()) * f.radius * 1.1;
+      const cx = f.x + Math.cos(a) * r;
+      const cz = f.z + Math.sin(a) * r;
+      if (inside(cx, cz, reef)) continue;
+      // A patch is a few tufts a hand apart: it reads as a patch, not a dot.
+      const kind = rnd();
+      const tufts = 2 + Math.floor(rnd() * 4);
+      for (let j = 0; j < tufts; j++) {
+        const x = cx + (rnd() - 0.5) * 0.9;
+        const z = cz + (rnd() - 0.5) * 0.9;
+        const ground = floor.height(x, z);
+        if (ground > -2) continue;
+        const y = ground - 0.04;
+        if (kind < 0.45) {
+          tuft(leaves, rnd, x, y, z, 5, LeafType.TURTLE_GRASS, [0.22, 0.45], [0.026, 0.038], [0.05, 0.5], [0.3, 0.5], 0.6);
+        } else if (kind < 0.85) {
+          halimeda(leaves, rnd, x, y, z, 0.7);
+        } else {
+          tuft(leaves, rnd, x, y, z, 5 + Math.floor(rnd() * 4), LeafType.SEA_ROD,
+            [0.45, 1.1], [0.032, 0.048], [0.05, 0.4], [0.3, 0.42], 0.75, 0.14);
+        }
+      }
+    }
+  }
+  for (const c of columns) {
+    // Fallen fronds: a blade lying on the sand, curling up off it a little,
+    // the yellow-brown of a detached one.
+    const wrack = Math.floor(WRACK_PER_COLUMN * rnd() * 2);
+    for (let i = 0; i < wrack; i++) {
+      const a = rnd() * Math.PI * 2;
+      const r = 0.4 + rnd() * 2.2;
+      const x = c.x + Math.cos(a) * r;
+      const z = c.z + Math.sin(a) * r;
+      if (inside(x, z, reef)) continue;
+      const len = 0.7 + rnd() * 0.9;
+      leaves.push({
+        x, y: floor.height(x, z) + 0.03, z, len, yaw: rnd() * Math.PI * 2, tilt: 1.47 + rnd() * 0.08,
+        width: len * (0.15 + rnd() * 0.06) + 0.03, hA: 0, type: LeafType.KELP,
+        s1: rnd() * 0.35, s2: rnd() < 0.6 ? 0.87 + rnd() * 0.12 : rnd() * 0.8, bend: 0.2 + rnd() * 0.08, ao: 0.55,
+      });
+    }
+    const extra = Math.floor(EXTRA_UNDERSTOREY * rnd() * 2);
+    for (let i = 0; i < extra; i++) {
+      const a = rnd() * Math.PI * 2;
+      const r = 0.7 + rnd() * 2.4;
+      const x = c.x + Math.cos(a) * r;
+      const z = c.z + Math.sin(a) * r;
+      if (inside(x, z, reef)) continue;
+      const y = floor.height(x, z) - 0.04;
+      if (rnd() < 0.5) halimeda(leaves, rnd, x, y, z, 0.5);
+      else tuft(leaves, rnd, x, y, z, 4, LeafType.TURTLE_GRASS, [0.12, 0.28], [0.022, 0.032], [0.05, 0.45], [0.3, 0.5], 0.5);
     }
   }
 }

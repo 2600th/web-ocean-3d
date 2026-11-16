@@ -266,7 +266,10 @@ export function rockDetailTexture(): THREE.DataTexture {
   map.minFilter = THREE.LinearMipmapLinearFilter;
   map.magFilter = THREE.LinearFilter;
   map.generateMipmaps = true;
-  map.anisotropy = 4;
+  // [underwater-look-3] Round 10: 4 -> 8. A boulder's flank a few metres off
+  // is seen at a grazing angle, and four taps took its fine and grain scales
+  // down to a blur the review called soft.
+  map.anisotropy = 8;
   map.colorSpace = THREE.NoColorSpace;
   map.needsUpdate = true;
   detailTexture = map;
@@ -521,6 +524,14 @@ const SCALE_GRAIN = 0.19;
 const GRAIN_FADE_NEAR = 4;
 const GRAIN_FADE_FAR = 22;
 /**
+ * [underwater-look-3] Round 10. Inside `NEAR_CRISP` metres (full at the near
+ * end) the fine and grain scales' relief and the grain's pits gain by
+ * `NEAR_CRISP_GAIN`: a boulder at arm's length was all broad bump, the
+ * round-10 review's "blurry" foreground rock. No extra reads; the weights only.
+ */
+const NEAR_CRISP: readonly [number, number] = [3, 14];
+const NEAR_CRISP_GAIN = 1.2;
+/**
  * [underwater-look-3] Round 7. World metres of the macro brightness field, and
  * its range: whole faces a shade lighter or darker, so a large mass is not
  * one even value across its width (the review's "tiled" read).
@@ -602,6 +613,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
   const eyeDist: Node = positionWorld.distance(cameraPosition).toVar('rockEyeD');
   const fine: Node = eyeDist.smoothstep(FINE_FADE_NEAR, FINE_FADE_FAR).oneMinus().toVar('rockFine');
   const grain: Node = eyeDist.smoothstep(GRAIN_FADE_NEAR, GRAIN_FADE_FAR).oneMinus().toVar('rockGrain');
+  const crisp: Node = eyeDist.smoothstep(NEAR_CRISP[0], NEAR_CRISP[1]).oneMinus().mul(NEAR_CRISP_GAIN).add(1).toVar('rockCrisp');
   const macro: Node = texture(detail, vec2(wp.x, wp.z).mul(1 / MACRO_METRES).add(wp.y.mul(0.011)).add(0.61))
     .a.smoothstep(0.3, 0.7)
     .toVar('rockMacro');
@@ -661,7 +673,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     albedo.mulAssign(height.mul(1.3).add(0.22).mul(mix(float(1), C.hc.x.mul(1.1).add(0.45), fine)));
     // [underwater-look-3] Round 7: the grain's pits, and the macro field; see
     // `SCALE_GRAIN` and `MACRO_METRES`.
-    albedo.mulAssign(mix(float(1), D.hc.x.mul(1.3).add(0.35), grain));
+    albedo.mulAssign(mix(float(1), D.hc.x.mul(1.3).add(0.35), grain.mul(crisp).min(1.3)));
     albedo.mulAssign(mix(float(MACRO_RANGE[0]), float(MACRO_RANGE[1]), macro));
     return vec4(albedo, 1);
   })();
@@ -670,7 +682,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     // Seam grooves bend the normal down into the bed line on the steep faces.
     const groove = seam.mul(-0.8);
     const n = n0
-      .add(A.bump.mul(0.85).add(B.bump.mul(0.65)).add(C.bump.mul(fine.mul(0.5))).add(D.bump.mul(grain.mul(0.45))).mul(1.6))
+      .add(A.bump.mul(0.85).add(B.bump.mul(0.65)).add(C.bump.mul(fine.mul(0.5).mul(crisp))).add(D.bump.mul(grain.mul(0.45).mul(crisp))).mul(1.6))
       .add(vec3(0, groove, 0));
     return cameraViewMatrix.mul(vec4(n.normalize(), 0)).xyz.normalize();
   })();

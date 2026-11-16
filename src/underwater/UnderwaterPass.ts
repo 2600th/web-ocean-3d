@@ -520,7 +520,10 @@ const LAYER_RAY_Y: readonly [number, number] = [-0.2, 0.05];
 const GRADE_CONTRAST_FAR = 1.05;
 const GRADE_FADE: readonly [number, number] = [5, 28];
 const MID_HAZE_START = 3;
-const MID_HAZE = 0.03;
+// [underwater-look-3] Round 10: 0.03 -> 0.045, the round-10 review's "little
+// depth falloff" on the mound: at 12 m 0.34 of the way to the water's colour
+// rather than 0.24, at 20 m 0.54 rather than 0.40.
+const MID_HAZE = 0.045;
 /**
  * The share of the haze a level, upward face (the open bed) takes. The bed is
  * the backdrop the layers stand on, and its caustics are what the kelp-wide
