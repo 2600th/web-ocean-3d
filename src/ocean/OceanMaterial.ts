@@ -287,6 +287,33 @@ const FRESNEL_FLATTEN = 0.45;
 const SWELL_RELIEF = 4;
 
 /**
+ * Share of the column's in-scatter drawn in front of an object (a hull, a
+ * rock) seen through the surface.
+ *
+ * The body colour is display-referred: the white point, BODY_GAIN and the
+ * column share lift it about 3x over scene units, which is right for the
+ * asymptote of an open, effectively infinite column. A hull 1-2 m below the
+ * surface sees only the near part of that column, yet the full lifted colour
+ * was mixed in by (1 - T), so the slab measured sRGB 40,57,59 while the hull
+ * that came through was about 2,8,13: a pale grey ghost over a dark hull.
+ * Half the in-scatter leaves the hull dark with the water's tint over it.
+ */
+const OBJECT_INSCATTER_SHARE = 0.5;
+
+/**
+ * How far the in-scatter weight in front of an object moves toward its
+ * luminance. The per-channel complement (1 - T) is red-heavy (red extinction
+ * 0.34 against blue 0.07), and against the stylised deep colour's red that
+ * turned the slab neutral grey. Half neutral keeps the water's hue; fully
+ * neutral gave a saturated blue slab (sRGB 15,64,89).
+ *
+ * With both at 0.5 the refraction-1 slab is sRGB 17,40,53, dark teal, against
+ * 37,55,61 before. Tried: share 0.5 per-channel 22,38,43 (still grey), share
+ * 0.33 per-channel 17,31,37, share 0.33 half-neutral 13,33,43.
+ */
+const OBJECT_INSCATTER_NEUTRAL = 0.5;
+
+/**
  * The display level, as a fraction of the white point (`1 / exposure`), that
  * the low-sun glint count is scaled against (see `glintGain`). Under ACES
  * that is about 0.9 of display white.
@@ -1923,7 +1950,14 @@ export class OceanMaterial {
       // multiplying that by the water's `n . l` a second time darkened the bed
       // by up to half and printed the wave normals onto it as fake caustics.
       const sceneWeight: any = absorption.mul(this.uRefractionAmount).mul(refractionReach).toVar();
-      const columnColor: any = inscatter.mul(sceneWeight.oneMinus()).toVar();
+      // In front of an object, less of the column glows and less of it is red.
+      // See OBJECT_INSCATTER_SHARE and OBJECT_INSCATTER_NEUTRAL.
+      const absorbed: any = sceneWeight.oneMinus().toVar();
+      const absorbedLuma: any = absorbed.dot(vec3(0.2126, 0.7152, 0.0722)).toVar();
+      const objectWeight: any = mix(absorbed, vec3(absorbedLuma), OBJECT_INSCATTER_NEUTRAL)
+        .mul(OBJECT_INSCATTER_SHARE)
+        .toVar();
+      const columnColor: any = inscatter.mul(mix(absorbed, objectWeight, objectBehind)).toVar();
       const seenThrough: any = refracted.mul(downwelling).mul(sceneWeight).toVar();
 
       // --- subsurface scattering ---------------------------------------------
