@@ -1720,7 +1720,31 @@ export class OceanMaterial {
         .mul(this.uDepthRange)
         .mul(axialToRay)
         .toVar();
-      const seenDepth: any = bufferThickness.mul(viewDir.y.abs()).min(column).toVar();
+      // Is what lies behind this pixel the seabed, or an object standing above
+      // it (a hull, a pile, a rock face)? An object stops the ray well above
+      // the column's floor; the bed may stop it short of that too, where it
+      // rises toward the shore along the ray, so the test allows a 1:7 slope
+      // over the ray's horizontal run (steeper than any beach face here).
+      //
+      // Asked of both samples, and an object only where both agree. Asked of
+      // the refracted sample alone, at a grazing view the lookup lands on bed
+      // nearer the camera, its measured drop collapsed toward zero a few tens
+      // of metres out, and the far shallows flipped to "object, no water in
+      // front of it" along a wavy horizontal line — the seam across
+      // beach-transparency-2 at y 650-725. Asked of the straight sample
+      // alone, a strip below a keel, where the straight ray hits the hull and
+      // the refracted one passes under it, was drawn as the hull's water.
+      const objectTest = (thickness: any): any => {
+        const drop = thickness.mul(viewDir.y.abs()).min(column);
+        const run = thickness.mul(viewDir.y.mul(viewDir.y).oneMinus().sqrt());
+        const allowance = run.mul(0.15).add(0.35);
+        return column.sub(drop).smoothstep(allowance, allowance.add(0.85));
+      };
+      const objectBehind: any = objectTest(straightThickness).mul(objectTest(bufferThickness)).toVar();
+      // Over the bed, the depth that matters is the column's: the light goes
+      // down it and comes back up it, whichever bed pixel refraction happens
+      // to show. Over an object, how far under the surface that point is.
+      const seenDepth: any = mix(column, bufferThickness.mul(viewDir.y.abs()).min(column), objectBehind).toVar();
       // Snell: cos of the refracted angle, floored at NeuralSpecOcean's 0.66 so
       // the path never exceeds 1.5 depths.
       const cosRefracted: any = float(1)
@@ -1728,7 +1752,12 @@ export class OceanMaterial {
         .max(0.44)
         .sqrt()
         .toVar();
-      const pathLength: any = seenDepth.div(cosRefracted).toVar();
+      // The light from an object comes the whole way along the ray, not down
+      // a vertical. A hull's face seen across a bow wave is a metre or two of
+      // water away while being only centimetres below the surface, and keyed
+      // to the vertical drop the water in front of it was glass: the black slab
+      // against the bow in boat-sea-2.
+      const pathLength: any = mix(seenDepth.div(cosRefracted), bufferThickness, objectBehind).toVar();
 
       // The bed is a diffuse reflector, and the light it sends back is not
       // lost to the eye when it scatters: water scatters almost entirely
@@ -1744,7 +1773,10 @@ export class OceanMaterial {
       // coefficient weights the column's own colour against the bed, so the
       // two stay complementary.
       const diffuseK: any = this.uExtinction.mul(BED_DIFFUSE_K).toVar();
-      const absorption: any = diffuseK.mul(pathLength).negate().exp().toVar();
+      // An object's image, unlike the bed's diffuse glow, is lost to every
+      // scattering: its contrast falls with the full beam coefficient.
+      const viewK: any = mix(diffuseK, this.uExtinction, objectBehind).toVar();
+      const absorption: any = viewK.mul(pathLength).negate().exp().toVar();
       // Daylight reaching the bed was attenuated on the way *down* too, and the
       // ground shader lights the bed as if it were dry: the same K_d over the
       // depth, divided by the mean cosine of downwelling light (0.82). This is
@@ -1771,13 +1803,7 @@ export class OceanMaterial {
       // scatters like open water: the deep body colour, weighted by how much
       // the column absorbed.
       //
-      // Measured vertically now, against the column: the old test compared the
-      // bed's depth with the straight distance to the backdrop, which at any
-      // grazing angle is many depths long, so it never fired where it was
-      // meant to; and it paid a second heightfield evaluation to do it.
-      const objectBehind: any = (
-        floorDepth === null ? float(0) : column.sub(seenDepth).smoothstep(0.35, 1.2)
-      ).toVar();
+      // The test is `objectBehind`, with the path length above.
       // The bed's colour reaches the eye only after the light that shows it has
       // gone *down* to the bed as well as back up the view ray, so it is
       // attenuated over the depth too, not over the view path alone. With the

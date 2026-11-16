@@ -492,6 +492,37 @@ const LAGOON_OUT = 1.62;
 const LAGOON_Y = -5.5;
 
 /**
+ * A low-tide terrace off the north-east beach: the stretch the `beach-surf`
+ * and `beach-swash` views look out over.
+ *
+ * The beach face there drops at about 1:8 straight to six metres, so the depth
+ * at which a breaker goes (`H / 0.78`, a metre or two) is crossed within a few
+ * metres of the sand. That leaves room for one line of white water, where a real
+ * surf beach has several. The surf zone is as wide as the water that is shallower
+ * than the break depth, so the fix is bathymetry, not foam. Of Wright and Short's
+ * beach states (1984), the low-tide terrace is the one that fits: a steep
+ * reflective face with a flat, dissipative shelf at its foot. The swash runs on
+ * the face and the breakers spill across the shelf. That keeps the swash on the
+ * beach exactly as it was, and puts the extra surf further out.
+ *
+ * The shelf starts at the foot of the face, `TERRACE_STEP_DEPTH` down, at
+ * `TERRACE_STEP_T`. It falls at `TERRACE_SLOPE`, which is in the range Short
+ * gives for terraces and dissipative bars (about 1:30 to 1:70), and fades back
+ * into the original slope around 4 m down. Like the lagoon, it is a floor
+ * applied as a maximum, so it can only raise the bed. The sector stops short of
+ * the lagoon's caustics and refraction views on bearing 0.70.
+ *
+ * `Surf` reads the slope and the step to keep the breaker phase in step with
+ * this bed (see `shoreTerraceMask`).
+ */
+const TERRACE = sector(0.98, 0.28);
+export const TERRACE_STEP_DEPTH = 0.9;
+const TERRACE_STEP_T = 1.02;
+export const TERRACE_SLOPE = 1 / 60;
+const TERRACE_EDGE = 1.3;
+const TERRACE_OUT = 1.44;
+
+/**
  * Relief that breaks the dome: radial ridges and gullies, two subsidiary peaks
  * and a stretch of sea cliff.
  *
@@ -633,7 +664,29 @@ export function seafloorHeight(x: number, z: number): number {
   // floor rather than whatever a compound assignment decides to evaluate first.
   const fill = Math.max(LAGOON_Y - y, 0);
   y += lagoon * fill;
+
+  const terrace = sectorMask(ux, uz, TERRACE) * smoothstepDown(t, TERRACE_EDGE, TERRACE_OUT);
+  const shelf = Math.min(
+    -TERRACE_STEP_DEPTH - (t - TERRACE_STEP_T) * shore * TERRACE_SLOPE,
+    -TERRACE_STEP_DEPTH,
+  );
+  const lift = Math.max(shelf - y, 0);
+  y += terrace * lift;
   return y;
+}
+
+/**
+ * How much of the terrace's slope the surf should assume at `xz`: its bearing
+ * mask alone, without the seaward fade. Past the fade the water is deeper than
+ * any breaker reaches, so the phase there does not matter. A TSL node for
+ * `Surf`'s phase.
+ */
+export function shoreTerraceMask(xz: Node): Node {
+  return xz
+    .sub(vec2(ISLAND.x, ISLAND.z))
+    .normalize()
+    .dot(vec2(TERRACE.x, TERRACE.z))
+    .smoothstep(TERRACE.edge, 1);
 }
 
 /**
@@ -1942,6 +1995,16 @@ function buildNoiseNodes(map: THREE.Texture): NoiseNodes {
         .toVar();
       const fill = float(LAGOON_Y).sub(y).max(0).toVar();
       y.addAssign(lagoon.mul(fill));
+
+      const terrace = sectorMaskNode(u, TERRACE)
+        .mul(smoothstepDownNode(t, TERRACE_EDGE, TERRACE_OUT))
+        .toVar();
+      const shelf = float(-TERRACE_STEP_DEPTH)
+        .sub(t.sub(TERRACE_STEP_T).mul(shore).mul(TERRACE_SLOPE))
+        .min(-TERRACE_STEP_DEPTH)
+        .toVar();
+      const lift = shelf.sub(y).max(0).toVar();
+      y.addAssign(terrace.mul(lift));
       return y;
     });
 
