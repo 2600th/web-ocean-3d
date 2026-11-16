@@ -135,6 +135,12 @@ export const CELL_SIZE = 24;
 /** One level of detail: rows along the strip, and the drawn fraction. */
 export interface LeafLod {
   rows: number;
+  /**
+   * [underwater-look-3] Vertices across the blade; 2 if absent. More than two
+   * lets the blade cup (see `CUP`), so a near kelp blade has a rounded
+   * section instead of reading as one flat polygon.
+   */
+  cols?: number;
   /** Multiplies the field's density for this level; widened to compensate. */
   thin: number;
   /** Upper distance bound, as a fraction of the field's range. */
@@ -210,6 +216,20 @@ const CLOCK_WRAP = 3600;
  * slides on the sand.
  */
 const SWAY_GAIN = 0.024;
+
+/**
+ * [underwater-look-3] Gain on the light a submerged blade passes through to
+ * an eye looking toward the sun. The round-4 review found the kelp "flat,
+ * opaque and polygonal, with no light through the blades" against
+ * abyssal-garden's backlit forest. The term was there (abyssal's `trc * tr`
+ * and its `pow(dot(-V, L), 3)` glow) but `UnderwaterPass` brings every
+ * submerged surface down to `SURFACE_LIGHT` of its air-rig light, which took
+ * the glow with it; transmitted light is what kelp is photographed for, so
+ * it gets that back here.
+ */
+const BACKLIT = 6;
+/** [underwater-look-3] How far a blade's edges curl back, as a share of its half-width. */
+const CUP = 0.28;
 const SWAY_POWER = 1.25;
 
 /**
@@ -243,6 +263,8 @@ export class LeafUniforms {
   readonly uExposure = uniform(1.6);
   /** Emissive gain on the glints. */
   readonly uGlint = uniform(1);
+  /** [underwater-look-3] See `BACKLIT`. */
+  readonly uBacklit = uniform(BACKLIT);
 
   private swellOmega = Math.sqrt(GRAVITY * ((Math.PI * 2) / 47));
   private time = 0;
@@ -445,6 +467,7 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
   const isHalimeda = type.sub(6).abs().lessThan(0.5);
   const segments = select(isHalimeda, sin(v.mul(Math.PI * 4.5)).abs().sqrt().mul(0.6).add(0.4), float(1));
   const halfWidth = width.mul(0.5).mul(profile).mul(segments);
+  const cupAmount = byType(type, [float(CUP), float(0), float(0.12), float(0), float(CUP), float(0), float(0), float(0)]);
 
   /**
    * Leaf-level distance collapse, abyssal's `farK`: fades the width to zero
@@ -473,7 +496,11 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     const half = shadow
       ? select(isStipe, float(0), width.mul(0.5).max(0.09).mul(profile))
       : halfWidth;
-    const p = centre.add(S.mul(u.mul(farK).mul(half))).add(N2.mul(shadow ? 0 : ruffle));
+    // [underwater-look-3] A cupped section; only visible with more than two
+    // vertices across (`LeafLod.cols`), a constant offset otherwise. Edges
+    // curl toward -N2, which is the side the shading normal already rounds.
+    const cup = shadow ? float(0) : u.mul(u).mul(half).mul(cupAmount).negate();
+    const p = centre.add(S.mul(u.mul(farK).mul(half))).add(N2.mul(shadow ? 0 : ruffle).add(N2.mul(cup)));
     const h = hA.add(p.y.sub(anchor.y));
     const sw = swayAt(U, anchor.x, anchor.z, h, t, U.uSwayPhase, U.uSurgePhase);
     return p.add(vec3n(sw.x, 0, sw.y));
@@ -523,19 +550,26 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
   material.userData.leafPosition = mainPosition;
   material.userData.leafWorld = vWorld;
   material.userData.leafNormal = vNormal;
+  material.userData.leafTranslucency = byType(type, [float(0.9), float(0.2), float(0.7), float(0.6), float(1), float(0.35), float(0.25), float(0)]);
 
   // --- palette (vertex stage, abyssal's per-type colours) --------------------
   // Height-varying: the same blade is darker and browner low in a column and
   // brighter and greener where it reaches the light, keyed on its own depth so
   // a shallow bed reads sunnier than a deep one.
   const lift = ss(-20, -3, anchor.y);
+  // [underwater-look-3] Three tones rather than two, picked mostly per
+  // column (`Kelp` folds a column tone into `s1`): golden-brown, olive, and a
+  // greener blade, so neighbouring columns separate instead of the whole
+  // forest being one olive.
+  const tri = (a: Node, b: Node, c: Node): Node =>
+    mix(mix(a, b, ss(0.0, 0.5, s1)), c, ss(0.5, 1.0, s1));
   const kelpCol = mix(
-    mix(vec3(0.07, 0.085, 0.02), vec3(0.03, 0.075, 0.03), s1),
-    mix(vec3(0.13, 0.15, 0.03), vec3(0.06, 0.15, 0.05), s1),
+    tri(vec3(0.11, 0.065, 0.018), vec3(0.07, 0.085, 0.02), vec3(0.03, 0.08, 0.035)),
+    tri(vec3(0.2, 0.13, 0.035), vec3(0.13, 0.15, 0.03), vec3(0.05, 0.16, 0.06)),
     lift,
   );
   const col = byType(type, [
-    mix(kelpCol, vec3(0.25, 0.17, 0.025), s2.greaterThan(0.72).select(float(1), float(0))),
+    mix(kelpCol, vec3(0.25, 0.17, 0.025), s2.greaterThan(0.86).select(float(1), float(0))),
     vec3(0.08, 0.085, 0.03),
     // Turtle grass: bright Caribbean green, a fifth of the blades browned by
     // the epiphytes that crust old leaves.
@@ -603,7 +637,14 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     const dist = toEye.length();
     const V = toEye.div(dist.max(1e-4));
     const n = vNormal.normalize().mul(faceDirection).toVar();
-    const L = U.uKeyDir;
+    // [underwater-look-3] Below the surface the sun stands where Snell puts
+    // it, not where it is in the sky: 47 degrees up rather than 24 under
+    // the skyPro sun, so the through-blade glow peaks where the burst is.
+    const K = U.uKeyDir;
+    const kh = vec2n(K.x, K.z).div(1.333);
+    const Lw = vec3n(kh.x, float(1).sub(kh.dot(kh)).max(1e-4).sqrt(), kh.y);
+    const underK = float(1).sub(ss(-1.2, 1.2, wp.y)).toVar();
+    const L = mix(K, Lw, underK).normalize().toVar();
 
     // Albedo: midrib, a darker base, veins near the eye, a mottle in place of
     // abyssal's detail texture.
@@ -643,7 +684,11 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
 
     const translucency = vPr.y;
     const tr = ndl.negate().max(0).mul(0.85).add(0.15).mul(translucency);
-    const trc = alb.mul(mix(vec3(1), vec3(1.5, 1.4, 0.75), translucency.mul(vPr.z.oneMinus())));
+    // [underwater-look-3] A thickness falloff: light crosses less tissue at
+    // the thin margin than at the midrib, so the edges glow and the rib
+    // reads as a darker line through the backlit blade.
+    const thin = mix(float(0.55), float(1.3), ss(0.05, 0.85, uvx));
+    const trc = alb.mul(mix(vec3(1), vec3(1.5, 1.4, 0.75), translucency.mul(vPr.z.oneMinus()))).mul(thin);
     // Occlusion: the baked crowding, and the base of every leaf is darker.
     const aoTerm = mix(float(0.3), float(1), occl).mul(mix(float(0.55), float(1), vv));
     const am = U.uAmbient
@@ -659,7 +704,14 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     const nh = n.dot(H).clamp(0, 1);
     c.addAssign(E.mul(nh.pow(40).mul(ir.mul(vPr.z).mul(2).add(0.45)).add(nh.pow(9).mul(0.07))).mul(0.25));
     // Looking toward the key through a blade: the glow kelp is photographed for.
-    c.addAssign(E.mul(trc).mul(translucency).mul(V.negate().dot(L).clamp(0, 1).pow(2)).mul(2));
+    // [underwater-look-3] Under water, a narrower lobe scaled back up (see
+    // `BACKLIT`): only the blades between the eye and the sun glow, and the
+    // rest of the forest stays the dark mass abyssal-garden's frames show.
+    const back = V.negate().dot(L).clamp(0, 1).toVar();
+    const lobeAir = back.pow(2).mul(2);
+    const back2 = back.mul(back);
+    const lobeWater = back2.mul(back2).mul(back2).mul(U.uBacklit);
+    c.addAssign(E.mul(trc).mul(translucency).mul(mix(lobeAir, lobeWater, underK)));
     const lum = (x: Node): Node => x.dot(vec3(0.1, 0.5, 0.5));
     c.addAssign(alb.mul(vPr.w).mul(lum(am.add(E.mul(0.3))).mul(3).add(0.5)));
     // Whole-leaf sparkle that twinkles slowly.
@@ -715,7 +767,23 @@ export function attachLeafMrt(
       const p = previous.mul(vec4(prevWorld, 1));
       return c.xy.div(c.w.max(1e-4)).sub(p.xy.div(p.w.max(1e-4)));
     })(),
-    normal: cameraViewMatrix.mul(vec4(normal.normalize().mul(faceDirection), 0)).xyz.normalize(),
+    // [underwater-look-3] Bent toward the sky by the leaf's translucency. A
+    // thin blade is lit through from either face, but `UnderwaterPass` reads
+    // this normal for its hemisphere (dark undersides): seen from below, a
+    // kelp blade's face toward the eye points down and lost two thirds of its
+    // light. Varying, so the vertex stage computes it once.
+    normal: cameraViewMatrix
+      .mul(
+        vec4(
+          normal
+            .normalize()
+            .mul(faceDirection)
+            .add(vec3(0, 1, 0).mul((varying(material.userData.leafTranslucency, 'leafTr') as Node).mul(0.7)))
+            .normalize(),
+          0,
+        ),
+      )
+      .xyz.normalize(),
   });
   material.needsUpdate = true;
 }
@@ -773,7 +841,7 @@ export class LeafField {
     );
     void this.uWiden;
 
-    const templates = this.levels.map((l) => buildStrip(l.rows));
+    const templates = this.levels.map((l) => buildStrip(l.rows, l.cols ?? 2));
     this.buildCells(leaves, templates, options.swayMargin, options.name);
     this.applyDensity();
 
@@ -1019,18 +1087,23 @@ export class LeafField {
  * position along the leaf, `sin(row / (rows - 1) * pi/2)` — abyssal's spacing,
  * which packs rows toward the tip where the curvature is.
  */
-function buildStrip(rows: number): THREE.BufferGeometry {
+function buildStrip(rows: number, cols = 2): THREE.BufferGeometry {
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
   for (let r = 0; r < rows; r++) {
     const v = Math.sin((r / (rows - 1)) * Math.PI * 0.5);
-    positions.push(-1, v, 0, 1, v, 0);
-    normals.push(0, 0, 1, 0, 0, 1);
+    for (let c = 0; c < cols; c++) {
+      positions.push(-1 + (2 * c) / (cols - 1), v, 0);
+      normals.push(0, 0, 1);
+    }
   }
   for (let r = 0; r + 1 < rows; r++) {
-    const a = r * 2;
-    indices.push(a, a + 1, a + 3, a, a + 3, a + 2);
+    for (let c = 0; c + 1 < cols; c++) {
+      const a = r * cols + c;
+      const b = a + cols;
+      indices.push(a, a + 1, b + 1, a, b + 1, b);
+    }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));

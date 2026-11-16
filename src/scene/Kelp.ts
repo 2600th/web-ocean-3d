@@ -100,7 +100,10 @@ const MAX_SLOPE = 0.5;
 
 /** Distance bands, as fractions of the range: 9 rows, 5 rows, 3 rows at half. */
 const KELP_LEVELS = [
-  { rows: 9, thin: 1, until: 0.24 },
+  // [underwater-look-3] Five across and twelve along near the eye, so a
+  // blade a metre from the lens cups and bends smoothly instead of showing
+  // its two-vertex section as one flat polygon.
+  { rows: 12, cols: 5, thin: 1, until: 0.24 },
   { rows: 5, thin: 1, until: 0.52 },
   { rows: 3, thin: 0.5, until: 1 },
 ] as const;
@@ -443,6 +446,37 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
     return 1 - k * (1 - lit);
   };
 
+  // [underwater-look-3] The column's own tone, 0..1, from its position rather
+  // than from the stream, so every other draw (and the forest's layout) is
+  // unchanged. Leaves take most of their palette pick from it, which makes
+  // one column golden-brown and its neighbour olive or green instead of every
+  // column the same mix of all three.
+  const tone = hash2(c.x, c.z);
+
+  // [underwater-look-3] A holdfast: a clump of short haptera spreading from
+  // the foot and bending down into the sand. Giant kelp grips the rock with a
+  // tangle up to a metre across; without one a column stood on the sand like
+  // a pole. Drawn from their own generator for the same reason as `tone`.
+  {
+    let hs = (hash2(c.z * 1.7, c.x * 0.3) * 4294967296) >>> 0;
+    const hr = () => {
+      hs = (hs + 0x6d2b79f5) >>> 0;
+      let t = hs;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const count = 7 + Math.floor(hr() * 5);
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * TAU + hr() * 0.8;
+      leaves.push({
+        x: c.x + Math.cos(a) * 0.08, y: c.y + HOLDFAST_SINK + 0.05 + hr() * 0.25, z: c.z + Math.sin(a) * 0.08,
+        len: 0.45 + hr() * 0.45, yaw: a, tilt: 1.05 + hr() * 0.35, width: 0.07 + hr() * 0.04, hA: 0,
+        type: LeafType.STIPE, s1: hr(), s2: hr(), bend: 0.75 + hr() * 0.2, ao: 0.25, keep: true,
+      });
+    }
+  }
+
   for (let s = 0; s < strands; s++) {
     for (let h = 0; h < H - 1; h += 1.7) {
       const p = stem(s, h);
@@ -463,7 +497,7 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
     const type = c.kind === 2 ? (rnd() < 0.5 ? LeafType.SARGASSUM : LeafType.KELP) : LeafType.KELP;
     leaves.push({
       x: p[0], y: c.y + h, z: p[1], len: L, yaw: rnd() * TAU, tilt, width: L * rr(0.15, 0.21) + 0.03, hA: h,
-      type, s1: rnd(), s2: rnd(), bend: rr(0.38, 0.95), ao: occlusion(t),
+      type, s1: mix(rnd(), tone, 0.7), s2: rnd(), bend: rr(0.38, 0.95), ao: occlusion(t),
     });
   }
 
@@ -482,6 +516,12 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
 }
 
 // ------------------------------------------------------------------ utilities
+
+/** A hash of a position to 0..1. */
+function hash2(x: number, z: number): number {
+  const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+  return h - Math.floor(h);
+}
 
 function smoothstep(a: number, b: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));

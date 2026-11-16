@@ -297,6 +297,20 @@ const UPWELL_WEB = 0.7;
  */
 const SURFACE_LIGHT = 0.35;
 /**
+ * [underwater-look-3] Round 5. Within a few metres of the eye a submerged
+ * surface keeps more of its light (`NEAR_LIGHT` in place of `SURFACE_LIGHT`)
+ * and more of its colour (`NEAR_WARM`: the share of the column's absorption
+ * taken off), fading out between `NEAR_START` and `NEAR_END` metres. The
+ * round-4 review called the reef "sparse and blue-monochrome": with every
+ * surface at a third of its light the in-scatter's blue carried the whole
+ * frame, near and far. abyssal-garden's near sponges and corals hold their
+ * yellows and purples while its distance goes to blue; this is that split.
+ */
+const NEAR_LIGHT = 0.5;
+const NEAR_WARM = 0.45;
+const NEAR_START = 4;
+const NEAR_END = 14;
+/**
  * [underwater-look-3] The sun seen from below, as abyssal-garden draws it in
  * its surface's window: `pow(sd, 60) * 1.3 + pow(sd, 500) * 12` around the
  * refracted sun, then fogged by the water above. Here it is drawn by the
@@ -304,16 +318,16 @@ const SURFACE_LIGHT = 0.35;
  * and fish stand out against it in silhouette. `SUN_GLOW` is the wide glow,
  * `SUN_CORE` the disc.
  */
-const SUN_GLOW = 1.3;
+const SUN_GLOW = 1.0;
 const SUN_CORE = 12;
 /** A broad `mu^16` halo under the glow: the forward scatter of the column above. */
-const SUN_HALO = 0.25;
+const SUN_HALO = 0.15;
 /**
  * [underwater-look-3] A narrow forward lobe added to the shafts' phase, on top
  * of abyssal-garden's broad `2 mu^3`. Looking up-sun the beams converge on the
  * burst and brighten into it; across the sun they are unchanged.
  */
-const SHAFT_LOBE = 1.5;
+const SHAFT_LOBE = 0.5;
 
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
 const GRADE_CONTRAST = 1.4;
@@ -486,6 +500,9 @@ export class UnderwaterPass {
   private readonly uContrast = uniform(GRADE_CONTRAST);
   /** [underwater-look-3] See `SURFACE_LIGHT`. A uniform so a tuning session can move it. */
   private readonly uSurfaceLight = uniform(SURFACE_LIGHT);
+  /** [underwater-look-3] See `NEAR_LIGHT`. */
+  private readonly uNearLight = uniform(NEAR_LIGHT);
+  private readonly uNearWarm = uniform(NEAR_WARM);
   /** [underwater-look-3] Sun colour x horizon ramp, for the burst. See `SUN_GLOW`. */
   private readonly uSunBurst = uniform(new THREE.Vector3(1, 1, 1));
   /** [underwater-look-3] See `SUN_GLOW` and `SUN_CORE`. */
@@ -898,7 +915,11 @@ export class UnderwaterPass {
         // the hemisphere's dark underside as though it were a submerged rock.
         const hitSurfaceY = waveHeight !== null ? waveHeight(hitP.xz) : this.uSeaLevel;
         const hitDepth: any = hitSurfaceY.sub(hitP.y).max(0).toVar('uwHitDepth');
-        const downwell = exp(this.uDownwell.mul(hitDepth.negate())).toVar('uwDown');
+        // [underwater-look-3] Near the eye, less of the column's colour loss:
+        // see `NEAR_WARM`. A power on the transmittance, so the hue shift
+        // shrinks without changing which channel goes first.
+        const nearK = float(1).sub(warpedDist.smoothstep(NEAR_START, NEAR_END)).toVar('uwNearK');
+        const downwell = exp(this.uDownwell.mul(hitDepth.negate()).mul(float(1).sub(nearK.mul(this.uNearWarm)))).toVar('uwDown');
 
         const surfaceRgb: any = vec3(warped.rgb).mul(downwell).toVar('uwSurface');
         // [underwater-look-3] Light on submerged surfaces relative to the water
@@ -1015,7 +1036,9 @@ export class UnderwaterPass {
         // After every term above, fluorescence and upwelling included: those
         // carried the kelp's yellow-green through at full strength when the
         // scale was taken before them.
-        surfaceRgb.mulAssign(mix(float(1), this.uSurfaceLight, isSubmergedSurface));
+        surfaceRgb.mulAssign(
+          mix(float(1), mix(this.uSurfaceLight, this.uNearLight, nearK), isSubmergedSurface),
+        );
         surfaceRgb.addAssign(waterLight);
 
         const fogged = surfaceRgb.mul(transmit).add(inscatter).toVar('uwFog');
