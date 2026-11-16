@@ -492,8 +492,10 @@ const LAGOON_OUT = 1.62;
 const LAGOON_Y = -5.5;
 
 /**
- * A low-tide terrace off the north-east beach: the stretch the `beach-surf`
- * and `beach-swash` views look out over.
+ * Low-tide terraces: shelves at the foot of a beach face.
+ *
+ * The first is off the north-east beach, the stretch the `beach-surf` and
+ * `beach-swash` views look out over.
  *
  * The beach face there drops at about 1:8 straight to six metres, so the depth
  * at which a breaker goes (`H / 0.78`, a metre or two) is crossed within a few
@@ -512,15 +514,62 @@ const LAGOON_Y = -5.5;
  * applied as a maximum, so it can only raise the bed. The sector stops short of
  * the lagoon's caustics and refraction views on bearing 0.70.
  *
- * `Surf` reads the slope and the step to keep the breaker phase in step with
- * this bed (see `shoreTerraceMask`).
+ * The second is at the cove, the beach the `shore-break` view looks in at
+ * across the lagoon. There the 1:10 face ran from the sand to the lagoon floor
+ * in fifty metres, so the strip of water shallow enough to show the sand
+ * through it was ten metres deep in the view and the shallows read as one
+ * tinted sheet (beach-transparency-2). A narrower, steeper shelf (1:30 from
+ * 0.6 m down, about 40 m wide) holds a band of pale, sand-coloured water
+ * along the beach. It drops to the lagoon floor before the lagoon's own
+ * views: those sit 60 m and more further out, on 5.5 m of water.
+ *
+ * The cove is the head of the lagoon, behind the bar, so `Surf` brings half
+ * the open-coast breaker into it (`shelter`). At full height a 2 m swell
+ * broke across the whole shelf and drew the cove as a surf zone. Waves that
+ * have crossed a bar and a lagoon arrive a fraction of the height they had
+ * outside it.
+ *
+ * Neither moves the scatter, which is laid out on `seafloorPlacementHeight`.
+ *
+ * `Surf` reads the step, the slope and the depth where each shelf ends, to
+ * keep the breaker phase in step with this bed (see `shoreTerraceMask`).
  */
-const TERRACE = sector(0.98, 0.28);
-export const TERRACE_STEP_DEPTH = 0.9;
-const TERRACE_STEP_T = 1.02;
-export const TERRACE_SLOPE = 1 / 60;
-const TERRACE_EDGE = 1.3;
-const TERRACE_OUT = 1.44;
+export interface Terrace {
+  readonly sector: Sector;
+  /** Depth of the step at the foot of the beach face, metres. */
+  readonly stepDepth: number;
+  /** `t` of that step. */
+  readonly stepT: number;
+  /** Fall of the shelf, rise over run. */
+  readonly slope: number;
+  /** `t` where the shelf starts to hand back to the floor, and where it has. */
+  readonly edge: number;
+  readonly out: number;
+  /** About how deep the shelf is where it hands back, metres. */
+  readonly endDepth: number;
+  /** Share of the breaker height the sector's shelter takes off, 0..1. */
+  readonly shelter: number;
+  /**
+   * How far, in `t`, the shelf's outer edge wanders with the floor's relief
+   * noise. A shelf edge on one contour drew a straight seam across a view
+   * that looks along the bearing.
+   */
+  readonly wander: number;
+}
+export const TERRACES: readonly Terrace[] = [
+  { sector: sector(0.98, 0.28), stepDepth: 0.9, stepT: 1.02, slope: 1 / 60, edge: 1.3, out: 1.44, endDepth: 3.9, shelter: 0, wander: 0 },
+  {
+    sector: sector(0.66, 0.22),
+    stepDepth: 0.6,
+    stepT: 0.982,
+    slope: 1 / 30,
+    edge: 1.0,
+    out: 1.14,
+    endDepth: 2.6,
+    shelter: 0.5,
+    wander: 0.1,
+  },
+];
 
 /**
  * Relief that breaks the dome: radial ridges and gullies, two subsidiary peaks
@@ -687,28 +736,27 @@ function floorField(x: number, z: number, withTerrace: number): number {
   y += lagoon * fill;
 
   if (!withTerrace) return y;
-  const terrace = sectorMask(ux, uz, TERRACE) * smoothstepDown(t, TERRACE_EDGE, TERRACE_OUT);
-  const shelf = Math.min(
-    -TERRACE_STEP_DEPTH - (t - TERRACE_STEP_T) * shore * TERRACE_SLOPE,
-    -TERRACE_STEP_DEPTH,
-  );
-  const lift = Math.max(shelf - y, 0);
-  y += terrace * lift;
+  for (const tr of TERRACES) {
+    const tw = t - (n - 0.5) * tr.wander;
+    const terrace = sectorMask(ux, uz, tr.sector) * smoothstepDown(tw, tr.edge, tr.out);
+    const shelf = Math.min(-tr.stepDepth - (t - tr.stepT) * shore * tr.slope, -tr.stepDepth);
+    const lift = Math.max(shelf - y, 0);
+    y += terrace * lift;
+  }
   return y;
 }
 
 /**
- * How much of the terrace's slope the surf should assume at `xz`: its bearing
- * mask alone, without the seaward fade. Past the fade the water is deeper than
- * any breaker reaches, so the phase there does not matter. A TSL node for
- * `Surf`'s phase.
+ * How much of terrace `tr`'s slope the surf should assume at `xz`: its bearing
+ * mask alone, without the seaward fade, which `Surf` stands in for with the
+ * terrace's `endDepth`. A TSL node for `Surf`'s phase.
  */
-export function shoreTerraceMask(xz: Node): Node {
+export function shoreTerraceMask(xz: Node, tr: Terrace): Node {
   return xz
     .sub(vec2(ISLAND.x, ISLAND.z))
     .normalize()
-    .dot(vec2(TERRACE.x, TERRACE.z))
-    .smoothstep(TERRACE.edge, 1);
+    .dot(vec2(tr.sector.x, tr.sector.z))
+    .smoothstep(tr.sector.edge, 1);
 }
 
 /**
@@ -1707,8 +1755,16 @@ export class Seafloor {
       // The wet band: everything the swash reaches is darker and, through
       // `roughnessNode`, glossy. Its upper edge wanders with the patch noise so
       // the tide line is not a contour.
+      //
+      // It stops at the still-water line. Below that, the sand is under water
+      // all the time and its reflectance is the in-water `shallowSand` the
+      // rest of the shelf has. The band used to run on to 1.2 m down at the
+      // wet-sand albedo, which is less than half of that. Seen through the
+      // water, the thinnest strip of shallows was the darkest bed in the
+      // frame. That turned the depth gradient inside out at the foot of the
+      // beach, the "tinted glass" of beach-transparency-2.
       const wetTop: Node = patch.mul(0.9).add(1.4);
-      const wet: Node = smoothstepDownNode(wp.y, wetTop.mul(0.35), wetTop).mul(wp.y.smoothstep(-1.2, -0.2)).toVar();
+      const wet: Node = smoothstepDownNode(wp.y, wetTop.mul(0.35), wetTop).mul(wp.y.smoothstep(-0.6, -0.05)).toVar();
       const damp: Node = mix(base, mix(sandWet, base.mul(0.45), rockExposure), wet.mul(aboveWater.max(0.6))).toVar();
 
       // Seabed mottling: weed and darker sediment under the shallows, and
@@ -2024,15 +2080,18 @@ function buildNoiseNodes(map: THREE.Texture): NoiseNodes {
       const fill = float(LAGOON_Y).sub(y).max(0).toVar();
       y.addAssign(lagoon.mul(fill));
 
-      const terrace = sectorMaskNode(u, TERRACE)
-        .mul(smoothstepDownNode(t, TERRACE_EDGE, TERRACE_OUT))
-        .toVar();
-      const shelf = float(-TERRACE_STEP_DEPTH)
-        .sub(t.sub(TERRACE_STEP_T).mul(shore).mul(TERRACE_SLOPE))
-        .min(-TERRACE_STEP_DEPTH)
-        .toVar();
-      const lift = shelf.sub(y).max(0).toVar();
-      y.addAssign(terrace.mul(lift));
+      for (const tr of TERRACES) {
+        const tw = t.sub(n.sub(0.5).mul(tr.wander));
+        const terrace = sectorMaskNode(u, tr.sector)
+          .mul(smoothstepDownNode(tw, tr.edge, tr.out))
+          .toVar();
+        const shelf = float(-tr.stepDepth)
+          .sub(t.sub(tr.stepT).mul(shore).mul(tr.slope))
+          .min(-tr.stepDepth)
+          .toVar();
+        const lift = shelf.sub(y).max(0).toVar();
+        y.addAssign(terrace.mul(lift));
+      }
       return y;
     });
 
