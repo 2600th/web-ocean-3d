@@ -4017,6 +4017,7 @@ class App {
       this.previousShipPosition.copy(position);
 
       this.wake.emit(position.x, position.z, ship.heading, speed, ship.hullBeam);
+      this.water.setHull({ x: position.x, z: position.z, heading: ship.heading, length: ship.hullLength, beam: ship.hullBeam });
 
       this.chaseTarget.position.copy(position);
       this.chaseTarget.heading = ship.heading;
