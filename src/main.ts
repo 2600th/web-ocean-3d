@@ -4199,6 +4199,12 @@ class App {
         /** Sun cascades, local lights and the strike's light — see `lighting/`. */
         lighting: this.lighting,
         sampler: this.sampler,
+        /**
+         * The frame-rate downgrade, so a probe that walks the tiers can set
+         * `enabled = false` and measure the tier it asked for rather than the
+         * one a slow frame dropped it to.
+         */
+        adaptive: this.adaptive,
         atmosphere: this.atmosphere,
         /**
          * The cloud layer, so `scripts/profile-frame.mjs` can vary its step

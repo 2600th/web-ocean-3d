@@ -219,7 +219,8 @@ export function generateInitialSpectrum(
   seed = 1337,
 ): Float32Array {
   const data = new Float32Array(size * size * 4);
-  const random = mulberry32(seed);
+  const anchor = anchorGaussians(seed);
+  const anchorHalf = ANCHOR_SIZE / 2;
 
   const peakOmega = Math.sqrt((GRAVITY * 2 * Math.PI) / params.peakWavelength);
   const deltaK = (2 * Math.PI) / cascade.tileSize;
@@ -235,18 +236,28 @@ export function generateInitialSpectrum(
       const kx = (x - half) * deltaK;
       const kz = (z - half) * deltaK;
 
-      const g0 = gaussianPair(random);
-      // Drawn and discarded, so the stream — and with it every texel's `g0` —
-      // is the one this function has always produced. See below for why the
-      // second draw can no longer be used.
-      gaussianPair(random);
+      // This mode's draw, by its wavevector rather than by its place in the
+      // texture. See `anchorGaussians`.
+      const ax = x - half + anchorHalf;
+      const az = z - half + anchorHalf;
+      let ga: number;
+      let gb: number;
+      if (ax >= 0 && ax < ANCHOR_SIZE && az >= 0 && az < ANCHOR_SIZE) {
+        const t = (az * ANCHOR_SIZE + ax) * 2;
+        ga = anchor[t];
+        gb = anchor[t + 1];
+      } else {
+        const g = gaussianPair(mulberry32(modeSeed(x - half, z - half, seed)));
+        ga = g.a;
+        gb = g.b;
+      }
 
       const index = (z * size + x) * 4;
       const amplitude =
         spectrumAmplitude(kx, kz, cascade, params, peakOmega, windX, windZ, deltaK) * Math.SQRT1_2;
 
-      data[index + 0] = g0.a * amplitude;
-      data[index + 1] = g0.b * amplitude;
+      data[index + 0] = ga * amplitude;
+      data[index + 1] = gb * amplitude;
     }
   }
 
@@ -498,6 +509,51 @@ function gaussianPair(random: () => number): { a: number; b: number } {
   if (u < 1e-9) u = 1e-9;
   const radius = Math.sqrt(-2 * Math.log(u));
   return { a: radius * Math.cos(2 * Math.PI * v), b: radius * Math.sin(2 * Math.PI * v) };
+}
+
+/**
+ * The grid every cascade's random draws are keyed to, whatever its own size.
+ *
+ * A tier change rebuilds the simulation at another FFT size, and the draws were
+ * taken in texel order: at 64, 128 and 256 the same wave mode got a different
+ * Gaussian, so every tier drew an unrelated sea. Measured at one frame of
+ * clear-day-wide, the height on a grid round the ship differed from High's by
+ * 1.44 times its own RMS on Low and 1.10 on Medium — uncorrelated — and the
+ * ship's heave by 0.56 m. Switching tier live dropped the hull onto a different
+ * sea, which is a jump in the physics and a pop in the picture.
+ *
+ * Keyed to the wavevector instead, a mode has one draw at every size: a smaller
+ * FFT keeps the modes it can carry and loses only the short waves past its
+ * Nyquist, a larger one adds short waves round the same swell. The table is
+ * the stream this function always drew at 256, two pairs per texel with the
+ * second discarded (see below for why it can no longer be used), so High and
+ * Ultra are byte-identical to what they were; Low, Medium and Max now show the
+ * same swell as High rather than a sea of their own. Modes outside 256 (only
+ * Max's 512 has any) are drawn from a hash of the wavevector.
+ */
+const ANCHOR_SIZE = 256;
+const anchorTables = new Map<number, Float64Array>();
+
+function anchorGaussians(seed: number): Float64Array {
+  let table = anchorTables.get(seed);
+  if (table) return table;
+  table = new Float64Array(ANCHOR_SIZE * ANCHOR_SIZE * 2);
+  const random = mulberry32(seed);
+  for (let i = 0; i < ANCHOR_SIZE * ANCHOR_SIZE; i++) {
+    const g = gaussianPair(random);
+    gaussianPair(random);
+    table[i * 2] = g.a;
+    table[i * 2 + 1] = g.b;
+  }
+  anchorTables.set(seed, table);
+  return table;
+}
+
+/** Seed for one mode outside the anchor grid, from its signed wavevector index. */
+function modeSeed(ix: number, iz: number, seed: number): number {
+  let h = Math.imul(ix ^ 0x27d4eb2d, 0x85ebca6b) ^ Math.imul(iz + 0x165667b1, 0xc2b2ae35) ^ Math.imul(seed, 0x9e3779b9);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  return (h ^ (h >>> 12)) >>> 0;
 }
 
 /** Small deterministic PRNG so a given seed always yields the same sea. */
