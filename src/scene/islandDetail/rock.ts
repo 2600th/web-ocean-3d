@@ -455,8 +455,16 @@ export function createBeachrockMaterial(keyLight: Node): THREE.MeshStandardNodeM
     // with the decimetre grain.
     const grain = mx_noise_float(wp.mul(7)).mul(0.6).add(mx_noise_float(wp.mul(26)).mul(0.4)).toVar();
     const pit = float(1).sub(pitCells.x.smoothstep(0.05, 0.11)).mul(grain.smoothstep(-0.35, 0.25)).toVar();
-    const joints = mx_worley_noise_vec2(wp.mul(vec3(0.75, 0.45, 0.75))).toVar();
-    const crack = float(1).sub(joints.y.sqrt().sub(joints.x.sqrt()).smoothstep(0.015, 0.05)).toVar();
+    // Fractures, not a tiling: the cell edges warped by metre noise so they
+    // wander and meet at odd angles, varying in width, and present only in
+    // runs, so the network reads as cracks that branch and die out (round
+    // 11c: evenly spaced joints read as a man-made pier).
+    const warp = mx_noise_float(wp.mul(0.8)).toVar();
+    const joints = mx_worley_noise_vec2(wp.mul(vec3(0.75, 0.45, 0.75)).add(vec3(warp.mul(0.55), warp.mul(0.3), warp.mul(-0.55)))).toVar();
+    const crack = float(1)
+      .sub(joints.y.sqrt().sub(joints.x.sqrt()).smoothstep(0.012, warp.mul(0.025).add(0.045)))
+      .mul(warp.smoothstep(-0.32, 0.02))
+      .toVar();
     const pan = mx_noise_float(wp.xz.mul(1.3)).smoothstep(0.32, 0.38).mul(up.smoothstep(0.85, 0.95)).toVar();
     return vec4(pit, crack, pan, grain);
   })();
@@ -476,7 +484,7 @@ export function createBeachrockMaterial(keyLight: Node): THREE.MeshStandardNodeM
     const tan: Node = vec3n(0.7, 0.58, 0.42);
     const stone: Node = mix(cream, tan, k.w.mul(0.5).add(0.45).clamp(0, 1)).mul(k.w.mul(0.08).add(1));
     const pitted: Node = stone.mul(float(1).sub(k.x.mul(0.3)));
-    const jointed: Node = pitted.mul(float(1).sub(k.y.mul(0.6)));
+    const jointed: Node = pitted.mul(float(1).sub(k.y.mul(0.45)));
     const panned: Node = jointed.mul(float(1).sub(k.z.mul(0.25)));
     // Wet limestone darkens to about 55% and cools a little.
     const wet = float(wetness).toVar();
