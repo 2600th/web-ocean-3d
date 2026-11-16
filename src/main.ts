@@ -2,8 +2,6 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   mrt,
-  normalView,
-  output,
   pass,
   positionWorld,
   rtt,
@@ -46,6 +44,7 @@ import {
   type MusicState,
 } from './audio';
 import { attachUiSounds } from './ui/sounds';
+import { sceneMrt } from './post/sceneMrt';
 import { Gameplay, type GameUiSink, type SailSetting } from './gameplay';
 import {
   BuoyancySystem,
@@ -1047,7 +1046,10 @@ class App {
       // View-space normals for GTAO. Without them it reconstructs normals from
       // depth, which breaks down on distant ground seen at a grazing angle: the
       // beach came out as a grid of stripes that TRAA could not average away.
-      scenePass.setMRT(mrt({ output, velocity, normal: normalView }));
+      // Motion vectors and normals blended by each material's coverage, so a
+      // transparent sprite no longer overwrites the sea's under its whole quad
+      // (see `sceneMrt`).
+      scenePass.setMRT(sceneMrt());
       this.clouds.setPreviousViewProjection(this.prevViewProjection, this.currViewProjection);
       // Sway-aware motion vectors and shaded normals for the leaves; see `LeafField`.
       this.kelp.setVelocity(this.prevViewProjection, this.currViewProjection);
