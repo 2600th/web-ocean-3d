@@ -828,6 +828,8 @@ class App {
     // The cloud layer draws with `fog = false` on a camera-locked dome, so it
     // never reaches `setupFog` and has to be handed the same function directly.
     this.clouds.setAerialPerspective(this.aerial);
+    // The dome's sun disc goes behind the deck: see `Clouds.sunTransmittanceNode`.
+    this.atmosphere.setSunOccluder((dir) => this.clouds.sunTransmittanceNode(dir));
 
     this.scene.add(this.clouds.mesh);
     // Clouds stay out of the planar mirror. Through a roughness-blurred, half-

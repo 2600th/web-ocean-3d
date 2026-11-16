@@ -528,6 +528,8 @@ const CULL_BASE = 24;
 /** Scales every garden count: the table above is per garden at density 1. */
 // [underwater-look-2] 1.5 -> 2.2: view4's rock faces are crowded with life.
 const GARDEN_DENSITY = 2.2;
+/** [underwater-look-3] Extra on-rock growth on the plateau's outcrops, as a share of the garden count. */
+const PLATEAU_ROCK_EXTRA = 0.6;
 const CULL_PER_SIZE = 40;
 const CULL_MAX = 130;
 
@@ -836,19 +838,42 @@ export class ReefLife {
    */
   private placeInGardens(def: SpeciesDef, variant: number, gardens: readonly RockGarden[], out: Placement[]): void {
     const random = mulberry32(REEF_LIFE_SEED ^ (hashString(def.name) + variant * 7919 + 0x6a5d));
+    // [underwater-look-3] Its own stream, so the extra growth below moves
+    // nothing that was already placed.
+    const extraRandom = mulberry32(REEF_LIFE_SEED ^ (hashString(def.name) + variant * 7919 + 0x51ce));
     const normal = new THREE.Vector3();
     for (const g of gardens) {
       const want = def.garden?.[g.theme] ?? 0;
       // The plateau's gardens are the reef patches the play area is built
       // around, so they grow twice as thick as the shelf's.
       const density = GARDEN_DENSITY * (g.region === 'plateau' ? 2 : 1);
+      const onRock = def.onRock ?? 0;
       const n = Math.round((want * density) / def.variants + (random() - 0.5));
       const anchors = g.anchors.length / 6;
+      // [underwater-look-3] Round 5: on the plateau, as much again grown on
+      // the outcrop itself, from its own stream. The review read mound-close
+      // as "sparse, blue-monochrome, around a blob of rock": the outcrop's
+      // faces were bare enough to read as one smooth lump, and abyssal-garden
+      // crowds its rock with sponges and coral.
+      if (g.region === 'plateau' && def.onRock !== undefined && anchors > 0) {
+        const extra = Math.round((want * density * PLATEAU_ROCK_EXTRA) / def.variants + (extraRandom() - 0.5));
+        for (let i = 0; i < extra; i++) {
+          const k = Math.floor(extraRandom() * anchors) * 6;
+          out.push({
+            x: g.anchors[k],
+            y: g.anchors[k + 1],
+            z: g.anchors[k + 2],
+            nx: g.anchors[k + 3],
+            ny: g.anchors[k + 4],
+            nz: g.anchors[k + 5],
+          });
+        }
+      }
       let colonyLeft = 0;
       let cx = 0;
       let cz = 0;
       for (let i = 0; i < n; i++) {
-        if (anchors > 0 && random() < (def.onRock ?? 0)) {
+        if (anchors > 0 && random() < onRock) {
           const k = Math.floor(random() * anchors) * 6;
           out.push({
             x: g.anchors[k],

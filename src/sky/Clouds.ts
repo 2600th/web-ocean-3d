@@ -417,8 +417,44 @@ const WEATHER_AMOUNT = 0.9;
  * deck instead of one shape repeated is most of what breaks the rows up.
  */
 const TOP_MIN = 0.5;
-/** Frequency of the erosion field relative to the base. */
-const DETAIL_FREQUENCY = 5.5;
+/**
+ * Frequency of the erosion field relative to the base. 8, from 5.5 in round 5:
+ * at 5.5 the octave's cells were large enough that an overhead cloud, seen
+ * from two kilometres below, showed each eroded lobe as a flat patch with a
+ * hard crease round it ("faceted, melted", round-4 critique). The finer cells
+ * read as torn edge detail instead; `softness` still fades them with distance.
+ */
+const DETAIL_FREQUENCY = 8;
+/**
+ * Width, in detail-field units, over which billow noise's V-shaped crease at
+ * each zero crossing is rounded off. The crease is a kink in the field, and an
+ * eroded silhouette or a lit surface following it showed it as a sharp seam
+ * between lobes: half of the faceted look. 0.06 against `DETAIL_RANGE` 0.2.
+ */
+const DETAIL_CREASE = 0.06;
+/**
+ * How much the erosion octave thins a cloud's *body*, which the shape remap
+ * leaves solid. Up to 30 % less density where the detail field is low: what
+ * gives a big overhead mass internal structure in its self-shadowing and its
+ * base rather than one flat grey slab (round-4 critique, `clouds-2`). Smooth
+ * signed noise, not the billow, so it reads as varying thickness and not as a
+ * network of veins (which the billow's creases drew when tried).
+ */
+const INTERIOR_VARIATION = 0.3;
+/**
+ * Ambient light shadowed by the cloud's own optical depth toward the sun.
+ *
+ * The ambient term is graded by height but was otherwise the same at every
+ * point of a given height, so the underside of a deep cloud came out the same
+ * flat grey as the base of a thin one: "smooth, plain undersides". A deep
+ * column is darker underneath than a shallow one because less of the sky's
+ * light reaches its base, and the march already has a measure of how deep the
+ * cloud is above a sample, the optical depth toward the sun. Up to 45 % of the
+ * ambient goes with `exp(-0.5 * depth)`; the rest stays as the light the sea
+ * and the surrounding deck bounce in.
+ */
+const AMBIENT_SHADOW = 0.45;
+const AMBIENT_SHADOW_RATE = 0.5;
 /**
  * The erosion octave's working range: `|detail|` is clamped to this and
  * normalised by it, so 0 is a crease of the billow noise and 1 a lump.
@@ -455,9 +491,24 @@ const EDGE_CRISP = 0.2;
  * as the fraction of the upper 55% of the frame that is cloud, against the
  * additive billow erosion this replaced: `sky-1` 0.646 / `clouds-1` 0.700 /
  * `clouds-2` 0.681 / `sky-4` 0.840 before, 0.634 / 0.708 / 0.682 / 0.843 at
- * -0.12. (-0.15 gave 0.711 / 0.783 / 0.764 / 0.889.)
+ * -0.12. (-0.15 gave 0.711 / 0.783 / 0.764 / 0.889.) -0.115 since round 5's
+ * finer, rounded erosion: `sky-1` / `clouds-1` / `clouds-2` / `sky-2` / `sky-4`
+ * 0.631 / 0.708 / 0.682 / 0.800 / 0.817 before it, 0.620 / 0.708 / 0.691 /
+ * 0.784 / 0.807 after.
  */
-const COVERAGE_BIAS = -0.12;
+const COVERAGE_BIAS = -0.115;
+/** Transmittance at which the march stops: past it nothing behind can matter. */
+const MARCH_FLOOR = 0.01;
+/**
+ * The deck's *seen* opacity (after the haze) over which the sun disc goes from
+ * fully shown to fully hidden; see `Clouds.sunTransmittanceNode`. Hidden from
+ * 0.5: the disc is drawn at up to `Atmosphere.SUN_DISC_PEAK` times white, so
+ * any share of it the composite lets through a visible cloud shows as a disc
+ * on the cloud. Shown below 0.05, so a far deck the haze has dissolved, which
+ * the eye reads as clear sky, does not take the sunset sun with it.
+ */
+const DISC_HIDE_FROM = 0.05;
+const DISC_HIDE_AT = 0.5;
 
 /**
  * Thinning of the far deck, as a rise in the coverage threshold with distance.
@@ -781,6 +832,13 @@ export class Clouds {
   private readonly uViewProj: any = uniform(new THREE.Matrix4());
   /** The view-projection the history was marched with. */
   private readonly uPrevViewProj: any = uniform(new THREE.Matrix4());
+  /**
+   * The view-projection the most recent resolve was made with, and whether
+   * that resolve is this frame's predecessor; see `sunTransmittanceNode`.
+   */
+  private readonly uOccluderViewProj: any = uniform(new THREE.Matrix4());
+  private readonly uOccluderLive = uniform(0);
+  private resolvedSinceView = false;
   /** Inverse of the rotation-only view-projection: target UV to direction. */
   private readonly uInvViewRot: any = uniform(new THREE.Matrix4());
   /** 1 / target size, for the neighbourhood taps. */
@@ -947,6 +1005,10 @@ export class Clouds {
    * sees it move with the jitter like everything else.
    */
   setView(viewProjection: THREE.Matrix4, eye: THREE.Vector3): void {
+    // A resolve since the last view is the one the dome will read this frame;
+    // none (the layer hidden, or the Low tier) and its contents are stale.
+    this.uOccluderLive.value = this.resolvedSinceView && this.mesh.visible ? 1 : 0;
+    this.resolvedSinceView = false;
     this.viewProj.copy(viewProjection);
     (this.uViewProj.value as THREE.Matrix4).copy(viewProjection);
     (this.uRayOrigin.value as THREE.Vector3).copy(eye);
@@ -1032,8 +1094,46 @@ export class Clouds {
     THREE.RendererUtils.restoreRendererState(renderer, this.rendererState);
 
     this.prevViewProj.copy(this.viewProj);
+    (this.uOccluderViewProj.value as THREE.Matrix4).copy(this.viewProj);
+    this.resolvedSinceView = true;
     this.ping = 1 - this.ping;
     this.historyValid = true;
+  }
+
+  /**
+   * How much of the sun's disc the deck lets through toward `dir`: for the sky
+   * dome under this layer, which draws the disc (`Atmosphere.setSunOccluder`).
+   *
+   * The deck blends over the dome by its haze-faded opacity, so a cloud in
+   * front of the sun let `1 - opacity` of the dome through, disc and all, and
+   * the disc is drawn at up to `Atmosphere.SUN_DISC_PEAK` times white: a cloud
+   * at 0.9 still showed it as a flat ellipse (`sky-1`, round 4). So the dome's
+   * disc itself is hidden by the opacity the composite will draw here, on a
+   * ramp (`DISC_HIDE_FROM`). Not by the march's own opacity before the haze:
+   * near the horizon that is near one through the far deck the haze has
+   * already dissolved into clear sky, and it took the sunset sun with it.
+   *
+   * Read from the previous frame's resolve, through the matrix it was made
+   * with, because the dome is drawn before this frame's march: one frame of
+   * cloud drift late, and exact under camera rotation. 1 off screen and
+   * whenever the layer did not draw last frame.
+   */
+  sunTransmittanceNode(dir: any): any {
+    const look = this.uvFromRay(this.uOccluderViewProj, dir);
+    const onScreen = look.uv.x
+      .greaterThanEqual(0)
+      .and(look.uv.x.lessThanEqual(1))
+      .and(look.uv.y.greaterThanEqual(0))
+      .and(look.uv.y.lessThanEqual(1))
+      .and(look.w.greaterThan(0))
+      .and(this.uOccluderLive.greaterThan(0.5));
+    const rd = normalize(vec3(dir.x, max(dir.y, GRAZE_FLOOR), dir.z));
+    const tEnter = this.shellDistance(cameraPosition, rd, this.uAltitude).max(0);
+    const seen = this.compositeNode
+      .sample(look.uv)
+      .w.clamp(0, 1)
+      .mul(mix(this.airToward(tEnter, rd), float(1), this.uDeckHold));
+    return onScreen.select(float(1).sub(smoothstep(DISC_HIDE_FROM, DISC_HIDE_AT, seen)), float(1));
   }
 
   /** Forget the history: the next frame is resolved from its own march alone. */
@@ -1622,15 +1722,30 @@ export class Clouds {
     const shape = smoothstep(edge, edge.add(width).add(SHAPE_WIDTH), base);
     if (detail === null) return shape.mul(profile).mul(this.uDensity);
 
-    const lump = detail.abs().min(DETAIL_RANGE).div(DETAIL_RANGE);
+    // |n| with its crease rounded over `DETAIL_CREASE`: sqrt(n^2 + k^2) - k.
+    const nAbs = detail.mul(detail).add(DETAIL_CREASE * DETAIL_CREASE).sqrt().sub(DETAIL_CREASE);
+    const lump = nAbs.min(DETAIL_RANGE).div(DETAIL_RANGE);
     const billowy = smoothstep(WISP_LOW, WISP_HIGH, h.div(top).clamp(0, 1));
     const erosion = mix(lump, float(1).sub(lump), billowy)
       .mul(EROSION_STRENGTH)
       .mul(detailFade);
     const remapped = shape.sub(erosion).div(float(1).sub(erosion)).clamp(0, 1);
-    const shaped = smoothstep(0, EDGE_CRISP, remapped);
+    // And a little of the same octave through the body, which the remap
+    // leaves at full density (`INTERIOR_VARIATION`).
+    const body = float(1).sub(float(0.5).sub(detail.mul(2)).clamp(0, 1).mul(INTERIOR_VARIATION).mul(detailFade));
+    const shaped = smoothstep(0, EDGE_CRISP, remapped).mul(body);
 
     return shaped.mul(profile).mul(this.uDensity);
+  }
+
+  /**
+   * How much of the deck survives the air in front of it, entering at
+   * `tEnter` along `rd`: the shared aerial perspective times the deck's own
+   * far fade (`FAR_HAZE_START`).
+   */
+  private airToward(tEnter: any, rd: any): any {
+    const farFade = exp(tEnter.sub(FAR_HAZE_START).max(0).div(-FAR_HAZE_SCALE));
+    return (this.aerial === null ? float(1) : this.aerial.transmittance(tEnter, rd)).mul(farFade);
   }
 
   /** World direction through a march/resolve target texel, from its UV. */
@@ -1822,7 +1937,7 @@ export class Clouds {
                   this.uAmbientBottom,
                   this.uAmbientTop,
                   height.mul(height).mul(float(3).sub(height.mul(2))),
-                ).toVar('cloudAmbient');
+                ).mul(mix(float(1), exp(opticalDepth.mul(-AMBIENT_SHADOW_RATE)), AMBIENT_SHADOW)).toVar('cloudAmbient');
 
                 // The low sun under the deck. Strongest at the very base and gone
                 // by half way up; and attenuated by how much cloud lies between
@@ -1849,7 +1964,7 @@ export class Clouds {
 
             t.addAssign(stepSize);
 
-            If(transmittance.lessThan(0.01), () => {
+            If(transmittance.lessThan(MARCH_FLOOR), () => {
               Break();
             });
           });
@@ -1952,8 +2067,7 @@ export class Clouds {
         // the same reason the dome is.
         const straight: any = deck.xyz.div(deck.w.max(1e-4));
         // Plus the deck's own far fade (`FAR_HAZE_START`).
-        const farFade = exp(tEnter.sub(FAR_HAZE_START).max(0).div(-FAR_HAZE_SCALE));
-        const air: any = (this.aerial === null ? float(1) : this.aerial.transmittance(tEnter, rd)).mul(farFade);
+        const air: any = this.airToward(tEnter, rd);
         const hold: any = this.uDeckHold;
         const hazed: any = mix(this.uHaze, straight, air);
         const lit: any = mix(straight, hazed, hold);

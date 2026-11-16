@@ -1873,11 +1873,15 @@ function frenchAngelfish(src: Node, vary: Node): Node {
   const peak: Node = max(max(c.r, c.g), c.b).max(1e-3).toVar();
   const yellow: Node = min(c.r, c.g).sub(c.b).div(peak).smoothstep(0.12, 0.45).toVar();
   const pale: Node = min(min(c.r, c.g), c.b).div(peak).smoothstep(0.6, 0.85).mul(lum.smoothstep(0.12, 0.3));
-  const body: Node = vec3(0.045, 0.047, 0.055).mul(lum.mul(2.0).add(0.7));
+  // [underwater-look-3] Round 5: a slate grey rather than near-black. The
+  // round-4 review read the angelfish as "pure black silhouettes"; the
+  // animal is a dark charcoal whose scale rims carry the gold, and under
+  // the column's light 0.045 left nothing for either to show on.
+  const body: Node = vec3(0.1, 0.1, 0.11).mul(lum.mul(2.0).add(0.7));
   const gold: Node = vec3(0.95, 0.72, 0.12).mul(lum.mul(1.5).add(0.45));
   // [underwater-look-3] How much gold rims the scales varies from fish to
   // fish (it does with age): 0.55 to 1 of the texture's own.
-  const goldShare: Node = vary.mul(5.13).fract().mul(0.45).add(0.55);
+  const goldShare: Node = vary.mul(5.13).fract().mul(0.3).add(0.8);
   const out: Node = mix(body, gold, yellow.mul(0.85).mul(goldShare)).toVar();
   out.assign(mix(out, vec3(0.7, 0.68, 0.62).mul(lum.mul(1.5)), pale));
   return out;

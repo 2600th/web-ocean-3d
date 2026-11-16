@@ -426,7 +426,7 @@ const AGED_SHAPE_CAP = 0.62;
 const AGED_SPREAD = 1.6;
 
 /** Opacity of the wind-combed streaks old foam fades out as. */
-const RESIDUE_OPACITY = 0.38;
+const RESIDUE_OPACITY = 0.45;
 const FRESH_SHAPE_CAP = 1.15;
 
 /**
@@ -2846,11 +2846,25 @@ export class OceanMaterial {
         const soft = cover.clamp(0, 1).oneMinus().mul(0.2).add(0.08);
         const edge = shapeCover.oneMinus();
         const film = pattern.smoothstep(edge.sub(foamRamp).sub(soft), edge.add(foamRamp).add(soft));
-        const lace = foamLace(foamXZ.add(vec2(37.1, 11.9)), cover.mul(0.8).max(breaking), viewDistance).toVar();
+        // Seen edge-on a raft is thicker than seen from above. Bubbles stand
+        // proud of the water, so at a grazing view the rims of the far side of
+        // each hole hide its floor and the path through the film lengthens as
+        // 1 / cos: the holes close and the film whitens. This is why a
+        // Beaufort 8 sea looks white to the horizon from a deck while the same
+        // foam from a mast is lace (round 4's foam-3: "reads as Beaufort 4").
+        // It changes how foam looks, not how much there is.
+        const graze = smoothstepDownClamped(viewDir.y.abs(), 0.04, 0.3).toVar();
+        const lace = mix(
+          foamLace(foamXZ.add(vec2(37.1, 11.9)), cover.mul(0.8).max(breaking), viewDistance),
+          float(1),
+          graze.mul(0.45),
+        ).toVar();
         const patternN = pattern.sub(0.29).div(0.53).clamp(0, 1).toVar();
         const thickness = mix(float(AGED_FOAM_OPACITY), float(FRESH_FOAM_OPACITY), breaking)
           .mul(cover.smoothstep(0.05, 0.9).mul(0.5).add(0.5))
           .mul(patternN.mul(0.6).add(0.4))
+          .mul(graze.mul(0.6).add(1))
+          .min(FRESH_FOAM_OPACITY)
           .toVar();
         // Freshly broken water: the dense core. Thresholded on the pattern
         // (`featherFoam`), so its edge is ragged at every scale the pattern has
@@ -2877,7 +2891,7 @@ export class OceanMaterial {
         // fades out as streaks rather than shrinking to a blob; at a lower wind
         // there is less old foam in the buffer and so fewer streaks.
         const residue = laneField
-          .smoothstep(0.5, 0.85)
+          .smoothstep(0.42, 0.85)
           .mul(seaCover.smoothstep(0.01, 0.12))
           .mul(lace)
           .mul(patternN.mul(0.6).add(0.4))
@@ -2904,12 +2918,26 @@ export class OceanMaterial {
           // densest, and astern the film both opens (the lace's amount) and
           // goes translucent (the opacity), varied by the pattern's density so
           // a long wake does not read as one white sheet.
-          const hullMask = foamLace(foamXZ, hullCover.mul(0.85), viewDistance)
-            .mul(hullEdge)
+          //
+          // The churn being made now — at the transom, the stem and on the bow
+          // break, where `Wake` marks the water fresh — is the wake's dense
+          // white core: pinholes only, nearly opaque. Everything else is
+          // trail, and the trail is drawn by its amount, which `Wake` has
+          // already shaped into a streaked band that fades astern and arms that
+          // dissolve within a couple of seconds: its holes open and it goes
+          // translucent as it thins, so the amount's gradients — core to
+          // trail, band to edge, streak to streak — are what the eye reads
+          // rather than one texture (round 4's boat-sea-1).
+          const hullFresh = freshFoam.mul(hullCover.smoothstep(0.05, 0.3)).smoothstep(0.3, 0.9).toVar();
+          // The trail's response is steep on purpose: the band's core holds
+          // 0.8 and up, the quarter waves' and arms' trails 0.2–0.6, and drawn
+          // on a gentle ramp both read as the same white.
+          const hullLace = foamLace(foamXZ, hullCover.mul(hullCover).max(hullFresh), viewDistance);
+          const hullMask = hullLace
+            .mul(hullEdge.max(hullFresh))
             .mul(hullCover.smoothstep(0, 0.4))
-            .mul(hullCover.smoothstep(0.15, 0.9).mul(0.4).add(0.6))
-            .mul(patternN.mul(0.35).add(0.65))
-            .mul(HULL_FOAM_OPACITY);
+            .mul(mix(hullCover.smoothstep(0.25, 0.9).mul(0.75).add(0.25).mul(HULL_FOAM_OPACITY), float(FRESH_FOAM_OPACITY), hullFresh))
+            .mul(patternN.mul(0.35).add(0.65));
           open.assign(open.max(hullMask));
         });
 
