@@ -881,6 +881,8 @@ export class Clouds {
   private readonly marchTarget: THREE.RenderTarget;
   /** Ping-pong pair: one is this frame's resolve, the other last frame's. */
   private readonly resolveTargets: [THREE.RenderTarget, THREE.RenderTarget];
+  /** Resolve targets replaced by a resize, disposed on the next render. */
+  private readonly retiredTargets: THREE.RenderTarget[] = [];
   private ping = 0;
   private readonly quad = new THREE.QuadMesh();
   private readonly marchMaterial = new THREE.NodeMaterial();
@@ -1091,10 +1093,23 @@ export class Clouds {
     }
     width = Math.max(1, Math.round(width * this.resolutionScale));
     height = Math.max(1, Math.round(height * this.resolutionScale));
+    // Targets replaced on the last resize are released one frame late: the sky
+    // dome samples last frame's resolve for the sun's occlusion
+    // (`sunTransmittanceNode`) and is drawn before this, so resizing a resolve
+    // target in place destroyed a texture that frame's dome draw had already
+    // bound ("Destroyed texture clouds.resolveA used in a submit" on load).
+    for (const old of this.retiredTargets) old.dispose();
+    this.retiredTargets.length = 0;
     if (this.marchTarget.width !== width || this.marchTarget.height !== height) {
       this.marchTarget.setSize(width, height);
-      this.resolveTargets[0].setSize(width, height);
-      this.resolveTargets[1].setSize(width, height);
+      for (let i = 0; i < 2; i++) {
+        const old = this.resolveTargets[i];
+        const fresh = old.clone();
+        fresh.setSize(width, height);
+        fresh.texture.name = old.texture.name;
+        this.resolveTargets[i] = fresh;
+        this.retiredTargets.push(old);
+      }
       this.historyValid = false;
     }
     (this.uTexel.value as THREE.Vector2).set(1 / width, 1 / height);
@@ -1355,6 +1370,8 @@ export class Clouds {
     this.marchTarget.dispose();
     this.resolveTargets[0].dispose();
     this.resolveTargets[1].dispose();
+    for (const old of this.retiredTargets) old.dispose();
+    this.retiredTargets.length = 0;
   }
 
   // -------------------------------------------------------------------------
