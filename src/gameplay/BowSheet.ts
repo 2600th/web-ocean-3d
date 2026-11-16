@@ -23,7 +23,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
-import { SPRAY_ALPHA_FLOOR, hullShadow, sharedSceneDepth, sprayAtlas, sprayUniforms } from '../physics/sprayLook';
+import { SPRAY_ALPHA_FLOOR, sharedSceneDepth, sheetRadiance, sprayAtlas } from '../physics/sprayLook';
 
 /**
  * The bow-wave sheet: the thin, connected curtain of water a bluff bow peels off
@@ -371,33 +371,15 @@ export class BowSheet {
     const nearFade: any = smoothstep(0.4, 2.0, vSheetMisc.x.negate());
 
     // --- light ---------------------------------------------------------------
-    const u = sprayUniforms;
     const toEye: any = cameraPosition.sub(positionWorld).normalize();
-    const cosTheta: any = toEye.negate().dot(u.sunDirection);
-    const g: any = float(0.75);
-    const g2: any = g.mul(g);
-    const phase: any = float(1)
-      .sub(g2)
-      .div(float(1).add(g2).sub(g.mul(2).mul(cosTheta)).max(1e-3).pow(1.5))
-      .min(12);
     // Thin water transmits forward; aerated water scatters many times.
     // The root is the bow wave's own breaking crest, white with entrained air;
     // the sheet above it is clearer water for a moment (never glass: it is
     // full of bubbles from the crest), then white again as it thins and tears.
     const aerated: any = smoothstep(0.1, 0.5, tau).max(smoothstepDown(tau, 0.03, 0.14).mul(0.85)).max(0.35);
-    const diffuse: any = mix(float(0.6), float(0.9), aerated);
-    const sunUp: any = u.sunDirection.y.smoothstep(-0.05, 0.12);
-    const shadow: any = hullShadow(positionWorld);
-    const sunTerm: any = diffuse.mul(0.8).add(diffuse.oneMinus().mul(0.3).mul(phase));
-    // Aerated from the moment it leaves the stem (white water, not glass), a
-    // little sea colour only where it is thinnest, and mottled by its own
-    // breakup field so it reads as tumbling water rather than a smooth shell.
-    const tint: any = mix(vec3(0.8, 0.92, 0.94), vec3(0.95, 0.97, 0.98), aerated).mul(field.mul(0.4).add(0.75));
-    const radiance: any = (u.sunColor as any)
-      .mul(sunTerm.mul(sunUp).mul(shadow))
-      // White water sees the whole sky, the bright horizon included.
-      .add((u.skyColor as any).mul(mix(float(0.6), float(0.95), aerated)))
-      .mul(tint);
+    // Mottled by its own breakup field so it reads as tumbling water rather
+    // than a smooth shell. The lighting is shared with the splashes.
+    const radiance: any = sheetRadiance(aerated, field.mul(0.4).add(0.75));
 
     // Seen edge-on, a torn sheet is its strands lined up along the eye ray, and
     // drawn as a surface it would be a hard, solid outline: the "glass shell".
