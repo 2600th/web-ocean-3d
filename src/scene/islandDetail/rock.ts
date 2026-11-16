@@ -6,6 +6,7 @@ import {
   materialRoughness,
   mix,
   mx_noise_float,
+  mx_worley_noise_vec2,
   normalViewGeometry,
   normalWorldGeometry,
   positionView,
@@ -409,6 +410,114 @@ export function createRockMaterial(options: RockMaterialOptions = {}): THREE.Mes
   // `vertexColors` stays false: the colour node above multiplies the vertex
   // colour in itself, and leaving the flag on would apply it twice.
   m.vertexColors = false;
+  return m;
+}
+
+/**
+ * Beachrock and weathered reef limestone (`beachrock.ts`), not the island's
+ * volcanic stone: pale grey-cream to tan where it is dry, darker and glossy
+ * where the waves wash it, a dark band of algae at the still water, and the
+ * pitted karst the sea dissolves into it.
+ *
+ * Round 11 drew it with `createRockMaterial` and a pale vertex tint, and it
+ * came out as "dark, blotchy camouflage blobs". The tint was there, but that
+ * material's albedo starts at 0.17-0.36, everything under 2.6 m is its wet
+ * band at half that, and its barnacle and weed masks are noise at 1-2 m: on a
+ * rock that stands a metre out of the water, all of it is waterline, so all
+ * of it was dark and patched. Here the zones are set by how high the waves
+ * reach, and every pattern is finer than the rock's face:
+ *
+ *  - **pits**, the honeycomb of solution holes a few centimetres across, from
+ *    cellular noise with a hard rim, sunk into the bump and dark in their floor;
+ *  - **joints**, the cracks along the cell edges of a coarser cellular field
+ *    whose cells are taller than wide, so they run down the faces;
+ *  - **solution pans** on the flat tops, shallow and flat-bottomed, holding
+ *    water so darker and glossy;
+ *  - grain in the stone at decimetre and centimetre scale, a few percent.
+ *
+ * The large-scale shading is the geometry's (flat tops, stepped ledges, an
+ * undercut notch) with its occlusion in the vertex colour, plus the fill the
+ * ground throws up onto the faces turned from the sun (below).
+ */
+export function createBeachrockMaterial(keyLight: Node): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0 });
+  m.name = 'beachrock';
+  m.envMapIntensity = 0.75;
+  const vec3n = vec3 as unknown as (x: unknown, y?: unknown, z?: unknown) => Node;
+
+  // Shared by colour, roughness and bump: pits, joints, pans and grain.
+  const karst = Fn(() => {
+    const wp = positionWorld;
+    const up = normalWorldGeometry.y.toVar();
+    // Squared distances (the MaterialX metric 1): pits are the cells' cores.
+    const pitCells = mx_worley_noise_vec2(wp.mul(6.5)).toVar();
+    // Honeycombed in patches, not peppered evenly: the pits come and go
+    // with the decimetre grain.
+    const grain = mx_noise_float(wp.mul(7)).mul(0.6).add(mx_noise_float(wp.mul(26)).mul(0.4)).toVar();
+    const pit = float(1).sub(pitCells.x.smoothstep(0.05, 0.11)).mul(grain.smoothstep(-0.35, 0.25)).toVar();
+    const joints = mx_worley_noise_vec2(wp.mul(vec3(0.75, 0.45, 0.75))).toVar();
+    const crack = float(1).sub(joints.y.sqrt().sub(joints.x.sqrt()).smoothstep(0.015, 0.05)).toVar();
+    const pan = mx_noise_float(wp.xz.mul(1.3)).smoothstep(0.32, 0.38).mul(up.smoothstep(0.85, 0.95)).toVar();
+    return vec4(pit, crack, pan, grain);
+  })();
+
+  /** How wet the stone is: always through the swash, then where the waves wash over. */
+  const wetness = Fn(() => {
+    const y = positionWorld.y;
+    return float(1).sub(y.smoothstep(0.1, 0.4)).mul(0.45).max(float(1).sub(y.smoothstep(-0.1, 0.1)));
+  })();
+
+  m.colorNode = Fn(() => {
+    const k = vec4(karst).toVar();
+    const y = positionWorld.y.toVar();
+    // The sand's warm ratio (the sky fill here is blue enough to turn a
+    // neutral cream slate), a little greyer, and brighter than the beach.
+    const cream: Node = vec3n(0.76, 0.68, 0.53);
+    const tan: Node = vec3n(0.7, 0.58, 0.42);
+    const stone: Node = mix(cream, tan, k.w.mul(0.5).add(0.45).clamp(0, 1)).mul(k.w.mul(0.08).add(1));
+    const pitted: Node = stone.mul(float(1).sub(k.x.mul(0.3)));
+    const jointed: Node = pitted.mul(float(1).sub(k.y.mul(0.6)));
+    const panned: Node = jointed.mul(float(1).sub(k.z.mul(0.25)));
+    // Wet limestone darkens to about 55% and cools a little.
+    const wet = float(wetness).toVar();
+    const washed: Node = mix(panned, panned.mul(vec3n(0.56, 0.58, 0.6)), wet);
+    // Algae at the still water: dark olive-brown, broken at centimetre scale.
+    const algae = y
+      .smoothstep(-0.5, -0.25)
+      .mul(float(1).sub(y.smoothstep(0.1, 0.3)))
+      .mul(k.w.smoothstep(-0.35, 0.15).mul(0.4).add(0.6))
+      .toVar();
+    const weedy: Node = mix(washed, vec3n(0.11, 0.11, 0.06) as Node, algae.mul(0.85) as Node);
+    const below: Node = mix(weedy, vec3n(0.09, 0.12, 0.07) as Node, float(1).sub(y.smoothstep(-0.9, -0.5)).mul(0.6) as Node);
+    return below.mul(vertexColor());
+  })();
+
+  // Fill from below. A rock standing in sunlit white water or on sunlit sand
+  // is lit on its shaded faces by what the ground throws back: about half
+  // the ground's albedo times the sun on it, over the half of the sky a
+  // vertical face sees below the horizon. The sky light here has no ground,
+  // so without this the faces turned from the sun (every face both beach
+  // views look at: the sun is ahead and to the right) were lit by blue sky
+  // alone and pale stone read slate. `keyLight` is the island detail's grey
+  // card light (`IslandDetail.setLighting`), the sun's share of it about a
+  // fifth of the key; 0.18 of it against the downward-facing fraction is the
+  // irradiance above, as radiance off a Lambertian face.
+  m.emissiveNode = Fn(() => {
+    const below = float(1).sub(normalWorldGeometry.y).mul(0.5);
+    return vec3n(m.colorNode).mul(vec3n(keyLight)).mul(below.mul(0.36));
+  })();
+
+  m.roughnessNode = Fn(() => {
+    const k = vec4(karst);
+    const dry = mix(float(0.86), float(0.95), k.x);
+    const wet = float(wetness).max(k.z.mul(0.8));
+    return mix(dry, float(0.26), wet);
+  })();
+
+  m.normalNode = Fn(() => {
+    const k = vec4(karst);
+    return bumpNormal(k.w.mul(0.006).sub(k.x.mul(0.018)).sub(k.y.mul(0.025)).sub(k.z.mul(0.012)));
+  })();
   return m;
 }
 
