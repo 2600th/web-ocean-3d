@@ -1418,16 +1418,23 @@ export class OceanMaterial {
       // Rain impacts, added to the wave slope before the normal is built so they
       // ride the surface rather than sitting on a plane over it.
       //
-      // Faded out with distance, hard. The rings are decimetre features; past
-      // thirty metres or so they are well under a pixel and all they can
-      // contribute is aliasing — the same reason the finest wave cascade fades.
-      // Behind a uniform branch, so every clear preset pays one compare.
+      // Faded out with distance, hard. The rings are centimetre features; past
+      // twenty metres they are under a pixel and all they can contribute is
+      // aliasing — the same reason the finest wave cascade fades. Behind a
+      // uniform branch, so every clear preset pays one compare.
       If(this.uRainIntensity.greaterThan(0.001), () => {
-        const nearness = smoothstepDownClamped(viewDistance, 6, 38);
+        const nearness = smoothstepDownClamped(viewDistance, 5, 20);
         slope.addAssign(
           rainSlope(worldPos.xz, this.uRainTime, this.uRainIntensity)
             .mul(this.uRainSlope)
             .mul(nearness),
+        );
+        // Where the rings are under a pixel they are still there: the stipple
+        // a downpour puts on the sea is a roughening of the glitter, so the
+        // slope variance the rings would carry is handed to the specular as
+        // unresolved detail, as the finest wave band's is.
+        lostDetailVariance.addAssign(
+          this.uRainIntensity.mul(this.uRainSlope).mul(RAIN_UNRESOLVED_VARIANCE).mul(nearness.oneMinus()),
         );
       });
 
@@ -3352,36 +3359,42 @@ export class OceanMaterial {
 /**
  * Metres per lattice cell, and seconds between a cell's impacts.
  *
- * These two set the impact rate — one strike per cell per period, so at full
- * intensity the surface takes `1 / (RAIN_CELL² × RAIN_PERIOD)` hits per square
- * metre per second. That has to agree with how much rain is visibly falling, or
- * the scene shows a downpour landing as a drizzle. `Weather` renders 9000
- * streaks through a 68 m box; matching the two by eye at full intensity puts the
- * cell near a metre and the period near a second, not the 2.6 m and 1.35 s this
- * started with — which was roughly seven times too few impacts.
+ * Sized to a raindrop, not to a decal. A 2–4 mm drop lands as a crown a few
+ * centimetres across that collapses within a tenth of a second, and leaves a
+ * capillary ring that spreads at about the minimum capillary–gravity speed,
+ * 0.23 m/s, and is damped out within a few wavelengths — a ring a hand's
+ * breadth across at most. The first version had metre cells, rings running at
+ * 1.5 m/s with a half-metre wavelength and steep slopes: round 6's critic read
+ * them as "oversized donut decals" on the storm sea (waves-5). Heavy rain on
+ * the sea reads as a dense fine stipple, so the cells are a fifth of the size
+ * — twenty-five times the impacts per square metre, about 45 / m² / s at full
+ * intensity — and each ring is small, short and shallow.
  */
-const RAIN_CELL = 1.05;
-const RAIN_PERIOD = 0.95;
+const RAIN_CELL = 0.21;
+const RAIN_PERIOD = 0.5;
 /**
- * Furthest a ring travels before its cell fires again, in cells.
- *
- * `RAIN_SPEED * RAIN_PERIOD` is 1.43 m against a 1.05 m cell, so a ring can
- * reach 1.36 cells from where it landed and the 3x3 neighbourhood the loop walks
- * does not contain every drop that can touch a given fragment. A review caught
- * that; the visible consequence is a discontinuity as a fragment crosses a cell
- * boundary and a ring pops in or out.
- *
- * Rather than widen the loop to 5x5 — which more than doubles the cost for
- * contributions that are almost entirely faded — the ring's envelope is closed
- * off before it can leave the neighbourhood. `exp(-1.6 r)` is already down to 4%
- * of its peak at one cell, so bounding it here changes the image far less than
- * the boundary artefact it removes.
+ * Furthest a ring travels before its cell fires again. Kept inside the 3x3
+ * neighbourhood the loop walks, so no ring is cut off at a cell boundary.
  */
-const RAIN_MAX_RADIUS = RAIN_CELL * 0.95;
-/** Metres per second the ring expands. */
-const RAIN_SPEED = 1.5;
-/** Radians per metre across the ring — how tight the wavefront reads. */
-const RAIN_FREQUENCY = 13.0;
+const RAIN_MAX_RADIUS = RAIN_CELL * 0.9;
+/** Metres per second the ring expands: the capillary–gravity minimum. */
+const RAIN_SPEED = 0.26;
+/** Radians per metre across the ring: a 6 cm capillary wavelength. */
+const RAIN_FREQUENCY = 105.0;
+/**
+ * Scales the ring's slope. Its derivative grows with `RAIN_FREQUENCY`, and at
+ * the first version's amplitude a centimetre-scale ring would be a field of
+ * glints; this keeps the ring's steepest slope near half of the old
+ * one's, which is what makes it a texture of the water rather than a mark on
+ * it.
+ */
+const RAIN_SLOPE_SCALE = 0.055;
+/**
+ * Slope variance the rain stipple adds to the glitter past where its rings are
+ * drawn, per unit of `uRainSlope` at full intensity. Small: it widens the
+ * highlight a little, the way a downpour dulls the sheen of the sea.
+ */
+const RAIN_UNRESOLVED_VARIANCE = 0.02;
 
 const rainSlope = /*@__PURE__*/ Fn(([worldXZ, time, intensity]: [any, any, any]) => {
   const cell = worldXZ.div(RAIN_CELL).floor().toVar();
@@ -3420,17 +3433,21 @@ const rainSlope = /*@__PURE__*/ Fn(([worldXZ, time, intensity]: [any, any, any])
       // `RAIN_MAX_RADIUS`. Without it a ring that outruns the window vanishes
       // abruptly at a cell boundary instead of fading.
       const reach = float(1).sub(r.div(RAIN_MAX_RADIUS)).clamp(0, 1).toVar();
+      // A packet two wavelengths wide, dying fast with age (squared: most of
+      // a ring's life is its first tenth of a second) and with distance. The
+      // splash itself is the packet at age zero, a few centimetres across.
+      const youth = float(1).sub(age.div(RAIN_PERIOD)).toVar();
       const envelope = x
         .mul(x)
-        .mul(-9.0)
+        .mul(-900.0)
         .exp()
-        .mul(float(1).sub(age.div(RAIN_PERIOD)))
-        .mul(r.mul(-1.6).exp())
+        .mul(youth.mul(youth))
+        .mul(r.mul(-14).exp())
         .mul(reach.mul(reach))
         .toVar();
 
       // d/dr of sin(x * F) * envelope, keeping the dominant term.
-      const dhdr = x.mul(RAIN_FREQUENCY).cos().mul(RAIN_FREQUENCY).mul(envelope).toVar();
+      const dhdr = x.mul(RAIN_FREQUENCY).cos().mul(RAIN_FREQUENCY * RAIN_SLOPE_SCALE).mul(envelope).toVar();
       slope.addAssign(delta.div(r).mul(dhdr).mul(active));
     }
   }
