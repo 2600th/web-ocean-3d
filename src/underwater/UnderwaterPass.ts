@@ -328,9 +328,18 @@ const SUN_HALO = 0.15;
  * burst and brighten into it; across the sun they are unchanged.
  */
 const SHAFT_LOBE = 0.5;
+/** [underwater-look-3] The in-scatter's phase: `PHASE_ISO + PHASE_FWD mu^3 + 0.3 mu^4`. Was 1.22 and 0. */
+const PHASE_ISO = 0.65;
+const PHASE_FWD = 1.8;
 
 /** Exponent of the grade's luminance curve about the medium. 1 is identity. */
-const GRADE_CONTRAST = 1.4;
+// [underwater-look-3] Round 5c: 1.4 -> 1.5. The kelp frame was high-key
+// next to abyssal-garden's: dark masses against bright water. Darkening the
+// kelp at its source alone did little, because the submerged exposure
+// re-centres the frame and lifted it straight back; the curve below the
+// water's own level is what moves the distribution. 1.65 (round 5b) crushed
+// the shadows of the reef and the kelp-wide frame.
+const GRADE_CONTRAST = 1.5;
 /** The same curve's exponent above the pivot. */
 const GRADE_CONTRAST_HIGH = 1.04;
 
@@ -511,6 +520,9 @@ export class UnderwaterPass {
   private readonly uSunHalo = uniform(SUN_HALO);
   /** [underwater-look-3] See `SHAFT_LOBE`. */
   private readonly uShaftLobe = uniform(SHAFT_LOBE);
+  /** [underwater-look-3] See `PHASE_ISO`. */
+  private readonly uPhaseIso = uniform(PHASE_ISO);
+  private readonly uPhaseFwd = uniform(PHASE_FWD);
 
   // --- refractive distortion -----------------------------------------------
   /**
@@ -884,7 +896,15 @@ export class UnderwaterPass {
         // abyssal-garden's `1.22 + 0.3 mu^4`: mostly isotropic, with a broad
         // brightening toward the refracted sun. The tight forward peak is the
         // shafts' business.
-        const fogPhase = float(1.22).add(mu2.mul(mu2).mul(0.3)).toVar('uwFogPhase');
+        // [underwater-look-3] Round 5b: more strongly forward. abyssal's lobe
+        // is nearly isotropic, but its kelp frame is low-key away from the sun
+        // and bright only around it, and ours read bright cyan in every
+        // direction. `PHASE_ISO + PHASE_FWD mu^3`; the exposure re-centres
+        // the frame, so this moves the distribution, not the mean.
+        const fogPhase = this.uPhaseIso
+          .add(mu2.mul(muSun).mul(this.uPhaseFwd))
+          .add(mu2.mul(mu2).mul(0.3))
+          .toVar('uwFogPhase');
         const inscatter = this.uScatterColor
           .mul(this.uSigma)
           .mul(exp(this.uScatterK.mul(roDepth).negate()))
