@@ -3734,6 +3734,9 @@ class App {
     );
     // The lens and the frame height set the one-pixel floor on droplet width.
     this.spray.setView(this.camera.fov, this.renderer.getDrawingBufferSize(_drawingBuffer).y, this.camera.position, dt);
+    // While the bow sheet is up (at the helm, under way) it takes the routine
+    // pitching at the bow off the impact spray; see `SHEET_COVERS_CLOSING`.
+    this.spray.setBowSheet(this.gameplay?.bowSheetUp ?? false);
     this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.

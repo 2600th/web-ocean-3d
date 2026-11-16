@@ -224,6 +224,12 @@ export function sprayAtlas(): THREE.DataTexture {
 }
 
 /**
+ * Alpha below which a spray fragment is discarded rather than blended; see
+ * `sprayMaterial`. Shared with `BowSheet`, which writes the same targets.
+ */
+export const SPRAY_ALPHA_FLOOR = 0.004;
+
+/**
  * A spray material around a vertex builder that ends in `particleVertex`.
  *
  * `depthOnly` is the second pass every spray system draws: the dense cores
@@ -250,6 +256,13 @@ export function sprayMaterial(vertex: () => any, depthOnly: boolean): THREE.Mesh
     material.alphaTest = 0.3;
   } else {
     material.depthWrite = false;
+    // Discard what is not drawn. Under TRAA the scene pass writes velocity, the
+    // view normal and the water's AO mask alongside colour, and the material's
+    // blending only fades colour: a fragment at alpha 0 still overwrote the
+    // sea's motion vector, normal and mask across the whole quad, which the
+    // resolve and GTAO then drew as hard-edged translucent rectangles laid over
+    // the water (round 10c). The threshold is below one 8-bit step of colour.
+    material.alphaTest = SPRAY_ALPHA_FLOOR;
   }
   return material;
 }
@@ -475,7 +488,17 @@ export function particleFragment(): any {
   // Thin water transmits: a little darker and bluer where it is thin. Only a
   // little: round 10's critic read the old 0.82 grey-blue membrane as glass.
   const tint: any = mix(vec3(0.92, 0.95, 0.96), vec3(1, 1, 1), thick);
-  const alpha: any = vShade.w.mul(shape).mul(depthFade).mul(nearFade).mul(thick.mul(0.25).add(0.75)).clamp(0, 1);
+  // And a last mask on the quad itself, whatever the class: nothing reaches
+  // the outer tenth of the inscribed circle, so a quad's edge can never show
+  // whatever its stretch or a class's field does.
+  const quadMask: any = smoothstepDown(r, 0.82, 0.92);
+  const alpha: any = vShade.w
+    .mul(shape)
+    .mul(depthFade)
+    .mul(nearFade)
+    .mul(thick.mul(0.25).add(0.75))
+    .mul(quadMask)
+    .clamp(0, 1);
   return vec4((vShade as any).xyz.mul(tint), alpha);
 }
 

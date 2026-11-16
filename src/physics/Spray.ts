@@ -112,6 +112,21 @@ const RAIL_FRACTION = 0.085;
  */
 const WASH_DROP = 2.3;
 
+/**
+ * Closing speed, m/s, below which a bow or shoulder impact throws no spray of
+ * its own while the bow sheet (`gameplay/BowSheet`) is drawn.
+ *
+ * In a moderate sea a hull under way re-enters at the stem and shoulders every
+ * pitch, at 1–2 m/s of closing speed with her forward speed on top, and each
+ * re-entry wrote a slam. The bow sheet now answers exactly that: its intensity
+ * follows the stem's immersion and plunge, saturating at 1.5 m/s. Both together
+ * drew the same water twice — the sheet, and over it a V of slam quads. So
+ * while the sheet is up, the bow and shoulders throw only a real slam, the
+ * stem driving down well past what the sheet's plunge boost covers. The impact
+ * is still reported (audio, shake, the wake's splash): only the particles go.
+ */
+const SHEET_COVERS_CLOSING = 2.2;
+
 /** Minimum seconds between two emissions from the same probe. */
 const PROBE_COOLDOWN = 0.22;
 
@@ -235,6 +250,8 @@ export class Spray {
   private eyePrimed = false;
   private lastFloat = -1000;
   private eventSerial = 0;
+  /** True while the bow sheet is drawn; see `SHEET_COVERS_CLOSING`. */
+  private bowSheet = false;
   private disposed = false;
   private listener: ((impact: SprayImpact) => void) | null = null;
   private readonly impact: SprayImpact = {
@@ -340,6 +357,14 @@ export class Spray {
     // Instances are laid out event-fastest (see `buildGeometry`), so trimming
     // the count trims particles from every impact evenly.
     this.geometry.instanceCount = Math.max(1, EVENTS * perEvent);
+  }
+
+  /**
+   * Whether the bow sheet (`gameplay/BowSheet`) is drawn this frame, which
+   * takes the routine pitching re-entries at the bow off this system.
+   */
+  setBowSheet(active: boolean): void {
+    this.bowSheet = active;
   }
 
   /** Near-surface wind, as a world velocity in m/s. */
@@ -537,6 +562,9 @@ export class Spray {
       state.last = this.clock;
 
       _at.set(_probeWorld.x, surface + 0.05, _probeWorld.z);
+      // The bow sheet's job, unless this is a real slam.
+      const sheetCovers =
+        source.hull && this.bowSheet && (role === 'bow' || role === 'shoulder') && closing < SHEET_COVERS_CLOSING;
       const sideSign = Math.abs(probe.offset.z) < 1e-3 ? 0 : Math.sign(probe.offset.z);
       const carry = source.velocity ?? _zero;
 
@@ -547,7 +575,7 @@ export class Spray {
         this.report('float', strength, _at, 0, false, source.scale);
       } else if (role === 'bow') {
         // A stem throws a V: one sheet off each bow, forward and out.
-        for (const s of [-1, 1]) {
+        for (const s of sheetCovers ? [] : [-1, 1]) {
           _out.copy(_forward).multiplyScalar(0.55).addScaledVector(_starboard, s).normalize();
           this.write(_at, carry, _out, _forward, 1, KIND_SLAM, strength, source.scale);
         }
@@ -560,7 +588,7 @@ export class Spray {
       } else {
         // Shoulder or quarter: out on its own side, a little forward.
         _out.copy(_starboard).multiplyScalar(sideSign).addScaledVector(_forward, 0.35).normalize();
-        this.write(_at, carry, _out, _forward, 1, KIND_SLAM, strength, source.scale);
+        if (!sheetCovers) this.write(_at, carry, _out, _forward, 1, KIND_SLAM, strength, source.scale);
         this.report('slam', strength, _at, sideSign, true);
       }
     }
