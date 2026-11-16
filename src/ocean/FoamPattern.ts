@@ -226,43 +226,99 @@ function bubbleDistance(p: any, salt: number, rMin: number, rMax: number): any {
 }
 
 /**
- * Aerated foam with round holes, for a ship's wake: 1 in the foam, 0 in a
- * hole, at world point `p` for a foam `amount` 0..1.
+ * How far the lace is stretched along the wind, as a ratio. A raft lying in a
+ * wind is combed downwind: its holes and the strands between them run along
+ * the wind (Beaufort 7, "foam blown in streaks"). Kept under `FOAM_WIND_STRETCH`
+ * territory (about 2), past which a stretched cell field reads as hatching.
+ */
+const LACE_STRETCH = 1.45;
+
+/**
+ * One scale of the lace: 1 in the foam, 0 in a hole, faded to its mean with
+ * distance. `open` is the hole threshold in units of each bubble's radius: holes
+ * are wherever the distance to a bubble centre is under `open` radii.
  *
- * Three.js Water Pro's wake (the critic's reference for boat-sea-1) is a milky
- * film punched with round holes from a few centimetres to most of a metre — a
- * "cellular, Voronoi-like aerated foam". It is how a bubble raft dies: the
- * smallest bubbles burst first and their neighbours drain into the gaps, so
- * holes open and grow until the raft is a lace of rims and then shreds. Here
- * that is the bubble field of `foamPattern`'s swiss cheese at two scales —
- * holes 0.35–1.1 m and 0.1–0.35 m — with the hole radius tied to the amount:
- * at 1 (the churn at the transom) only the cores of the holes are open; as the
- * amount decays astern the holes widen and merge, and below about 0.3 what is
- * left is a net of rims.
+ * The mean is analytic rather than measured, so it follows `open`: discs of
+ * radius `r * open` at one per cell cover the plane as a Boolean model,
+ * `1 - exp(-pi * open^2 * E[r^2])` of it, overlaps included, with `E[r^2]` over
+ * the per-cell radius drawn uniformly in `[rMin, rMax]`. Fading to it rather
+ * than to 1 keeps a raft's brightness when its holes go under a pixel.
+ */
+function laceScale(q: any, salt: number, rMin: number, rMax: number, open: any, near: any, enabled: any): any {
+  const meanR2 = (rMax ** 3 - rMin ** 3) / (3 * (rMax - rMin));
+  const mean = open.mul(open).mul(-Math.PI * meanR2).exp().toVar();
+  const value = mean.toVar();
+  If(enabled.and(near.greaterThan(0.001)), () => {
+    const d = bubbleDistance(q, salt, rMin, rMax);
+    // A rim, not a cut: the film thins over the last third of a radius into
+    // the hole, the way a bubble wall drains, so no hole has a hard outline.
+    const hole = d.smoothstep(open.mul(0.7), open.mul(1.15));
+    value.assign(mix(mean, hole, near));
+  });
+  return value;
+}
+
+/**
+ * Bubble lace: 1 in the foam, 0 in a hole, at world point `p` for a foam
+ * `amount` 0..1. Every open-sea foam and the wake are drawn through it.
  *
- * Band-limited like the pattern: each scale fades to its mean coverage before
- * its holes fall under a pixel (a hole 0.4 m across is about two pixels at
- * 120 m at 1080p), so far off this is a translucent flat amount and the
- * distance takes the lace's detail, never its brightness. Must be called
- * inside a TSL `Fn`.
+ * Three.js Water Pro's whitecaps and wake (the critic's references for foam-3
+ * and boat-sea-1) are a translucent film riddled with holes from a few
+ * centimetres to half a metre — "cellular, Voronoi-like aerated" foam. It is
+ * how a bubble raft dies: the smallest bubbles burst first and their
+ * neighbours drain into the gaps, so holes open, grow and merge until the raft
+ * is a lace of rims and then shreds. Here that is web-ocean's swiss-cheese
+ * bubble field (`bubbles` in `FOAM_TEX`, MIT) at three scales — 0.55 m,
+ * 0.2 m and 7 cm cells — with the hole radius tied to the amount: at 1 only
+ * pinholes are open; as the amount falls they widen and merge.
+ *
+ * **What it replaces.** The previous lace punched two scales of holes, the
+ * larger up to 0.5 m across, into foam drawn 0.95 opaque. A few big clean holes
+ * in flat white are what the critic read as "leopard-spot oval holes" (waves-4,
+ * foam-1): perspective flattens every round hole into an ellipse, and with no
+ * smaller holes beside them each one reads as a printed spot. Holes at three
+ * scales, many more of them and with drained rims, read as a bubble structure
+ * instead, and the material now draws the film translucent.
+ *
+ * Sampled in a frame stretched along the wind (`LACE_STRETCH`), so the lace
+ * streaks downwind. Each scale fades to its mean before its holes fall under
+ * a pixel, and the finest are High and up only. Must be called inside a TSL
+ * `Fn`.
  */
 export function foamLace(p: any, amount: any, viewDistance: any): any {
   const a = amount.clamp(0, 1).toVar('foamLaceAmount');
-  // Normalised-radius threshold: holes are where the distance is below it.
-  const open = mix(float(1.5), float(0.45), a).toVar('foamLaceOpen');
-  const coarseNear = smoothstepDownClamped(viewDistance, 60, 140).toVar('foamLaceCoarseNear');
-  const coarse = float(1).toVar('foamLaceCoarse');
-  If(coarseNear.greaterThan(0.001), () => {
-    const d = bubbleDistance(p.mul(1.45).add(vec2(11.3, 4.7)), 53, 0.3, 0.75);
-    coarse.assign(mix(a.mul(0.5).add(0.5), d.smoothstep(open.sub(0.12), open.add(0.12)), coarseNear));
-  });
-  const fineNear = smoothstepDownClamped(viewDistance, 20, 50).toVar('foamLaceFineNear');
-  const fine = float(1).toVar('foamLaceFine');
-  If(foamUniforms.detail.greaterThan(0.5).and(fineNear.greaterThan(0.001)), () => {
-    const d = bubbleDistance(p.mul(4.3).add(vec2(2.9, 8.3)), 71, 0.25, 0.6);
-    fine.assign(mix(a.mul(0.25).add(0.75), d.smoothstep(open.mul(0.85).sub(0.1), open.mul(0.85).add(0.1)), fineNear));
-  });
-  return coarse.mul(fine);
+  const along = vec2(foamUniforms.windAxis.x, foamUniforms.windAxis.y);
+  const across = vec2(foamUniforms.windAxis.y.negate(), foamUniforms.windAxis.x);
+  const q = vec2(p.dot(along).div(LACE_STRETCH), p.dot(across)).toVar('foamLaceQ');
+  // Normalised-radius threshold: pinholes at 1, merged holes below about 0.3.
+  const open = mix(float(1.25), float(0.5), a).toVar('foamLaceOpen');
+  const always = float(1).greaterThan(0);
+  const coarse = laceScale(
+    q.mul(1.8).add(vec2(11.3, 4.7)), 53, 0.12, 0.38, open,
+    smoothstepDownClamped(viewDistance, 55, 130), always,
+  );
+  const mid = laceScale(
+    q.mul(5).add(vec2(2.9, 8.3)), 71, 0.18, 0.5, open.mul(0.92),
+    smoothstepDownClamped(viewDistance, 22, 55), foamUniforms.detail.greaterThan(0.5),
+  );
+  const fine = laceScale(
+    q.mul(13).add(vec2(6.1, 3.7)), 89, 0.2, 0.5, open.mul(0.85),
+    smoothstepDownClamped(viewDistance, 8, 22), foamUniforms.detail.greaterThan(1.5),
+  );
+  return coarse.mul(mid).mul(fine);
+}
+
+/**
+ * A blurred bubble cloud, 0..1, for the aerated layer under the white
+ * (Crest's `BubbleFoamTexture`): the same structure at a metre scale, with no
+ * fine detail, so read through a parallax offset it looks like bubbles hanging
+ * in the water below the foam rather than painted on it.
+ */
+export function foamBubbleCloud(p: any): any {
+  return foamNoise(p.mul(1.1).add(vec2(3.3, 9.2)))
+    .mul(0.6)
+    .add(foamNoise(p.mul(2.9).add(vec2(7.7, 1.4))).mul(0.4))
+    .smoothstep(0.3, 0.75);
 }
 
 /**

@@ -3058,6 +3058,8 @@ class App {
     );
     this.clouds.setParams({
       ...preset.clouds,
+      // Resolved here, not left to merge: only `sunset` sets it.
+      windStretch: preset.clouds.windStretch ?? 1,
       coverage: this.state.cloudCoverage,
       steps: QUALITY_TIERS[this.state.quality].cloudSteps,
       // Driven by the same wind that raises the sea, so a storm's clouds scud
@@ -3776,6 +3778,8 @@ class App {
     this.postChain.exposure?.setSubmerged(submersion);
     // [underwater-look-2] And its tone curve; see `OutputTransform.setSubmerged`.
     this.outputTransform.setSubmerged(submersion);
+    // [underwater-look-3] And the occlusion radius; see `AmbientOcclusion.setSubmerged`.
+    this.postChain.ao?.setSubmerged(submersion);
     // The receivers' shadow lookup follows the refracted key light below the
     // surface (`SunShadows.setLightDirection`), so the hull's shadow on the sand
     // lands where the shafts' shadow column does. A uniform write.

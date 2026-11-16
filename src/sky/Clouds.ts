@@ -117,6 +117,15 @@ export interface CloudParams {
    * stays lit pink after the sun has left the lower deck.
    */
   cirrus: number;
+  /**
+   * How much longer the cloud field's features are along the wind than across
+   * it; 1 is isotropic. Above 1 the same cells are drawn out into banks lying
+   * downwind, the stratocumulus of an evening deck, instead of separate heaps.
+   * Stretches the noise coordinate only, so the field's value distribution,
+   * and the fraction of the layer the threshold fills, are unchanged; seen
+   * from below, banks hide slightly less sky than heaps do.
+   */
+  windStretch: number;
 }
 
 export const DEFAULT_CLOUD_PARAMS: CloudParams = {
@@ -132,6 +141,7 @@ export const DEFAULT_CLOUD_PARAMS: CloudParams = {
   shadowColor: new THREE.Color(0.34, 0.38, 0.47),
   baseRoughness: 0.1,
   cirrus: 0.4,
+  windStretch: 1,
 };
 
 /** Dome radius in metres — see Atmosphere for why this can be small. */
@@ -407,28 +417,47 @@ const WEATHER_AMOUNT = 0.9;
  * deck instead of one shape repeated is most of what breaks the rows up.
  */
 const TOP_MIN = 0.5;
-/** Frequency of the erosion field relative to the base, and its strength. */
+/** Frequency of the erosion field relative to the base. */
 const DETAIL_FREQUENCY = 5.5;
-/** 1.15, from 0.75 with the switch to billow noise (see `densityFrom`). */
-const DETAIL_GAIN = 1.15;
 /**
- * The billow erosion is `(min(|detail|, EROSION_CAP) - EROSION_OFFSET) * gain`.
- *
- * The offset is a coverage calibration, measured: with the dome hidden, the
- * fraction of the upper frame that is cloud at the old ridged erosion was
- * 0.637 (`sky-day`) and 0.707 (`clouds-day`); billow erosion at offsets 0.07,
- * 0.10, 0.12 and 0.14 gave 0.767 / 0.819, 0.690 / 0.748, 0.641 / 0.700 and
- * 0.600 / 0.646. 0.12 keeps the coverage the quantile table maps to.
+ * The erosion octave's working range: `|detail|` is clamped to this and
+ * normalised by it, so 0 is a crease of the billow noise and 1 a lump.
  */
-const EROSION_CAP = 0.2;
-const EROSION_OFFSET = 0.12;
+const DETAIL_RANGE = 0.2;
 /**
- * Most the erosion octave can *raise* the field. A sample whose base field is
- * this far under its edge is empty whatever the detail says, so the march
- * skips the detail noise, the profile and the light march for it. Exact, not a
- * heuristic.
+ * Width of the base-shape ramp the erosion eats into, in base-field units, on
+ * top of `EDGE_WIDTH`. The erosion can only remove density where this ramp is
+ * below one, so it decides how far in from the silhouette the detail reaches:
+ * at 0.2 (about 1.2 sigma of the base field) a cloud's fringe is carved and
+ * its core is left whole. See `densityFrom`.
  */
-const EROSION_LIFT_MAX = (EROSION_CAP - EROSION_OFFSET) * DETAIL_GAIN;
+const SHAPE_WIDTH = 0.2;
+/** Most the erosion removes from the shape ramp, at a full lump or crease. */
+const EROSION_STRENGTH = 0.75;
+/**
+ * Height band, as a fraction of the column, over which the erosion turns from
+ * wispy (eating the lumps, leaving the creases as tendrils) at the base to
+ * billowy (eating the creases, leaving rounded lumps) above it. The Nubis
+ * split: wisps where a cloud is torn at its underside, cauliflower above.
+ */
+const WISP_LOW = 0.1;
+const WISP_HIGH = 0.6;
+/**
+ * Sharpness of the eroded edge: the remapped density reaches one at this
+ * fraction of the ramp, so a cloud's interior is solid and only its last
+ * stretch fades. Lower is harder.
+ */
+const EDGE_CRISP = 0.2;
+/**
+ * Coverage calibration for the subtractive erosion, added to the threshold.
+ * Erosion that only removes thins every cloud, so the threshold comes down to
+ * hold the coverage the quantile table maps to. Measured with the dome hidden,
+ * as the fraction of the upper 55% of the frame that is cloud, against the
+ * additive billow erosion this replaced: `sky-1` 0.646 / `clouds-1` 0.700 /
+ * `clouds-2` 0.681 / `sky-4` 0.840 before, 0.634 / 0.708 / 0.682 / 0.843 at
+ * -0.12. (-0.15 gave 0.711 / 0.783 / 0.764 / 0.889.)
+ */
+const COVERAGE_BIAS = -0.12;
 
 /**
  * Thinning of the far deck, as a rise in the coverage threshold with distance.
@@ -703,6 +732,8 @@ export class Clouds {
   /** Extinction per metre of unit density. */
   private readonly uExtinction = uniform(0.0085);
   private readonly uLightStep = uniform(175);
+  /** `1 / windStretch - 1`: the noise coordinate's change along the wind. */
+  private readonly uAlongWind = uniform(0);
   /** See `VIEW_EXTINCTION_GAIN`. A uniform so a probe can vary it. */
   private readonly uViewGain = uniform(VIEW_EXTINCTION_GAIN);
   private readonly uSunGain = uniform(SUN_GAIN);
@@ -851,6 +882,7 @@ export class Clouds {
     if (params.steps !== undefined) this.params.steps = params.steps;
     if (params.baseRoughness !== undefined) this.params.baseRoughness = params.baseRoughness;
     if (params.cirrus !== undefined) this.params.cirrus = params.cirrus;
+    if (params.windStretch !== undefined) this.params.windStretch = params.windStretch;
     this.applyParams();
   }
 
@@ -1232,6 +1264,7 @@ export class Clouds {
 
     this.windVector.set(Math.cos(p.windDirection), 0, Math.sin(p.windDirection));
     (this.uWindAxis.value as THREE.Vector3).copy(this.windVector);
+    this.uAlongWind.value = 1 / Math.max(1, p.windStretch) - 1;
     this.uBaseRough.value = Math.min(1, Math.max(0, p.baseRoughness));
     this.uCirrusAmount.value = Math.min(1, Math.max(0, p.cirrus));
   }
@@ -1323,8 +1356,8 @@ export class Clouds {
         const hit = p.add(this.uSunDir.mul(t));
         // `softness` 1: the shadow is a low-frequency feature by nature and the
         // erosion octave would only alias across the sea surface. At full
-        // softness its contribution is already zero, so declining to evaluate it
-        // costs nothing and saves a three-octave 3D noise per consumer.
+        // softness the erosion is already zero, so declining to evaluate it
+        // saves a three-octave 3D noise per consumer (see `densityAt`).
         acc.addAssign(this.densityAt(hit, float(1), weather, octaves));
       });
 
@@ -1400,6 +1433,15 @@ export class Clouds {
   }
 
   /**
+   * Cloud-noise coordinate of a world point: drifted with the wind, scaled to
+   * the base field, and shortened along the wind by `windStretch`.
+   */
+  private noiseCoord(p: any): any {
+    const q = p.sub(this.uWindOffset).mul(NOISE_SCALE);
+    return q.add(this.uWindAxis.mul(q.dot(this.uWindAxis).mul(this.uAlongWind)));
+  }
+
+  /**
    * The weather map at a point, about 0.5 +- 0.2. See `weatherFbm`.
    */
   private weatherAt(p: any): any {
@@ -1435,6 +1477,7 @@ export class Clouds {
     return this.uThreshold
       .add(float(1).sub(profile).mul(0.22))
       .add(weather.sub(0.5).mul(this.uWeatherAmount))
+      .add(COVERAGE_BIAS)
       .add(bias);
   }
 
@@ -1448,10 +1491,12 @@ export class Clouds {
    *   octave is skipped entirely and the base field runs at this many octaves
    *   instead of four. Null is the full field the layer is drawn from.
    *
-   *   Skipping the erosion octave is free in the image for any caller passing
-   *   `softness` 1, because at full softness its contribution is already
-   *   multiplied by zero — but the noise call still happens, and a build-time
-   *   flag is the only way not to pay for it. Cutting the *base* octaves is not
+   *   Skipping the erosion octave costs a caller passing `softness` 1 nothing
+   *   but the `EDGE_CRISP` hardening, because at full softness the erosion is
+   *   already multiplied by zero — but the noise call still happens, and a
+   *   build-time flag is the only way not to pay for it. The coarse field keeps
+   *   the soft ramp, which an optical-depth integral or a ground shadow wants
+   *   anyway. Cutting the *base* octaves is not
    *   free: it makes the field blobbier, so it is a choice each caller makes
    *   against its own cost. A shadow evaluated once per pixel can afford four;
    *   one evaluated inside another raymarch cannot.
@@ -1465,7 +1510,7 @@ export class Clouds {
     bias: any = float(0),
   ): any {
     const h = this.heightFraction(p);
-    const q = p.sub(this.uWindOffset).mul(NOISE_SCALE);
+    const q = this.noiseCoord(p);
     const base = this.baseField(q, baseOctaves ?? 4);
     return this.densityFrom(h, q, base, softness, weather, this.cloudTop(weather), bias, baseOctaves === null);
   }
@@ -1553,19 +1598,37 @@ export class Clouds {
     // the march resolves a tenth of its step, which is why the band-limit per
     // metre is a third of what a single march needed (`uSoftnessPerMetre`).
     const detailFade = float(1).sub(softness).clamp(0, 1);
-    // Billow noise, |n|: rounded lumps around the noise's extrema, with creases
-    // along its zero crossings — Perlin's "turbulence", the cauliflower shape.
+    // Shape-weighted, subtractive erosion: the technique of Horizon Zero Dawn's
+    // clouds (Schneider, "The Real-time Volumetric Cloudscapes of Horizon Zero
+    // Dawn", SIGGRAPH 2015) and Nubis after it. No code taken; the shape is:
     //
-    // What stood here was the opposite, ridged noise, `0.13 - |n|`: a network of
-    // thin raised lines along the zero crossings. On a cloud edge seen from the
-    // side that read as fraying; on the overhead deck in `clouds-1`, seen from
-    // below at two kilometres, every line was a tendril and the bases read as
-    // smoke ("melted"). See `EROSION_OFFSET` for how the coverage was held.
-    const erosion = detail === null
-      ? null
-      : detail.abs().min(EROSION_CAP).sub(EROSION_OFFSET).mul(detailFade).mul(DETAIL_GAIN);
-    const field = erosion === null ? base : base.add(erosion);
-    const shaped = smoothstep(edge, edge.add(width), field);
+    //   shape  = ramp of the base field over the edge, SHAPE_WIDTH wide
+    //   eroded = remap(shape, erosion, 1 -> 0, 1)
+    //
+    // The erosion *only removes*. What it replaced added billow noise to the
+    // base field before the threshold, `base + (|n| - offset) * gain`, and the
+    // positive half of that lifted base field that sat just under the edge over
+    // it — a lump of cloud wherever the detail had a lump, with nothing joining
+    // it to a parent. Those were the "loose fragments" and the sunset "popcorn"
+    // of the round-3 critique. Here nothing can exist where the base shape is
+    // zero, and because the remap scales by what is left, a cloud's core (shape
+    // near one) is barely touched while its fringe (shape near zero) is eaten
+    // through: detail at the edges, a solid body, no islands.
+    //
+    // Billow noise, |n|: rounded lumps around the noise's extrema, creases along
+    // its zero crossings. Eroding by the lumps leaves the creases standing as
+    // wisps; eroding by the creases leaves rounded lumps. The first is used low
+    // in the column and the second above (`WISP_LOW`).
+    const shape = smoothstep(edge, edge.add(width).add(SHAPE_WIDTH), base);
+    if (detail === null) return shape.mul(profile).mul(this.uDensity);
+
+    const lump = detail.abs().min(DETAIL_RANGE).div(DETAIL_RANGE);
+    const billowy = smoothstep(WISP_LOW, WISP_HIGH, h.div(top).clamp(0, 1));
+    const erosion = mix(lump, float(1).sub(lump), billowy)
+      .mul(EROSION_STRENGTH)
+      .mul(detailFade);
+    const remapped = shape.sub(erosion).div(float(1).sub(erosion)).clamp(0, 1);
+    const shaped = smoothstep(0, EDGE_CRISP, remapped);
 
     return shaped.mul(profile).mul(this.uDensity);
   }
@@ -1685,17 +1748,17 @@ export class Clouds {
             const weather = this.weatherAt(p).toVar('cloudWeather');
             const h = this.heightFraction(p).toVar('cloudHf');
             const top = this.cloudTop(weather).toVar('cloudTopF');
-            const q = p.sub(this.uWindOffset).mul(NOISE_SCALE).toVar('cloudQ');
+            const q = this.noiseCoord(p).toVar('cloudQ');
             const base = this.baseField(q, 4).toVar('cloudBase');
 
             // The base field first, and the rest only if it can matter. The
-            // erosion octave can raise the field by at most EROSION_LIFT_MAX and
-            // the base lift can only raise the edge, so a base this far under
-            // the lowest edge the column allows is empty whatever else is
-            // computed. Most of a broken sky is that, and it skips the detail
-            // noise and the light march.
+            // erosion only removes density and the base lift can only raise the
+            // edge, so a base under the lowest edge the column allows is empty
+            // whatever else is computed. Exact, not a heuristic. Most of a
+            // broken sky is that, and it skips the detail noise and the light
+            // march.
             const edgeMin = this.edgeFor(this.profileMax(h, top), weather, thin);
-            If(base.greaterThan(edgeMin.sub(EROSION_LIFT_MAX)), () => {
+            If(base.greaterThan(edgeMin), () => {
               const d = this.densityFrom(h, q, base, softness, weather, top, thin, true).toVar('cloudD');
 
               If(d.greaterThan(0.002), () => {
