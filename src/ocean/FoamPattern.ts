@@ -291,11 +291,28 @@ export function foamLace(p: any, amount: any, viewDistance: any): any {
   const across = vec2(foamUniforms.windAxis.y.negate(), foamUniforms.windAxis.x);
   const q = vec2(p.dot(along).div(LACE_STRETCH), p.dot(across)).toVar('foamLaceQ');
   // Normalised-radius threshold: pinholes at 1, merged holes below about 0.3.
-  const open = mix(float(1.25), float(0.5), a).toVar('foamLaceOpen');
+  //
+  // **Varied by region**, at 8–15 m. With one hole scale and one threshold for
+  // a given amount, every raft and the whole wake were the same swiss cheese —
+  // round 4's commonest note on our side, "one repeated leopard-spot hole
+  // pattern" (foam-1, waves-4, boat-sea-1). A real raft's bubbles are not
+  // uniform: patches of fine froth sit beside patches where the big bubbles
+  // have burst. So the threshold wanders by ±25% over a few metres, and the
+  // coarse holes are present in some regions and absent in others, leaving
+  // only the fine froth there. Both fields are smooth and world-anchored, and
+  // `laceScale`'s analytic mean follows the threshold, so the far field's
+  // brightness still tracks the amount.
+  const region = foamNoise(p.mul(1 / 9).add(vec2(7.3, 2.1))).toVar('foamLaceRegion');
+  const open = mix(float(1.25), float(0.5), a).mul(region.mul(0.5).add(0.75)).toVar('foamLaceOpen');
+  const coarseRegion = foamNoise(p.mul(1 / 14).add(vec2(1.7, 9.4))).smoothstep(0.3, 0.65).toVar('foamLaceCoarseRegion');
   const always = float(1).greaterThan(0);
-  const coarse = laceScale(
-    q.mul(1.8).add(vec2(11.3, 4.7)), 53, 0.12, 0.38, open,
-    smoothstepDownClamped(viewDistance, 55, 130), always,
+  const coarse = mix(
+    float(1),
+    laceScale(
+      q.mul(1.8).add(vec2(11.3, 4.7)), 53, 0.12, 0.38, open,
+      smoothstepDownClamped(viewDistance, 55, 130), always,
+    ),
+    coarseRegion,
   );
   const mid = laceScale(
     q.mul(5).add(vec2(2.9, 8.3)), 71, 0.18, 0.5, open.mul(0.92),
