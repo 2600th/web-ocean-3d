@@ -176,7 +176,10 @@ const PERCH_PITCH = 0.35;
  *
  * Painted from one float per vertex (`shape.w`): the wing's chord (0 leading
  * edge, 1 trailing) on the wings — negated on the detailed wing's lower
- * surface, which says which side of the wing a fragment is on — `PAINT_BILL`
+ * surface, which says which side of the wing a fragment is on, and exactly 0
+ * and 1 on the leading and trailing edges the two surfaces share, which are
+ * neither (see `upness` in the vertex stage); the cheap gull's sheets, all
+ * upper side, use 0.001 and 0.999 for their edges — `PAINT_BILL`
  * and `PAINT_LEG` on those parts, `PAINT_PLUMAGE` everywhere else. No texture
  * and no extra attribute.
  */
@@ -184,7 +187,12 @@ const PAINT_PLUMAGE = 0;
 const PAINT_BILL = 2;
 const PAINT_LEG = 3;
 const GULL_WHITE = [0.86, 0.87, 0.88] as const;
-const GULL_MANTLE = [0.15, 0.16, 0.185] as const;
+/**
+ * Slate grey, not black. At 0.15 the upper wing in shade, which is most of the
+ * time a bird is seen from above or banked, went to near-black and the flock
+ * read as crows.
+ */
+const GULL_MANTLE = [0.25, 0.265, 0.3] as const;
 const GULL_HOOD = [0.03, 0.03, 0.035] as const;
 const GULL_TIPS = [0.025, 0.025, 0.03] as const;
 const GULL_BILL = [0.36, 0.05, 0.035] as const;
@@ -273,6 +281,12 @@ const NEAR_SHOW = 3.5;
  * thin enough to glow against a low sun rather than going black.
  */
 const TRANSMISSION = 0.55;
+/**
+ * How far a backlit wing's upper side pales toward the light coming through it:
+ * gain on the transmission term, and the grey (a fraction of the white) it pales
+ * to. See `mantleTone`.
+ */
+const BACKLIT_MANTLE = [3.2, 0.8] as const;
 
 /** Wing half-span of the authored geometry, metres, at instance scale 1. */
 const HALF_SPAN = 0.66;
@@ -782,7 +796,16 @@ export class Birds {
     // it, white rump behind.
     const bodyTop: any = upness.smoothstep(0.15, 0.75).mul(zone);
     const topness: any = mix(sheetTop, bodyTop, part);
-    const mantled: any = mix(white, vec3(...GULL_MANTLE), topness);
+    // Against the light the wing's upper side is the shaded one, and slate in
+    // shadow read black against a bright sky. What a backlit gull's wing shows
+    // there is light through it, which comes through white underwing feathers:
+    // the mantle tends to pale grey with the transmission (`BACKLIT_MANTLE`).
+    const mantleTone: any = mix(
+      vec3(...GULL_MANTLE),
+      white.mul(BACKLIT_MANTLE[1]),
+      through.mul(wing).mul(BACKLIT_MANTLE[0]).clamp(0, 1),
+    );
+    const mantled: any = mix(white, mantleTone, topness);
     // The white trailing edge of the inner wing, on top: the line that shows
     // the wing's shape against the dark mantle.
     const trailing: any = paint
@@ -1173,10 +1196,12 @@ export class Birds {
       part,
       // Which side of the wing this is: the cheap gull's sheets are all upper
       // side (+1) and `faceDirection` tells the faces apart; the detailed wing
-      // marks its lower surface with a negative chord. Not the rest normal's
-      // sign, which is 0 round the leading edge and left a white rim along the
-      // top of the folded wing.
-      upness: mixn(shape.w.step(-1e-4).mul(2).sub(1).mul(foldSign), localNormal.y, part),
+      // marks its lower surface with a negative chord, and the edges the two
+      // surfaces share are neither (0). Not the rest normal's sign, which is 0
+      // round the leading edge and left a white rim along the top of the folded
+      // wing; and not +1 on the shared edges, which painted a mantle rim along
+      // the underwing's leading edge.
+      upness: mixn(shape.w.sign().mul(shape.w.abs().step(0.9995).oneMinus()).mul(foldSign), localNormal.y, part),
       head,
       paint: shape.w,
     };
@@ -1369,12 +1394,14 @@ function buildCheapGull(): THREE.InstancedBufferGeometry {
   // Right wing: arm panel shoulder->wrist, then a long pointed hand swept back.
   // The wrist is the leading edge's most forward point, as on a real gull.
   const y = WING_Y;
-  const shoulderLead: V = [SHOULDER_X, y, 0.1];
-  const shoulderTrail: V = [SHOULDER_X, y, -0.08];
-  const wristLead: V = [WRIST_X, y, 0.095];
-  const wristTrail: V = [WRIST_X, y, -0.12];
-  const handTrail: V = [0.48, y, -0.15];
-  const tip: V = [HALF_SPAN, y, -0.12];
+  // Matched to the detailed wing's planform (`WING_STATIONS`), narrow and
+  // pointed, so the LOD switch does not change the bird's shape.
+  const shoulderLead: V = [SHOULDER_X, y, 0.072];
+  const shoulderTrail: V = [SHOULDER_X, y, -0.068];
+  const wristLead: V = [WRIST_X, y, 0.096];
+  const wristTrail: V = [WRIST_X, y, -0.09];
+  const handTrail: V = [0.48, y, -0.096];
+  const tip: V = [HALF_SPAN, y, -0.08];
   const rightWing: V[][] = [
     [shoulderLead, wristLead, wristTrail],
     [shoulderLead, wristTrail, shoulderTrail],
@@ -1418,7 +1445,7 @@ function buildCheapGull(): THREE.InstancedBufferGeometry {
   // Wing chord, 0 on the leading edge and 1 on the trailing (and the tip), for
   // the white trailing edge and the fold. The leading-edge vertices are the
   // only ones forward of the body's centre.
-  const chordOf = (v: V): number => (v[2] > 0.05 ? 0 : 1);
+  const chordOf = (v: V): number => (v[2] > 0.05 ? 0.001 : 0.999);
 
   const g = new GullBuilder();
   const up: Vec = [0, 1, 0];
@@ -1486,27 +1513,31 @@ const TAIL_STATIONS: ReadonlyArray<readonly [number, number]> = [
 ];
 const TAIL_THICKNESS = 0.005;
 /**
- * The wing, spanwise stations `[x, leading-edge z, trailing-edge z]`. Broad
- * arm to the wrist at `WRIST_X`, then a long hand swept back to a point. Out
- * the hand the trailing edge alternates between the feather tips and the notch
- * between them — the separated primaries of a gull's wingtip, as geometry.
+ * The wing, spanwise stations `[x, leading-edge z, trailing-edge z]`: a gull's
+ * long, narrow, pointed wing. The arm's leading edge sweeps *forward* to the
+ * wrist at `WRIST_X`, the most forward point of the wing, and its trailing edge
+ * is the straight line of the secondaries; the hand is longer than the arm and
+ * tapers to a point, its leading edge swept hard back and its trailing edge
+ * closing in to meet it. Aspect ratio about 11.
+ *
+ * No notches. A first version slotted the primaries the way a crow's or a
+ * raptor's are; a flying gull shows a smooth pointed tip, and with a broad
+ * rounded hand the notches made the flock read as crows.
  */
 const WING_STATIONS: ReadonlyArray<readonly [number, number, number]> = [
-  [0.025, 0.1, -0.075],
-  [0.1, 0.106, -0.098],
-  [0.18, 0.108, -0.112],
-  [0.25, 0.104, -0.12],
-  [WRIST_X, 0.094, -0.122],
-  [0.35, 0.08, -0.128],
-  [0.4, 0.062, -0.134],
-  [0.44, 0.046, -0.118],
-  [0.48, 0.028, -0.142],
-  [0.52, 0.01, -0.124],
-  [0.555, -0.008, -0.142],
-  [0.59, -0.028, -0.124],
-  [0.62, -0.048, -0.138],
-  [0.645, -0.074, -0.124],
-  [HALF_SPAN, -0.1, -0.118],
+  [0.025, 0.07, -0.065],
+  [0.1, 0.078, -0.078],
+  [0.18, 0.086, -0.086],
+  [0.25, 0.092, -0.09],
+  [WRIST_X, 0.096, -0.09],
+  [0.36, 0.078, -0.094],
+  [0.42, 0.054, -0.096],
+  [0.48, 0.026, -0.096],
+  [0.54, -0.006, -0.094],
+  [0.59, -0.034, -0.09],
+  [0.625, -0.056, -0.086],
+  [0.648, -0.072, -0.083],
+  [HALF_SPAN, -0.08, -0.081],
 ];
 /** Chord fractions the section is sampled at, leading edge to trailing. */
 const WING_CHORD = [0, 0.04, 0.12, 0.25, 0.42, 0.6, 0.78, 0.92, 1];
