@@ -359,6 +359,27 @@ const SUN_HALO = 0.15;
  * burst and brighten into it; across the sun they are unchanged.
  */
 const SHAFT_LOBE = 0.5;
+/**
+ * [underwater-look-3] Round 8. The shafts' phase away from the sun, in place
+ * of abyssal-garden's 0.2, and how far the beams hold their contrast.
+ *
+ * The round-8 review called the reef frame's upper half "god-ray curtains":
+ * looking across the sun (mu about 0.1 there) every beam out to the 75 m range
+ * stood at full contrast, so the field read as a wall of wavy sheets. In the
+ * references the shafts are faint and narrow away from the sun and only stand
+ * out looking toward it. At `SHAFT_ISO` the across-sun beams drop to under half,
+ * while up-sun (the kelp-sun and under-hull frames, mu 0.86 to 0.97) the
+ * `2 mu^3` lobe carries them as before. A beam blends into the field's mean
+ * (`SHAFT_MEAN`, of the 0..1 pattern) over `SHAFT_CONTRAST_RANGE` metres, so
+ * the distance keeps its glow but loses the stripes: near beams are crisp, far
+ * ones are haze. The range runs from its first value looking across the sun to
+ * its second looking toward it (mu 0.25 to 0.85): beams seen end-on converge on
+ * the sun and stay distinct a long way, which is what the under-hull frame's
+ * rays below the keel are; seen side-on they are the curtains.
+ */
+const SHAFT_ISO = 0.12;
+const SHAFT_CONTRAST_RANGE: readonly [number, number] = [24, 90];
+const SHAFT_MEAN = 0.07;
 /** [underwater-look-3] The in-scatter's phase: `PHASE_ISO + PHASE_FWD mu^3 + 0.3 mu^4`. Was 1.22 and 0. */
 const PHASE_ISO = 0.65;
 const PHASE_FWD = 1.8;
@@ -578,6 +599,10 @@ export class UnderwaterPass {
   private readonly uSunHalo = uniform(SUN_HALO);
   /** [underwater-look-3] See `SHAFT_LOBE`. */
   private readonly uShaftLobe = uniform(SHAFT_LOBE);
+  /** [underwater-look-3] Round 8. See `SHAFT_ISO`, `SHAFT_CONTRAST_RANGE`, `SHAFT_MEAN`. */
+  private readonly uShaftIso = uniform(SHAFT_ISO);
+  private readonly uShaftFade = uniform(new THREE.Vector2(1 / SHAFT_CONTRAST_RANGE[0], 1 / SHAFT_CONTRAST_RANGE[1]));
+  private readonly uShaftMean = uniform(SHAFT_MEAN);
   /** [underwater-look-3] See `PHASE_ISO`. */
   private readonly uPhaseIso = uniform(PHASE_ISO);
   private readonly uPhaseFwd = uniform(PHASE_FWD);
@@ -1365,6 +1390,12 @@ export class UnderwaterPass {
         // TRAA — the pass runs after the resolve and could not be smoothed by it.
         const t = stepLength.mul(interleavedGradientNoise(screenCoordinate)).toVar('usT');
         const acc = vec3(0, 0, 0).toVar('usAcc');
+        // [underwater-look-3] Round 8: per metre, from across the sun to toward it.
+        const fadeRate = mix(
+          this.uShaftFade.x,
+          this.uShaftFade.y,
+          rd.dot(this.uSunUnder).smoothstep(0.25, 0.85),
+        ).toVar('usFade');
 
         Loop(this.uSteps, () => {
           const p = this.uCameraPos.add(rd.mul(start.add(t))).toVar('usP');
@@ -1377,7 +1408,10 @@ export class UnderwaterPass {
           // module the way abyssal-garden's `W_RAYS` thresholds its own: the
           // shared caustic tile read at shaft scale. Thin sheets of light, not
           // the broad local-over-mean blobs the old world field gave.
-          const pattern = float(caustics(p, lod) as any).mul(this.uShaftGain);
+          // [underwater-look-3] Round 8: the beams lose their contrast with
+          // distance, toward the field's mean; see `SHAFT_CONTRAST_RANGE`.
+          const beamContrast = exp(t.mul(fadeRate).negate());
+          const pattern = mix(this.uShaftMean, float(caustics(p, lod) as any), beamContrast).mul(this.uShaftGain);
 
           const vis = this.shadowVisibility(p, depthBelow);
           // In: down the refracted path from the surface. Out: back along the
@@ -1393,7 +1427,7 @@ export class UnderwaterPass {
         const mu = rd.dot(this.uSunUnder).max(0);
         const mu4 = mu.mul(mu).mul(mu.mul(mu));
         const mu16 = mu4.mul(mu4).mul(mu4.mul(mu4));
-        const phase = float(0.2).add(mu.mul(mu).mul(mu).mul(2)).add(mu16.mul(this.uShaftLobe));
+        const phase = this.uShaftIso.add(mu.mul(mu).mul(mu).mul(2)).add(mu16.mul(this.uShaftLobe));
 
         // Cloud shade, once per pixel at the middle of the march: the deck's
         // features are hundreds of metres across and the march tens.
