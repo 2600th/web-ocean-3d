@@ -441,6 +441,8 @@ export class Atmosphere {
   // colour uniform to a float-ish node, which blocks legitimate vec3 chaining.
   private readonly uGround: any = uniform(new THREE.Color(0.05, 0.09, 0.13));
   private readonly uSunDiscVisible = uniform(1);
+  /** See `setSunOccluder`. */
+  private sunOccluder: ((dir: any) => any) | null = null;
   /** The disc's drawn radiance over `T / max(T)`, scene units; see `SUN_DISC_PEAK`. */
   private readonly uDiscLevel = uniform(0);
   /** `SKY_KNEE_START` / `SKY_KNEE_MAX` in scene units at the current display exposure. */
@@ -1257,10 +1259,7 @@ export class Atmosphere {
       const sky = this.model.skyView(up);
       // The disc is added after the highlight knee below, at its own display
       // level (`SUN_DISC_PEAK`), so the knee cannot compress it back into the glow.
-      const disc = this.model
-        .sunDisc(dir, SUN_ANG_R * SUN_DISC_SCALE)
-        .mul(this.uDiscLevel)
-        .mul(this.uSunDiscVisible);
+      const disc = this.discRadiance(dir);
       const dayColor = sky.mul(MODEL_SCALE).toVar('dayColor');
 
       // --- overcast ----------------------------------------------------------
@@ -1374,6 +1373,26 @@ export class Atmosphere {
 
       return vec4(graded.max(vec3(0, 0, 0)), 1.0);
     })();
+  }
+
+  /** The drawn sun disc toward `dir`, hidden behind the cloud deck. */
+  private discRadiance(dir: any): any {
+    const disc = this.model
+      .sunDisc(dir, SUN_ANG_R * SUN_DISC_SCALE)
+      .mul(this.uDiscLevel)
+      .mul(this.uSunDiscVisible);
+    return this.sunOccluder === null ? disc : disc.mul(this.sunOccluder(dir));
+  }
+
+  /**
+   * What the cloud deck lets through of the sun's disc toward a direction
+   * (`Clouds.sunTransmittanceNode`). Rebuilds the dome's graph.
+   */
+  setSunOccluder(occluder: (dir: any) => any): void {
+    if (this.sunOccluder === occluder) return;
+    this.sunOccluder = occluder;
+    this.material.colorNode = this.buildSkyNode();
+    this.material.needsUpdate = true;
   }
 
   private buildNightNode(d: any): any {
