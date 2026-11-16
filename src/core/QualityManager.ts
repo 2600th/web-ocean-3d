@@ -518,7 +518,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     spray: 1,
     underwaterParticles: 2400,
     birds: 26,
-    fish: 240,
+    // [underwater-look-3] Round 12: 240 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
+    fish: 264,
     refraction: 1,
     reflection: 0.85,
     reflectionScale: 0.5,
@@ -560,7 +561,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     spray: 1,
     underwaterParticles: 4000,
     birds: 40,
-    fish: 380,
+    // [underwater-look-3] Round 12: 380 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
+    fish: 404,
     refraction: 1,
     reflection: 1,
     reflectionScale: 0.6,
@@ -604,7 +606,8 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     spray: 1,
     underwaterParticles: 6000,
     birds: 64,
-    fish: 560,
+    // [underwater-look-3] Round 12: 560 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
+    fish: 584,
     refraction: 1,
     reflection: 1,
     reflectionScale: 0.75,

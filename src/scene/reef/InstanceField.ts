@@ -51,7 +51,22 @@ export interface InstanceFieldOptions {
   /** Grid cell edge, metres. */
   cell?: number;
   castShadow?: boolean;
+  /**
+   * [underwater-look-3] Round 12. Cross-fades a level change over this many
+   * seconds instead of swapping the mesh in one frame. While an instance is
+   * changing level it is dealt to both, each copy carrying `lodFade`: the
+   * clock time the change began and +1 on the level fading in, -1 on the one
+   * fading out (0 when steady). The material dithers the pair into
+   * complementary halves of one screen-space pattern (see `ReefLife`'s
+   * `LOD_FADE_SECONDS`). Changes need the distance to clear the switch by
+   * `LOD_HYSTERESIS`, so a camera parked on a switch does not flicker between
+   * levels. Without the option none of this is built.
+   */
+  crossFade?: number;
 }
+
+/** Fraction of a switch distance a level change has to clear; see `crossFade`. */
+const LOD_HYSTERESIS = 0.05;
 
 const _m = new THREE.Matrix4();
 
@@ -77,6 +92,14 @@ export class InstanceField {
 
   private detail = 1;
   private multiplier = 1;
+  /** Cross-fade state per instance (sealed order): level shown, level left, when. */
+  private shown = new Int8Array(0);
+  private previous = new Int8Array(0);
+  private left = new Int8Array(0);
+  private since = new Float32Array(0);
+  private readonly fades: THREE.InstancedBufferAttribute[] = [];
+  private clock = 0;
+  private fading = false;
   private readonly dealtAt = new THREE.Vector3(Infinity, Infinity, Infinity);
   private dirty = true;
   private visible = true;
@@ -175,6 +198,12 @@ export class InstanceField {
     this.cellBounds = Float32Array.from(bounds);
     this.cellCount = starts.length;
     this.capacity = n;
+    if (o.crossFade !== undefined) {
+      this.shown = new Int8Array(n).fill(-1);
+      this.previous = new Int8Array(n).fill(-1);
+      this.left = new Int8Array(n).fill(-1);
+      this.since = new Float32Array(n).fill(-Infinity);
+    }
 
     for (let level = 0; level < o.levels.length; level++) {
       const mesh = new THREE.InstancedMesh(o.levels[level], o.material, Math.max(1, n));
@@ -190,6 +219,17 @@ export class InstanceField {
       colorAttr.setUsage(THREE.DynamicDrawUsage);
       (colorAttr.array as Float32Array).set(colors);
       mesh.instanceColor = colorAttr;
+      if (o.crossFade !== undefined) {
+        // Instanced attributes live on the geometry, so each level draws a
+        // copy of its own; the templates are a few thousand triangles. Zeroed,
+        // which is steady: until the first deal every level draws everything.
+        const geometry = o.levels[level].clone();
+        const fadeAttr = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n) * 2), 2);
+        fadeAttr.setUsage(THREE.DynamicDrawUsage);
+        geometry.setAttribute('lodFade', fadeAttr);
+        mesh.geometry = geometry;
+        this.fades.push(fadeAttr);
+      }
       mesh.count = n;
       mesh.instanceMatrix.needsUpdate = true;
       colorAttr.needsUpdate = true;
@@ -230,11 +270,26 @@ export class InstanceField {
     return t;
   }
 
-  /** Re-deals if the camera has moved far enough, or detail changed. Allocation-free. */
+  /**
+   * The clock the cross-fades run on, seconds; the material's must match. A
+   * clock that went backwards (a harness reset) ends every fade at once.
+   */
+  setClock(seconds: number): void {
+    if (seconds < this.clock) this.endFades();
+    this.clock = seconds;
+  }
+
+  /** Ends every cross-fade in progress, each instance on the level it was going to. */
+  endFades(): void {
+    this.since.fill(-Infinity);
+    this.dirty = true;
+  }
+
+  /** Re-deals if the camera has moved far enough, detail changed, or a cross-fade is running. Allocation-free. */
   update(camera: THREE.Vector3): void {
     if (!this.sealed || !this.visible) return;
     const refresh = this.options.refresh ?? 4;
-    if (!this.dirty && this.dealtAt.distanceToSquared(camera) < refresh * refresh) return;
+    if (!this.dirty && !this.fading && this.dealtAt.distanceToSquared(camera) < refresh * refresh) return;
     this.deal(camera);
   }
 
@@ -252,6 +307,12 @@ export class InstanceField {
     const counts = DEAL_COUNTS;
     for (let l = 0; l < levels; l++) counts[l] = 0;
     const detail = this.detail;
+    const fade = o.crossFade;
+    const now = this.clock;
+    let fading = false;
+    // Off the deal (culled, thinned, or in a cell out of range) an instance
+    // forgets its level, so it comes back without a fade from a stale one.
+    if (fade !== undefined) this.shown.fill(-1);
 
     for (let c = 0; c < this.cellCount; c++) {
       const b = c * 6;
@@ -276,14 +337,33 @@ export class InstanceField {
             break;
           }
         }
-        const mesh = this.meshes[level];
-        const slot = counts[level]++;
-        (mesh.instanceMatrix.array as Float32Array).set(this.matrices.subarray(i * 16, i * 16 + 16), slot * 16);
-        const col = mesh.instanceColor!.array as Float32Array;
-        col[slot * 3] = this.colors[i * 3];
-        col[slot * 3 + 1] = this.colors[i * 3 + 1];
-        col[slot * 3 + 2] = this.colors[i * 3 + 2];
+        if (fade === undefined) {
+          this.put(level, i, counts, 0, 0);
+          continue;
+        }
+        const was = this.previous[i];
+        if (was >= 0 && level !== was) {
+          // Clear the switch between them by the hysteresis, or stay.
+          const at = level > was ? o.switches[was] * (1 + LOD_HYSTERESIS) : o.switches[was - 1] * (1 - LOD_HYSTERESIS);
+          if (level > was ? r < at : r > at) level = was;
+          else {
+            this.left[i] = was;
+            this.since[i] = now;
+          }
+        }
+        this.shown[i] = level;
+        if (was >= 0 && now - this.since[i] < fade && this.left[i] >= 0 && this.left[i] !== level) {
+          this.put(level, i, counts, this.since[i], 1);
+          this.put(this.left[i], i, counts, this.since[i], -1);
+          fading = true;
+        } else {
+          this.put(level, i, counts, 0, 0);
+        }
       }
+    }
+    if (fade !== undefined) {
+      this.previous.set(this.shown);
+      this.fading = fading;
     }
 
     for (let l = 0; l < levels; l++) {
@@ -299,10 +379,31 @@ export class InstanceField {
         color.clearUpdateRanges();
         color.addUpdateRange(0, count * 3);
         color.needsUpdate = true;
+        if (fade !== undefined) {
+          const f = this.fades[l];
+          f.clearUpdateRanges();
+          f.addUpdateRange(0, count * 2);
+          f.needsUpdate = true;
+        }
       }
     }
     this.dealtAt.set(cx, cy, cz);
     this.dirty = false;
+  }
+
+  /** Deals instance `i` into the next slot of `level`, with its `lodFade` (start time, direction). */
+  private put(level: number, i: number, counts: Int32Array, start: number, direction: number): void {
+    const mesh = this.meshes[level];
+    const slot = counts[level]++;
+    (mesh.instanceMatrix.array as Float32Array).set(this.matrices.subarray(i * 16, i * 16 + 16), slot * 16);
+    const col = mesh.instanceColor!.array as Float32Array;
+    col[slot * 3] = this.colors[i * 3];
+    col[slot * 3 + 1] = this.colors[i * 3 + 1];
+    col[slot * 3 + 2] = this.colors[i * 3 + 2];
+    if (this.options.crossFade === undefined) return;
+    const f = this.fades[level].array as Float32Array;
+    f[slot * 2] = start;
+    f[slot * 2 + 1] = direction;
   }
 
   /** World matrix of instance `i` in sealed order; for placing things on it. */
@@ -311,7 +412,11 @@ export class InstanceField {
   }
 
   dispose(): void {
-    for (const mesh of this.meshes) mesh.dispose();
+    for (const mesh of this.meshes) {
+      // The cross-fade's per-level geometry copies are this field's own.
+      if (this.options.crossFade !== undefined) mesh.geometry.dispose();
+      mesh.dispose();
+    }
   }
 
   private grow(): void {

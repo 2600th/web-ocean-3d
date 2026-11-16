@@ -152,7 +152,7 @@ const MAX_FISH = 600;
  * and the chain costs a few ternaries on a population whose entire vertex count
  * is under eleven thousand.
  */
-type SchoolKind = 'open' | 'reef' | 'island' | 'patrol';
+type SchoolKind = 'open' | 'reef' | 'island' | 'patrol' | 'chromis';
 
 const SCHOOL_LAYOUT: readonly SchoolKind[] = [
   'open',
@@ -165,6 +165,7 @@ const SCHOOL_LAYOUT: readonly SchoolKind[] = [
   'reef',
   'reef',
   'patrol',
+  'chromis',
 ];
 
 const SCHOOLS = SCHOOL_LAYOUT.length;
@@ -188,7 +189,39 @@ const ISLAND_SCHOOLS = SCHOOL_LAYOUT.filter((kind) => kind === 'island').length;
  * exactly as before. The thresholds land each tier near twenty fish per active
  * school: 40 fills four schools, 90 fills six, 140 fills eight, 220 fills ten.
  */
-const SCHOOL_ACTIVATION: readonly number[] = [0, 0, 14, 30, 48, 70, 96, 126, 160, 196];
+const SCHOOL_ACTIVATION: readonly number[] = [0, 0, 14, 30, 48, 70, 96, 126, 160, 196, 240];
+
+/**
+ * [underwater-look-3] Round 12. A small school of blue chromis over the reef
+ * nearest the spawn point, behind its mound as a diver arriving from the
+ * origin sees it (mound-close had nothing moving in its middle distance).
+ *
+ * The eleventh school, activated at fish 240 (`SCHOOL_ACTIVATION`): the High, Ultra
+ * and Max tiers carry 24 more fish than they did, and at High the
+ * first 240 keep exactly the schools they had (the newly active school is the
+ * emptiest, so it takes all of the extra fish before the round robin resumes).
+ * Below High it does not exist.
+ *
+ * Chromis hang in a loose cloud a couple of metres over a coral head, picking
+ * plankton, and drift rather than travel: a tight circuit of `CHROMIS_RADIUS`
+ * metres, `CHROMIS_OFFSET` metres past the patch centre along the bearing from
+ * the origin, hovering `CHROMIS_HOVER` metres off the bottom in a
+ * `CHROMIS_LENGTH` x `CHROMIS_WIDTH` envelope. Small fish (`CHROMIS_SCALE` of
+ * the body length), counter-shaded blue (`CHROMIS_PALETTE`), on the procedural
+ * body: at twenty metres a school is a cloud of slivers, not a texture.
+ */
+const CHROMIS_OFFSET = 6;
+const CHROMIS_RADIUS = 3.5;
+const CHROMIS_HOVER: readonly [number, number] = [4.2, 5.0];
+const CHROMIS_LENGTH = 8;
+const CHROMIS_WIDTH = 6;
+const CHROMIS_HALF_HEIGHT = 1.4;
+const CHROMIS_SCALE: readonly [number, number] = [0.55, 0.65];
+const CHROMIS_PALETTE: readonly [THREE.Color, THREE.Color, THREE.Color] = [
+  new THREE.Color(0.015, 0.04, 0.12),
+  new THREE.Color(0.08, 0.22, 0.5),
+  new THREE.Color(0.42, 0.56, 0.72),
+];
 
 // ------------------------------------------------------------------ the circuit
 
@@ -734,6 +767,7 @@ const SPECIES_OF_KIND: Readonly<Record<SchoolKind, Species>> = {
   patrol: 'pelagic',
   reef: 'reef',
   island: 'reef',
+  chromis: 'pelagic',
 };
 
 /**
@@ -842,7 +876,10 @@ export class FishSchool {
       this.uAnchors.push(uniform(new THREE.Vector4(0, -8, 0, path.halfHeight)));
       this.uHeadings.push(uniform(new THREE.Vector4(1, 0, 0, 0)));
       this.uShapes.push(uniform(new THREE.Vector4(path.length, path.width, 0, 0)));
-      const palette = PELAGIC_PALETTES[this.uBacks.length % PELAGIC_PALETTES.length];
+      const palette =
+        SCHOOL_LAYOUT[this.uBacks.length] === 'chromis'
+          ? CHROMIS_PALETTE
+          : PELAGIC_PALETTES[this.uBacks.length % PELAGIC_PALETTES.length];
       this.uBacks.push(uniform(palette[0].clone()));
       this.uFlanks.push(uniform(palette[1].clone()));
       this.uBellies.push(uniform(palette[2].clone()));
@@ -1324,6 +1361,9 @@ function buildSchools(random: () => number): SchoolPath[] {
       case 'patrol':
         paths.push(buildPatrolPath(random, findStation(random, PATROL_STATION_BAND, 0, 1)));
         break;
+      case 'chromis':
+        paths.push(buildChromisPath(random));
+        break;
     }
   }
 
@@ -1450,6 +1490,41 @@ function buildPatrolPath(random: () => number, station: Station): SchoolPath {
     weaveOmega: WEAVE_OMEGA,
     beatOmega: BEAT_HZ * 0.85 * Math.PI * 2,
     scale: 0.85 + random() * 0.5,
+  };
+}
+
+/** [underwater-look-3] Round 12: the chromis over the nearest reef; see `CHROMIS_OFFSET`. */
+function buildChromisPath(random: () => number): SchoolPath {
+  const patches = reefPatches();
+  const near =
+    patches.length > 0
+      ? patches.reduce((a, b) => (Math.hypot(b.x, b.z) < Math.hypot(a.x, a.z) ? b : a))
+      : { x: REEF_STATION_BAND.minRadius, z: 0 };
+  const bearing = Math.atan2(near.z, near.x);
+  const direction = random() < 0.5 ? -1 : 1;
+  return {
+    cx: near.x + Math.cos(bearing) * CHROMIS_OFFSET,
+    cz: near.z + Math.sin(bearing) * CHROMIS_OFFSET,
+    theta0: random() * Math.PI * 2,
+    omega: (direction * RESIDENT_CRUISE_MIN) / CHROMIS_RADIUS,
+    radius: CHROMIS_RADIUS,
+    wanderR1: 1.2,
+    wanderR2: 0.6,
+    r1Phase: random() * Math.PI * 2,
+    r2Phase: random() * Math.PI * 2,
+    fromFloor: true,
+    depth: CHROMIS_HOVER[0] + random() * (CHROMIS_HOVER[1] - CHROMIS_HOVER[0]),
+    depthSwing: 0.5,
+    depthRate: 0.03 + random() * 0.02,
+    depthPhase: random() * Math.PI * 2,
+    length: CHROMIS_LENGTH,
+    width: CHROMIS_WIDTH,
+    halfHeight: CHROMIS_HALF_HEIGHT,
+    footprint: footprintFor(CHROMIS_LENGTH, CHROMIS_WIDTH),
+    clearance: RESIDENT_CLEARANCE,
+    weaveOmega: WEAVE_OMEGA * RESIDENT_WEAVE_SCALE,
+    beatOmega: BEAT_HZ * Math.PI * 2,
+    scale: CHROMIS_SCALE[0] + random() * (CHROMIS_SCALE[1] - CHROMIS_SCALE[0]),
   };
 }
 

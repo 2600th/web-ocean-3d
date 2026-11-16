@@ -4,15 +4,19 @@ import {
   attribute,
   cos,
   float,
+  frameId,
+  interleavedGradientNoise,
   mix,
   mx_noise_float,
   normalWorld,
   positionGeometry,
   positionLocal,
   positionWorld,
+  screenCoordinate,
   select,
   sin,
   uniform,
+  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -135,6 +139,8 @@ interface SpeciesDef {
   lods?: readonly ((seed: number) => MeshBuilder)[];
   /** Level switches, in distance over instance radius; see `InstanceField`. */
   switches?: readonly number[];
+  /** [underwater-look-3] Round 12: dissolve between levels; see `LOD_FADE_SECONDS`. */
+  crossFade?: boolean;
   /** Distinct templates, each its own draw. */
   variants: number;
   /** Two-sided material: ribbons and fans. */
@@ -189,6 +195,19 @@ interface SpeciesDef {
 // Round 11: 7 -> 10, so the round outline holds out to the mound-close range.
 const NEAR_MASSIVE = 10;
 
+/**
+ * [underwater-look-3] Round 12. Seconds a bommie takes to dissolve from one
+ * level of detail into the next, instead of exchanging the 12k-triangle head
+ * for the 3k one in a single frame (see `InstanceField`'s `crossFade`). Over
+ * time rather than over a band of distance: a distance band left a parked
+ * camera looking at a half-dithered head indefinitely, a stipple TAA does not
+ * fully resolve; a timed fade passes in half a second and the head is whole
+ * again. Bommies only, the one species whose levels differ enough in
+ * silhouette to pop: the dither discards, which costs the early depth test,
+ * and the other species' levels differ only in tessellation.
+ */
+const LOD_FADE_SECONDS = 0.5;
+
 const SPECIES: readonly SpeciesDef[] = [
   {
     // The structure the rest of the reef is scattered around — see
@@ -201,6 +220,7 @@ const SPECIES: readonly SpeciesDef[] = [
     build: buildBommie,
     lods: [(s) => buildBommie(s, 1), (s) => buildBommie(s, 2)],
     switches: [7, 18],
+    crossFade: true,
     variants: 2,
     thin: true,
     palette: [0xffffff, 0xf4f0e8, 0xe8eef4, 0xf8ecec],
@@ -570,6 +590,26 @@ const ISLAND_MEADOW_RADIUS = 7;
 const PLATEAU_MEADOWS_PER_PATCH = 1;
 const PLATEAU_MEADOW_RADIUS = 7;
 const SITE_SPACING = 45;
+/**
+ * [underwater-look-3] Round 12. The island's shallow shelf between
+ * `SHELF_LIFE_DEPTH` metres: scattered coral heads, rubble and the odd sponge
+ * and sea rod on the sand and in the grass, in loose clusters of up to
+ * `SHELF_CLUSTER` within `SHELF_CLUSTER_RADIUS` metres. Per species: the count
+ * round the whole island and its scale range (smaller than on the reef, these
+ * are isolated heads and broken rock). The review read the shelf as empty sand.
+ */
+const SHELF_LIFE_SEED = 0x5e1f11fe;
+const SHELF_LIFE_DEPTH: readonly [number, number] = [1.8, 9];
+const SHELF_CLUSTER = 8;
+const SHELF_CLUSTER_RADIUS = 8;
+const SHELF_LIFE: readonly (readonly [string, number, readonly [number, number]])[] = [
+  ['star-coral', 1200, [0.6, 1.4]],
+  ['brain-coral', 900, [0.5, 1.1]],
+  ['reef-rock', 3200, [0.3, 0.8]],
+  ['sea-rod', 1000, [0.6, 1.1]],
+  ['vase-sponge', 240, [0.5, 0.9]],
+  ['urchin', 700, [0.8, 1.2]],
+];
 
 function findIslandSites(
   random: () => number,
@@ -600,17 +640,22 @@ function findIslandSites(
   return out;
 }
 
-function slopeAt(x: number, z: number): number {
+function slopeAt(x: number, z: number, height = seafloorPlacementHeight): number {
   const h = 2;
-  const dx = (seafloorPlacementHeight(x + h, z) - seafloorPlacementHeight(x - h, z)) / (2 * h);
-  const dz = (seafloorPlacementHeight(x, z + h) - seafloorPlacementHeight(x, z - h)) / (2 * h);
+  const dx = (height(x + h, z) - height(x - h, z)) / (2 * h);
+  const dz = (height(x, z + h) - height(x, z - h)) / (2 * h);
   return Math.hypot(dx, dz);
 }
 
-function floorNormal(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
+function floorNormal(
+  x: number,
+  z: number,
+  out: THREE.Vector3,
+  height = seafloorPlacementHeight,
+): THREE.Vector3 {
   const h = 0.6;
-  const dx = (seafloorPlacementHeight(x + h, z) - seafloorPlacementHeight(x - h, z)) / (2 * h);
-  const dz = (seafloorPlacementHeight(x, z + h) - seafloorPlacementHeight(x, z - h)) / (2 * h);
+  const dx = (height(x + h, z) - height(x - h, z)) / (2 * h);
+  const dz = (height(x, z + h) - height(x, z - h)) / (2 * h);
   return out.set(-dx, 1, -dz).normalize();
 }
 
@@ -640,6 +685,9 @@ export class ReefLife {
   private readonly fields: InstanceField[] = [];
   private readonly solid: THREE.MeshStandardNodeMaterial;
   private readonly thin: THREE.MeshStandardNodeMaterial;
+  /** [underwater-look-3] Round 12: the bommies' cross-faded levels; see `LOD_FADE_SECONDS`. */
+  private readonly fading: THREE.MeshStandardNodeMaterial;
+  private readonly uLodClock = uniform(0);
   private detail = 1;
   private wantVisible = true;
   private disposed = false;
@@ -669,9 +717,11 @@ export class ReefLife {
     this.object.name = 'reef-life';
     this.solid = this.buildMaterial(THREE.FrontSide);
     this.thin = this.buildMaterial(THREE.DoubleSide);
+    this.fading = this.buildMaterial(THREE.DoubleSide, true);
     if (options.shading) {
       applyGroundShading(this.solid, options.shading);
       applyGroundShading(this.thin, options.shading);
+      applyGroundShading(this.fading, options.shading);
     }
 
     // The site draws keep the stream they always had, so the creatures' homes
@@ -718,6 +768,7 @@ export class ReefLife {
         this.buildField(def, v, placements, random);
       }
     }
+    this.dressShelf();
 
     this.setDetail(detail);
     this.buildMs = performance.now() - started;
@@ -758,7 +809,10 @@ export class ReefLife {
   setCameraPosition(position: THREE.Vector3): void {
     this.setCameraHeight(position.y);
     if (!this.object.visible) return;
-    for (const field of this.fields) field.update(position);
+    for (const field of this.fields) {
+      field.setClock(this.clock);
+      field.update(position);
+    }
   }
 
   /** Same three numbers the surface and the kelp take. See `Kelp.setSwell`. */
@@ -776,11 +830,14 @@ export class ReefLife {
   update(dt: number): void {
     if (this.disposed) return;
     this.clock += dt;
+    this.uLodClock.value = this.clock;
     this.pushPhases();
   }
 
   resetClock(time = 0): void {
     this.clock = time;
+    this.uLodClock.value = time;
+    for (const field of this.fields) field.endFades();
     this.pushPhases();
   }
 
@@ -806,6 +863,7 @@ export class ReefLife {
     }
     this.solid.dispose();
     this.thin.dispose();
+    this.fading.dispose();
     this.object.removeFromParent();
   }
 
@@ -923,15 +981,60 @@ export class ReefLife {
     }
   }
 
-  private buildField(def: SpeciesDef, v: number, placements: Placement[], random: () => number): void {
+  /**
+   * [underwater-look-3] Round 12. The island shelf's scattered heads and
+   * rubble; see `SHELF_LIFE`. After every other field, from its own
+   * generators, so nothing already placed moves.
+   */
+  private dressShelf(): void {
+    const normal = new THREE.Vector3();
+    for (const [name, count, scale] of SHELF_LIFE) {
+      const def = SPECIES.find((d) => d.name === name);
+      if (!def) continue;
+      const random = mulberry32(SHELF_LIFE_SEED ^ hashString(name));
+      const placements: Placement[] = [];
+      let left = 0;
+      let cx = 0;
+      let cz = 0;
+      for (let tries = 0; tries < count * 60 && placements.length < count; tries++) {
+        if (left <= 0) {
+          const a = random() * Math.PI * 2;
+          const r = ISLAND.radius * (0.7 + random() * 0.75);
+          cx = ISLAND.x + Math.cos(a) * r;
+          cz = ISLAND.z + Math.sin(a) * r;
+          left = 1 + Math.floor(random() * SHELF_CLUSTER);
+        }
+        const a = random() * Math.PI * 2;
+        const r = Math.sqrt(random()) * SHELF_CLUSTER_RADIUS;
+        const x = cx + Math.cos(a) * r;
+        const z = cz + Math.sin(a) * r;
+        // On the floor as drawn, terrace included: these are new placements,
+        // so seating them on the layout floor (`seafloorPlacementHeight`) would
+        // only bury them up to two metres under the shelf's sand.
+        const d = -seafloorHeight(x, z);
+        if (d < SHELF_LIFE_DEPTH[0] || d > SHELF_LIFE_DEPTH[1]) {
+          left = 0;
+          continue;
+        }
+        if (slopeAt(x, z, seafloorHeight) > 0.4) continue;
+        left--;
+        floorNormal(x, z, normal, seafloorHeight);
+        placements.push({ x, y: seafloorHeight(x, z), z, nx: normal.x, ny: normal.y, nz: normal.z });
+      }
+      this.buildField({ ...def, scale }, 0, placements, random, 'shelf');
+    }
+  }
+
+  private buildField(def: SpeciesDef, v: number, placements: Placement[], random: () => number, tag = ''): void {
     if (placements.length === 0) return;
     const seed = REEF_LIFE_SEED ^ (hashString(def.name) + v * 977);
     const levels = [def.build(seed).build(), ...(def.lods ?? []).map((lod) => lod(seed).build())];
     const field = new InstanceField({
-      name: `reef-${def.name}-${v}`,
+      name: `reef-${def.name}-${tag}${v}`,
       levels,
-      material: def.thin ? this.thin : this.solid,
+      material: def.crossFade ? this.fading : def.thin ? this.thin : this.solid,
       switches: def.switches ?? [],
+      crossFade: def.crossFade ? LOD_FADE_SECONDS : undefined,
       cullBase: CULL_BASE,
       cullPerSize: CULL_PER_SIZE,
       cullMax: CULL_MAX,
@@ -987,15 +1090,33 @@ export class ReefLife {
     this.fields.push(field);
   }
 
-  private buildMaterial(side: THREE.Side): THREE.MeshStandardNodeMaterial {
+  private buildMaterial(side: THREE.Side, crossFade = false): THREE.MeshStandardNodeMaterial {
     const material = new THREE.MeshStandardNodeMaterial({
       vertexColors: true,
       roughness: 0.78,
       metalness: 0,
       side,
     });
-    material.name = side === THREE.DoubleSide ? 'reef-life-thin' : 'reef-life';
+    material.name = crossFade ? 'reef-life-fading' : side === THREE.DoubleSide ? 'reef-life-thin' : 'reef-life';
     material.fog = false;
+    if (crossFade) {
+      // [underwater-look-3] Round 12; see `LOD_FADE_SECONDS`. Both copies of
+      // a changing instance draw the same screen-space dither and keep
+      // complementary halves of it, so together they cover every pixel once;
+      // the incoming level's half grows from nothing to all of it. The
+      // pattern moves each frame, so under TAA the change is a dissolve.
+      const fade: Node = attribute('lodFade', 'vec2');
+      material.maskNode = Fn(() => {
+        const t = this.uLodClock.sub(fade.x).div(LOD_FADE_SECONDS).clamp(0, 1);
+        // The renderer's own frame count, so the pattern moves under a
+        // paused clock too (the capture harness pauses).
+        const frame = float(frameId).mod(64);
+        const n = interleavedGradientNoise(screenCoordinate.add(vec2(frame.mul(5.588), frame.mul(3.11))));
+        const incoming = n.lessThan(t);
+        const steady = fade.y.abs().lessThan(0.5);
+        return steady.or(fade.y.greaterThan(0).and(incoming)).or(fade.y.lessThan(0).and(incoming.not()));
+      })();
+    }
 
     const swayData: Node = attribute('reefSway', 'vec2');
     const surf: Node = attribute('reefSurf', 'float');

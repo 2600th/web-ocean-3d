@@ -375,6 +375,86 @@ const OBJECT_INSCATTER_NEUTRAL = 0.5;
 const OBJECT_TREATMENT_FADE: readonly [number, number] = [0.5, 0.9];
 
 /**
+ * [underwater-look-3] Round 12. A deep bed seen from above: the reef seventeen
+ * metres down reads as darker patches under the blue.
+ *
+ * The transmission term attenuates the bed's own image over both legs (down
+ * the column and back up the view ray, at the diffuse coefficient), which at
+ * seventeen metres keeps a twelfth of it in green, and the column's glow over
+ * it is authored for the look of Caribbean water as a whole, brighter than an
+ * optically deep sea's reflectance. Together the reef and the sand round it came
+ * out within two levels of each other from just above the surface (reef-above).
+ * Measured: the mound 28.9 against sand 111.7 in the bare scene, 103.0 against
+ * 103.8 through the water. The 10b object fade is not involved; the reef there
+ * already tests as bed.
+ *
+ * A real bed is seen from a boat because it *takes away* light the sand would
+ * return: the water over a dark reef is darker than over the sand beside it.
+ * That is what is restored, as a ratio, so the sea over sand keeps its colour:
+ * the water-leaving light over the bed is scaled toward the bed's luminance
+ * relative to its surroundings (the mean of `BED_REFERENCE_TAPS` backdrop reads
+ * `BED_REFERENCE_RADIUS` of the screen away, those that land behind the water
+ * and near the bed's own depth), by up to `BED_SHARE`. Darkening only: a bright
+ * patch (a caustic, pale sand) leaves the water as it is.
+ *
+ * Over the bed only, never an object (`objectBehind`), and only where the
+ * column is between `BED_LEGIBLE_DEPTH[0..1]` and fading by `[2..3]` metres: a
+ * lagoon's bed already shows through its few metres, and past thirty no bed
+ * does. Faded in by the view's steepness, `BED_LEGIBLE_SLOPE` (|view.y|): at a
+ * grazing look across the water the reflection and the path hide any bed, and
+ * this keeps the deck view's kelp from returning as dark strokes
+ * (ship-underway; see `OBJECT_TREATMENT_FADE`).
+ */
+const BED_SHARE = 0.52;
+const BED_LEGIBLE_DEPTH: readonly [number, number, number, number] = [5, 10, 24, 32];
+const BED_LEGIBLE_SLOPE: readonly [number, number] = [0.28, 0.5];
+const BED_REFERENCE_RADIUS = 0.09;
+/**
+ * [underwater-look-3] Round 12b. The bed's image softened before it darkens
+ * the water: in round 12 the ratio read the sharp refracted backdrop, so at
+ * seventeen metres the reef came out as hard-edged dark cut-outs stamped on the
+ * bed. Light coming back up through that much water is spread by forward
+ * scattering, and the moving surface bends it, so a deep bed shows as soft
+ * tonal patches that wobble with the waves.
+ * - Blur: the bed's luminance is the mean of `BED_BLUR_TAPS`, two rings (plus the centre),
+ *   over a footprint of radius `BED_BLUR_PER_M` of the column (0.8 m at 17 m),
+ *   projected to the screen at the bed's distance (`BED_BLUR_UV` caps it).
+ * - Wobble: the footprint's centre is pushed by the waves' slope,
+ *   `BED_WOBBLE` of the screen per unit slope, on top of the refraction the
+ *   backdrop already has, so the patches' edges move with the surface.
+ * - Feather: the darkening ramps in over `BED_FEATHER` of the bed's relative
+ *   darkness (sand ripples and caustic cells stay out; a reef head comes in
+ *   smoothly) instead of following the ratio one for one.
+ * Taps that land in front of the water are skipped, as the reference's are.
+ */
+const BED_BLUR_PER_M = 0.045;
+const BED_BLUR_UV: readonly [number, number] = [0.002, 0.05];
+const BED_WOBBLE = 0.03;
+const BED_FEATHER: readonly [number, number] = [0.04, 0.3];
+const BED_BLUR_TAPS: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [0.5, 0.866],
+  [-0.5, 0.866],
+  [-1, 0],
+  [-0.5, -0.866],
+  [0.5, -0.866],
+  // The inner ring, half as wide and turned 30 degrees: six taps alone printed
+  // six offset copies of every head and left the patches mottled.
+  [0.433, 0.25],
+  [0, 0.5],
+  [-0.433, 0.25],
+  [-0.433, -0.25],
+  [0, -0.5],
+  [0.433, -0.25],
+];
+const BED_REFERENCE_TAPS: readonly (readonly [number, number])[] = [
+  [1, 0.35],
+  [-0.35, 1],
+  [-1, -0.35],
+  [0.35, -1],
+];
+
+/**
  * The display level, as a fraction of the white point (`1 / exposure`), that
  * the low-sun glint count is scaled against (see `glintGain`). Under ACES
  * that is about 0.9 of display white.
@@ -383,6 +463,27 @@ const GLITTER_CEILING = 0.8;
 
 /** Upwelling light under a night sky, as a share of full daylight's. */
 const BODY_NIGHT_FLOOR = 0.1;
+
+/**
+ * The sky luminance (the mean of the zenith and horizon the water reflects,
+ * scene-linear) at and above which the sky lights the column as fully as
+ * daylight does.
+ *
+ * The skylight share of the body's light, its night floor and the crest's
+ * sideways glow were fixed: a white skylight and a floor of a tenth of
+ * daylight whatever the sky was doing. At night the sky the water reflects
+ * falls to about 0.02-0.04 of this, but the body did not follow it: under the
+ * skyPro grade at 01:00 it drew the column at a quarter of its noon display
+ * level, ten times the sky it sat under, and the night sea was a self-lit teal
+ * sheet (night-deck, cinematic-night, the squall at t76). Those terms now
+ * scale with the measured sky against this reference instead.
+ *
+ * Every daylight preset's sky sits above it (measured from the clear-day-wide
+ * camera: dusk 0.434, storm 0.463, foggy 0.494, sunset 0.493, the rest 0.507),
+ * so in daylight the ratio clamps to exactly 1 and nothing changes; moonlit and
+ * the tour's night sit at 0.023-0.036.
+ */
+const BODY_SKY_DAYLIGHT = 0.4;
 
 /**
  * The body's radiance under full daylight, per unit of the authored
@@ -2065,7 +2166,8 @@ export class OceanMaterial {
       // smears it down the wave face. Where that happens, try a shorter offset,
       // then fall back to the unrefracted sample, which is behind the surface by
       // construction (NeuralSpecOcean steps back the same way).
-      const behindZ: any = (linearDepth(viewportDepthTexture(refractedUv)) as any).toVar();
+      const behindDepth: any = viewportDepthTexture(refractedUv);
+      const behindZ: any = (linearDepth(behindDepth) as any).toVar();
       const nearerZ: any = (linearDepth(viewportDepthTexture(nearerUv)) as any).toVar();
       const valid: any = behindZ.greaterThan(surfaceZ).toVar();
       const nearerValid: any = nearerZ.greaterThan(surfaceZ).toVar();
@@ -2169,7 +2271,8 @@ export class OceanMaterial {
       // water absorbed on the way through is what it has to give back as body
       // colour, which is why `absorption` weights one and its complement the
       // other rather than both being tuned independently.
-      const refracted: any = viewportSharedTexture(sampleUv).rgb.toVar();
+      const refractedSample: any = viewportSharedTexture(sampleUv);
+      const refracted: any = refractedSample.rgb.toVar();
       // `shallowColor` is the look of thin water *over bright sand* — the bed's
       // own reflectance, tinted. Where the depth buffer finds an object well
       // above the seabed (a hull, a buoy, a rock face), that sand is not there,
@@ -2219,6 +2322,67 @@ export class OceanMaterial {
       const columnColor: any = inscatter.mul(mix(absorbed, objectWeight, objectBehind)).toVar();
       const seenThrough: any = refracted.mul(downwelling).mul(sceneWeight).toVar();
 
+      // [underwater-look-3] Round 12: a deep bed's dark patches; see `BED_SHARE`.
+      const lumaW = vec3(0.2126, 0.7152, 0.0722);
+      const bedReference: any = float(0).toVar();
+      const bedReferenceWeight: any = float(0).toVar();
+      for (const [tx, ty] of BED_REFERENCE_TAPS) {
+        const tapUv = sampleUv
+          .add(vec2(tx * BED_REFERENCE_RADIUS, ty * BED_REFERENCE_RADIUS))
+          .clamp(0.002, 0.998)
+          .toVar();
+        // Sampled through the nodes above, so the taps share their bindings:
+        // the fragment stage is at WebGPU's default limit of 16 textures.
+        const tapZ: any = linearDepth(behindDepth.sample(tapUv)) as any;
+        // Behind the water, and not far past the bed's own depth (the sky
+        // above a far horizon is not this bed's surroundings).
+        const tapValid = tapZ.greaterThan(surfaceZ).and(tapZ.lessThan(backdropZ.mul(1.6))).select(1, 0);
+        bedReference.addAssign(refractedSample.sample(tapUv).rgb.dot(lumaW).mul(tapValid));
+        bedReferenceWeight.addAssign(tapValid);
+      }
+      // Round 12b: the bed's own luminance, scattered and wobbled; see `BED_BLUR_PER_M`.
+      const bedDistance: any = backdropZ.mul(this.uDepthRange).max(1).toVar();
+      const blurUv: any = column
+        .mul(BED_BLUR_PER_M * 0.96)
+        .div(bedDistance)
+        .clamp(BED_BLUR_UV[0], BED_BLUR_UV[1])
+        .toVar();
+      const blurCentre: any = sampleUv
+        .add(refractNormal.xz.mul(BED_WOBBLE))
+        .clamp(0.002, 0.998)
+        .toVar();
+      const centreZ: any = linearDepth(behindDepth.sample(blurCentre)) as any;
+      const centreValid = centreZ.greaterThan(surfaceZ).select(1, 0);
+      const bedBlur: any = refracted.dot(lumaW).mul(0.5).toVar();
+      const bedBlurWeight: any = float(0.5).toVar();
+      bedBlur.addAssign(refractedSample.sample(blurCentre).rgb.dot(lumaW).mul(centreValid));
+      bedBlurWeight.addAssign(centreValid);
+      for (const [tx, ty] of BED_BLUR_TAPS) {
+        const tapUv = blurCentre.add(vec2(tx, ty).mul(blurUv)).clamp(0.002, 0.998).toVar();
+        const tapZ: any = linearDepth(behindDepth.sample(tapUv)) as any;
+        const tapValid = tapZ.greaterThan(surfaceZ).select(1, 0);
+        bedBlur.addAssign(refractedSample.sample(tapUv).rgb.dot(lumaW).mul(tapValid));
+        bedBlurWeight.addAssign(tapValid);
+      }
+      const refractedLuma: any = bedBlur.div(bedBlurWeight).toVar();
+      const bedMean: any = bedReferenceWeight
+        .greaterThan(0.5)
+        .select(bedReference.div(bedReferenceWeight.max(1)), refractedLuma)
+        .toVar();
+      const bedDark: any = refractedLuma.div(bedMean.max(1e-5)).clamp(0, 1).oneMinus().toVar();
+      const bedRatio: any = bedDark
+        .mul(smoothstep(float(BED_FEATHER[0]), float(BED_FEATHER[1]), bedDark))
+        .oneMinus()
+        .toVar();
+      const bedLegible: any = smoothstep(float(BED_LEGIBLE_SLOPE[0]), float(BED_LEGIBLE_SLOPE[1]), viewDir.y.abs())
+        .mul(smoothstep(float(BED_LEGIBLE_DEPTH[0]), float(BED_LEGIBLE_DEPTH[1]), column))
+        .mul(smoothstep(float(BED_LEGIBLE_DEPTH[3]), float(BED_LEGIBLE_DEPTH[2]), column))
+        .mul(objectBehind.oneMinus())
+        .mul(refractionReach)
+        .mul(this.uRefractionAmount)
+        .toVar();
+      const bedShade: any = mix(float(1), bedRatio, bedLegible.mul(BED_SHARE)).toVar();
+
       // --- subsurface scattering ---------------------------------------------
       //
       // Light that entered the back of a wave, travelled through it, and came
@@ -2238,6 +2402,13 @@ export class OceanMaterial {
       // `THIN_CREST_METRES`, and it grows toward `THICK_BODY_METRES` down the
       // face. Normalising by the sea state matters — a 0.4 m chop and a 6 m swell
       // have different crests, and a fixed metre scale makes one of them wrong.
+      // How fully the sky is lighting the water, against daylight's: 1 by day,
+      // a few hundredths under a night sky. See BODY_SKY_DAYLIGHT.
+      const skyLight = mix(this.uHorizonColor, this.uSkyColor, 0.5)
+        .dot(vec3(0.2126, 0.7152, 0.0722))
+        .div(BODY_SKY_DAYLIGHT)
+        .clamp(0, 1)
+        .toVar();
       const seaScale = this.uWaveScale.max(0.35).toVar();
       const heightAboveMean = worldPos.y.div(seaScale).clamp(0, 1).max(surfThin).toVar();
       const thickness = mix(
@@ -2325,7 +2496,9 @@ export class OceanMaterial {
           .mul(across.mul(0.6).add(0.4))
           .mul(awayFromSun.mul(0.6).add(0.4))
           .mul(this.uCrestGlow)
-          .mul(this.uLightLevel.min(1.2)),
+          .mul(this.uLightLevel.min(1.2))
+          // Mostly skylight through the thin water: it goes as the sky does.
+          .mul(skyLight),
       );
       // The breaker's backlit face (`surfFace`): skylight and sunlight through
       // a sheet of water a few tens of centimetres thick. Beer–Lambert through
@@ -2346,7 +2519,8 @@ export class OceanMaterial {
           .mul(awayFromSun.mul(0.5).add(0.5))
           .mul(across.mul(0.4).add(0.6))
           .mul(FACE_GLOW)
-          .mul(this.uLightLevel.min(1.2)),
+          .mul(this.uLightLevel.min(1.2))
+          .mul(skyLight),
       );
 
       // --- reflection ----------------------------------------------------------
@@ -2752,13 +2926,17 @@ export class OceanMaterial {
       // reaching the column is the sun's, tinted a third of the way to its
       // colour (the rest is skylight), and falls as the sun drops, toward the
       // night floor.
+      // The skylight share and the night floor are the measured sky's, not a
+      // fixed white and a fixed tenth: under a night sky they fall with it, and
+      // what is left is the moon's light, in the moon's colour (`skyLight`; see
+      // BODY_SKY_DAYLIGHT). In daylight `skyLight` is exactly 1.
       const sunLift = sunDirEarly.y.mul(2.2).clamp(0, 1).toVar();
       const upwelling = mix(
-        float(BODY_NIGHT_FLOOR),
+        skyLight.mul(BODY_NIGHT_FLOOR),
         float(1),
         this.uLightLevel.mul(sunLift.mul(0.7).add(0.3)),
       ).toVar();
-      const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
+      const bodyLight = mix(vec3(skyLight), this.uSunColor, 0.35)
         .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
         .toVar();
       // The body's facing is the swell's, not the ripples'. The light comes up
@@ -2794,6 +2972,7 @@ export class OceanMaterial {
         .mul(sunHeight.mul(0.55).add(0.45).mul(swellRelief).mul(sunShade.mul(0.55).add(0.45)))
         .mul(bodyLight.mul(troughShade).mul(BODY_COLUMN_SHARE))
         .add(seenThrough)
+        .mul(bedShade)
         .add(scatter.mul(sunShade))
         .toVar();
 
