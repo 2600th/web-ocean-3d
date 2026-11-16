@@ -39,14 +39,18 @@ function aoRamp(t: number, floor = 0.42, reach = 0.45): number {
 
 const grey = (k: number): RGB => [k, k, k];
 
-/** Brain coral: a lumpy, slightly flattened dome. ~520 triangles. */
-export function buildBrainCoral(seed: number): MeshBuilder {
+/**
+ * Brain coral: a lumpy, slightly flattened dome. ~520 triangles; `fine`
+ * (round 10, the near level) ~1900, so a head a couple of metres off keeps a
+ * round silhouette and smooth shading instead of showing its polygons.
+ */
+export function buildBrainCoral(seed: number, fine = false): MeshBuilder {
   const b = new MeshBuilder();
   b.addBlob(
     new THREE.Vector3(0, -0.05, 0),
     new THREE.Vector3(0.62, 0.46, 0.58),
-    11,
-    24,
+    fine ? 20 : 11,
+    fine ? 48 : 24,
     { color: (t) => grey(aoRamp(t, 0.38, 0.55)), surf: SURF_BRAIN },
     (d) => 0.9 + 0.2 * dirNoise(d.x, d.y, d.z, seed),
     -0.12,
@@ -57,9 +61,9 @@ export function buildBrainCoral(seed: number): MeshBuilder {
 /**
  * Star coral (Orbicella / Montastraea): three or four overlapping lumpy mounds,
  * the massive boulder form that makes up most of a Caribbean reef's bulk. ~700
- * triangles.
+ * triangles, ~3000 `fine`.
  */
-export function buildMoundCoral(seed: number): MeshBuilder {
+export function buildMoundCoral(seed: number, fine = false): MeshBuilder {
   const random = mulberry32(seed);
   const b = new MeshBuilder();
   const lobes = 3 + Math.floor(random() * 2);
@@ -70,8 +74,9 @@ export function buildMoundCoral(seed: number): MeshBuilder {
     b.addBlob(
       new THREE.Vector3(Math.cos(a) * r, -0.04, Math.sin(a) * r),
       new THREE.Vector3(size, size * (0.75 + random() * 0.4), size),
-      7,
-      14,
+      // [underwater-look-3] Round 10: the near level, ~4x the triangles; see `buildBrainCoral`.
+      fine ? 14 : 7,
+      fine ? 30 : 14,
       { color: (t) => grey(aoRamp(t, 0.35, 0.6)), surf: SURF_PORES },
       (d) => 0.85 + 0.28 * dirNoise(d.x * 1.6, d.y * 1.6, d.z * 1.6, seed + i * 7),
       -0.1,

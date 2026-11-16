@@ -1007,6 +1007,8 @@ class App {
         range: quality.vegetationRange * 0.65,
       });
       this.scene.add(this.seabedCover.object);
+      // [underwater-look-3] Round 10: stones at the holdfasts and between the stands.
+      this.rocks.addKelpBedStones(this.kelp.columns, this.kelp.forests);
     }
 
     // Everything that lives under the surface goes on its own layer, kept out of

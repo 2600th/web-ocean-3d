@@ -302,6 +302,16 @@ const UNDER_AMBIENT_TINT: readonly [number, number, number] = [0.75, 1.2, 0.8];
  */
 const LEAN_SPREAD = 0.6;
 const LEAN_TURN = 0.7;
+/**
+ * [underwater-look-3] Round 10. Each plant's own lag in the swell and its own
+ * meander, radians: a smooth field over seven to nine metres (two or three
+ * columns' spacing; near the top, where the swing is, a column's strands are
+ * within half a metre), so neighbours swing out of step and a column holds together.
+ * A stiffer or longer plant answers the same water late; with one phase the
+ * whole forest moved as a single sheet.
+ */
+const SWELL_LAG = 0.9;
+const MEANDER_LAG = 2.2;
 /** [underwater-look-3] How far a blade's edges curl back, as a share of its half-width. */
 const CUP = 0.28;
 const SWAY_POWER = 1.25;
@@ -437,10 +447,14 @@ function swayAt(U: LeafUniforms, px: Node, pz: Node, h: Node, t: Node, swayPhase
   const hh = h.max(0);
   const env = hh.pow(SWAY_POWER).mul(SWAY_GAIN);
   const downwave = px.mul(dir.x).add(pz.mul(dir.y));
-  const swell = sin(swayPhase.sub(downwave.mul(U.uSwellK)).sub(hh.mul(0.08))).mul(U.uSwell);
-  const surge = sin(surgePhase.sub(downwave.mul(SURGE_K)).sub(hh.mul(0.05))).mul(U.uSurge);
+  // [underwater-look-3] Round 10: see `SWELL_LAG`.
+  const lag = sin(px.mul(0.79).add(pz.mul(0.37)).add(0.7))
+    .mul(0.6)
+    .add(sin(px.mul(-0.31).add(pz.mul(0.83)).add(2.1)).mul(0.4));
+  const swell = sin(swayPhase.sub(downwave.mul(U.uSwellK)).sub(hh.mul(0.08)).sub(lag.mul(SWELL_LAG))).mul(U.uSwell);
+  const surge = sin(surgePhase.sub(downwave.mul(SURGE_K)).sub(hh.mul(0.05)).sub(lag.mul(SWELL_LAG * 0.6))).mul(U.uSurge);
   const along = swell.add(surge);
-  const ph = px.mul(0.031).add(pz.mul(0.017));
+  const ph = px.mul(0.031).add(pz.mul(0.017)).add(lag.mul(MEANDER_LAG));
   const mx = sin(t.mul(0.5).add(ph).add(hh.mul(0.09))).add(sin(t.mul(1.3).add(ph.mul(3)).add(hh.mul(0.3))).mul(0.35));
   const mz = cos(t.mul(0.37).add(ph.mul(1.3)).add(hh.mul(0.07))).add(cos(t.mul(1.1).add(ph.mul(2)).add(hh.mul(0.23))).mul(0.35));
   // [underwater-look-3] The mean set, varied across the forest; see `LEAN_SPREAD`.
