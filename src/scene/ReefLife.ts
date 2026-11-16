@@ -182,6 +182,12 @@ interface SpeciesDef {
  * inside their cull range, so the stand-in costs a fraction of what it
  * replaces (reef plus rocks, High, reef-dive: +0.3 ms GPU at p10).
  */
+/**
+ * [underwater-look-3] Round 10. Distance over instance radius inside which
+ * the massive corals draw their fine level: a 1 m head to 7 m.
+ */
+const NEAR_MASSIVE = 7;
+
 const SPECIES: readonly SpeciesDef[] = [
   {
     // The structure the rest of the reef is scattered around — see
@@ -213,7 +219,10 @@ const SPECIES: readonly SpeciesDef[] = [
   {
     // Diploria, Colpophyllia.
     name: 'brain-coral',
-    build: buildBrainCoral,
+    // [underwater-look-3] Round 10: a fine near level; see `buildBrainCoral`.
+    build: (s) => buildBrainCoral(s, true),
+    lods: [(s) => buildBrainCoral(s)],
+    switches: [NEAR_MASSIVE],
     variants: 2,
     thin: false,
     palette: [0xb8a36a, 0x8fae6b, 0xc98f7a, 0xa5a25a, 0xd2b68c, 0x9fb88a, 0x6fa87a, 0xc8b048],
@@ -232,7 +241,9 @@ const SPECIES: readonly SpeciesDef[] = [
   {
     // Star coral, Orbicella: the massive boulder colonies.
     name: 'star-coral',
-    build: buildMoundCoral,
+    build: (s) => buildMoundCoral(s, true),
+    lods: [(s) => buildMoundCoral(s)],
+    switches: [NEAR_MASSIVE],
     variants: 1,
     thin: false,
     palette: [0xa88f63, 0x8c9a6e, 0xb59a7c, 0x8a947e, 0xc4a160, 0x9a8a70],

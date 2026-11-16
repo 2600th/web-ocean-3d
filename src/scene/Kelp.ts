@@ -139,6 +139,31 @@ const MAX_COLUMN = 26;
 const MIN_COLUMN = 3;
 /** Holdfast burial, as the old `HOLDFAST_SINK`: the mesh lerps the analytic floor. */
 const HOLDFAST_SINK = 0.3;
+/**
+ * [underwater-look-3] Round 10. Each plant's own character, from hashes of its
+ * holdfast so the layout and every column's place are unchanged: the round-10
+ * review read the forest as cloned stalks. `age` 0..1 sets a young plant's
+ * height to `YOUNG_HEIGHT` of its column at age 0, rising to full by
+ * `YOUNG_AGE`, with fewer, smaller blades; past `OLD_AGE` a plant darkens by
+ * up to `OLD_DARK` and its blades brown, `OLD_YELLOW` of them going the
+ * yellow-brown of a senescent frond. `BROKEN_SHARE` of the grown plants have
+ * lost their top to a storm, standing at `BROKEN_KEEP` of their height with
+ * full-size blades to the break. Curvature runs `CURVE_RANGE` times the
+ * stream's draw, blade size `SIZE_RANGE`, fill `FILL_RANGE`.
+ */
+const YOUNG_HEIGHT = 0.42;
+const YOUNG_AGE = 0.4;
+const OLD_AGE: readonly [number, number] = [0.68, 0.95];
+const OLD_DARK = 0.4;
+const OLD_YELLOW = 0.3;
+const BROKEN_SHARE = 0.18;
+const BROKEN_KEEP: readonly [number, number] = [0.4, 0.72];
+const CURVE_RANGE: readonly [number, number] = [0.35, 2.3];
+const SIZE_RANGE: readonly [number, number] = [0.78, 1.3];
+const FILL_RANGE: readonly [number, number] = [0.7, 1.3];
+/** Holdfast haptera: count and reach grow with the plant's age. */
+const HOLDFAST_COUNT: readonly [number, number] = [8, 17];
+const HOLDFAST_REACH: readonly [number, number] = [0.55, 1.25];
 /** Steepest floor a holdfast takes, as a gradient. */
 const MAX_SLOPE = 0.5;
 
@@ -615,7 +640,22 @@ function clumpColumns(columns: Column[], floor: FloorCache): void {
 function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
   const rr = (a: number, b: number) => a + (b - a) * rnd();
   const TAU = Math.PI * 2;
-  const H = c.height;
+  // [underwater-look-3] Round 10: the plant's own character; see `YOUNG_HEIGHT`.
+  const age = hash2(c.x * 0.613 + 3.1, c.z * 0.291 - 1.7);
+  const grown = smoothstep(0, YOUNG_AGE, age);
+  const old = smoothstep(OLD_AGE[0], OLD_AGE[1], age);
+  const gBreak = hash2(c.z * 0.447 - 5.3, c.x * 0.719 + 2.9);
+  const gCurve = hash2(c.x * 1.31 + 7.7, c.z * 0.83 + 4.1);
+  const gSize = hash2(c.z * 1.13 - 2.2, c.x * 1.57 - 6.6);
+  const gFill = hash2(c.x * 0.97 - 8.8, c.z * 1.41 + 0.6);
+  // The stem's shape is laid out over the plant's whole height; a broken one
+  // stops at `top`, with the blades it had there.
+  const H = Math.max(MIN_COLUMN * 0.8, c.height * mix(YOUNG_HEIGHT, 1, grown));
+  const broken = grown > 0.9 && gBreak < BROKEN_SHARE;
+  const top = broken ? H * mix(BROKEN_KEEP[0], BROKEN_KEEP[1], gBreak / BROKEN_SHARE) : H;
+  const sizeK = mix(SIZE_RANGE[0], SIZE_RANGE[1], gSize) * mix(0.72, 1, grown);
+  const fillK = mix(FILL_RANGE[0], FILL_RANGE[1], gFill) * mix(0.6, 1, grown);
+  const darkK = (1 - OLD_DARK * old) * (1 + 0.12 * (1 - grown));
   const strands = 2 + (rnd() < 0.6 ? 1 : 0) + (rnd() < 0.3 ? 1 : 0);
   const ph = rnd() * TAU;
   const tw = rr(0.1, 0.28);
@@ -624,7 +664,7 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
   const la = rnd() * TAU;
   // [underwater-look-3] Round 6: 0.11 -> 0.17, the same draw scaled, so each
   // column's own curve stands out more against the current's common lean.
-  const lm = rr(0, 0.17);
+  const lm = rr(0, 0.17) * mix(CURVE_RANGE[0], CURVE_RANGE[1], gCurve);
   const stem = (s: number, h: number): [number, number, number] => {
     const a = ph + (s * TAU) / strands + h * tw;
     const r = sr * (1 - (0.6 * h) / H);
@@ -643,7 +683,9 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
   // unchanged. Leaves take most of their palette pick from it, which makes
   // one column golden-brown and its neighbour olive or green instead of every
   // column the same mix of all three.
-  const tone = hash2(c.x, c.z);
+  // [underwater-look-3] Round 10: old plants toward the golden-brown end,
+  // young ones toward the fresh green.
+  const tone = mix(hash2(c.x, c.z) * (1 - 0.7 * old), 1, 0.6 * (1 - grown));
 
   // [underwater-look-3] A holdfast: a clump of short haptera spreading from
   // the foot and bending down into the sand. Giant kelp grips the rock with a
@@ -658,45 +700,62 @@ function growColumn(leaves: Leaf[], rnd: () => number, c: Column): void {
       t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const count = 7 + Math.floor(hr() * 5);
+    // [underwater-look-3] Round 10: a bigger clump on an older plant, in two
+    // tiers — long haptera splayed over the sand and a short tangle above —
+    // so it reads from a distance as the anchor it is.
+    const span = mix(HOLDFAST_REACH[0], HOLDFAST_REACH[1], age);
+    const count = Math.round(mix(HOLDFAST_COUNT[0], HOLDFAST_COUNT[1], age)) + Math.floor(hr() * 3);
     for (let i = 0; i < count; i++) {
       const a = (i / count) * TAU + hr() * 0.8;
+      const upper = i % 3 === 2;
+      const r0 = upper ? 0.05 : 0.08 + hr() * 0.1;
       leaves.push({
-        x: c.x + Math.cos(a) * 0.08, y: c.y + HOLDFAST_SINK + 0.05 + hr() * 0.25, z: c.z + Math.sin(a) * 0.08,
-        len: 0.45 + hr() * 0.45, yaw: a, tilt: 1.05 + hr() * 0.35, width: 0.07 + hr() * 0.04, hA: 0,
-        type: LeafType.STIPE, s1: hr(), s2: hr(), bend: 0.75 + hr() * 0.2, ao: 0.25, keep: true,
+        x: c.x + Math.cos(a) * r0, y: c.y + HOLDFAST_SINK + (upper ? 0.35 + hr() * 0.3 : 0.15 + hr() * 0.2), z: c.z + Math.sin(a) * r0,
+        len: span * (upper ? 0.45 + hr() * 0.3 : 0.6 + hr() * 0.4), yaw: a, tilt: upper ? 0.75 + hr() * 0.35 : 0.95 + hr() * 0.3,
+        width: (0.08 + hr() * 0.06) * (0.8 + 0.4 * age), hA: 0,
+        // Arched over the sand rather than diving into it.
+        type: LeafType.STIPE, s1: hr(), s2: hr(), bend: 0.55 + hr() * 0.2, ao: 0.3, keep: true,
       });
     }
   }
 
   for (let s = 0; s < strands; s++) {
-    for (let h = 0; h < H - 1; h += 1.7) {
+    for (let h = 0; h < top - 1; h += 1.7) {
       const p = stem(s, h);
       leaves.push({
-        x: p[0], y: c.y + h, z: p[1], len: 2.1, yaw: p[2] + Math.PI / 2, tilt: 0.1, width: 0.17, hA: h,
-        type: LeafType.STIPE, s1: rnd(), s2: rnd(), bend: 0.3, ao: occlusion(h / H), keep: true,
+        x: p[0], y: c.y + h, z: p[1], len: Math.min(2.1, top - h + 0.2), yaw: p[2] + Math.PI / 2, tilt: 0.1,
+        width: 0.17 * mix(0.75, 1.1, grown * (0.6 + 0.4 * gSize)), hA: h,
+        type: LeafType.STIPE, s1: rnd(), s2: rnd(), bend: 0.3, ao: occlusion(h / H) * darkK, keep: true,
       });
     }
   }
 
-  const n = Math.floor(H * LEAVES_PER_METRE * c.fill);
+  const n = Math.floor(H * LEAVES_PER_METRE * c.fill * fillK);
   for (let i = 0; i < n; i++) {
     const t = Math.pow(rnd(), 0.9);
     const h = t * H;
     const p = stem(Math.floor(rnd() * strands), h);
-    const L = ((0.55 + 0.75 * rnd() * rnd()) * (1 - 0.5 * t * t) * sc + 0.25) * 1.15;
+    const L = ((0.55 + 0.75 * rnd() * rnd()) * (1 - 0.5 * t * t) * sc + 0.25) * 1.15 * sizeK;
     const tilt = mix(rr(0.4, 1.0), rr(0.15, 0.45), t);
     const type = c.kind === 2 ? (rnd() < 0.5 ? LeafType.SARGASSUM : LeafType.KELP) : LeafType.KELP;
+    const s1 = mix(rnd(), tone, 0.7);
+    let s2 = rnd();
+    const bend = rr(0.38, 0.95);
+    // Above the break nothing grows; the draws are spent all the same.
+    if (h > top) continue;
+    // An old plant's yellowing fronds: the palette's yellow-brown blade, which
+    // `s2` past 0.86 picks.
+    if (old > 0 && hash2(p[0] * 3.7 + h, p[1] * 2.9 - h) < OLD_YELLOW * old) s2 = 0.87 + 0.13 * s2;
     leaves.push({
       x: p[0], y: c.y + h, z: p[1], len: L, yaw: rnd() * TAU, tilt, width: L * rr(0.15, 0.21) + 0.03, hA: h,
-      type, s1: mix(rnd(), tone, 0.7), s2: rnd(), bend: rr(0.38, 0.95), ao: occlusion(t),
+      type, s1, s2, bend, ao: occlusion(t) * darkK,
     });
   }
 
   // [underwater-look-3] See `GLINT_KEEP`: its own hash, not the stream.
   let glintSeed = (hash2(c.x * 0.71, c.z * 1.37) * 4294967296) >>> 0;
   for (let i = Math.floor(H * GLINTS_PER_METRE); i > 0; i--) {
-    const h = rnd() * H;
+    const h = rnd() * top;
     const a = rnd() * TAU;
     const r = rr(0.15, 0.8) * (1 - (0.5 * h) / H);
     const ln = (lm * h * h) / H;
