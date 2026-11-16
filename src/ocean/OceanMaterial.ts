@@ -2955,7 +2955,7 @@ export class OceanMaterial {
       // ship from a cask, but `Wake` can: it lays a collar of foam along every
       // moving hull's waterline, heaviest at the stem (`COLLAR_FOAM`,
       // `stemKnot`), so the hull channel is non-zero exactly round a hull that
-      // is pushing water aside. There the ring widens to about a metre and
+      // is pushing water aside. There the ring widens to a metre and a half and
       // thickens — Water Pro's refraction-1 shows a broken white band 0.3–1 m
       // wide along the hull, ours a one-pixel line — and since the collar is
       // weighted to the bow so is the band. It is heavier again where a crest
@@ -2989,12 +2989,12 @@ export class OceanMaterial {
       const contactAlong = smoothstepDownClamped(
         straightThickness,
         0.03,
-        mix(mix(float(0.25), float(1.1), hullContact), float(5), surge),
+        mix(mix(float(0.25), float(1.6), hullContact), float(5), surge),
       );
       const contactBelow = smoothstepDownClamped(
         straightThickness.mul(viewDir.y.abs()),
         0.03,
-        mix(mix(float(0.16), float(0.55), hullContact), float(1.2), surge),
+        mix(mix(float(0.16), float(0.8), hullContact), float(1.2), surge),
       );
       const notSeabed: any = (
         floorDepth === null
