@@ -31,6 +31,27 @@ import {
 import { smoothstepDownClamped } from '../core/tslMath';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import { ISLAND } from '../scene/Seafloor';
+import { beachrockFootprints, type BeachrockFootprint } from '../scene/islandDetail/beachrock';
+
+/**
+ * The beachrock's footprints grouped into clusters, each with a centre and a
+ * reach that covers every footprint's pile, wrap and lee, so the surf can
+ * skip a cluster with one distance test.
+ */
+const BEACHROCK_CLUSTERS: { x: number; z: number; reach: number; feet: BeachrockFootprint[] }[] = (() => {
+  const out: { x: number; z: number; reach: number; feet: BeachrockFootprint[] }[] = [];
+  for (const f of beachrockFootprints()) {
+    const near = out.find((c) => Math.hypot(c.feet[0].x - f.x, c.feet[0].z - f.z) < 40);
+    if (near) near.feet.push(f);
+    else out.push({ x: 0, z: 0, reach: 0, feet: [f] });
+  }
+  for (const c of out) {
+    c.x = c.feet.reduce((s, f) => s + f.x, 0) / c.feet.length;
+    c.z = c.feet.reduce((s, f) => s + f.z, 0) / c.feet.length;
+    c.reach = Math.max(...c.feet.map((f) => Math.hypot(f.x - c.x, f.z - c.z) + Math.max(f.ra, f.rb) * 6.5 + 4));
+  }
+  return out;
+})();
 import {
   featherFoam,
   foamBubbleCloud,
@@ -3308,6 +3329,60 @@ export class OceanMaterial {
             .mul(sheetClear)
             .min(0.95)
             .toVar();
+
+          // **Rocks to break around** (round 11). Every bore that reaches a
+          // rock standing in the surf breaks against it: white water piles on
+          // its seaward face metres deep, pours round both sides in streams,
+          // and leaves a gap of dark, unbroken water in its lee where the bore
+          // was blocked (NeuralSpecOcean's beach frames; the critic's "no rocks
+          // to break around" in foam-4). The depth buffer sees only the water
+          // in front of a rock's submerged face, so this reads the beachrock's
+          // footprints (`beachrock.ts`), a handful of ellipses, gated by
+          // cluster so the rest of the surf pays one distance test.
+          const rockPile = float(0).toVar();
+          const rockLee = float(0).toVar();
+          const across2 = vec2(shoreward.y.negate(), shoreward.x).toVar();
+          for (const cluster of BEACHROCK_CLUSTERS) {
+            If(fieldXZ.sub(vec2(cluster.x, cluster.z)).length().lessThan(cluster.reach), () => {
+              for (const f of cluster.feet) {
+                const rel = fieldXZ.sub(vec2(f.x, f.z)).toVar();
+                const ea = rel.dot(vec2(f.ax, f.az)).div(f.ra);
+                const eb = rel.dot(vec2(-f.az, f.ax)).div(f.rb);
+                // Metres outside the waterline ellipse, near enough.
+                const edge = vec2(ea, eb).length().sub(1).mul(Math.min(f.ra, f.rb));
+                const behind = rel.dot(shoreward).toVar();
+                const across = rel.dot(across2).abs().toVar();
+                const seaward = behind.negate().div(rel.length().max(0.01)).max(0);
+                const r = (f.ra + f.rb) * 0.5;
+                const pile = smoothstepDownClamped(edge, 0.2, mix(float(2), float(4), seaward));
+                // Combed shore-normal into streams as it pours past.
+                const combed = valueNoise(vec2(across.mul(1 / 0.9), behind.mul(1 / 4)).add(vec2(f.x % 17, f.z % 13)))
+                  .smoothstep(0.3, 0.7)
+                  .mul(0.6)
+                  .add(0.4);
+                const wrap = across
+                  .smoothstep(r * 0.4, r * 0.95)
+                  .mul(smoothstepDownClamped(across, r * 1.2, r * 2))
+                  .mul(behind.smoothstep(-r * 0.4, r * 0.3))
+                  .mul(smoothstepDownClamped(behind, r * 2, r * 6))
+                  .mul(combed);
+                const lee = smoothstepDownClamped(across, r * 0.4, r * 1.0)
+                  .mul(behind.smoothstep(r * 0.6, r * 1.3))
+                  .mul(smoothstepDownClamped(behind, r * 2.2, r * 6));
+                rockPile.assign(rockPile.max(pile).max(wrap.mul(0.9)));
+                rockLee.assign(rockLee.max(lee));
+              }
+            });
+          }
+          // Lumpy, renewed by each bore's arrival and fading through the period.
+          const rockWhite = rockPile
+            .mul(valueNoise(fieldXZ.mul(1 / 1.1).add(vec2(3.3, 8.1))).mul(0.55).add(0.8))
+            .mul(age.mul(-1.8).exp().mul(0.25).add(0.8))
+            .mul(d.smoothstep(0.02, 0.2))
+            .min(1)
+            .toVar();
+          const rockKeep = rockLee.mul(-0.7).add(1).toVar();
+          whitewater.assign(whitewater.mul(rockKeep).max(rockWhite.min(0.95)));
           // What is left of a bore is still being carried up the beach by the
           // next, so the pattern drifts shoreward as it ages — and stops doing so
           // at the waterline, where the ground draws the same pattern unmoved.
@@ -3435,6 +3510,8 @@ export class OceanMaterial {
               .max(thin)
               .max(band.mul(far).mul(mix(float(0.35), float(1.1), lanes)).mul(sections).mul(crestSection.mul(0.6).add(0.4)))
               .max(edgeLine)
+              .mul(rockKeep)
+              .max(rockWhite)
               .clamp(0, 1)
               .mul(strength),
           );
@@ -3445,7 +3522,7 @@ export class OceanMaterial {
           // The dense stage is what carries the bubbles; the lace floats on
           // water that has mostly cleared.
           surfAerated.assign(
-            roller.max(dense.mul(1.15).mul(sheetClear)).max(whitewater.mul(0.3)).max(lip).clamp(0, 1).mul(strength),
+            roller.max(dense.mul(1.15).mul(sheetClear)).max(whitewater.mul(0.3)).max(lip).mul(rockKeep).max(rockWhite.mul(0.8)).clamp(0, 1).mul(strength),
           );
         });
       }
