@@ -333,9 +333,21 @@ export class IslandDetail {
     for (const v of variants) v.dispose();
   }
 
-  /** Wrack along the high-tide line and shell litter below and above it. */
+  /**
+   * Wrack along the high-tide line and shell litter below and above it.
+   *
+   * The wrack is sparse and sun-bleached. Laid end to end at full width in
+   * the fresh-weed brown, it drew the strandline as long dark smudges a
+   * metre and a half wide that read as decals from the beach-surf view
+   * (foam-4). A real strandline above the latest tide is mostly old, grey-tan
+   * weed in scattered tufts and short strands, with sand between them. So
+   * only one strip in three is laid, at about half the width, and most are
+   * lightened toward that bleached tone. Every strip still makes all its
+   * random draws, so the driftwood placed after it does not move.
+   */
   private beachDecals(out: PartBuilder, rng: () => number): void {
     const n = new THREE.Vector3();
+    let emit = true;
     const place = (tile: 'wrack' | 'litter', bearing: number, y: number, len: number, wid: number, along: boolean) => {
       const shore = shoreRadius(bearing);
       const r = radiusAtHeight(bearing, y, shore);
@@ -354,19 +366,29 @@ export class IslandDetail {
         const z = cz + tangent.z * a * len + side.z * b * wid;
         return new THREE.Vector3(x, seafloorMeshHeight(x, z) + 0.03, z);
       };
-      const tint: [number, number, number] = tile === 'wrack' ? [0.9 + rng() * 0.2, 0.9, 0.85] : [1, 1, 1];
+      let tint: [number, number, number] = [1, 1, 1];
+      if (tile === 'wrack') {
+        const t = rng();
+        // Three in four strips bleached toward grey-tan; the rest stay fresh.
+        const bleach = t < 0.75 ? 1.55 + t * 0.4 : 0.95 + t * 0.15;
+        tint = [bleach * 1.02, bleach, bleach * 0.97];
+      }
+      const mirror = rng() < 0.5;
+      if (!emit) return;
       out.quad(
         // Wound so the face points up: `side` is to the tangent's right.
         [corner(-0.5, -0.5), corner(0.5, -0.5), corner(0.5, 0.5), corner(-0.5, 0.5)],
-        tileQuadUv(tile, rng() < 0.5),
+        tileQuadUv(tile, mirror),
         tint,
         n.clone(),
       );
     };
     for (let i = 0; i < 2400; i++) {
       const b = rng() * Math.PI * 2;
-      place('wrack', b, 1.55 + rng() * 0.5, 3 + rng() * 3, 1 + rng() * 0.8, true);
+      emit = i % 3 === 0;
+      place('wrack', b, 1.55 + rng() * 0.5, 3 + rng() * 3, (1 + rng() * 0.8) * 0.5, true);
     }
+    emit = true;
     for (let i = 0; i < 900; i++) {
       const b = rng() * Math.PI * 2;
       place('litter', b, 0.5 + rng() * 3, 1.4 + rng() * 0.8, 0.5 + rng() * 0.3, false);
