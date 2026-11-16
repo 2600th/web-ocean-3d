@@ -287,6 +287,52 @@ export function generateInitialSpectrum(
   return data;
 }
 
+/**
+ * Energy gain on the JONSWAP level for a sea younger than fully developed,
+ * applied to the waves near the peak and released toward the short-wave tail.
+ *
+ * **Why.** The level was Phillips' 0.0081 at every sea state, which is the
+ * Pierson-Moskowitz value for a *fully developed* sea. A preset's peak is set
+ * independently of its wind, and at 15 m/s with a 47 m peak the sea is far from
+ * developed (a developed 15 m/s sea peaks near 190 m): it is fetch-limited, and
+ * JONSWAP's own fetch laws (Hasselmann et al. 1973) put its level well above
+ * 0.0081. Written in terms of the peak instead of the fetch, eliminating the
+ * dimensionless fetch between `f_p U / g = 3.5 x^-0.33` and
+ * `alpha = 0.076 x^-0.22`:
+ *
+ *     alpha = 0.076 (f_p U / (3.5 g))^(2/3)
+ *
+ * which returns 0.0089 for a developed sea (so 0.0081 stays the floor), 0.0141
+ * for the 15 m/s, 47 m preset and about 0.016 at 21 m/s, 60 m.
+ *
+ * **Near the peak only.** The level of the short waves is set by the wind's
+ * friction velocity, not by fetch: Elfouhaily et al. (1997) split the
+ * spectrum into a long-wave part, whose level grows with inverse wave age, and
+ * a short-wave part on u* alone (the one `OceanMaterial.shortWaveGain` already
+ * applies to the detail band). Their long-wave part is released above the peak
+ * by `exp(-(Omega / sqrt(10)) (sqrt(k / k_p) - 1))`, Omega = U / c_p, and the
+ * extra level here rides that same envelope, so a ripple keeps exactly the
+ * energy it had and only the dominant waves grow.
+ *
+ * **What it was for.** waves-4 (round 6): at 15 m/s and 47 m the swell carried
+ * 82% of the height variance but only 10% of the slope variance (rms slope
+ * 0.051 against 0.088 for the 3-24 m chop and 0.129 under 3 m), and read as
+ * "short chop" beside Water Pro's swell. At the peak this gives 1.74x the
+ * energy (1.32x the height); at 12 m 1.4x; under 3 m nearly none. A calm 5 m/s
+ * sea with a 20 m peak is almost developed and changes by about 10%.
+ */
+function youngSeaGain(windSpeed: number, peakOmega: number, omega: number): number {
+  const u = Math.max(0.5, windSpeed);
+  const peakFrequency = peakOmega / (2 * Math.PI);
+  const level = 0.076 * Math.pow((peakFrequency * u) / (3.5 * GRAVITY), 2 / 3);
+  const gain = Math.max(1, level / 0.0081);
+  if (omega <= peakOmega) return gain;
+  // k / k_p = (w / w_p)^2 in deep water, so sqrt(k / k_p) = w / w_p.
+  const inverseWaveAge = (u * peakOmega) / GRAVITY;
+  const release = Math.exp((-inverseWaveAge / Math.sqrt(10)) * (omega / peakOmega - 1));
+  return 1 + (gain - 1) * release;
+}
+
 function spectrumAmplitude(
   kx: number,
   kz: number,
@@ -316,7 +362,7 @@ function spectrumAmplitude(
   const sigma = omega <= peakOmega ? 0.07 : 0.09;
   const peakRatio = (omega - peakOmega) / (sigma * peakOmega);
   const peakEnhancement = Math.pow(params.gamma, Math.exp(-0.5 * peakRatio * peakRatio));
-  const alpha = 0.0081;
+  const alpha = 0.0081 * youngSeaGain(params.windSpeed, peakOmega, omega);
   const jonswap =
     ((alpha * GRAVITY * GRAVITY) / Math.pow(omega, 5)) *
     Math.exp(-1.25 * Math.pow(peakOmega / omega, 4)) *
