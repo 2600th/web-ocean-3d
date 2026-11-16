@@ -270,15 +270,21 @@ const FRESNEL_FLATTEN = 0.45;
 
 /**
  * How far the swell's own facing toward the sun brightens or darkens the body,
- * per unit of `N.L - sun height`, on the cascades' slope only.
+ * per unit of `N.L - sun height`, on the swell cascade's slope only.
  *
  * In side light (waves-4: sun 90 degrees off the view) the lit and shadowed
  * faces of a swell are the relief, and the body's earlier N.L on the full
  * slope spent that contrast on centimetre ripples, which the reflection draws
  * anyway. Centred on the sun's height so a flat sea keeps its brightness;
- * clamped so a steep face cannot go black or blow out. 2.5 gave dark streaks.
+ * clamped so a steep face cannot go black or blow out.
+ *
+ * Round 5 had 1 on all three cascades, where 2.5 gave dark streaks; the chop
+ * and ripple cascades are gone from it now (they drew the "milky smudges"),
+ * and the swell alone is gentle — rms slope 0.067 at 15 m/s, 0.013 at a calm
+ * 5 m/s — so 4 is a face-to-face swing of about 20% on the moderate sea and
+ * a few percent on the calm one.
  */
-const SWELL_RELIEF = 1;
+const SWELL_RELIEF = 4;
 
 /**
  * The display level, as a fraction of the white point (`1 / exposure`), that
@@ -1663,11 +1669,16 @@ export class OceanMaterial {
       // grazing eye actually sees, so the far sea reflects the greyer sky above
       // the horizon by itself and the fade has nothing left to correct.
       //
-      // Only at grazing views, though: see FRESNEL_FLATTEN.
+      // Only at grazing views, though: see FRESNEL_FLATTEN. And toward the
+      // swell's normal rather than vertical: the argument is about the facets
+      // finer than the pixel, and the swell is metres across and resolved, so
+      // flattening it too took away the one slope that makes a long swell
+      // read at a distance (waves-4, round 6).
       const fresnelFlatten = float(FRESNEL_FLATTEN)
         .mul(viewDir.y.smoothstep(0.08, 0.35).oneMinus())
         .toVar();
-      const nFresnel = normalize(mix(n, vec3(0, 1, 0), fresnelFlatten)).toVar();
+      const swellNormal = normalize(vec3(swellSlope.x.negate(), 1, swellSlope.y.negate())).toVar();
+      const nFresnel = normalize(mix(n, swellNormal, fresnelFlatten)).toVar();
       const oneMinus = float(1).sub(nFresnel.dot(viewDir).clamp(0, 1)).toVar();
       const fresnelPow = oneMinus.mul(oneMinus).mul(oneMinus).mul(oneMinus).mul(oneMinus).toVar();
       const fresnel = fresnelPow.mul(0.98).add(0.02).clamp(0, 1).toVar();
@@ -2074,6 +2085,8 @@ export class OceanMaterial {
       const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
         .mul(SKY_REFLECTION_GAIN)
         .toVar();
+      /** How much of this pixel's mirror ray an object (hull, island) takes. */
+      const objectCover = float(0).toVar();
 
       if (planar !== null) {
         // **Objects only from the planar mirror.** The hull, the island and the
@@ -2109,12 +2122,9 @@ export class OceanMaterial {
         const inFrame = rEdge.x.min(rEdge.y).smoothstep(0, 0.05).clamp(0, 1).toVar();
         const facing = nDotV.smoothstep(0.02, 0.22).toVar();
 
+        objectCover.assign(inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount));
         reflection.assign(
-          mix(
-            reflection,
-            mirrored.rgb.div(objectMask.max(1e-3)),
-            inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount) as any,
-          ),
+          mix(reflection, mirrored.rgb.div(objectMask.max(1e-3)), objectCover as any),
         );
       }
 
@@ -2293,6 +2303,14 @@ export class OceanMaterial {
         glintLevel.sub(glintLevel0),
       ).toVar();
       specular.mulAssign(glintDraw);
+      // The hull stands between these facets and the sun. Where the planar
+      // mirror says an object takes this pixel's reflected ray, the water just
+      // in front of the hull is looking at the hull, and up-sun the same hull
+      // is what blocks the sun from it: the glitter stopped at the keel line
+      // rather than running up to it (reflections-3), and the dark reflection
+      // above shows instead. The sun's shadow map would be the exact test, but
+      // it is a seventeenth texture; the mirror's coverage is already read.
+      specular.mulAssign(objectCover.oneMinus());
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
@@ -2319,15 +2337,17 @@ export class OceanMaterial {
         .toVar();
       // The body's facing is the swell's, not the ripples'. The light comes up
       // out of the column, so how much reaches the eye follows the sun's height
-      // and the face of the wave it leaves through, at the scale of the
-      // cascades (`refractSlope`); the centimetre facets are drawn by the
+      // and the face of the wave it leaves through, at the scale of the swell
+      // cascade (`swellSlope`, 24 m and up); everything shorter is drawn by the
       // Fresnel swing of the reflection on top. On the full slope, the body's
       // N.L put a second, unrelated ripple pattern under the reflection's, and
-      // the sum read as fuzz. See SWELL_RELIEF.
+      // the sum read as fuzz. On all three cascades (round 5) it still did: the
+      // ripple and chop cascades are mip-softened at a grazing view, and their
+      // facing drew soft light and dark blots under the calm near water, the
+      // "milky smudges" of waves-1 (round 6), isolated by drawing this term
+      // alone. See SWELL_RELIEF.
       const sunHeight = sunDirEarly.y.clamp(0, 1).toVar();
-      const swellDotL = normalize(vec3(refractSlope.x.negate(), 1, refractSlope.y.negate()))
-        .dot(sunDirEarly)
-        .toVar();
+      const swellDotL = swellNormal.dot(sunDirEarly).toVar();
       const swellRelief = swellDotL
         .sub(sunHeight)
         .mul(SWELL_RELIEF)
@@ -3509,8 +3529,9 @@ const valueNoise = /*@__PURE__*/ Fn(([p]: [any]) => {
  * breeze.
  *
  * The spectrum's tail is Phillips' saturated k^-4 range with a fixed alpha
- * (`Spectrum`, 0.0081), so everything shorter than the peak has the same
- * slope at 5 m/s as at 15: the wind only moves the peak. That is why the near
+ * (`Spectrum`, 0.0081; `youngSeaGain` raises it near the peak only), so
+ * everything well short of the peak has the same slope at 5 m/s as at 15: the
+ * wind only moves the peak. That is why the near
  * water of near-water-detail (15 m/s) drew the same as calm-close (5 m/s). Real
  * short waves are not saturated at a fixed level. Their curvature spectrum
  * scales with the friction velocity, which is Cox and Munk's mean-square slope
