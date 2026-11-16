@@ -1,6 +1,9 @@
 import { If, cameraPosition, float, fract, mix, sin, uniform, vec2, vec3, vec4 } from 'three/tsl';
 import { smoothstepDown, smoothstepDownClamped } from '../core/tslMath';
 import { featherFoam, foamCells, foamPattern } from './FoamPattern';
+// A cycle (Seafloor draws the swash from here), safe because both sides read
+// the other only inside functions, never while the modules load.
+import { TERRACE_SLOPE, TERRACE_STEP_DEPTH, shoreTerraceMask } from '../scene/Seafloor';
 
 export { foamCells };
 
@@ -30,7 +33,8 @@ export { foamCells };
  * the water shallows, because `sqrt(d)` compresses (shoaling — the wavelength
  * at 2 m is half what it is at 8 m); and they slow down as they come in. `s` is
  * a nominal 1:10, measured off the island's own beaches (0.10–0.13 at the
- * waterline, steepening offshore).
+ * waterline, steepening offshore). The one exception is the low-tide terrace
+ * in `Seafloor`, where `shoalingRoot` adds the slower crossing of its shelf.
  *
  * **Sets.** `floor(phi)` numbers the breakers, so a wave's height can be a
  * function of its number: a seven-wave group envelope times a per-wave jitter.
@@ -247,12 +251,32 @@ function alongShorePhase(xz: any): any {
     .add(surfNoise(xz.div(45).add(vec2(17.3, 5.1))).mul(0.35));
 }
 
+/**
+ * `sqrt(depth)`, rescaled to what it would be on the nominal 1:10 beach, so the
+ * phase's `2 sqrt(d) / (s sqrt(g))` is the true travel time on this bed.
+ *
+ * On a plane of slope `s` a crest takes `2 sqrt(d) / (s sqrt(g))` to reach the
+ * shoreline. On `Seafloor`'s low-tide terrace it crosses the shelf at the
+ * terrace's slope and then the face at the nominal slope. The travel time is
+ * the sum of the two legs, so past the step the depth's root counts
+ * `NOMINAL_SLOPE / TERRACE_SLOPE` times over. The crest spacing,
+ * `sqrt(g d) T`, does not depend on the slope, so `surfPhaseGradient` is right
+ * on both. Without this term the breakers would cross the shelf at four times
+ * their real spacing.
+ */
+function shoalingRoot(depth: any, xz: any): any {
+  const root = depth.max(0).sqrt();
+  const step = Math.sqrt(TERRACE_STEP_DEPTH);
+  const shelf = root.min(step).add(root.sub(step).max(0).mul(NOMINAL_SLOPE / TERRACE_SLOPE));
+  return mix(root, shelf, shoreTerraceMask(xz));
+}
+
 /** Breaker phase at a point; crests are at integer values. See the header. */
 export function surfPhase(depth: any, xz: any): any {
   const k = float(2 / (NOMINAL_SLOPE * Math.sqrt(GRAVITY))).div(surfUniforms.period);
   return surfUniforms.time
     .div(surfUniforms.period)
-    .add(depth.max(0).sqrt().mul(k))
+    .add(shoalingRoot(depth, xz).mul(k))
     .add(alongShorePhase(xz));
 }
 
@@ -517,7 +541,7 @@ export function chopBreaker(depth: any, xz: any): ChopSample {
     .add(surfNoise(xz.div(30).add(vec2(7.3, 29.1))).mul(0.5));
   const phase = surfUniforms.time
     .div(surfUniforms.period.mul(CHOP_PERIOD))
-    .add(d.sqrt().mul(k))
+    .add(shoalingRoot(d, xz).mul(k))
     .add(along)
     .toVar('chopPhase');
   const s = crestDistance(phase).toVar('chopS');
