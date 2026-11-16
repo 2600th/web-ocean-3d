@@ -70,6 +70,36 @@ const LOD_HYSTERESIS = 0.05;
 
 const _m = new THREE.Matrix4();
 
+/**
+ * Instance matrices uploaded only when a deal changes them, and only the dealt
+ * prefix.
+ *
+ * These were `DynamicDrawUsage`, and in r185 that does not mean "changes
+ * often", it means "upload all of it on every render call": `Attributes.update`
+ * writes a dynamic buffer whenever it is used, version or not, and the update
+ * ranges a deal sets are cleared by the first such write, so every later one
+ * is the whole capacity. Every level of every field, 10-20 MB a second each
+ * of `writeBuffer` at High: about 7 ms of main thread a frame (CPU profile of
+ * the production build), which with the rest of the frame put it at 17-20 ms
+ * and kept the 120 Hz pacer at a divisor of 3 or 4. Static usage uploads on
+ * the version a deal bumps, through the ranges it sets.
+ *
+ * Static usage alone would break motion vectors. For the velocity pass three
+ * clones the matrices into a "previous" attribute (`getPreviousInstance` in
+ * `nodes/accessors/Instance.js`), copies the current array into it before each
+ * render, and relies on dynamic usage to upload that copy: a static clone is
+ * uploaded once and is wrong after the first deal reorders the slots. Nothing
+ * here moves between frames, so the previous matrices are the current ones,
+ * which is also what the copy-then-upload produced. `clone` returns the
+ * attribute itself, so the previous node reads the same GPU buffer. Nothing
+ * else clones an instance matrix.
+ */
+class DealtMatrices extends THREE.InstancedBufferAttribute {
+  override clone(): this {
+    return this;
+  }
+}
+
 export class InstanceField {
   readonly meshes: THREE.InstancedMesh[] = [];
   readonly name: string;
@@ -213,10 +243,10 @@ export class InstanceField {
       // The field spans kilometres; its own bounds would never cull. The deal
       // is the cull.
       mesh.frustumCulled = false;
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      // Static usage throughout; see `DealtMatrices`.
+      mesh.instanceMatrix = new DealtMatrices(new Float32Array(Math.max(1, n) * 16), 16);
       (mesh.instanceMatrix.array as Float32Array).set(matrices);
       const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n) * 3), 3);
-      colorAttr.setUsage(THREE.DynamicDrawUsage);
       (colorAttr.array as Float32Array).set(colors);
       mesh.instanceColor = colorAttr;
       if (o.crossFade !== undefined) {
@@ -225,7 +255,6 @@ export class InstanceField {
         // which is steady: until the first deal every level draws everything.
         const geometry = o.levels[level].clone();
         const fadeAttr = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n) * 2), 2);
-        fadeAttr.setUsage(THREE.DynamicDrawUsage);
         geometry.setAttribute('lodFade', fadeAttr);
         mesh.geometry = geometry;
         this.fades.push(fadeAttr);

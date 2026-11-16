@@ -90,10 +90,27 @@ export function installThreeFixes(renderer: THREE.WebGPURenderer): void {
 export function installWebGLFixes(renderer: THREE.WebGPURenderer): void {
   if (THREE.REVISION !== '185') return;
   const capabilities = (renderer as any).backend?.capabilities;
-  const geometries = (renderer as any)._geometries;
   if (!capabilities || typeof capabilities.getUniformBufferLimit !== 'function') return;
-  if (!geometries || typeof geometries.updateForRender !== 'function') return;
   capabilities.getUniformBufferLimit = () => 0;
+  installInstanceCopySync(renderer);
+}
+
+/**
+ * The frame-of-lag fix above, on its own, for every backend.
+ *
+ * WebGPU takes the attribute path too, for any mesh whose matrices do not fit
+ * a uniform block (64 KiB: 1024 instances). The reef and rock fields are far
+ * past that, and since they stopped re-uploading every draw (`DealtMatrices`
+ * in `reef/InstanceField`) they upload on the version, so they had the same
+ * lag: a deal's new counts and fades drawn with the previous deal's matrices
+ * for a frame.
+ */
+export function installInstanceCopySync(renderer: THREE.WebGPURenderer): void {
+  if (THREE.REVISION !== '185') return;
+  const geometries = (renderer as any)._geometries;
+  if (!geometries || typeof geometries.updateForRender !== 'function') return;
+  if (geometries.__instanceCopySync) return;
+  geometries.__instanceCopySync = true;
 
   const updateForRender = geometries.updateForRender.bind(geometries);
   geometries.updateForRender = (renderObject: any): void => {
