@@ -238,14 +238,15 @@ function build(): { pieces: BeachrockPiece[]; footprints: BeachrockFootprint[] }
     const t = (i + 0.25 + rng() * 0.5) / heads;
     const bearing = HEADS.from + (HEADS.to - HEADS.from) * t;
     const shore = shoreRadius(bearing);
-    const p = seat(bearing, shore + 7 + rng() * 2);
+    const p = seat(bearing, shore + 6.6 + rng() * 2);
     const k = 2 + rng() * 1.3;
     const rise = 0.5 + rng() * 0.5;
     const top = Math.max(k * 0.25, rise - p.y);
     q.setFromAxisAngle(UP, rng() * Math.PI * 2);
     tip(q, shapeRng(10 + i));
     const w = 0.8 + rng() * 0.4;
-    add('block', p, k, k * 0.8 * w, blockRings(top, -p.y, shapeRng(20 + i)), 0xbe7 + i * 59);
+    // Four fifths of the reef's size: a fuller block reached into the left edge of beach-swash.
+    add('block', p, k * 0.8, k * 0.64 * w, blockRings(top, -p.y, shapeRng(20 + i)), 0xbe7 + i * 59);
   }
   // Reef: broader blocks further out, standing a metre or so clear of the
   // still water, drawn after the rest so the slabs and heads did not move.
