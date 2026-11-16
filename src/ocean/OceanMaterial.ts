@@ -1690,7 +1690,13 @@ export class OceanMaterial {
           // wave. It is what makes a breaker read as water rather than as a
           // white line, and the crest-glow term below already knows what to do
           // with thin water; it only had no way to know a breaker is thin.
-          const faceLine = wave.s.add(0.03).div(0.06);
+          // Both glow terms are drawn no narrower than the crest the mesh can
+          // carry here: `breaker` widens the profile to the mesh footprint, and
+          // a band narrower than that, evaluated per fragment, followed the
+          // triangles' kinks along the crest. That was the "sawtooth teal
+          // ribbon" of foam-4 (round 10): a thin band on aliased geometry.
+          const faceFootprint = meshFootprint.mul(surfPhaseGradient(seabedDepth).abs()).mul(1.3).toVar();
+          const faceLine = wave.s.add(0.03).div(faceFootprint.max(0.06));
           surfThin.assign(
             faceLine
               .mul(faceLine)
@@ -1713,8 +1719,16 @@ export class OceanMaterial {
           // Placed by the profile's own front width, so it sits on the face
           // `crestProfile` draws: three quarters of the way down it, where the
           // water is a metre or less thick but no longer white.
-          const faceWidth = mix(float(0.15), float(0.055), wave.steep);
-          const faceX = wave.s.negate().div(faceWidth).sub(0.8).div(0.6);
+          //
+          // A gradient down the face, not a band: brightest just below the
+          // crest, where the sheet is thinnest, and fading over the face's
+          // whole width to nothing at its foot, where the water is metres
+          // thick. On the crest itself it hands over to the white. Round 8's
+          // narrow band three quarters of the way down drew a hard-edged
+          // ribbon instead of a lit face.
+          const faceWidth = mix(float(0.15), float(0.055), wave.steep).max(faceFootprint);
+          const faceDown = wave.s.negate().div(faceWidth).toVar();
+          const faceX = faceDown.sub(0.32).div(0.78);
           const faceStage = seabedDepth
             .lessThan(wave.breakDepth)
             .select(seabedDepth.smoothstep(wave.breakDepth.mul(0.55), wave.breakDepth.mul(0.95)), wave.steep.pow(1.5));
@@ -1726,11 +1740,16 @@ export class OceanMaterial {
             .smoothstep(0.35, 1.1)
             .mul(0.65)
             .add(0.35);
+          // The lip is not equally thin along its length: where it is about
+          // to throw it is a sheet, where it is still mounding it is not.
+          const faceThin = valueNoise(fieldXZ.mul(1 / 13).add(vec2(8.1, 15.4))).mul(0.5).add(0.6);
           surfFace.assign(
             faceX
               .mul(faceX)
               .negate()
               .exp()
+              .mul(faceDown.smoothstep(-0.3, 0.12))
+              .mul(faceThin)
               .mul(faceStage)
               .mul(faceSize)
               .mul(surfUniforms.strength.min(1)),
@@ -2231,9 +2250,13 @@ export class OceanMaterial {
       // blue-green. Brightest looking into the light but present cross-lit,
       // because most of what comes through a face is skylight from above the
       // wave behind it.
+      //
+      // Part of it is plain skylight through a sheet too thin to colour it,
+      // so it is a paler turquoise than the body's scattering albedo alone:
+      // all albedo, it read as a saturated teal ribbon.
       const faceTransmit: any = this.uExtinction.mul(FACE_SHEET_METRES).negate().exp();
       scatter.addAssign(
-        (this.uScatterColor as any)
+        mix(this.uScatterColor as any, vec3(0.62, 0.9, 0.86), 0.4)
           .mul(faceTransmit)
           .mul(surfFace)
           .mul(awayFromSun.mul(0.5).add(0.5))
@@ -3072,8 +3095,16 @@ export class OceanMaterial {
           // lace fading over two periods) stacked into an opaque white blanket
           // over the inner surf zone and the swash. That hid the clear sheet and
           // its caustics that beach-transparency-1 was won on.
-          const denseAt = (a: any) => a.mul(-7).exp().mul(0.92);
-          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.34).mul(smoothstepDownClamped(a, 2.2, 3));
+          //
+          // Round 10: the dense stage lasts about twice as long as it did, a
+          // third of a period for a typical wave. From the beach-surf view the
+          // old fifth of a period was four metres of white across the shore,
+          // foreshortened to a few pixels: "thin white strips" where the
+          // reference has a broad field of churned water. The swash keeps its
+          // clear sheet: `sheetClear` below still takes the white off the last
+          // half metre of depth.
+          const denseAt = (a: any) => a.mul(-3.4).exp().mul(0.92);
+          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3));
 
           // **Foam lines.** The white a bore leaves is not a sheet: it is torn
           // into streaks lying *along* the crest that made them, a metre or two
@@ -3098,7 +3129,7 @@ export class OceanMaterial {
             .toVar();
           // Dense where it is fresh, lanes as it ages: a bore's first second is
           // white all through, and only then tears.
-          const tearing = age.smoothstep(0.015, 0.09).toVar();
+          const tearing = age.smoothstep(0.02, 0.16).toVar();
           // **Froth.** White water is clumped, not banded: thick heaps of
           // froth with thinner, bubblier water between, at a few metres. Torn
           // along the crest-parallel `lanes` alone, every bore's wake was a set
@@ -3141,7 +3172,7 @@ export class OceanMaterial {
           // small wave's line: its dense stage lasts in proportion to its
           // height, about a third of a period at a set's peak.
           const dense = age
-            .mul(-7)
+            .mul(-3.4)
             .div(heightRatio.clamp(0.6, 1.8))
             .exp()
             .mul(0.92)
@@ -3157,13 +3188,15 @@ export class OceanMaterial {
             .mul(lastBroke)
             .max(laceAt(age.add(1)).mul(previousBroke))
             .max(laceAt(age.add(2)).mul(olderBroke))
-            .mul(mix(float(0), float(1.3), lanes));
+            .mul(mix(float(0.15), float(1.3), lanes.mul(0.6).add(surfFroth.mul(0.4))));
           // Over the last half metre the bore has become the swash sheet, which
           // stays clear: its foam is the lip at its leading edge (`thin` and
           // `edgeLine` below), not a carpet over the water behind it.
           const sheetClear = d.smoothstep(0.1, 0.6).toVar();
           const whitewater = dense
-            .mul(mix(float(1), mix(float(0.1), float(1.05), torn), tearing))
+            // Torn, not cleared: between the clumps the churned water is
+            // still a third white (round 10's "thin white strips").
+            .mul(mix(float(1), mix(float(0.34), float(1.08), torn), tearing))
             .max(lace)
             .mul(sections)
             .mul(sheetClear)
@@ -3242,7 +3275,7 @@ export class OceanMaterial {
             .mul(lanes)
             .mul(smoothstepDownClamped(d, surfBreak.mul(0.45), surfBreak.mul(1.15)))
             .mul(sheetClear)
-            .mul(0.2)
+            .mul(0.28)
             .toVar();
           surf.assign(
             roller

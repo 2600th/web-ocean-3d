@@ -484,7 +484,15 @@ export function breaker(
     .toVar('surfReachFade');
   const amplitude = d.lessThan(breakDepth).select(bore, shoaled).mul(reachFade).toVar('surfAmplitude');
   // The footprint in phase: metres times phase per metre.
-  const minWidth = footprint.mul(surfPhaseGradient(d).abs()).mul(0.6).toVar('surfMinWidth');
+  //
+  // 1.3 footprints, not 0.6. The profile's width is a Gaussian's, so at 0.6 its
+  // spread was 0.85 of a vertex spacing, and a crest crossing the radial grid
+  // obliquely had its peak sampled 16% lower between vertices than on them. The
+  // crest drew as a row of lumps a vertex apart, and the face's glow lit them as
+  // the "sawtooth teal ribbon" of foam-4 (round 10). At 1.3 the dip is under
+  // 4%. Only distant crests are affected: near the eye the profile's own width
+  // is the larger.
+  const minWidth = footprint.mul(surfPhaseGradient(d).abs()).mul(1.3).toVar('surfMinWidth');
   const profile = crestProfile(s, steep, minWidth).toVar('surfProfile');
 
   // --- the pitch ---------------------------------------------------------------
