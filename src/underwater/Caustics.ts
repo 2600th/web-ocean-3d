@@ -104,6 +104,29 @@ const BROAD_SCALE = 2.1;
  */
 const WARP_METRES = 0.3;
 
+/**
+ * [underwater-look-3] Round 6: how much of the web a surface shows by how far
+ * it is turned toward the refracted sun, `dot(n, sunUnder)`. The round-6
+ * review saw the web drawn across the side of a mound turned away from the
+ * sun, stretched into long streaks: the field is a projection down the
+ * refracted sun and lands on whatever is there. A caustic is focused direct
+ * sun, so a face the beam cannot reach carries none of it. See `facingNode`.
+ */
+const FACING_EDGES: readonly [number, number] = [0.2, 0.7];
+
+/**
+ * [underwater-look-3] Round 6: the web's contrast with the eye's distance, with
+ * the eye under water. The review read the sand and rock at thirty metres
+ * carrying the same crisp web as at three as "no falloff with distance".
+ * Seen through that much water a caustic's filaments are blurred by forward
+ * scattering long before the medium hides the surface itself. From
+ * `VIEW_FADE_NEAR` to `VIEW_FADE_FAR` metres the contrast falls to
+ * `VIEW_FADE_KEEP`; with the eye in air nothing changes.
+ */
+const VIEW_FADE_NEAR = 6;
+const VIEW_FADE_FAR = 36;
+const VIEW_FADE_KEEP = 0.3;
+
 /** Sanity bound on the shear; the refracted sun cannot exceed ~1.13. */
 const MAX_TILT = 3;
 
@@ -132,7 +155,9 @@ export class Caustics {
    * blue one rather than splitting into three — abyssal's `vec2(.004, .0025)`
    * of its 3.3 m tile, which is 1.3 cm.
    */
-  private readonly uDispersion = uniform(new THREE.Vector2(0.012, 0.0028));
+  // [underwater-look-3] Round 6: a third of (0.012, 0.0028); see
+  // `UnderwaterPass.uCausticRelight`.
+  private readonly uDispersion = uniform(new THREE.Vector2(0.004, 0.001));
   /**
    * Smoothstep edges of the shafts' two reads; see `shaftField`. Set for the
    * heavily blurred levels the march reads (`UnderwaterPass.uShaftBlurLod`),
@@ -146,6 +171,10 @@ export class Caustics {
   private readonly uAboveBlur = uniform(0.6);
   /** [underwater-look-2] Extra contrast loss per metre of depth seen from above. */
   private readonly uAboveFade = uniform(0.03);
+  /** [underwater-look-3] The eye, for `VIEW_FADE_*`; see `setEye`. */
+  private readonly uEye = uniform(new THREE.Vector3());
+  /** [underwater-look-3] Unit direction toward the sun below the surface. */
+  readonly uSunUnder = uniform(new THREE.Vector3(0, 1, 0));
 
   /**
    * The node graphs, built exactly once. TSL functions are lazily compiled at
@@ -277,7 +306,11 @@ export class Caustics {
     const web = texture(this.texture, xz.div(this.uTile).add(this.warp(xz)))
       .bias(this.detailBias(below))
       .r.mul(this.broadPattern(xz));
-    return applyWeb(web, this.detailContrast(below));
+    // [underwater-look-3] See `VIEW_FADE_NEAR`. The eye is a uniform rather
+    // than `cameraPosition`, which in the post pass is the quad's camera.
+    const dist = p.sub(this.uEye).length();
+    const fade = mix(float(1).sub(dist.smoothstep(VIEW_FADE_NEAR, VIEW_FADE_FAR).mul(1 - VIEW_FADE_KEEP)), float(1), this.uAbove);
+    return applyWeb(web, this.detailContrast(below).mul(fade));
   }
 
   /**
@@ -460,11 +493,26 @@ export class Caustics {
     this.uAboveFade.value = 0.02 + 0.16 * rough;
   }
 
+  /** [underwater-look-3] The eye's world position, each frame; see `VIEW_FADE_NEAR`. */
+  setEye(position: THREE.Vector3): void {
+    (this.uEye.value as THREE.Vector3).copy(position);
+  }
+
+  /**
+   * [underwater-look-3] 0..1, how much of the web a surface with this world
+   * normal takes: none on faces turned away from the refracted sun or edge-on
+   * to it, all of it on faces turned toward it. See `FACING_EDGES`.
+   */
+  facingNode(normalWorld: unknown): unknown {
+    return vec3(normalWorld as any).dot(this.uSunUnder).smoothstep(FACING_EDGES[0], FACING_EDGES[1]);
+  }
+
   setSunDirection(dir: THREE.Vector3): void {
     const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
     const hx = dir.x / len / WATER_IOR;
     const hz = dir.z / len / WATER_IOR;
     const y = Math.sqrt(Math.max(1e-4, 1 - hx * hx - hz * hz));
+    (this.uSunUnder.value as THREE.Vector3).set(hx, y, hz).normalize();
     const tilt = this.uSunTilt.value;
     tilt.set(clampNumber(hx / y, -MAX_TILT, MAX_TILT), clampNumber(hz / y, -MAX_TILT, MAX_TILT));
   }
