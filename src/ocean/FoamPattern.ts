@@ -83,6 +83,16 @@ const MEAN_M2 = 0.673;
 const MEAN_B3 = 0.751;
 const MEAN_FINE = 0.836;
 
+/**
+ * Seabed depths, metres, over which open-sea whitecaps fade out toward the
+ * shore: none at or above `SHELTER_DEPTH_FULL` (the lagoon floor is 5.5 m),
+ * all of them past `SHELTER_DEPTH_NONE`. Both well inside the island's 17 m
+ * plateau, so no open-water view changes. Shared by `Wake`'s whitecap deposit and
+ * `OceanMaterial`'s instantaneous crest mask, which have to agree.
+ */
+export const SHELTER_DEPTH_FULL = 6.5;
+export const SHELTER_DEPTH_NONE = 13;
+
 /** Shared by every material that draws foam. */
 export const foamUniforms = {
   /**

@@ -3,6 +3,7 @@ import { Fn, If, float, mix, texture, uniform, uv, vec2, vec3, vec4 } from 'thre
 import { smoothstepDown } from '../core/tslMath';
 import { seafloorDepth } from '../scene/Seafloor';
 import { breaker } from '../ocean/Surf';
+import { SHELTER_DEPTH_FULL, SHELTER_DEPTH_NONE } from '../ocean/FoamPattern';
 
 /**
  * World-anchored wake buffer: foam in R, surface elevation in G.
@@ -1287,7 +1288,33 @@ export class Wake {
       // The sea channel holds at least what is being injected now and grows on
       // top of it while the crest keeps breaking; freshness is the same
       // injection with a fast decay (see `FRESH_TAU`).
-      const inject = this.uBreakThreshold.sub(fold).mul(INJECT_GAIN).clamp(0, 1).toVar();
+      // The seabed under this texel, read once for the whitecaps' shelter
+      // below and for the shore break. Only where `shoreActive` says the
+      // footprint reaches shoal water; elsewhere the sea is deep.
+      const floorAtTexel = float(1000).toVar();
+      if (this.shoreDepthNode !== null) {
+        const floorDepthAt = this.shoreDepthNode;
+        If(this.uShoreActive.greaterThan(0.5), () => {
+          floorAtTexel.assign(floorDepthAt(vec3(world.x, 0, world.y)));
+        });
+      }
+
+      // Whitecaps are a deep-water wind sea breaking, and sheltered shallows do
+      // not have one. The surface simulation is the open ocean's everywhere, so
+      // over the lagoon behind the bar its folds deposited open-sea whitecaps
+      // in two-metre water — round 7's caustics-1, "covered in opaque foam
+      // blobs", which round 6's rougher JONSWAP sea made worse. A lagoon is
+      // fetch-limited and sheltered by the bar, and depth-limited besides; a
+      // shelf shallower than `SHELTER_DEPTH_FULL` takes no whitecaps, and the
+      // open ocean (the island's plateau is 17 m down, the deep sea 88 m) is
+      // untouched. The shore's breakers are a separate deposit, not gated here.
+      const shelterOpen = floorAtTexel.smoothstep(SHELTER_DEPTH_FULL, SHELTER_DEPTH_NONE).toVar();
+      const inject = this.uBreakThreshold
+        .sub(fold)
+        .mul(INJECT_GAIN)
+        .clamp(0, 1)
+        .mul(shelterOpen)
+        .toVar();
 
       // Rain agitation. Heavy rain aerates a surface on its own — it goes white
       // in a downpour whether or not the waves are steep enough to break — so
@@ -1327,7 +1354,7 @@ export class Wake {
       if (this.shoreDepthNode !== null) {
         const floorDepth = this.shoreDepthNode;
         If(this.uShoreActive.greaterThan(0.5), () => {
-          const depth = floorDepth(vec3(world.x, 0, world.y)).toVar();
+          const depth = floorAtTexel;
 
           // Inner edge at the depth the significant wave breaks in, outer edge
           // where the biggest wave of a set does. Full strength everywhere

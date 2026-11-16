@@ -38,6 +38,8 @@ import {
   foamPattern,
   foamStreaks,
   foamUniforms,
+  SHELTER_DEPTH_FULL,
+  SHELTER_DEPTH_NONE,
   setFoamDetail,
   setFoamWind,
 } from './FoamPattern';
@@ -825,6 +827,14 @@ export class OceanMaterial {
   private readonly uFoamStrength = uniform(1);
   /** Drift of floating foam, metres. See `setFoamDrift`. */
   private readonly uFoamDrift = uniform(new THREE.Vector2());
+  /** The player's hull, for its waterline contact band: centre xz. See `setHull`. */
+  private readonly uHullCentre = uniform(new THREE.Vector2());
+  /** Unit bow direction in xz, `(cos, sin)` of the heading. */
+  private readonly uHullForward = uniform(new THREE.Vector2(1, 0));
+  /** Waterline half-length and half-beam, metres. */
+  private readonly uHullHalf = uniform(new THREE.Vector2(1, 1));
+  /** 1 while there is a hull to draw contact foam round, else 0. */
+  private readonly uHullActive = uniform(0);
   /**
    * Multiplier on the wake's elevation channel, 0..1.
    *
@@ -1086,6 +1096,23 @@ export class OceanMaterial {
   /** Tier knob for the wake's surface deformation. 0 skips the taps entirely. */
   setWakeDisplacement(value: number): void {
     this.uWakeDisplacement.value = Math.max(0, Math.min(1, value));
+  }
+
+  /**
+   * Where the player's hull is, so its waterline gets a hull's contact band
+   * rather than a floater's ring. Overall length and beam, as `Ship` measures
+   * them; the waterline is taken as 0.84 of the length (no bowsprit) and the
+   * full beam. `null` switches the band off.
+   */
+  setHull(hull: { x: number; z: number; heading: number; length: number; beam: number } | null): void {
+    if (hull === null) {
+      this.uHullActive.value = 0;
+      return;
+    }
+    (this.uHullCentre.value as THREE.Vector2).set(hull.x, hull.z);
+    (this.uHullForward.value as THREE.Vector2).set(Math.cos(hull.heading), Math.sin(hull.heading));
+    (this.uHullHalf.value as THREE.Vector2).set(Math.max(0.5, hull.length * 0.42), Math.max(0.3, hull.beam * 0.5));
+    this.uHullActive.value = 1;
   }
 
   dispose(): void {
@@ -2476,7 +2503,14 @@ export class OceanMaterial {
       // the band. Widening band-limits the edge, not the field. What does
       // band-limit the field is fading each scale where it stops being resolved,
       // which `perturb` above and the foam pattern's own scales do.
-      const crestAmount = biased.add(perturb.mul(0.45)).smoothstep(0.12, 0.78).clamp(0, 1).toVar();
+      // Sheltered shallows take no whitecaps; see `SHELTER_DEPTH_FULL` in
+      // `Wake`, whose deposit is gated the same way.
+      const crestAmount = biased
+        .add(perturb.mul(0.45))
+        .smoothstep(0.12, 0.78)
+        .clamp(0, 1)
+        .mul(seabedSigned.smoothstep(SHELTER_DEPTH_FULL, SHELTER_DEPTH_NONE))
+        .toVar();
 
       // --- accumulated foam ---------------------------------------------------
       // Wake, whitecaps and the shore's standing foam, read from the
@@ -2971,8 +3005,8 @@ export class OceanMaterial {
       // draws as lace over about a third of the ring: it tears, as Water Pro's
       // hull contact foam does, rather than closing into a collar.
       // That cannot scale with the object's size — the depth buffer does not
-      // know it — so it is set for the smallest floaters; on the hull the bow
-      // and stern foam come from `Wake` and dwarf it.
+      // know it — so it is set for the smallest floaters, and a moving hull is
+      // told apart from them below (`hullContact`).
       //
       // Seabed contact is excluded where the heightfield explains the depth:
       // that is the shore break's job. Faded with distance because depth
@@ -2997,11 +3031,50 @@ export class OceanMaterial {
         .mul(surfUniforms.strength.min(1))
         .toVar();
       const surgePulse: any = surfPhaseValue.fract().mul(-2.2).exp().mul(0.45).add(0.55).toVar();
-      const contactAlong = smoothstepDownClamped(straightThickness, 0.03, mix(float(0.25), float(5), surge));
+      // **A hull under way is not a floater.** The depth buffer cannot tell a
+      // ship from a cask, but `Wake` can: it lays a collar of foam along every
+      // moving hull's waterline, heaviest at the stem (`COLLAR_FOAM`,
+      // `stemKnot`), so the hull channel is non-zero exactly round a hull that
+      // is pushing water aside. There the ring widens to a metre and a half and
+      // thickens — Water Pro's refraction-1 shows a broken white band 0.3–1 m
+      // wide along the hull, ours a one-pixel line — and since the collar is
+      // weighted to the bow so is the band. It is heavier again where a crest
+      // is climbing the hull: water standing above mean level against the
+      // planking has been driven up it, and falls back white.
+      //
+      // At rest the hull lays no collar, so the band also knows the player's
+      // hull directly (`setHull`): within two metres of its waterplane — the
+      // superellipse `|x|³ + |y|² = 1` `Wake`'s collar uses — and weighted to
+      // the bow, where the stem meets the sea.
+      const hullNear = float(0).toVar();
+      If(this.uHullActive.greaterThan(0.5), () => {
+        const toHull = worldPos.xz.sub(this.uHullCentre).toVar();
+        const hullAlong = toHull.dot(this.uHullForward).toVar();
+        const hullAcross = toHull.dot(vec2(this.uHullForward.y.negate(), this.uHullForward.x)).abs();
+        const xf = hullAlong.div(this.uHullHalf.x).toVar();
+        const xa = xf.abs().min(1);
+        const halfWidth = float(1).sub(xa.mul(xa).mul(xa)).max(0).sqrt().mul(this.uHullHalf.y);
+        const outside = hullAcross.sub(halfWidth).max(hullAlong.abs().sub(this.uHullHalf.x));
+        hullNear.assign(smoothstepDownClamped(outside, 0.8, 2.2));
+      });
+      const hullContact: any = hullNear.max(hullCover.smoothstep(0.02, 0.2)).mul(surge.oneMinus()).toVar();
+      const bowward: any = worldPos.xz
+        .sub(this.uHullCentre)
+        .dot(this.uHullForward)
+        .div(this.uHullHalf.x)
+        .smoothstep(0, 0.9)
+        .mul(0.35)
+        .add(0.65);
+      const climbing: any = worldPos.y.smoothstep(-0.2, 0.9).mul(0.5).add(0.75).mul(bowward);
+      const contactAlong = smoothstepDownClamped(
+        straightThickness,
+        0.03,
+        mix(mix(float(0.25), float(1.6), hullContact), float(5), surge),
+      );
       const contactBelow = smoothstepDownClamped(
         straightThickness.mul(viewDir.y.abs()),
         0.03,
-        mix(float(0.16), float(1.2), surge),
+        mix(mix(float(0.16), float(0.8), hullContact), float(1.2), surge),
       );
       const notSeabed: any = (
         floorDepth === null
@@ -3013,7 +3086,7 @@ export class OceanMaterial {
         .mul(contactBelow)
         .mul(notSeabed)
         .mul(contactReach)
-        .mul(mix(float(0.38), float(0.75).mul(surgePulse), surge))
+        .mul(mix(mix(float(0.38), float(0.8).mul(climbing), hullContact), float(0.75).mul(surgePulse), surge))
         .toVar();
 
       // --- the feather ----------------------------------------------------------
