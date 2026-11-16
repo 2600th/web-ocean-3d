@@ -69,13 +69,36 @@ export class OceanSampler {
     return this.everResolved;
   }
 
+  /**
+   * Follows the simulation after it was built or rebuilt at another tier.
+   *
+   * **The last readback is kept across a rebuild of the same bands.** A tier
+   * change moves the FFT size, never the tiles, and this used to drop every
+   * slice and report height 0 until the next readback landed, a few frames
+   * later. Buoyancy had nothing to push against for those frames and the hull
+   * fell toward a flat sea, then bounced. The old slices describe the same
+   * swell (the spectrum's draws are keyed to the wavevector, not the texel; see
+   * `Spectrum.anchorGaussians`), at the old resolution, which `size` records per
+   * slice, so they carry the physics until the new targets are read.
+   *
+   * A readback already in flight was started against the targets the rebuild
+   * retired, and may still have copies to issue. The generation stops it before
+   * any further copy and discards what it brings back.
+   */
   rebuild(): void {
+    this.generation++;
+    const tiles = this.simulation.tileSizes;
+    const sameBands = tiles.length === this.slices.length && tiles.every((t, i) => t === this.slices[i].tileSize);
+    if (sameBands) return;
     this.slices.length = 0;
-    for (const tileSize of this.simulation.tileSizes) {
+    for (const tileSize of tiles) {
       this.slices.push({ tileSize, size: 0, data: null, half: false });
     }
     this.everResolved = false;
   }
+
+  /** Bumped by `rebuild`; a readback started under another value is stale. */
+  private generation = 0;
 
   /**
    * Kicks off a readback if one is not already in flight. Safe to call every
@@ -108,8 +131,11 @@ export class OceanSampler {
 
   private async readback(): Promise<void> {
     try {
+      const generation = this.generation;
       const targets = this.simulation.displacementTargets;
       for (let i = 0; i < this.slices.length && i < targets.length; i++) {
+        // Rebuilt since this started: these targets are retired. See `rebuild`.
+        if (generation !== this.generation) return;
         // The whole target. Half-float RGBA is 8 bytes a texel, so a 256 row is
         // 2048 bytes and a 512 row 4096 — both multiples of the 256-byte
         // alignment the readback needs, so no padding rows appear and the
@@ -122,6 +148,7 @@ export class OceanSampler {
           size,
           size,
         );
+        if (generation !== this.generation) return;
         this.slices[i].size = size;
         adoptInto(raw, this.slices[i]);
       }

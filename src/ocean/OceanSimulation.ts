@@ -311,16 +311,27 @@ export class OceanSimulation {
     this.writeSpectra();
   }
 
-  /** Rebuilds all GPU resources at a new resolution / cascade count. */
+  /**
+   * Rebuilds all GPU resources at a new resolution / cascade count.
+   *
+   * The caller re-points every consumer at the new targets before the next
+   * frame (`OceanMaterial.setCascades`, `Wake.setCascades`, `OceanSampler.rebuild`;
+   * the height slots are re-pointed here). The old resources are not destroyed
+   * here but retired, and released at the start of the next `update`, once
+   * nothing can still bind them: the same one-frame-late release as the cloud
+   * resolve targets (`Clouds`, f480ca4), for the same "Destroyed texture used
+   * in a submit". The new fields need no warm-up: the transform is evaluated
+   * at the current time, not integrated, so the first frame is already the
+   * settled sea.
+   */
   resize(
     size: OceanSimulationOptions['size'],
     cascadeCount: OceanSimulationOptions['cascadeCount'],
   ): void {
     if (size === this.size && cascadeCount === this.cascadeCount) return;
-    this.releaseCascades();
+    this.retireCascades();
     this.size = size;
     this.cascadeCount = cascadeCount;
-    this.fft.butterfly.dispose();
     this.fft = createFFTResources(size);
     this.build();
     this.repointHeightBindings();
@@ -328,6 +339,7 @@ export class OceanSimulation {
 
   update(elapsed: number): void {
     if (this.disposed) return;
+    this.releaseRetired();
     this.uTime.value = elapsed;
 
     const previousTarget = this.renderer.getRenderTarget();
@@ -350,8 +362,8 @@ export class OceanSimulation {
 
   dispose(): void {
     this.disposed = true;
-    this.releaseCascades();
-    this.fft.butterfly.dispose();
+    this.retireCascades();
+    this.releaseRetired();
     this.quad.geometry.dispose();
   }
 
@@ -762,22 +774,49 @@ export class OceanSimulation {
     return material;
   }
 
-  private releaseCascades(): void {
+  /** Resources replaced by `resize`, released by the next `update`. */
+  private readonly retired: { dispose(): void }[] = [];
+
+  /**
+   * A render target, and its texture separately.
+   *
+   * `RenderTarget.dispose` tells three about the target, and three only listens
+   * for that once something has rendered *into* it. A target a compile has
+   * sampled but no frame has rendered — every tier a drain applies on the way
+   * to the last one, since it compiles each and renders none — has its texture
+   * registered through the sampling path instead, which listens on the texture.
+   * Disposing only the target left those textures alive: 7 per skipped tier,
+   * measured by diffing `renderer.info` across back-to-back tier cycles. The
+   * second call is a no-op when the target's own release already freed it.
+   */
+  private retireTarget(target: THREE.RenderTarget): void {
+    this.retired.push(target, target.texture);
+  }
+
+  /** Moves every GPU resource of the current build onto the retired list. */
+  private retireCascades(): void {
     for (const cascade of [...this.cascades, ...this.details]) {
-      cascade.displacement.dispose();
-      cascade.derivatives.dispose();
-      cascade.assembleDisplacement.dispose();
-      cascade.assembleDerivatives.dispose();
+      this.retireTarget(cascade.displacement);
+      this.retireTarget(cascade.derivatives);
+      this.retired.push(cascade.assembleDisplacement, cascade.assembleDerivatives);
     }
     this.cascades.length = 0;
     this.details.length = 0;
 
-    this.h0?.dispose();
-    this.pair?.read.dispose();
-    this.pair?.write.dispose();
-    this.evolve?.dispose();
-    for (const m of this.butterfly) m.dispose();
+    if (this.h0) this.retired.push(this.h0);
+    if (this.pair) {
+      this.retireTarget(this.pair.read);
+      this.retireTarget(this.pair.write);
+    }
+    if (this.evolve) this.retired.push(this.evolve);
+    this.retired.push(...this.butterfly, this.fft.butterfly);
     this.butterfly = [];
+  }
+
+  private releaseRetired(): void {
+    if (this.retired.length === 0) return;
+    for (const resource of this.retired) resource.dispose();
+    this.retired.length = 0;
   }
 }
 
