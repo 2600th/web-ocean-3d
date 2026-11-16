@@ -216,6 +216,77 @@ const MAX_DETAIL = 1;
 const DETAIL_ROTATION = 1.1071487; // atan(2)
 
 /**
+ * Mip bias on the detail band's reads, in levels: the footprint filter of a
+ * LEAN fold (Olano & Baker 2010; Toksvig 2005 for the same idea on normal
+ * lengths).
+ *
+ * The band runs from 4 mm to 12.5 cm and is read through a 16x anisotropic
+ * sampler, which keeps it sharp along the footprint's minor axis right down
+ * to the pixel. Content at one or two pixels per wavelength is not a ripple
+ * the eye can follow; on screen it read as "grainy fur" over the near water
+ * (round 4: waves-1, waves-2, foam-3), and switching the band off removed the
+ * fur outright, so it was the band's resolved slope and not the cascades.
+ * Reading two levels coarser moves everything finer than about four texels
+ * of the minor axis out of the mean slope, and the alpha channel at that
+ * level (E[s^2] - |E[s]|^2) carries exactly what left into
+ * `lostDetailVariance`, so the energy becomes glitter roughness rather than
+ * being thrown away. Bias 1 still showed the fur; 3 matched 2. Coarser reads
+ * are also cheaper.
+ */
+const DETAIL_MIP_BIAS = 2;
+
+/**
+ * Gain on the sky's reflection (the environment lookup, not the planar
+ * mirror's objects).
+ *
+ * The near sea's contrast is the Fresnel swing between facets times the gap
+ * between what they reflect and the body under them. Measured on calm-close
+ * (round 5, rows 0.6-0.95), the reflected sky alone came to sRGB luma 113 and
+ * the lit body alone to 106: nearly the same brightness, so every facet
+ * cancelled and the water read flat and fuzzy whatever its normals did. The
+ * reflection is darker than the sky the frame shows for two reasons, both
+ * measured: the environment capture has no clouds and is graded toward a
+ * dimmed deck (`Atmosphere`, CLOUD_ENV_DARKEN), which left a flat mirror 15%
+ * under the visible sky in linear terms; and web-ocean's visible-facet tilt
+ * aims the near water's rays higher, into deeper blue. The references show
+ * reflection well above body in both renderers. 1.3 lifted near mid-band
+ * contrast by about 40% on waves-1/2 and foam-3 and near luma by 5 levels
+ * toward the references; 2.0 went further but turned the far field pale, the
+ * grey horizon band the critic marked against Water Pro.
+ */
+const SKY_REFLECTION_GAIN = 1.3;
+
+/**
+ * Fresnel's flattening of the normal toward vertical, at a grazing view.
+ *
+ * web-ocean's 45% stands for the visible-facet statistics of everything finer
+ * than the pixel at grazing incidence. Where the view is steep (the water
+ * under the camera) the facets are resolved and that argument does not hold,
+ * and the flattening was taking away the Fresnel swing that draws their shape.
+ * Held at 45% below a view elevation of about 5 degrees and released to none
+ * by about 20.
+ */
+const FRESNEL_FLATTEN = 0.45;
+
+/**
+ * How far the swell's own facing toward the sun brightens or darkens the body,
+ * per unit of `N.L - sun height`, on the swell cascade's slope only.
+ *
+ * In side light (waves-4: sun 90 degrees off the view) the lit and shadowed
+ * faces of a swell are the relief, and the body's earlier N.L on the full
+ * slope spent that contrast on centimetre ripples, which the reflection draws
+ * anyway. Centred on the sun's height so a flat sea keeps its brightness;
+ * clamped so a steep face cannot go black or blow out.
+ *
+ * Round 5 had 1 on all three cascades, where 2.5 gave dark streaks; the chop
+ * and ripple cascades are gone from it now (they drew the "milky smudges"),
+ * and the swell alone is gentle — rms slope 0.067 at 15 m/s, 0.013 at a calm
+ * 5 m/s — so 4 is a face-to-face swing of about 20% on the moderate sea and
+ * a few percent on the calm one.
+ */
+const SWELL_RELIEF = 4;
+
+/**
  * The display level, as a fraction of the white point (`1 / exposure`), that
  * the low-sun glint count is scaled against (see `glintGain`). Under ACES
  * that is about 0.9 of display white.
@@ -1326,7 +1397,8 @@ export class OceanMaterial {
       for (let i = 0; i < MAX_DETAIL; i++) {
         const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(Math.SQRT1_2);
         const uvA = fieldXZ.div(this.uDetailTiles[i]);
-        const a = this.detailNodes[i].sample(uvA).toVar();
+        // Two levels coarser than the footprint: see DETAIL_MIP_BIAS.
+        const a = this.detailNodes[i].sample(uvA).bias(float(DETAIL_MIP_BIAS)).toVar();
         // Rotated read: sample at R^T x, and rotate the slope it returns by R.
         const uvB = vec2(
           fieldXZ.x.mul(cosR).add(fieldXZ.y.mul(sinR)),
@@ -1334,7 +1406,7 @@ export class OceanMaterial {
         )
           .div(this.uDetailTiles[i])
           .add(vec2(0.37, 0.71));
-        const b = this.detailNodes[i].sample(uvB).toVar();
+        const b = this.detailNodes[i].sample(uvB).bias(float(DETAIL_MIP_BIAS)).toVar();
         const bSlope = vec2(b.x.mul(cosR).sub(b.y.mul(sinR)), b.x.mul(sinR).add(b.y.mul(cosR)));
         slope.addAssign(vec2(a.x, a.y).add(bSlope).mul(weight));
         // Variance scales with the square of the 1/sqrt(2) weight.
@@ -1352,16 +1424,23 @@ export class OceanMaterial {
       // Rain impacts, added to the wave slope before the normal is built so they
       // ride the surface rather than sitting on a plane over it.
       //
-      // Faded out with distance, hard. The rings are decimetre features; past
-      // thirty metres or so they are well under a pixel and all they can
-      // contribute is aliasing — the same reason the finest wave cascade fades.
-      // Behind a uniform branch, so every clear preset pays one compare.
+      // Faded out with distance, hard. The rings are centimetre features; past
+      // twenty metres they are under a pixel and all they can contribute is
+      // aliasing — the same reason the finest wave cascade fades. Behind a
+      // uniform branch, so every clear preset pays one compare.
       If(this.uRainIntensity.greaterThan(0.001), () => {
-        const nearness = smoothstepDownClamped(viewDistance, 6, 38);
+        const nearness = smoothstepDownClamped(viewDistance, 5, 20);
         slope.addAssign(
           rainSlope(worldPos.xz, this.uRainTime, this.uRainIntensity)
             .mul(this.uRainSlope)
             .mul(nearness),
+        );
+        // Where the rings are under a pixel they are still there: the stipple
+        // a downpour puts on the sea is a roughening of the glitter, so the
+        // slope variance the rings would carry is handed to the specular as
+        // unresolved detail, as the finest wave band's is.
+        lostDetailVariance.addAssign(
+          this.uRainIntensity.mul(this.uRainSlope).mul(RAIN_UNRESOLVED_VARIANCE).mul(nearness.oneMinus()),
         );
       });
 
@@ -1589,7 +1668,17 @@ export class OceanMaterial {
       // the real reflected ray into the environment, tilted toward the facets a
       // grazing eye actually sees, so the far sea reflects the greyer sky above
       // the horizon by itself and the fade has nothing left to correct.
-      const nFresnel = normalize(mix(n, vec3(0, 1, 0), 0.45)).toVar();
+      //
+      // Only at grazing views, though: see FRESNEL_FLATTEN. And toward the
+      // swell's normal rather than vertical: the argument is about the facets
+      // finer than the pixel, and the swell is metres across and resolved, so
+      // flattening it too took away the one slope that makes a long swell
+      // read at a distance (waves-4, round 6).
+      const fresnelFlatten = float(FRESNEL_FLATTEN)
+        .mul(viewDir.y.smoothstep(0.08, 0.35).oneMinus())
+        .toVar();
+      const swellNormal = normalize(vec3(swellSlope.x.negate(), 1, swellSlope.y.negate())).toVar();
+      const nFresnel = normalize(mix(n, swellNormal, fresnelFlatten)).toVar();
       const oneMinus = float(1).sub(nFresnel.dot(viewDir).clamp(0, 1)).toVar();
       const fresnelPow = oneMinus.mul(oneMinus).mul(oneMinus).mul(oneMinus).mul(oneMinus).toVar();
       const fresnel = fresnelPow.mul(0.98).add(0.02).clamp(0, 1).toVar();
@@ -1992,7 +2081,12 @@ export class OceanMaterial {
       this.envNode = pmremTexture(this.envPlaceholder!, reflectDir, envRoughness) as any;
       const skyBlend = reflectDir.y.clamp(0, 1).sqrt().toVar();
       const analyticSky = mix(this.uHorizonColor, this.uSkyColor, skyBlend);
-      const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady).toVar();
+      // Lifted toward the sky the frame shows: see SKY_REFLECTION_GAIN.
+      const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
+        .mul(SKY_REFLECTION_GAIN)
+        .toVar();
+      /** How much of this pixel's mirror ray an object (hull, island) takes. */
+      const objectCover = float(0).toVar();
 
       if (planar !== null) {
         // **Objects only from the planar mirror.** The hull, the island and the
@@ -2028,12 +2122,9 @@ export class OceanMaterial {
         const inFrame = rEdge.x.min(rEdge.y).smoothstep(0, 0.05).clamp(0, 1).toVar();
         const facing = nDotV.smoothstep(0.02, 0.22).toVar();
 
+        objectCover.assign(inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount));
         reflection.assign(
-          mix(
-            reflection,
-            mirrored.rgb.div(objectMask.max(1e-3)),
-            inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount) as any,
-          ),
+          mix(reflection, mirrored.rgb.div(objectMask.max(1e-3)), objectCover as any),
         );
       }
 
@@ -2212,6 +2303,14 @@ export class OceanMaterial {
         glintLevel.sub(glintLevel0),
       ).toVar();
       specular.mulAssign(glintDraw);
+      // The hull stands between these facets and the sun. Where the planar
+      // mirror says an object takes this pixel's reflected ray, the water just
+      // in front of the hull is looking at the hull, and up-sun the same hull
+      // is what blocks the sun from it: the glitter stopped at the keel line
+      // rather than running up to it (reflections-3), and the dark reflection
+      // above shows instead. The sun's shadow map would be the exact test, but
+      // it is a seventeenth texture; the mirror's coverage is already read.
+      specular.mulAssign(objectCover.oneMinus());
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
@@ -2236,11 +2335,24 @@ export class OceanMaterial {
       const bodyLight = mix(vec3(1), this.uSunColor, 0.35)
         .mul(upwelling.mul(this.uWhitePoint).mul(BODY_GAIN))
         .toVar();
-      // On the full slope. Dropping most of the short waves from it, as this did
-      // against the camo, took the near water's crisp facets with the camo.
-      const bodyDotL = normalize(vec3(slope.x.negate(), 1, slope.y.negate()))
-        .dot(sunDirEarly)
-        .clamp(0, 1)
+      // The body's facing is the swell's, not the ripples'. The light comes up
+      // out of the column, so how much reaches the eye follows the sun's height
+      // and the face of the wave it leaves through, at the scale of the swell
+      // cascade (`swellSlope`, 24 m and up); everything shorter is drawn by the
+      // Fresnel swing of the reflection on top. On the full slope, the body's
+      // N.L put a second, unrelated ripple pattern under the reflection's, and
+      // the sum read as fuzz. On all three cascades (round 5) it still did: the
+      // ripple and chop cascades are mip-softened at a grazing view, and their
+      // facing drew soft light and dark blots under the calm near water, the
+      // "milky smudges" of waves-1 (round 6), isolated by drawing this term
+      // alone. See SWELL_RELIEF.
+      const sunHeight = sunDirEarly.y.clamp(0, 1).toVar();
+      const swellDotL = swellNormal.dot(sunDirEarly).toVar();
+      const swellRelief = swellDotL
+        .sub(sunHeight)
+        .mul(SWELL_RELIEF)
+        .add(1)
+        .clamp(0.25, 1.75)
         .toVar();
       // Troughs read darker than faces: the eye looks into a trough through
       // the wave in front of it, and the light that comes back up out of it
@@ -2253,7 +2365,7 @@ export class OceanMaterial {
         .add(1)
         .toVar();
       const litBody = columnColor
-        .mul(bodyDotL.mul(0.55).add(0.45).mul(sunShade.mul(0.55).add(0.45)))
+        .mul(sunHeight.mul(0.55).add(0.45).mul(swellRelief).mul(sunShade.mul(0.55).add(0.45)))
         .mul(bodyLight.mul(troughShade).mul(BODY_COLUMN_SHARE))
         .add(seenThrough)
         .add(scatter.mul(sunShade))
@@ -3267,36 +3379,42 @@ export class OceanMaterial {
 /**
  * Metres per lattice cell, and seconds between a cell's impacts.
  *
- * These two set the impact rate — one strike per cell per period, so at full
- * intensity the surface takes `1 / (RAIN_CELL² × RAIN_PERIOD)` hits per square
- * metre per second. That has to agree with how much rain is visibly falling, or
- * the scene shows a downpour landing as a drizzle. `Weather` renders 9000
- * streaks through a 68 m box; matching the two by eye at full intensity puts the
- * cell near a metre and the period near a second, not the 2.6 m and 1.35 s this
- * started with — which was roughly seven times too few impacts.
+ * Sized to a raindrop, not to a decal. A 2–4 mm drop lands as a crown a few
+ * centimetres across that collapses within a tenth of a second, and leaves a
+ * capillary ring that spreads at about the minimum capillary–gravity speed,
+ * 0.23 m/s, and is damped out within a few wavelengths — a ring a hand's
+ * breadth across at most. The first version had metre cells, rings running at
+ * 1.5 m/s with a half-metre wavelength and steep slopes: round 6's critic read
+ * them as "oversized donut decals" on the storm sea (waves-5). Heavy rain on
+ * the sea reads as a dense fine stipple, so the cells are a fifth of the size
+ * — twenty-five times the impacts per square metre, about 45 / m² / s at full
+ * intensity — and each ring is small, short and shallow.
  */
-const RAIN_CELL = 1.05;
-const RAIN_PERIOD = 0.95;
+const RAIN_CELL = 0.21;
+const RAIN_PERIOD = 0.5;
 /**
- * Furthest a ring travels before its cell fires again, in cells.
- *
- * `RAIN_SPEED * RAIN_PERIOD` is 1.43 m against a 1.05 m cell, so a ring can
- * reach 1.36 cells from where it landed and the 3x3 neighbourhood the loop walks
- * does not contain every drop that can touch a given fragment. A review caught
- * that; the visible consequence is a discontinuity as a fragment crosses a cell
- * boundary and a ring pops in or out.
- *
- * Rather than widen the loop to 5x5 — which more than doubles the cost for
- * contributions that are almost entirely faded — the ring's envelope is closed
- * off before it can leave the neighbourhood. `exp(-1.6 r)` is already down to 4%
- * of its peak at one cell, so bounding it here changes the image far less than
- * the boundary artefact it removes.
+ * Furthest a ring travels before its cell fires again. Kept inside the 3x3
+ * neighbourhood the loop walks, so no ring is cut off at a cell boundary.
  */
-const RAIN_MAX_RADIUS = RAIN_CELL * 0.95;
-/** Metres per second the ring expands. */
-const RAIN_SPEED = 1.5;
-/** Radians per metre across the ring — how tight the wavefront reads. */
-const RAIN_FREQUENCY = 13.0;
+const RAIN_MAX_RADIUS = RAIN_CELL * 0.9;
+/** Metres per second the ring expands: the capillary–gravity minimum. */
+const RAIN_SPEED = 0.26;
+/** Radians per metre across the ring: a 6 cm capillary wavelength. */
+const RAIN_FREQUENCY = 105.0;
+/**
+ * Scales the ring's slope. Its derivative grows with `RAIN_FREQUENCY`, and at
+ * the first version's amplitude a centimetre-scale ring would be a field of
+ * glints; this keeps the ring's steepest slope near half of the old
+ * one's, which is what makes it a texture of the water rather than a mark on
+ * it.
+ */
+const RAIN_SLOPE_SCALE = 0.055;
+/**
+ * Slope variance the rain stipple adds to the glitter past where its rings are
+ * drawn, per unit of `uRainSlope` at full intensity. Small: it widens the
+ * highlight a little, the way a downpour dulls the sheen of the sea.
+ */
+const RAIN_UNRESOLVED_VARIANCE = 0.02;
 
 const rainSlope = /*@__PURE__*/ Fn(([worldXZ, time, intensity]: [any, any, any]) => {
   const cell = worldXZ.div(RAIN_CELL).floor().toVar();
@@ -3335,17 +3453,21 @@ const rainSlope = /*@__PURE__*/ Fn(([worldXZ, time, intensity]: [any, any, any])
       // `RAIN_MAX_RADIUS`. Without it a ring that outruns the window vanishes
       // abruptly at a cell boundary instead of fading.
       const reach = float(1).sub(r.div(RAIN_MAX_RADIUS)).clamp(0, 1).toVar();
+      // A packet two wavelengths wide, dying fast with age (squared: most of
+      // a ring's life is its first tenth of a second) and with distance. The
+      // splash itself is the packet at age zero, a few centimetres across.
+      const youth = float(1).sub(age.div(RAIN_PERIOD)).toVar();
       const envelope = x
         .mul(x)
-        .mul(-9.0)
+        .mul(-900.0)
         .exp()
-        .mul(float(1).sub(age.div(RAIN_PERIOD)))
-        .mul(r.mul(-1.6).exp())
+        .mul(youth.mul(youth))
+        .mul(r.mul(-14).exp())
         .mul(reach.mul(reach))
         .toVar();
 
       // d/dr of sin(x * F) * envelope, keeping the dominant term.
-      const dhdr = x.mul(RAIN_FREQUENCY).cos().mul(RAIN_FREQUENCY).mul(envelope).toVar();
+      const dhdr = x.mul(RAIN_FREQUENCY).cos().mul(RAIN_FREQUENCY * RAIN_SLOPE_SCALE).mul(envelope).toVar();
       slope.addAssign(delta.div(r).mul(dhdr).mul(active));
     }
   }
@@ -3407,8 +3529,9 @@ const valueNoise = /*@__PURE__*/ Fn(([p]: [any]) => {
  * breeze.
  *
  * The spectrum's tail is Phillips' saturated k^-4 range with a fixed alpha
- * (`Spectrum`, 0.0081), so everything shorter than the peak has the same
- * slope at 5 m/s as at 15: the wind only moves the peak. That is why the near
+ * (`Spectrum`, 0.0081; `youngSeaGain` raises it near the peak only), so
+ * everything well short of the peak has the same slope at 5 m/s as at 15: the
+ * wind only moves the peak. That is why the near
  * water of near-water-detail (15 m/s) drew the same as calm-close (5 m/s). Real
  * short waves are not saturated at a fixed level. Their curvature spectrum
  * scales with the friction velocity, which is Cox and Munk's mean-square slope

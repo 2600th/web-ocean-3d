@@ -446,7 +446,13 @@ export function buildBeaconHalo(position: THREE.Vector3): THREE.Mesh {
     const core = float(1).sub(r.smoothstep(0, 1)).pow(3);
     // Weak up close, where the lit glass carries it; full from a couple of hundred metres.
     const far = dist.smoothstep(40, 260).mul(0.85).add(0.15);
-    return vec4(v3(1.0, 0.62, 0.3).mul(core).mul(beaconLevel).mul(far).mul(5), 1);
+    // A halo is glare, and glare only shows against a dark sky: at sunset the
+    // lamp is lit but the sky behind it is still bright, and a full-strength
+    // additive card there read as a pale orange ghost round the lantern. So the
+    // halo waits for real dusk (the lamp level is the scene's darkness, with
+    // its flutter), while the glazing and flames keep following the lamp.
+    const dusk = beaconLevel.smoothstep(0.45, 0.95);
+    return vec4(v3(1.0, 0.62, 0.3).mul(core).mul(beaconLevel).mul(dusk).mul(far).mul(5), 1);
   })();
   const mesh = new THREE.Mesh(g, mat);
   mesh.name = 'lighthouse-halo';

@@ -228,6 +228,80 @@ const SWAY_GAIN = 0.024;
  * it gets that back here.
  */
 const BACKLIT = 6;
+/**
+ * [underwater-look-3] Round 5b. Under water, the share kept of the
+ * view-independent translucency (`trc * tr`, every blade whose far face the
+ * sun reaches) and of the ambient. Both lit the whole forest about evenly,
+ * which is what made the kelp frame high-key next to abyssal-garden's dark
+ * masses: the glow belongs to the blades the sun is behind, which the
+ * view-dependent lobe (`BACKLIT`) already gives.
+ */
+const UNDER_DIFFUSE_TR = 0.25;
+const UNDER_AMBIENT = 0.4;
+/**
+ * [underwater-look-3] Round 6. Under water, the share kept of the whole-leaf
+ * sparkle and of the glints' emission. The round-6 review read the kelp as
+ * "covered in emissive specks": both are self-lit and the pass's
+ * `SURFACE_LIGHT` brings everything around them down to a third, so a speck
+ * that sat quietly on a sunlit blade in air glowed like a lamp on a dark one.
+ */
+const UNDER_SPARKLE = 0.25;
+/**
+ * [underwater-look-3] Round 6. Per-channel loss per metre of water between the
+ * eye and a submerged blade, over a path that saturates at
+ * `NEAR_ABSORB_LENGTH`: a blade a metre off keeps 80% of its red, one at three
+ * metres 60%, one at five half, and nothing past ten loses more than 63%.
+ * The review read the foreground kelp as "unattenuated ochre, lit as if in
+ * air": the medium's own extinction is set for range (red's 10% contrast at
+ * 16 m), which leaves a blade three metres away nearly untouched. Stylised and
+ * on the leaves only, which are what the eye swims through; the reef keeps
+ * the medium's colour.
+ */
+const NEAR_ABSORB: readonly [number, number, number] = [0.22, 0.05, 0];
+const NEAR_ABSORB_LENGTH = 4.5;
+/**
+ * [underwater-look-3] Round 6. `UNDER_DIFFUSE_TR` and `UNDER_AMBIENT` are the
+ * contre-jour values: they apply where the eye looks toward the sun through
+ * the blade (`dot(-V, L)` past `CONTRE_EDGES`), and these where it looks
+ * across or away from it. Round 5b took the ambient and the diffuse
+ * transmission down everywhere to give kelp-sun abyssal-garden's dark masses
+ * against the light; seen across the light the same forest became columns of
+ * the water's own navy — at a third of the air rig's light their faces were
+ * darker than the water in front of them — and the review called the frame
+ * monochrome. Against the sun the eye is adapted to the window and the
+ * shaded sides are dark; across it they are lit by the water around them.
+ */
+const ACROSS_DIFFUSE_TR = 1;
+/**
+ * Twenty times the contre-jour value. The leaves' ambient is the scene's
+ * hemisphere fill, set for air and a small term next to the key; across the
+ * light under water it is most of what a blade receives, and at 2.5 the
+ * forest was still navy. At 8 a column ten metres off is the dark green of
+ * abyssal-garden's and the ones past thirty go to the water's blue.
+ */
+const ACROSS_AMBIENT = 8;
+const CONTRE_EDGES: readonly [number, number] = [0.35, 0.8];
+/**
+ * [underwater-look-3] Round 6. The ambient a submerged blade takes is the
+ * water's light, not the sky's: blue-green rather than the sky cube's blue.
+ * On the shaded side of a forest the sky's blue made every column navy, which
+ * the review called monochrome; this keeps the luminance and turns the hue
+ * toward green, so a near column reads green and a far one goes to the
+ * water's blue.
+ */
+const UNDER_AMBIENT_TINT: readonly [number, number, number] = [0.75, 1.2, 0.8];
+/**
+ * [underwater-look-3] Round 6. A smooth field of lean across the forest, so
+ * neighbouring columns stand at different angles to the current instead of
+ * all leaning as one: a gain on the mean set (`uLean`) of `1 +- LEAN_SPREAD`
+ * and a turn of its direction by up to `LEAN_TURN` radians, both varying over
+ * five to eight metres — more than a column's spacing, much more than the
+ * spread of one column's leaves, so each column still bends as one piece.
+ * The swell and the surge are left alone: they are the water's motion and
+ * travel through the forest as a wave.
+ */
+const LEAN_SPREAD = 0.6;
+const LEAN_TURN = 0.7;
 /** [underwater-look-3] How far a blade's edges curl back, as a share of its half-width. */
 const CUP = 0.28;
 const SWAY_POWER = 1.25;
@@ -265,6 +339,18 @@ export class LeafUniforms {
   readonly uGlint = uniform(1);
   /** [underwater-look-3] See `BACKLIT`. */
   readonly uBacklit = uniform(BACKLIT);
+  /** [underwater-look-3] See `UNDER_DIFFUSE_TR`. */
+  readonly uUnderDiffuseTr = uniform(UNDER_DIFFUSE_TR);
+  readonly uUnderAmbient = uniform(UNDER_AMBIENT);
+  /** [underwater-look-3] See `UNDER_SPARKLE`. */
+  readonly uUnderSparkle = uniform(UNDER_SPARKLE);
+  /** [underwater-look-3] See `ACROSS_AMBIENT`. */
+  readonly uAcrossDiffuseTr = uniform(ACROSS_DIFFUSE_TR);
+  readonly uAcrossAmbient = uniform(ACROSS_AMBIENT);
+  /** [underwater-look-3] See `NEAR_ABSORB`. */
+  readonly uNearAbsorb = uniform(new THREE.Vector3(...NEAR_ABSORB));
+  /** [underwater-look-3] See `UNDER_AMBIENT_TINT`. */
+  readonly uUnderAmbientTint = uniform(new THREE.Vector3(...UNDER_AMBIENT_TINT));
 
   private swellOmega = Math.sqrt(GRAVITY * ((Math.PI * 2) / 47));
   private time = 0;
@@ -353,11 +439,30 @@ function swayAt(U: LeafUniforms, px: Node, pz: Node, h: Node, t: Node, swayPhase
   const downwave = px.mul(dir.x).add(pz.mul(dir.y));
   const swell = sin(swayPhase.sub(downwave.mul(U.uSwellK)).sub(hh.mul(0.08))).mul(U.uSwell);
   const surge = sin(surgePhase.sub(downwave.mul(SURGE_K)).sub(hh.mul(0.05))).mul(U.uSurge);
-  const along = swell.add(surge).add(U.uLean);
+  const along = swell.add(surge);
   const ph = px.mul(0.031).add(pz.mul(0.017));
   const mx = sin(t.mul(0.5).add(ph).add(hh.mul(0.09))).add(sin(t.mul(1.3).add(ph.mul(3)).add(hh.mul(0.3))).mul(0.35));
   const mz = cos(t.mul(0.37).add(ph.mul(1.3)).add(hh.mul(0.07))).add(cos(t.mul(1.1).add(ph.mul(2)).add(hh.mul(0.23))).mul(0.35));
-  return vec2n(dir.x.mul(along).add(mx.mul(U.uMeander)), dir.y.mul(along).add(mz.mul(U.uMeander))).mul(env);
+  // [underwater-look-3] The mean set, varied across the forest; see `LEAN_SPREAD`.
+  const leanGain = sin(px.mul(0.83).add(pz.mul(0.37)).add(1.1))
+    .mul(0.6)
+    .add(sin(px.mul(-0.29).add(pz.mul(1.07)).add(4.2)).mul(0.4))
+    .mul(LEAN_SPREAD)
+    .add(1);
+  const turn = sin(px.mul(0.41).sub(pz.mul(0.73)).add(2.3))
+    .mul(0.65)
+    .add(sin(px.mul(1.13).add(pz.mul(0.19))).mul(0.35))
+    .mul(LEAN_TURN);
+  const lean = U.uLean.mul(leanGain);
+  const lx = dir.x.mul(cos(turn)).sub(dir.y.mul(sin(turn))).mul(lean);
+  const lz = dir.x.mul(sin(turn)).add(dir.y.mul(cos(turn))).mul(lean);
+  // The swing with the swell, too, by half as much: a stiffer or shorter
+  // column moves less in the same water.
+  const swing = along.mul(leanGain.sub(1).mul(0.5).add(1));
+  return vec2n(
+    dir.x.mul(swing).add(lx).add(mx.mul(U.uMeander)),
+    dir.y.mul(swing).add(lz).add(mz.mul(U.uMeander)),
+  ).mul(env);
 }
 
 /** Per-type constants, as a select chain on the type. */
@@ -565,7 +670,7 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     mix(mix(a, b, ss(0.0, 0.5, s1)), c, ss(0.5, 1.0, s1));
   const kelpCol = mix(
     tri(vec3(0.11, 0.065, 0.018), vec3(0.07, 0.085, 0.02), vec3(0.03, 0.08, 0.035)),
-    tri(vec3(0.2, 0.13, 0.035), vec3(0.13, 0.15, 0.03), vec3(0.05, 0.16, 0.06)),
+    tri(vec3(0.17, 0.125, 0.04), vec3(0.12, 0.145, 0.035), vec3(0.05, 0.15, 0.06)),
     lift,
   );
   const col = byType(type, [
@@ -688,17 +793,23 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     // the thin margin than at the midrib, so the edges glow and the rib
     // reads as a darker line through the backlit blade.
     const thin = mix(float(0.55), float(1.3), ss(0.05, 0.85, uvx));
-    const trc = alb.mul(mix(vec3(1), vec3(1.5, 1.4, 0.75), translucency.mul(vPr.z.oneMinus()))).mul(thin);
+    // Under water a little less gold in the transmitted tint (round 5b).
+    const trTint = mix(vec3(1.5, 1.4, 0.75), vec3(1.25, 1.4, 0.85), underK);
+    const trc = alb.mul(mix(vec3(1), trTint, translucency.mul(vPr.z.oneMinus()))).mul(thin);
     // Occlusion: the baked crowding, and the base of every leaf is darker.
     const aoTerm = mix(float(0.3), float(1), occl).mul(mix(float(0.55), float(1), vv));
     const am = U.uAmbient
       .mul(n.y.mul(0.45).add(0.55))
       .add(U.uAmbient.mul(n.y.mul(-0.45).add(0.55)).mul(translucency.mul(0.55)).mul(vec3(1.1, 1.15, 0.7)))
       .mul(aoTerm);
+    // [underwater-look-3] See `ACROSS_AMBIENT`.
+    const contre = ss(CONTRE_EDGES[0], CONTRE_EDGES[1], V.negate().dot(L)).toVar();
+    const underDiffuseTr = mix(U.uAcrossDiffuseTr, U.uUnderDiffuseTr, contre);
+    const underAmbient = mix(U.uAcrossAmbient, U.uUnderAmbient, contre);
     const c = E.mul(caustic)
-      .mul(alb.mul(ndl.max(0)).add(trc.mul(tr)))
+      .mul(alb.mul(ndl.max(0)).add(trc.mul(tr).mul(mix(float(1), underDiffuseTr, underK))))
       .mul(aoTerm.mul(0.6).add(0.4))
-      .add(alb.mul(am))
+      .add(alb.mul(am).mul(mix(vec3n(1, 1, 1), U.uUnderAmbientTint.mul(underAmbient), underK)))
       .toVar();
     const H = V.add(L).normalize();
     const nh = n.dot(H).clamp(0, 1);
@@ -709,15 +820,19 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     // rest of the forest stays the dark mass abyssal-garden's frames show.
     const back = V.negate().dot(L).clamp(0, 1).toVar();
     const lobeAir = back.pow(2).mul(2);
+    // Round 5b: mu^12, from mu^6. At mu^6 every blade within forty degrees
+    // of the sun glowed, which lit the near forest about evenly.
     const back2 = back.mul(back);
-    const lobeWater = back2.mul(back2).mul(back2).mul(U.uBacklit);
+    const back6 = back2.mul(back2).mul(back2);
+    const lobeWater = back6.mul(back6).mul(U.uBacklit);
     c.addAssign(E.mul(trc).mul(translucency).mul(mix(lobeAir, lobeWater, underK)));
     const lum = (x: Node): Node => x.dot(vec3(0.1, 0.5, 0.5));
     c.addAssign(alb.mul(vPr.w).mul(lum(am.add(E.mul(0.3))).mul(3).add(0.5)));
     // Whole-leaf sparkle that twinkles slowly.
     const tw = sin(U.uTime.mul(seed2.mul(1.4).add(0.5)).add(seed1.mul(90))).mul(0.5).add(0.5).pow(5);
     const band = ss(0.2, 0, vv.sub(seed2.mul(0.45).add(0.35)).abs()).mul(uvx.mul(uvx).oneMinus());
-    c.addAssign(vSpc.mul(vPr.x).mul(tw.add(0.1)).mul(band).mul(lum(E).mul(1.2).add(0.35)).mul(0.6));
+    const sparkleKeep = mix(float(1), U.uUnderSparkle, underK);
+    c.addAssign(vSpc.mul(vPr.x).mul(tw.add(0.1)).mul(band).mul(lum(E).mul(1.2).add(0.35)).mul(0.6).mul(sparkleKeep));
 
     // The glint: emissive, falling off from its centre.
     const r2 = vUv.x.mul(vUv.x).add(vv.mul(2).sub(1).pow(2));
@@ -727,8 +842,13 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
       .mul(r2.mul(-3).exp())
       .mul(lum(E).mul(1.8).add(0.3))
       .mul(U.uGlint)
+      .mul(sparkleKeep)
       .mul(4);
 
+    // [underwater-look-3] Round 6: the water between the eye and a near blade;
+    // see `NEAR_ABSORB`.
+    const nearPath = dist.div(NEAR_ABSORB_LENGTH).negate().exp().oneMinus().mul(NEAR_ABSORB_LENGTH);
+    c.mulAssign(mix(vec3n(1, 1, 1), U.uNearAbsorb.mul(nearPath).negate().exp(), underK));
     return vec4(select(glint, glow, c.mul(U.uExposure)), 1);
   })();
 

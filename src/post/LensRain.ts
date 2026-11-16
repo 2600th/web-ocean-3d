@@ -844,7 +844,14 @@ export class LensRain {
           this.uGlintPower,
         ).mul(this.uGlint).mul(cover);
 
-        outRgb.assign(wet.add(this.uGlintColor.mul(spec)));
+        // A drop's highlight is a reflection of the bright surround, so it is
+        // only as bright as the scene the glass sits in. A fixed white glint is
+        // right on a sunlit frame and wrong under a storm deck, where it read as
+        // a field of white specks ("stars") against the dim sky.
+        const surround = glass.dot(vec3(0.2126, 0.7152, 0.0722)).clamp(0, 1);
+        const glintLevel = surround.mul(1.6).min(1);
+
+        outRgb.assign(wet.add(this.uGlintColor.mul(spec).mul(glintLevel)));
       });
 
       return vec4(outRgb, src.a);

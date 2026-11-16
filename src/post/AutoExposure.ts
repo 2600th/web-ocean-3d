@@ -240,10 +240,15 @@ export class AutoExposure {
     // correction, a narrow dead zone and a cap of +3 EV.
     /** 0 above water, 1 with the eye fully submerged. */
     submerged: uniform(0),
-    uwAnchorLog: uniform(-0.4),
+    // [underwater-look-3] Round 5c: anchor -0.4 -> -0.15 and cap 3 -> 3.6.
+    // With the directional in-scatter and the steeper grade, a reef view
+    // (mound-close) needed more than three stops and sat pinned at the cap,
+    // 30 below abyssal-garden's mean luma, while looking up-sun was within
+    // ten; the cap lets the reef reach its target, the anchor lifts the rest.
+    uwAnchorLog: uniform(-0.15),
     uwStrength: uniform(0.9),
     uwDeadZone: uniform(0.25),
-    uwMaxEv: uniform(3.0),
+    uwMaxEv: uniform(3.6),
   };
 
   private readonly meter: any;

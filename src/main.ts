@@ -960,6 +960,7 @@ class App {
       light: this.atmosphere.sunLight,
       keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
       caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+      causticFacing: (normal) => this.caustics.facingNode(normal),
       groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
     };
     // The geology first: the reef grows on its outcrops, and the sand reads
@@ -2252,6 +2253,7 @@ class App {
         light: this.atmosphere.sunLight,
         keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
         caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+        causticFacing: (normal) => this.caustics.facingNode(normal),
         groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
       });
 
@@ -2354,6 +2356,7 @@ class App {
         // the viewer is actually looking at.
         keyShadow: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
         caustics: (worldPosition) => this.caustics.intensityNode(worldPosition),
+        causticFacing: (normal) => this.caustics.facingNode(normal),
         groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
         foliage: {
           wind: this.foliageWind,
@@ -3919,6 +3922,7 @@ class App {
     // [underwater-look-2] Seen from above, the bed's web softens with depth
     // and wind; see `Caustics.setViewer`. Uniform writes.
     this.caustics.setViewer(1 - this.director.submersion(), this.state.windSpeed);
+    this.caustics.setEye(this.camera.position);
     this.caustics.update(dt);
     // Re-bake around the viewer. Must run outside an active render target, so it
     // sits here in the update rather than inside the post chain.

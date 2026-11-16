@@ -58,6 +58,12 @@ export interface GroundShadingInputs {
   /** `(worldPosition) => metres` — seafloor elevation, for the contact term. */
   groundHeight: (worldPosition: Node) => Node;
   /**
+   * [underwater-look-3] `(normalWorld) => 0..1`: how much of the caustic web a
+   * face takes by its angle to the refracted sun (`Caustics.facingNode`).
+   * Omitted, every face takes it as before.
+   */
+  causticFacing?: (normalWorld: Node) => Node;
+  /**
    * Wind for the planting, and the test that decides what counts as planting.
    *
    * Omitted leaves every mesh static, which is what the scene did before.
@@ -303,7 +309,13 @@ export function applyGroundShading(
     // was drawn stretched into long parallel streaks at full contrast; the
     // light there arrives spread over more area and from more of the cone.
     const steep = float(1).sub(normalWorld.y.abs().smoothstep(0.25, 0.75)).mul(STEEP_CAUSTIC_LOSS);
-    const caustic = mix(float(1), inputs.caustics(wp), reach.mul(float(1).sub(steep))).toVar('gsCaustic');
+    // [underwater-look-3] Round 6: and none on a face the refracted sun cannot
+    // reach. The key's own `n.l` is the sun's in air, 26 degrees up under the
+    // default sky against 47 below, so a side face turned half away from it
+    // still took enough key for the web's filaments to draw streaks across it.
+    const facing: Node = inputs.causticFacing ? inputs.causticFacing(normalWorld) : float(1);
+    const causticMix: any = reach.mul(float(1).sub(steep)).mul(facing as any);
+    const caustic = mix(float(1), inputs.caustics(wp), causticMix as Node).toVar('gsCaustic');
     // [underwater-look-3] See `UW_CONTACT_KEY`. Faded in over the first few
     // metres of depth, so nothing at the waterline changes.
     const aboveK = wp.y.sub(inputs.groundHeight(wp)).max(0);
