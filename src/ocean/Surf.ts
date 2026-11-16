@@ -3,7 +3,7 @@ import { smoothstepDown, smoothstepDownClamped } from '../core/tslMath';
 import { featherFoam, foamCells, foamPattern } from './FoamPattern';
 // A cycle (Seafloor draws the swash from here), safe because both sides read
 // the other only inside functions, never while the modules load.
-import { TERRACE_SLOPE, TERRACE_STEP_DEPTH, shoreTerraceMask } from '../scene/Seafloor';
+import { TERRACES, shoreTerraceMask } from '../scene/Seafloor';
 
 export { foamCells };
 
@@ -33,8 +33,8 @@ export { foamCells };
  * the water shallows, because `sqrt(d)` compresses (shoaling — the wavelength
  * at 2 m is half what it is at 8 m); and they slow down as they come in. `s` is
  * a nominal 1:10, measured off the island's own beaches (0.10–0.13 at the
- * waterline, steepening offshore). The one exception is the low-tide terrace
- * in `Seafloor`, where `shoalingRoot` adds the slower crossing of its shelf.
+ * waterline, steepening offshore). The exceptions are the low-tide terraces
+ * in `Seafloor`, where `shoalingRoot` adds the slower crossing of each shelf.
  *
  * **Sets.** `floor(phi)` numbers the breakers, so a wave's height can be a
  * function of its number: a seven-wave group envelope times a per-wave jitter.
@@ -209,15 +209,17 @@ export function setSurfState(
 /**
  * Highest the swash can climb, metres above still water: the run-up of the
  * largest wave a set can hold (see `waveHeight`, whose factors top out at
- * 1.2 x 1.15 x 1.15 x 1.25 = 1.98), with the 18% lobe `runup` adds.
+ * 1.2 x 1.15 x 1.15 x 1.5 = 2.38), with the 18% lobe `runup` adds.
  */
 function maxRunup(): any {
-  return surfUniforms.runupScale.mul(surfUniforms.height.mul(1.98).sqrt()).mul(1.18);
+  return surfUniforms.runupScale.mul(surfUniforms.height.mul(2.38).sqrt()).mul(1.18);
 }
 
 /** Deepest water, metres, in which anything here is non-zero. */
 export function surfReachDepth(): any {
-  // The biggest wave of a set, on a peak, is ~1.5 times the average.
+  // The biggest wave of a set, on a peak, is ~1.5 times the average. The
+  // tallest peaks of the tallest sets go past that; their fade just starts
+  // late. Left there so the reach does not grow into the lagoon floor.
   return surfUniforms.height.mul((1.5 / BREAKER_INDEX) * SURF_REACH);
 }
 
@@ -244,10 +246,21 @@ function hash1(n: any): any {
  *
  * Three periods of slow variation round the island, and a third of a period of
  * fast variation over about 45 m so a crest breaks in sections.
+ *
+ * Between them, half a period over about 80 m. A real swell is a spread of
+ * directions and periods, so its crests bend and their spacing varies. One
+ * direction and period drew every breaker parallel to the last and a
+ * wavelength behind it: the "evenly ruled" bands of foam-4 and the ruler-
+ * straight shore line of beach-transparency-2. The term is a 2-D field, so it
+ * varies across the surf zone as well as along it. That bunches and spreads
+ * successive crests by about a fifth either way. Its steepest slope is under a
+ * third of the phase's own shoreward gradient on the terrace, so a crest never
+ * turns back on itself.
  */
 function alongShorePhase(xz: any): any {
   return surfNoise(xz.div(320))
     .mul(3)
+    .add(surfNoise(xz.div(80).add(vec2(2.9, 13.7))).mul(0.5))
     .add(surfNoise(xz.div(45).add(vec2(17.3, 5.1))).mul(0.35));
 }
 
@@ -256,19 +269,29 @@ function alongShorePhase(xz: any): any {
  * phase's `2 sqrt(d) / (s sqrt(g))` is the true travel time on this bed.
  *
  * On a plane of slope `s` a crest takes `2 sqrt(d) / (s sqrt(g))` to reach the
- * shoreline. On `Seafloor`'s low-tide terrace it crosses the shelf at the
- * terrace's slope and then the face at the nominal slope. The travel time is
- * the sum of the two legs, so past the step the depth's root counts
- * `NOMINAL_SLOPE / TERRACE_SLOPE` times over. The crest spacing,
+ * shoreline. On one of `Seafloor`'s low-tide terraces it crosses the shelf at
+ * the terrace's slope and then the face at the nominal slope. The travel time
+ * is the sum of the legs, so over the shelf the depth's root counts
+ * `NOMINAL_SLOPE / slope` times over. The crest spacing,
  * `sqrt(g d) T`, does not depend on the slope, so `surfPhaseGradient` is right
  * on both. Without this term the breakers would cross the shelf at four times
  * their real spacing.
  */
 function shoalingRoot(depth: any, xz: any): any {
   const root = depth.max(0).sqrt();
-  const step = Math.sqrt(TERRACE_STEP_DEPTH);
-  const shelf = root.min(step).add(root.sub(step).max(0).mul(NOMINAL_SLOPE / TERRACE_SLOPE));
-  return mix(root, shelf, shoreTerraceMask(xz));
+  let out: any = root;
+  for (const tr of TERRACES) {
+    // Face to the step, the shelf at its own slope to where it ends, and the
+    // floor beyond at the nominal slope again.
+    const step = Math.sqrt(tr.stepDepth);
+    const end = Math.sqrt(tr.endDepth);
+    const shelf = root
+      .min(step)
+      .add(root.clamp(step, end).sub(step).mul(NOMINAL_SLOPE / tr.slope))
+      .add(root.sub(end).max(0));
+    out = mix(out, shelf, shoreTerraceMask(xz, tr));
+  }
+  return out;
 }
 
 /** Breaker phase at a point; crests are at integer values. See the header. */
@@ -300,14 +323,31 @@ export function waveHeight(n: any, xz: any): any {
   // bathymetry's steady share; this one is the wave's own, at about the 25 m
   // a peak spans, so each breaker comes in as sections that go at different
   // depths instead of the one extruded tube beach-transparency-1 showed.
-  const peaks = surfNoise(xz.div(26).add(vec2(hash1(n.add(11)).mul(53), hash1(n.add(17)).mul(41))))
-    .mul(0.5)
-    .add(0.75);
+  //
+  // The range runs from under half to one and a half times the wave's
+  // height, with the middle squeezed out. A low section breaks well inside
+  // the high ones beside it, or reaches the shore unbroken. That leaves gaps
+  // in the line of white, where 0.75-1.25 only nudged a continuous line in
+  // and out.
+  const peaks = surfNoise(xz.div(30).add(vec2(hash1(n.add(11)).mul(53), hash1(n.add(17)).mul(41))))
+    .smoothstep(0.12, 0.88)
+    .mul(1.05)
+    .add(0.45);
   return surfUniforms.height
     .mul(envelope.pow(1.5).mul(0.7).add(0.5))
     .mul(jitter)
     .mul(along)
-    .mul(peaks);
+    .mul(peaks)
+    .mul(shelterAt(xz));
+}
+
+/** Breaker height kept where a terrace's sector is sheltered; see `Terrace.shelter`. */
+function shelterAt(xz: any): any {
+  let kept: any = float(1);
+  for (const tr of TERRACES) {
+    if (tr.shelter > 0) kept = kept.mul(shoreTerraceMask(xz, tr).mul(-tr.shelter).add(1));
+  }
+  return kept;
 }
 
 /**
