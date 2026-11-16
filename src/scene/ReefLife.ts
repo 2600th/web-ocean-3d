@@ -12,7 +12,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { mulberry32 } from '../core/random';
-import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
+import { ISLAND, REEF_BAND, reefPatches, seafloorHeight, seafloorPlacementHeight } from './Seafloor';
 import { applyGroundShading, type GroundShadingInputs } from './groundShading';
 import type { GardenTheme, RockGarden } from './Rocks';
 import { InstanceField } from './reef/InstanceField';
@@ -565,7 +565,7 @@ function findIslandSites(
     const r = ISLAND.radius * (0.7 + random() * 0.75);
     const x = ISLAND.x + Math.cos(a) * r;
     const z = ISLAND.z + Math.sin(a) * r;
-    const d = -seafloorHeight(x, z);
+    const d = -seafloorPlacementHeight(x, z);
     if (d < depth[0] || d > depth[1]) continue;
     if (slopeAt(x, z) > 0.45) continue;
     let clear = true;
@@ -583,15 +583,15 @@ function findIslandSites(
 
 function slopeAt(x: number, z: number): number {
   const h = 2;
-  const dx = (seafloorHeight(x + h, z) - seafloorHeight(x - h, z)) / (2 * h);
-  const dz = (seafloorHeight(x, z + h) - seafloorHeight(x, z - h)) / (2 * h);
+  const dx = (seafloorPlacementHeight(x + h, z) - seafloorPlacementHeight(x - h, z)) / (2 * h);
+  const dz = (seafloorPlacementHeight(x, z + h) - seafloorPlacementHeight(x, z - h)) / (2 * h);
   return Math.hypot(dx, dz);
 }
 
 function floorNormal(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
   const h = 0.6;
-  const dx = (seafloorHeight(x + h, z) - seafloorHeight(x - h, z)) / (2 * h);
-  const dz = (seafloorHeight(x, z + h) - seafloorHeight(x, z - h)) / (2 * h);
+  const dx = (seafloorPlacementHeight(x + h, z) - seafloorPlacementHeight(x - h, z)) / (2 * h);
+  const dz = (seafloorPlacementHeight(x, z + h) - seafloorPlacementHeight(x, z - h)) / (2 * h);
   return out.set(-dx, 1, -dz).normalize();
 }
 
@@ -824,7 +824,7 @@ export class ReefLife {
       const x = colony.x + Math.cos(a) * r;
       const z = colony.z + Math.sin(a) * r;
       floorNormal(x, z, normal);
-      out.push({ x, y: seafloorHeight(x, z), z, nx: normal.x, ny: normal.y, nz: normal.z });
+      out.push({ x, y: seafloorPlacementHeight(x, z), z, nx: normal.x, ny: normal.y, nz: normal.z });
     }
   }
 
@@ -873,7 +873,7 @@ export class ReefLife {
         const r = Math.sqrt(random()) * spread;
         const x = cx + Math.cos(a) * r;
         const z = cz + Math.sin(a) * r;
-        const y = seafloorHeight(x, z);
+        const y = seafloorPlacementHeight(x, z);
         if (y > -1.5) continue;
         floorNormal(x, z, normal);
         out.push({ x, y, z, nx: normal.x, ny: normal.y, nz: normal.z });

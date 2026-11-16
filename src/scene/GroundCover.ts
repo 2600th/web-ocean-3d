@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mulberry32 } from '../core/random';
-import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
+import { ISLAND, REEF_BAND, reefPatches, seafloorPlacementHeight } from './Seafloor';
 import { FloorCache, LeafField, LeafType, fbm, type Leaf, type LeafShading, type LeafUniforms } from './LeafField';
 import type { Clearing, Forest } from './Kelp';
 
@@ -208,7 +208,7 @@ function plantMeadows(leaves: Leaf[], rnd: () => number, floor: FloorCache, reef
           x = Math.cos(a) * r;
           z = Math.sin(a) * r;
         }
-        const depth = -seafloorHeight(x, z);
+        const depth = -seafloorPlacementHeight(x, z);
         if (depth < band[0] || depth > band[1]) continue;
         const r = MEADOW_RADIUS[0] + rnd() * (MEADOW_RADIUS[1] - MEADOW_RADIUS[0]);
         if (inside(x, z, reef, 2)) continue;

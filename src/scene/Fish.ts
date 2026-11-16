@@ -23,7 +23,7 @@ import {
 } from 'three/tsl';
 import { mulberry32 } from '../core/random';
 import { dequantiseGeometry, type AssetLoader } from './AssetLoader';
-import { ISLAND, reefPatches, seafloorHeight } from './Seafloor';
+import { ISLAND, reefPatches, seafloorHeight, seafloorPlacementHeight } from './Seafloor';
 
 /**
  * Schools of fish, over the plateau, the reef and the island's shallows.
@@ -1487,7 +1487,7 @@ function findReefStation(random: () => number, index: number): Station {
     const offset = Math.sqrt(random()) * REEF_STATION_OFFSET;
     const x = patch.x + Math.cos(bearing) * offset;
     const z = patch.z + Math.sin(bearing) * offset;
-    const depth = -seafloorHeight(x, z);
+    const depth = -seafloorPlacementHeight(x, z);
     if (depth >= REEF_STATION_BAND.minDepth && depth <= REEF_STATION_BAND.maxDepth) {
       return { x, z };
     }
@@ -1530,7 +1530,7 @@ function findStation(
     const r = band.minRadius + random() * (band.maxRadius - band.minRadius);
     const x = band.x + Math.cos(angle) * r;
     const z = band.z + Math.sin(angle) * r;
-    const depth = -seafloorHeight(x, z);
+    const depth = -seafloorPlacementHeight(x, z);
 
     if (depth >= band.minDepth && depth <= band.maxDepth) return { x, z };
 
