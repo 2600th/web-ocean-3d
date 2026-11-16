@@ -349,10 +349,61 @@ const NEAR_END = 4;
  * and fish stand out against it in silhouette. `SUN_GLOW` is the wide glow,
  * `SUN_CORE` the disc.
  */
-const SUN_GLOW = 1.0;
+//
+// [underwater-look-3] Round 8b: glow 1 -> 0.55 and halo 0.15 -> 0.05. With the
+// water no longer drawing a second sun in its window, the round-8 review's
+// "blown out to milky white" round the sun in kelp-sun was this burst: the
+// glow and halo spread a white patch a fifth of the frame wide. The rays
+// (`RADIAL_*`) now carry the light outward from a tighter burst.
+const SUN_GLOW = 0.55;
 const SUN_CORE = 12;
 /** A broad `mu^16` halo under the glow: the forward scatter of the column above. */
-const SUN_HALO = 0.15;
+const SUN_HALO = 0.05;
+/**
+ * [underwater-look-3] Round 8b. Extra blur on the shafts' beam pattern looking
+ * toward the sun: `SHAFT_SUN_LOD` more mip levels between the two cosines
+ * (35 and 18 degrees off the refracted sun). Seen end-on a beam's broad patch
+ * stacks along the whole march, and at the off-sun level 5 those patches drew
+ * the "smeared dark mass" beside the burst in kelp-sun; at level 7 they are
+ * gone. Off the sun the beams keep their level and their shape.
+ */
+const SHAFT_SUN_LOD = 2;
+const SHAFT_SUN_LOD_COS: readonly [number, number] = [0.82, 0.95];
+/**
+ * [underwater-look-3] Round 8b. Rays radiating from the sun through gaps in the
+ * kelp: a screen-space radial blur of an occlusion mask, after Mitchell,
+ * "Volumetric Light Scattering as a Post-Process", GPU Gems 3, ch. 13.
+ *
+ * abyssal-garden does not do this; its rays near the sun are its volumetric
+ * march with the kelp in the shadow map. Ours can't take that route: the march
+ * blurs the beam pattern heavily, and up-sun (the end-on case above) it blurs
+ * it more. So the fan comes from a post pass instead. At half resolution:
+ * - a mask, per pixel: is the ray open to the surface (nothing in the depth
+ *   buffer nearer than the wave-refined surface crossing, less `RADIAL_BLOCK`
+ *   metres) and inside the Snell window (`RADIAL_WINDOW`, on the ray's y),
+ *   times `mu^RADIAL_FOCUS` around the refracted sun, times the column to the
+ *   surface, times the shafts' beam pattern at the crossing (blurred
+ *   `RADIAL_PATTERN_LOD` levels, over a `RADIAL_FLOOR`): the bright cells of
+ *   the surface's focusing are what the rays fan out from;
+ * - `RADIAL_TAPS` taps from each pixel toward the sun's screen position,
+ *   spanning `RADIAL_SPAN` of the way, each `RADIAL_DECAY` of the last.
+ * In the composite it is added as sun light times `RADIAL_GAIN`, and at
+ * `RADIAL_ON_OCCLUDER` on pixels that are themselves blocked, so a kelp blade
+ * stays a silhouette across the rays rather than being lit by them. It fades
+ * out as the sun's screen position leaves the frame (`RADIAL_EDGE`, in NDC).
+ */
+const RADIAL_TAPS = 40;
+const RADIAL_SPAN = 0.85;
+const RADIAL_DECAY = 0.965;
+const RADIAL_FOCUS = 10;
+const RADIAL_PATTERN_LOD = 3.5;
+const RADIAL_PATTERN = 1;
+const RADIAL_FLOOR = 0.3;
+const RADIAL_BLOCK = 0.8;
+const RADIAL_WINDOW: readonly [number, number] = [0.58, 0.7];
+const RADIAL_GAIN = 2.5;
+const RADIAL_ON_OCCLUDER = 0.15;
+const RADIAL_EDGE: readonly [number, number] = [1.0, 1.7];
 /**
  * [underwater-look-3] A narrow forward lobe added to the shafts' phase, on top
  * of abyssal-garden's broad `2 mu^3`. Looking up-sun the beams converge on the
@@ -597,6 +648,16 @@ export class UnderwaterPass {
   private readonly uSunGlow = uniform(SUN_GLOW);
   private readonly uSunCore = uniform(SUN_CORE);
   private readonly uSunHalo = uniform(SUN_HALO);
+  /**
+   * [underwater-look-3] Round 8b. The radial rays; see `RADIAL_TAPS`. The
+   * refracted sun's screen uv, the rays' colour (sun x gain x on-screen fade,
+   * zero when they are off) and whether the passes run this frame.
+   */
+  private readonly uSunUv = uniform(new THREE.Vector2(0.5, 0.5));
+  private readonly uRadialColor = uniform(new THREE.Vector3(0, 0, 0));
+  private radialActive = false;
+  /** The radial mask and blur targets, for the test hooks to read back. */
+  radialTargets: unknown[] = [];
   /** [underwater-look-3] See `SHAFT_LOBE`. */
   private readonly uShaftLobe = uniform(SHAFT_LOBE);
   /** [underwater-look-3] Round 8. See `SHAFT_ISO`, `SHAFT_CONTRAST_RANGE`, `SHAFT_MEAN`. */
@@ -729,6 +790,8 @@ export class UnderwaterPass {
     // The half-resolution shafts are their own two passes, built here so the
     // composite below can read them.
     const shafts: any = this.buildShafts(depthNode, caustics, waveHeight, sunOcclusion);
+    // [underwater-look-3] Round 8b: the rays from the sun; see `RADIAL_TAPS`.
+    const radial: any = this.buildRadial(depthNode, caustics, waveHeight);
 
     /** Distance from the camera to the nearest surface at a screen uv, metres. */
     const viewDistance = (p: any): any =>
@@ -1199,6 +1262,15 @@ export class UnderwaterPass {
           this.uSunBurst.mul(burst).mul(exp(this.uSigma.mul(leaves.min(200).negate()))),
         );
 
+        // [underwater-look-3] Round 8b: the rays from the sun, half resolution
+        // and smooth, so a plain bilinear read. Dimmed on blocked pixels so a
+        // blade in front of them stays dark; see `RADIAL_ON_OCCLUDER`.
+        If(this.uRadialColor.x.add(this.uRadialColor.y).add(this.uRadialColor.z).greaterThan(1e-5), () => {
+          const ray = radial.sample(warpedUv).level(0).toVar('uwRadial');
+          const own = mix(float(RADIAL_ON_OCCLUDER), float(1), openToSurface);
+          fogged.addAssign(this.uRadialColor.mul(ray.r.mul(own)).mul(eyeUnder));
+        });
+
         // The rim. Tinted by the medium rather than added as white, because what
         // is bright at a meniscus is the water itself catching the light above
         // it — a white line would read as a graphic overlay. Raised to
@@ -1382,7 +1454,10 @@ export class UnderwaterPass {
         // the jitter plus the blur pass absorb what it does across them. A
         // footprint-matched level put the read at 8 m texels at High and left
         // no beam structure at all.
-        const lod = this.uShaftBlurLod;
+        // [underwater-look-3] Round 8b: more toward the sun; see `SHAFT_SUN_LOD`.
+        const lod = this.uShaftBlurLod
+          .add(rd.dot(this.uSunUnder).smoothstep(SHAFT_SUN_LOD_COS[0], SHAFT_SUN_LOD_COS[1]).mul(SHAFT_SUN_LOD))
+          .toVar('usLod');
 
         // Interleaved gradient noise, as abyssal-garden's `ign`: a per-pixel
         // start offset trades the step planes' banding for fine noise, which the
@@ -1490,6 +1565,97 @@ export class UnderwaterPass {
     return blurred;
   }
 
+  /**
+   * [underwater-look-3] Round 8b. The rays from the sun: a half-resolution
+   * occlusion mask and a radial blur of it toward the sun's screen position.
+   * See `RADIAL_TAPS`. Returns the blurred texture node; red is the rays.
+   */
+  private buildRadial(
+    depthNode: any,
+    caustics: (worldPosition: any, lod?: any) => any,
+    waveHeight: ((worldXZ: any) => any) | null,
+  ): any {
+    const mask = Fn(() => {
+      const suv = vec2(uv()).toVar('urUv');
+      const ndc = vec2(suv.x.mul(2).sub(1), suv.y.mul(-2).add(1));
+      const viewH = this.uInvProjection.mul(vec4(ndc.x, ndc.y, -1, 1)).toVar('urViewH');
+      const viewDir = normalize(viewH.xyz.div(viewH.w)).toVar('urViewDir');
+      const rd = normalize(this.uCameraWorld.mul(vec4(viewDir, 0)).xyz).toVar('urRd');
+      const dist = perspectiveDepthToViewZ(depthNode.sample(suv).r, this.uNear, this.uFar)
+        .negate()
+        .div(viewDir.z.negate().max(1e-3))
+        .toVar('urDist');
+      // Only a rising ray reaches the surface from below. The crossing is
+      // refined once against the wave field, as the composite's is: with the
+      // eye a few metres down, a flat surface put the troughs in front of it
+      // and drew them as occluders.
+      const up = rd.y.max(1e-4);
+      const eyeH = float(0).toVar('urEyeH');
+      eyeH.assign(this.uEyeHeight);
+      if (waveHeight !== null) {
+        const guess = this.uCameraPos.add(rd.mul(eyeH.negate().max(0).div(up).min(400)));
+        eyeH.assign(this.uCameraPos.y.sub(waveHeight(guess.xz)));
+      }
+      const crossT = eyeH.negate().max(0).div(up).toVar('urCross');
+      // And only inside the Snell window: past it the surface seen from below
+      // is the water's own reflection, with no sun to radiate from.
+      const open = dist
+        .sub(crossT)
+        .smoothstep(-RADIAL_BLOCK, -RADIAL_BLOCK * 0.4)
+        .mul(rd.y.smoothstep(RADIAL_WINDOW[0], RADIAL_WINDOW[1]))
+        .toVar('urOpen');
+      const mu = rd.dot(this.uSunUnder).max(0);
+      // The source is the patch of surface the ray reaches, as bright as the
+      // beam pattern there: the bright cells of the surface's focusing are
+      // what the rays fan out from, as they are what the shafts are made of.
+      const surfaceP = this.uCameraPos.add(rd.mul(crossT.min(200)));
+      const beams = float(caustics(surfaceP, RADIAL_PATTERN_LOD) as any);
+      const emit = mu
+        .pow(RADIAL_FOCUS)
+        .mul(exp(this.uSigma.y.mul(crossT.min(200)).negate()))
+        .mul(beams.mul(RADIAL_PATTERN).add(RADIAL_FLOOR));
+      return vec4(open.mul(emit), open, 0, 1);
+    })();
+    const maskRt: any = rtt(mask as THREE.Node, null, null, { type: THREE.HalfFloatType });
+    maskRt.setResolutionScale(0.5);
+
+    const blur = Fn(() => {
+      const suv = vec2(uv()).toVar('urbUv');
+      const step = this.uSunUv.sub(suv).mul(RADIAL_SPAN / RADIAL_TAPS).toVar('urbStep');
+      // A per-pixel start offset trades the taps' banding for fine noise.
+      const coord = suv.add(step.mul(interleavedGradientNoise(screenCoordinate))).toVar('urbCoord');
+      const weight = float(1).toVar('urbWeight');
+      const acc = float(0).toVar('urbAcc');
+      Loop(RADIAL_TAPS, () => {
+        // Off the frame there is nothing to sample, not the edge texel again.
+        const inside = coord.x
+          .smoothstep(0, 0.01)
+          .mul(coord.x.oneMinus().smoothstep(0, 0.01))
+          .mul(coord.y.smoothstep(0, 0.01))
+          .mul(coord.y.oneMinus().smoothstep(0, 0.01));
+        acc.addAssign(maskRt.sample(coord.clamp(0, 1)).level(0).r.mul(weight).mul(inside));
+        weight.mulAssign(RADIAL_DECAY);
+        coord.addAssign(step);
+      });
+      return vec4(acc.mul(1 / RADIAL_TAPS), 0, 0, 1);
+    })();
+    const blurred: any = rtt(blur as THREE.Node, null, null, { type: THREE.HalfFloatType });
+    blurred.setResolutionScale(0.5);
+
+    // Skipped while the rays cannot be seen, as the shafts are; see there.
+    this.radialTargets = [maskRt, blurred];
+    const primed = new Set<unknown>();
+    for (const target of [maskRt, blurred]) {
+      const render = target.updateBefore.bind(target);
+      target.updateBefore = (frame: unknown) => {
+        if (!this.radialActive && primed.has(target)) return false;
+        primed.add(target);
+        return render(frame);
+      };
+    }
+    return blurred;
+  }
+
   setParams(params: Partial<UnderwaterParams>): void {
     const p = this.params;
     if (params.waterColor !== undefined) p.waterColor.copy(params.waterColor);
@@ -1581,7 +1747,26 @@ export class UnderwaterPass {
     (this.uInvProjection.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (this.uCameraWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
     (this.uCameraPos.value as THREE.Vector3).setFromMatrixPosition(camera.matrixWorld);
+
+    // [underwater-look-3] Round 8b: where the refracted sun is on screen, and
+    // how much of the rays to draw; see `RADIAL_TAPS`. A direction, so w = 0.
+    const s = this.uSunUnder.value as THREE.Vector3;
+    const clip = this.radialClip.set(s.x, s.y, s.z, 0).applyMatrix4(camera.matrixWorldInverse).applyMatrix4(camera.projectionMatrix);
+    let fade = 0;
+    if (clip.w > 1e-4) {
+      const nx = clip.x / clip.w;
+      const ny = clip.y / clip.w;
+      (this.uSunUv.value as THREE.Vector2).set(nx * 0.5 + 0.5, 0.5 - ny * 0.5);
+      fade = 1 - smoothstepNumber(Math.max(Math.abs(nx), Math.abs(ny)), RADIAL_EDGE[0], RADIAL_EDGE[1]);
+    }
+    fade *= smoothstepNumber(this.uSubmersion.value, 0.5, 1);
+    (this.uRadialColor.value as THREE.Vector3).copy(this.radialBase).multiplyScalar(fade);
+    this.radialActive = fade > 1e-3 && this.radialBase.lengthSq() > 0;
   }
+
+  /** Scratch for the sun's projection, and the rays' colour before the on-screen fade. */
+  private readonly radialClip = new THREE.Vector4();
+  private readonly radialBase = new THREE.Vector3();
 
   /**
    * The pass owns no geometry, material or render target — it contributes a node
@@ -1711,6 +1896,10 @@ export class UnderwaterPass {
     const wMax = Math.max(1e-3, wc.r, wc.g, wc.b);
     const density = this.shaftDensity * strength * sunUp;
     (this.uSunBurst.value as THREE.Vector3).set(p.sunColor.r, p.sunColor.g, p.sunColor.b).multiplyScalar(sunUp);
+    // [underwater-look-3] Round 8b: the rays, off with the shafts (the Low tier).
+    this.radialBase
+      .set(p.sunColor.r, p.sunColor.g, p.sunColor.b)
+      .multiplyScalar(steps > 0 ? RADIAL_GAIN * sunUp : 0);
     (this.uShaftColor.value as THREE.Vector3).set(
       p.sunColor.r * (0.25 + 0.75 * (wc.r / wMax)) * density,
       p.sunColor.g * (0.25 + 0.75 * (wc.g / wMax)) * density,
