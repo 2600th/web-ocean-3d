@@ -30,6 +30,28 @@ import {
 } from 'three/tsl';
 import { smoothstepDownClamped } from '../core/tslMath';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
+import { ISLAND } from '../scene/Seafloor';
+import { beachrockFootprints, type BeachrockFootprint } from '../scene/islandDetail/beachrock';
+
+/**
+ * The beachrock's footprints grouped into clusters, each with a centre and a
+ * reach that covers every footprint's pile, wrap and lee, so the surf can
+ * skip a cluster with one distance test.
+ */
+const BEACHROCK_CLUSTERS: { x: number; z: number; reach: number; feet: BeachrockFootprint[] }[] = (() => {
+  const out: { x: number; z: number; reach: number; feet: BeachrockFootprint[] }[] = [];
+  for (const f of beachrockFootprints()) {
+    const near = out.find((c) => Math.hypot(c.feet[0].x - f.x, c.feet[0].z - f.z) < 40);
+    if (near) near.feet.push(f);
+    else out.push({ x: 0, z: 0, reach: 0, feet: [f] });
+  }
+  for (const c of out) {
+    c.x = c.feet.reduce((s, f) => s + f.x, 0) / c.feet.length;
+    c.z = c.feet.reduce((s, f) => s + f.z, 0) / c.feet.length;
+    c.reach = Math.max(...c.feet.map((f) => Math.hypot(f.x - c.x, f.z - c.z) + Math.max(f.ra, f.rb) * 6.5 + 4));
+  }
+  return out;
+})();
 import {
   featherFoam,
   foamBubbleCloud,
@@ -2976,6 +2998,14 @@ export class OceanMaterial {
       const surfShade = float(1).toVar();
       /** Clumps in the surf's white water, 0..1: where it is thick froth and where it has opened. */
       const surfFroth = float(0.5).toVar();
+      /**
+       * The surf's white water as a heap: its height field (0..1), the slope
+       * that field gives the foam's normal, and how much of its own lee is in
+       * shadow. See the pillow in the surf block.
+       */
+      const surfPillow = float(0.5).toVar();
+      const surfPillowSlope = vec2(0, 0).toVar();
+      const surfPillowShadow = float(0).toVar();
       /** Where the surf's foam has been carried since it was made, metres. */
       const surfAdvect = vec2(0, 0).toVar();
       if (floorDepth !== null) {
@@ -3044,6 +3074,26 @@ export class OceanMaterial {
           // threshold here broke nine tenths of every crest from the start).
           // Even well inside, a third or so of each crest stays thin or
           // unbroken.
+          //
+          // **Rips and shore-normal streaks** (round 11: "parallel flat white
+          // stripes"). A beach's surf is cut across by rip channels every
+          // hundred metres or so, where the water the bores pile up runs back
+          // out: the bottom is deeper, the waves there break less, and the gap
+          // runs straight through every band. And the foam itself is combed
+          // shore-normal by the uprush and the backwash, into streaks across
+          // the bands. Both need a coordinate along the shore: the point
+          // projected onto the island's mean shoreline circle, which has no
+          // seam, with the distance from its centre as the cross-shore one.
+          const fromIsland = fieldXZ.sub(vec2(ISLAND.x, ISLAND.z)).toVar();
+          const islandR = fromIsland.length().toVar();
+          const alongShore = fromIsland.div(islandR.max(1)).mul(ISLAND.radius).toVar();
+          const rip = valueNoise(alongShore.mul(1 / 34).add(vec2(islandR.mul(1 / 400), 5.3)))
+            .smoothstep(0.6, 0.76)
+            .toVar();
+          const streak = valueNoise(alongShore.mul(1 / 2.6).add(vec2(islandR.mul(1 / 13), islandR.mul(1 / 17))))
+            .mul(0.65)
+            .add(valueNoise(alongShore.mul(1 / 7).add(vec2(islandR.mul(1 / 31), 2.2))).mul(0.35))
+            .toVar();
           const inward = d.div(surfBreak.max(0.05)).oneMinus().clamp(0, 1).toVar();
           const peelAt = mix(float(0.62), float(0.47), inward.smoothstep(0, 0.55)).toVar();
           const crestSection = valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(waveNumber)))
@@ -3051,12 +3101,14 @@ export class OceanMaterial {
             .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(waveNumber.add(7)))).mul(0.35))
             .add(heightRatio.sub(1).mul(0.15))
             .smoothstep(peelAt.sub(0.1), peelAt.add(0.1))
+            // A rip channel's waves mostly do not break.
+            .mul(rip.mul(-0.85).add(1))
             .toVar();
           // And the broken stretches are not one width: the roll is thicker
           // where the section broke hardest, on top of the set's own scale.
           const sectionWidth = valueNoise(fieldXZ.mul(1 / 26).add(waveOffset(waveNumber.add(3))))
-            .mul(0.75)
-            .add(0.62)
+            .mul(1.15)
+            .add(0.45)
             .toVar();
           // The roller is as wide as the wave is tall: a set wave's broken
           // crest is a white roll metres across, and a small one between sets
@@ -3279,25 +3331,122 @@ export class OceanMaterial {
             .mul(lastBroke)
             .max(laceAt(age.add(1)).mul(previousBroke))
             .max(laceAt(age.add(2)).mul(olderBroke))
-            .mul(mix(float(0.15), float(1.3), lanes.mul(0.6).add(surfFroth.mul(0.4))));
+            .mul(mix(float(0.15), float(1.3), lanes.mul(0.6).add(surfFroth.mul(0.4))))
+            // Combed across the bands, and carried out through the rips.
+            .mul(mix(float(0.4), float(1.45), streak))
+            .mul(rip.mul(0.5).add(1));
           // Over the last half metre the bore has become the swash sheet, which
           // stays clear: its foam is the lip at its leading edge (`thin` and
           // `edgeLine` below), not a carpet over the water behind it.
           const sheetClear = d.smoothstep(0.1, 0.6).toVar();
           const whitewater = dense
             // Torn, not cleared: between the clumps the churned water is
-            // still a third white (round 10's "thin white strips").
-            .mul(mix(float(1), mix(float(0.34), float(1.08), torn), tearing))
+            // still about half white (round 10's "thin white strips").
+            .mul(mix(float(1), mix(float(0.46), float(1.12), torn).mul(mix(float(0.75), float(1.15), streak)), tearing))
             .max(lace)
             .mul(sections)
             .mul(sheetClear)
-            .min(0.9)
+            .min(0.95)
             .toVar();
+
+          // **Rocks to break around** (round 11). Every bore that reaches a
+          // rock standing in the surf breaks against it: white water piles on
+          // its seaward face metres deep, pours round both sides in streams,
+          // and leaves a gap of dark, unbroken water in its lee where the bore
+          // was blocked (NeuralSpecOcean's beach frames; the critic's "no rocks
+          // to break around" in foam-4). The depth buffer sees only the water
+          // in front of a rock's submerged face, so this reads the beachrock's
+          // footprints (`beachrock.ts`), a handful of ellipses, gated by
+          // cluster so the rest of the surf pays one distance test.
+          const rockPile = float(0).toVar();
+          const rockLee = float(0).toVar();
+          const across2 = vec2(shoreward.y.negate(), shoreward.x).toVar();
+          for (const cluster of BEACHROCK_CLUSTERS) {
+            If(fieldXZ.sub(vec2(cluster.x, cluster.z)).length().lessThan(cluster.reach), () => {
+              for (const f of cluster.feet) {
+                const rel = fieldXZ.sub(vec2(f.x, f.z)).toVar();
+                const ea = rel.dot(vec2(f.ax, f.az)).div(f.ra);
+                const eb = rel.dot(vec2(-f.az, f.ax)).div(f.rb);
+                // Metres outside the waterline ellipse, near enough.
+                const edge = vec2(ea, eb).length().sub(1).mul(Math.min(f.ra, f.rb));
+                const behind = rel.dot(shoreward).toVar();
+                const across = rel.dot(across2).abs().toVar();
+                const seaward = behind.negate().div(rel.length().max(0.01)).max(0);
+                const r = (f.ra + f.rb) * 0.5;
+                const pile = smoothstepDownClamped(edge, 0.2, mix(float(2), float(4), seaward));
+                // Combed shore-normal into streams as it pours past.
+                const combed = valueNoise(vec2(across.mul(1 / 0.9), behind.mul(1 / 4)).add(vec2(f.x % 17, f.z % 13)))
+                  .smoothstep(0.3, 0.7)
+                  .mul(0.6)
+                  .add(0.4);
+                const wrap = across
+                  .smoothstep(r * 0.4, r * 0.95)
+                  .mul(smoothstepDownClamped(across, r * 1.2, r * 2))
+                  .mul(behind.smoothstep(-r * 0.4, r * 0.3))
+                  .mul(smoothstepDownClamped(behind, r * 2, r * 6))
+                  .mul(combed);
+                const lee = smoothstepDownClamped(across, r * 0.4, r * 1.0)
+                  .mul(behind.smoothstep(r * 0.6, r * 1.3))
+                  .mul(smoothstepDownClamped(behind, r * 2.2, r * 6));
+                rockPile.assign(rockPile.max(pile).max(wrap.mul(0.9)));
+                rockLee.assign(rockLee.max(lee));
+              }
+            });
+          }
+          // Lumpy, renewed by each bore's arrival and fading through the period.
+          const rockWhite = rockPile
+            .mul(valueNoise(fieldXZ.mul(1 / 1.1).add(vec2(3.3, 8.1))).mul(0.55).add(0.8))
+            .mul(age.mul(-1.8).exp().mul(0.25).add(0.8))
+            .mul(d.smoothstep(0.02, 0.2))
+            .min(1)
+            .toVar();
+          const rockKeep = rockLee.mul(-0.7).add(1).toVar();
+          whitewater.assign(whitewater.mul(rockKeep).max(rockWhite.min(0.95)));
           // What is left of a bore is still being carried up the beach by the
           // next, so the pattern drifts shoreward as it ages — and stops doing so
           // at the waterline, where the ground draws the same pattern unmoved.
           surfAdvect.assign(
             shoreward.mul(laceAge.min(3).mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
+          );
+
+          // **The pillow.** White water is a heap of churned foam, not a
+          // coat of paint: lumps a few metres across and a metre across,
+          // standing a few tens of centimetres proud, lit on the side toward
+          // the sun and shaded grey-blue in their lee and their hollows.
+          // Flat-lit, the bands read as "parallel flat white stripes" (foam-4,
+          // round 11). Ported from NeuralSpecOcean's whitewater
+          // (`FoamShader.js`, MIT): a foam height field whose gradient tilts
+          // the foam's normal, one more sample toward the sun for its
+          // self-shadow, and three values of albedo (cool shadowed folds,
+          // ivory lace, white sunlit crests; see the lighting below). Theirs
+          // reads an atlas; this is two octaves of the value noise, carried
+          // with the foam, the finer faded where it is under a pixel. They
+          // fade the relief out by 96 m; from the beach-surf view the bands are
+          // 60 to 250 m off, where lumps metres long along a crest are still
+          // tens of pixels, so the coarse octave is kept at any distance.
+          const pillowXZ = fieldXZ.sub(surfAdvect).toVar();
+          const pillowFine = smoothstepDownClamped(viewDistance, 70, 220).toVar();
+          const pillowAt = (p: any): any =>
+            valueNoise(p.mul(1 / 3.4).add(vec2(2.3, 7.1)))
+              .mul(0.62)
+              .add(valueNoise(p.mul(1 / 1.3).add(vec2(9.7, 4.4))).mul(0.38).mul(pillowFine))
+              .add(pillowFine.oneMinus().mul(0.19));
+          const pillowStep = 0.45;
+          const pillow0 = pillowAt(pillowXZ).toVar();
+          const pillowX = pillowAt(pillowXZ.add(vec2(pillowStep, 0)));
+          const pillowZ = pillowAt(pillowXZ.add(vec2(0, pillowStep)));
+          const sunFlat = vec2(sunUnit.x, sunUnit.z);
+          const towardSun = sunFlat.div(sunFlat.length().max(1e-3));
+          const pillowSun = pillowAt(pillowXZ.add(towardSun.mul(1.2)));
+          // Heaped where the white is thick: a fresh bore stands up, a lace
+          // of old foam lies flat.
+          const heap = whitewater.max(roller).smoothstep(0.1, 0.7).toVar();
+          surfPillow.assign(pillow0);
+          surfPillowSlope.assign(vec2(pillowX.sub(pillow0), pillowZ.sub(pillow0)).div(pillowStep).mul(heap.mul(0.75).add(0.15)).mul(2.4));
+          // Shadowed where the heap rises between this point and the sun, more
+          // so with the sun low.
+          surfPillowShadow.assign(
+            pillowSun.sub(pillow0).mul(2.4).clamp(0, 0.75).mul(heap).mul(sunUnit.y.oneMinus().mul(0.6).add(0.4)),
           );
 
           // Centimetres of water: the waterline and the front of the swash. The
@@ -3380,6 +3529,8 @@ export class OceanMaterial {
               .max(thin)
               .max(band.mul(far).mul(mix(float(0.35), float(1.1), lanes)).mul(sections).mul(crestSection.mul(0.6).add(0.4)))
               .max(edgeLine)
+              .mul(rockKeep)
+              .max(rockWhite)
               .clamp(0, 1)
               .mul(strength),
           );
@@ -3390,7 +3541,7 @@ export class OceanMaterial {
           // The dense stage is what carries the bubbles; the lace floats on
           // water that has mostly cleared.
           surfAerated.assign(
-            roller.max(dense.mul(1.15).mul(sheetClear)).max(whitewater.mul(0.3)).max(lip).clamp(0, 1).mul(strength),
+            roller.max(dense.mul(1.15).mul(sheetClear)).max(whitewater.mul(0.3)).max(lip).mul(rockKeep).max(rockWhite.mul(0.8)).clamp(0, 1).mul(strength),
           );
         });
       }
@@ -3712,7 +3863,9 @@ export class OceanMaterial {
         // amount near 1 cleared the whole pattern and came out as a flat
         // white stripe of constant width and brightness (foam-4, round 8).
         const frothAmount = surf.mul(mix(float(0.84), float(1.14), surfFroth)).toVar();
-        const frothOpacity = mix(float(0.82), float(1), surfFroth).toVar();
+        // And thinner where the heap is low: its edges and hollows are a film
+        // the water shows through, its crowns are opaque.
+        const frothOpacity = mix(float(0.82), float(1), surfFroth).mul(surfPillow.smoothstep(0.15, 0.55).mul(0.25).add(0.75)).toVar();
         const surfLace = mix(
           foamLace(foamXZ.add(vec2(5.3, 19.1)), frothAmount.mul(0.92), viewDistance),
           float(1),
@@ -3778,7 +3931,11 @@ export class OceanMaterial {
       // is nearly singular and the solve can return anything.
       const rawRelief = maskGradient.mul(0.035).toVar();
       const reliefSlope = rawRelief.mul(float(0.8).div(rawRelief.length().max(0.8))).mul(relief).toVar();
-      const foamNormal = normalize(n.sub(vec3(reliefSlope.x, 0, reliefSlope.y))).toVar();
+      // The surf's white water adds its pillow's slope (see the surf block).
+      // `surfWhite` is how much of this pixel's foam is surf.
+      const surfWhite = surf.smoothstep(0.02, 0.3).mul(inSurf).toVar();
+      const foamSlope = reliefSlope.add(surfPillowSlope.mul(surfWhite)).toVar();
+      const foamNormal = normalize(n.sub(vec3(foamSlope.x, 0, foamSlope.y))).toVar();
       const foamNDotL = foamNormal.dot(sunDir).clamp(0, 1).toVar();
 
       // Foam is lit, not painted.
@@ -3797,7 +3954,24 @@ export class OceanMaterial {
       // it: a wrapped sun term (bubbles scatter light in from the side) under the
       // cloud shadow, plus the sky dome's ambient.
       const bubbles = breakup.mul(0.22).add(0.84).toVar();
-      const foamSun = foamNDotL.mul(0.55).add(0.3).mul(sunShade.mul(0.7).add(0.3)).toVar();
+      // Surf foam is lit with more of the sun's direction in it than a raft
+      // of whitecap bubbles: a heap's faces toward the sun and away from it
+      // differ by most of the direct light, and its lee is in its own shadow
+      // (NeuralSpecOcean's `selfShadowOcc`, which takes up to two thirds of
+      // the direct term). Plus their multiple-scattering share: sunlight
+      // diffusing through the aerated heap lights every face of it from
+      // within, which is what keeps a backlit or cross-lit bore white rather
+      // than grey (`multiScatTrans`: the sun's height, floored at 0.22, times
+      // a wrapped facing term).
+      const heapWrap = foamNDotL.mul(0.5).add(0.5);
+      const heapSun = foamNDotL
+        .mul(0.7)
+        .mul(surfPillowShadow.mul(-0.68).add(1))
+        .add(sunDir.y.max(0.22).mul(heapWrap.mul(0.42).add(0.46)).mul(0.62).mul(surfPillowShadow.mul(-0.4).add(1)))
+        .add(0.04);
+      const foamSun = mix(foamNDotL.mul(0.55).add(0.3), heapSun, surfWhite)
+        .mul(sunShade.mul(0.7).add(0.3))
+        .toVar();
       const foamSky = (mix(this.uHorizonColor, this.uSkyColor, 0.45) as any).mul(0.42).toVar();
       // Floored at the light the body is drawn with. The body is display-referred
       // (it scales with the white point, see BODY_GAIN) while the sun and sky
@@ -3811,7 +3985,23 @@ export class OceanMaterial {
         .add(foamSky)
         .max(bodyLight.mul(foamSun.div(0.85).mul(0.75).add(0.25)))
         .toVar();
-      const foamColor = this.uFoamColor.mul(bubbles).mul(foamLight).mul(surfShade).toVar();
+      // Three values, as NeuralSpecOcean's whitewater has them: cool
+      // silver-blue in the shadowed folds, ivory lace, white where a heap's
+      // top faces the sun. Its values (0.80, 0.85, 0.90) and (0.995, 0.990,
+      // 0.980), blended by how lit and how high this point of the heap is.
+      const heapLit = foamNDotL
+        .mul(surfPillowShadow.oneMinus())
+        .mul(0.7)
+        .add(surfPillow.mul(0.3))
+        .smoothstep(0.12, 0.55)
+        .toVar();
+      const heapTone = mix(vec3(0.8, 0.85, 0.9), vec3(0.995, 0.99, 0.98), heapLit);
+      const foamColor = this.uFoamColor
+        .mul(bubbles)
+        .mul(foamLight)
+        .mul(surfShade)
+        .mul(mix(vec3(1, 1, 1), heapTone, surfWhite))
+        .toVar();
 
       // The aerated layer: the same light on a pale turquoise — water seen
       // through bubbles, Crest's bubble colour (0.64, 0.83, 0.82) — at a
