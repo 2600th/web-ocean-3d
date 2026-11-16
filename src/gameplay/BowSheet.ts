@@ -23,7 +23,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { smoothstepDown } from '../core/tslMath';
-import { hullShadow, sharedSceneDepth, sprayAtlas, sprayUniforms } from '../physics/sprayLook';
+import { SPRAY_ALPHA_FLOOR, hullShadow, sharedSceneDepth, sprayAtlas, sprayUniforms } from '../physics/sprayLook';
 
 /**
  * The bow-wave sheet: the thin, connected curtain of water a bluff bow peels off
@@ -225,6 +225,11 @@ export class BowSheet {
     material.side = THREE.DoubleSide;
     material.transparent = true;
     material.depthWrite = false;
+    // Torn-away parts are discarded, not blended to nothing: alpha fades only
+    // the colour target, and a zero-alpha fragment would still overwrite the
+    // sea's velocity, normal and AO mask under the whole sheet (see
+    // `sprayMaterial`).
+    material.alphaTest = SPRAY_ALPHA_FLOOR;
     // Aerial perspective comes from the volumetric pass, as for the spray.
     material.fog = false;
     material.positionNode = Fn(() => this.vertex())() as any;
@@ -352,8 +357,12 @@ export class BowSheet {
     const membrane: any = mix(float(0.8), float(1), smoothstep(0.1, 0.5, tau));
     const veil: any = smoothstep(0.85, 0.3, tau).mul(0.18);
     // The free edge of each station and the two ends of the root fade out.
-    const ends: any = smoothstep(0, 0.04, vSheet.x.div(this.uHalfLength.mul(ROOT_LENGTH)))
-      .mul(smoothstepDown(vSheet.x.div(this.uHalfLength.mul(ROOT_LENGTH)), 0.6, 0.95));
+    // The stem end over the first sixth: past the stem the far side's sheet is
+    // seen edge-on to its first trajectory, and a short fade drew it as a line.
+    const ends: any = smoothstep(0, 0.16, vSheet.x.div(this.uHalfLength.mul(ROOT_LENGTH)))
+      // And the shoulder end over its last two thirds, which the far side's
+      // sheet shows edge-on past the stem.
+      .mul(smoothstepDown(vSheet.x.div(this.uHalfLength.mul(ROOT_LENGTH)), 0.3, 0.92));
     const shape: any = torn.mul(membrane).max(veil).mul(ends).mul(crest.mul(0.6).add(0.4));
 
     // Soft against the hull and the sea behind it.

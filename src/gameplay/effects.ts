@@ -471,6 +471,11 @@ export class BowSpray {
     }
   }
 
+  /** The bow sheet's current strength, 0..~1.3 (0 when hove to). */
+  get sheetIntensity(): number {
+    return this.intensity;
+  }
+
   clear(): void {
     (this.origin.array as Float32Array).fill(0);
     (this.launch.array as Float32Array).fill(0);

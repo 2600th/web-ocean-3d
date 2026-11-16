@@ -344,6 +344,11 @@ export class Gameplay {
     return this.active;
   }
 
+  /** True while the bow sheet is drawn at a strength worth counting. */
+  get bowSheetUp(): boolean {
+    return this.active && this.bowSpray.sheetIntensity > 0.15;
+  }
+
   /**
    * Returns every piece of gameplay state to its seeded start.
    *
