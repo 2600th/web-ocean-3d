@@ -607,6 +607,27 @@ function shoreFraction(ux: number, uz: number): number {
  * every direction it needs is a module constant read component-wise.
  */
 export function seafloorHeight(x: number, z: number): number {
+  return floorField(x, z, 1);
+}
+
+/**
+ * The floor the scatter is laid out on: `seafloorHeight` without the low-tide
+ * terrace.
+ *
+ * `Rocks`, `ReefLife` and `Props` place everything by rejection sampling
+ * against the floor's depth, each from one seeded sequence, so any change to
+ * the depth anywhere changes which candidates pass, and every placement after
+ * the first changed one moves. The terrace alone moved a third of the seabed
+ * formations around the whole island. Laying the scatter out on the floor as
+ * it was keeps the island's layout fixed under later shaping of the shore; the
+ * few things that fell on the shelf end up partly under its sand, which is
+ * what rock at the foot of a beach face looks like anyway.
+ */
+export function seafloorPlacementHeight(x: number, z: number): number {
+  return floorField(x, z, 0);
+}
+
+function floorField(x: number, z: number, withTerrace: number): number {
   const n = fbm(x * FEATURE_SCALE, z * FEATURE_SCALE);
 
   const rOrigin = Math.sqrt(x * x + z * z);
@@ -665,6 +686,7 @@ export function seafloorHeight(x: number, z: number): number {
   const fill = Math.max(LAGOON_Y - y, 0);
   y += lagoon * fill;
 
+  if (!withTerrace) return y;
   const terrace = sectorMask(ux, uz, TERRACE) * smoothstepDown(t, TERRACE_EDGE, TERRACE_OUT);
   const shelf = Math.min(
     -TERRACE_STEP_DEPTH - (t - TERRACE_STEP_T) * shore * TERRACE_SLOPE,
@@ -744,6 +766,7 @@ export function seafloorMeshHeight(
   z: number,
   extent = SEAFLOOR_EXTENT,
   segments = SEAFLOOR_SEGMENTS,
+  field: (x: number, z: number) => number = seafloorHeight,
 ): number {
   const step = extent / segments;
   const gx = (x + extent / 2) / step;
@@ -753,12 +776,17 @@ export function seafloorMeshHeight(
   const u = gx - ix;
   const v = gz - iz;
   const vx = (i: number) => i * step - extent / 2;
-  const ha = seafloorHeight(vx(ix), vx(iz));
-  const hb = seafloorHeight(vx(ix), vx(iz + 1));
-  const hc = seafloorHeight(vx(ix + 1), vx(iz + 1));
-  const hd = seafloorHeight(vx(ix + 1), vx(iz));
+  const ha = field(vx(ix), vx(iz));
+  const hb = field(vx(ix), vx(iz + 1));
+  const hc = field(vx(ix + 1), vx(iz + 1));
+  const hd = field(vx(ix + 1), vx(iz));
   if (u + v <= 1) return ha + (hd - ha) * u + (hb - ha) * v;
   return hc + (hb - hc) * (1 - u) + (hd - hc) * (1 - v);
+}
+
+/** `seafloorMeshHeight` over the placement floor (see `seafloorPlacementHeight`). */
+export function seafloorPlacementMeshHeight(x: number, z: number): number {
+  return seafloorMeshHeight(x, z, SEAFLOOR_EXTENT, SEAFLOOR_SEGMENTS, seafloorPlacementHeight);
 }
 
 /** Positive metres of water above the floor at (x, z); 0 where the floor is dry. */

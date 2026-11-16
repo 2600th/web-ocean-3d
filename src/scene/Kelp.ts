@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mulberry32 } from '../core/random';
-import { ISLAND, REEF_BAND, reefPatches, seafloorHeight } from './Seafloor';
+import { ISLAND, REEF_BAND, reefPatches, seafloorPlacementHeight } from './Seafloor';
 import {
   FloorCache,
   LeafField,
@@ -298,7 +298,7 @@ function placeForests(random: () => number, clearings: readonly Clearing[]): For
         x = Math.cos(angle) * r;
         z = Math.sin(angle) * r;
       }
-      const depth = -seafloorHeight(x, z);
+      const depth = -seafloorPlacementHeight(x, z);
       if (depth < lo || depth > hi) continue;
       const radius = FOREST_RADIUS[0] + random() * (FOREST_RADIUS[1] - FOREST_RADIUS[0]);
       if (inClearing(x, z, clearings, radius * 0.55)) continue;
