@@ -556,6 +556,10 @@ export class Atmosphere {
     this.envMesh = new THREE.Mesh(this.geometry, this.material);
     this.envMesh.frustumCulled = false;
     this.envMesh.matrixAutoUpdate = false;
+    // A one-shot render: see `syncPipeline` in `main.ts`. A capture dropped for
+    // want of a pipeline is not redrawn until the sun next moves, and in the
+    // meantime everything lit or reflected from the environment goes dark.
+    this.envMesh.userData.syncPipeline = true;
     this.envScene = new THREE.Scene();
     this.envScene.add(this.envMesh);
 

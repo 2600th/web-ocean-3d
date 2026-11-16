@@ -1407,6 +1407,12 @@ export class Clouds {
     // the offset sequence restarts and the next frame resolves from itself.
     this.frame = 0;
     this.historyValid = false;
+    // And the sun occluder, which reads the *previous* resolve: the first frame
+    // after a rewind would otherwise hide or show the disc and its aureole by
+    // whatever the layer last drew before it, from another time and camera, and
+    // two captures of the same instant came out a level apart in the sky.
+    this.resolvedSinceView = false;
+    this.uOccluderLive.value = 0;
     this.windOffset.set(0, 0, 0);
     this.uWindOffset.value.copy(this.windOffset);
     this.evolution = 0;
