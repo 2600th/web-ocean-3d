@@ -244,18 +244,70 @@ const LACE_STRETCH = 1.45;
  * the per-cell radius drawn uniformly in `[rMin, rMax]`. Fading to it rather
  * than to 1 keeps a raft's brightness when its holes go under a pixel.
  */
-function laceScale(q: any, salt: number, rMin: number, rMax: number, open: any, near: any, enabled: any): any {
+function laceScale(
+  q: any,
+  salt: number,
+  rMin: number,
+  rMax: number,
+  open: any,
+  near: any,
+  enabled: any,
+  floor = 0,
+): any {
   const meanR2 = (rMax ** 3 - rMin ** 3) / (3 * (rMax - rMin));
-  const mean = open.mul(open).mul(-Math.PI * meanR2).exp().toVar();
+  const covered = open.mul(open).mul(-Math.PI * meanR2 * LACE_PRESENCE).exp();
+  const mean = mix(float(floor), float(1), covered).toVar();
   const value = mean.toVar();
   If(enabled.and(near.greaterThan(0.001)), () => {
-    const d = bubbleDistance(q, salt, rMin, rMax);
+    const d = laceDistance(q, salt, rMin, rMax);
     // A rim, not a cut: the film thins over the last third of a radius into
     // the hole, the way a bubble wall drains, so no hole has a hard outline.
     const hole = d.smoothstep(open.mul(0.7), open.mul(1.15));
-    value.assign(mix(mean, hole, near));
+    value.assign(mix(mean, mix(float(floor), float(1), hole), near));
   });
   return value;
+}
+
+/**
+ * Share of lattice cells that hold a hole at all.
+ *
+ * One hole per cell, every cell, is a jittered grid, and a jittered grid is
+ * what the eye reads as a repeating texture however its radii vary: round 6's
+ * critic still called the whitecaps in waves-4 "repeating foam", the
+ * "Swiss-cheese texture" (120-730, 750-1050). Leaving a third of the cells
+ * empty turns the grid into a Poisson-like scatter, with clusters of holes
+ * beside unbroken film, which has no period to find.
+ */
+const LACE_PRESENCE = 0.62;
+
+/**
+ * `bubbleDistance` for the lace, with the two things a jittered disc grid lacks
+ * to stop it reading as one tiled hole pattern: empty cells (`LACE_PRESENCE`),
+ * and a second, finer warp at the cell's own scale, so a hole is a drained
+ * blob with a lopsided outline rather than a punched disc. The foam pattern
+ * keeps `bubbleDistance`, since the surf and the swash draw through it.
+ */
+function laceDistance(p: any, salt: number, rMin: number, rMax: number): any {
+  const half = p.mul(0.5);
+  const warp = vec2(gradNoise(half.add(vec2(salt, 0))), gradNoise(half.add(vec2(17 + salt, 17))))
+    .mul(0.9)
+    .add(vec2(gradNoise(p.mul(1.7).add(vec2(5.3 + salt, 2.1))), gradNoise(p.mul(1.7).add(vec2(9.7, 4.4 + salt)))).mul(0.32));
+  const q = p.add(warp).toVar();
+  const cell = q.floor().toVar();
+  const local = fract(q).toVar();
+  const v = float(9).toVar();
+  for (let j = -1; j <= 1; j++) {
+    for (let i = -1; i <= 1; i++) {
+      const o = vec2(i, j);
+      const c = cell.add(o).add(vec2(salt, 0));
+      const jitter = vec2(latticeHash(c, vec2(127.1, 311.7)), latticeHash(c, vec2(269.5, 183.3)));
+      const radius = mix(float(rMin), float(rMax), latticeHash(c, vec2(419.2, 371.9)));
+      const present = latticeHash(c, vec2(91.7, 53.3)).lessThan(LACE_PRESENCE);
+      const r = o.add(jitter.mul(0.9)).add(0.05).sub(local);
+      v.assign(v.min(present.select(r.length().div(radius), float(9))));
+    }
+  }
+  return v;
 }
 
 /**
@@ -308,9 +360,11 @@ export function foamLace(p: any, amount: any, viewDistance: any): any {
   const always = float(1).greaterThan(0);
   const coarse = mix(
     float(1),
+    // The largest holes are not empty: a burst bubble's neighbours drain
+    // into it as a thinner film, so the water shows through a veil.
     laceScale(
       q.mul(1.8).add(vec2(11.3, 4.7)), 53, 0.12, 0.38, open,
-      smoothstepDownClamped(viewDistance, 55, 130), always,
+      smoothstepDownClamped(viewDistance, 55, 130), always, 0.3,
     ),
     coarseRegion,
   );
