@@ -1787,7 +1787,15 @@ export class Seafloor {
 
       // Caustics only exist under water, and fade out as the floor gets deep
       // enough that the surface pattern has diverged into ambient light.
-      const reach = smoothstepDownNode(depth, 2, 48).mul(float(1).sub(aboveWater)).toVar();
+      //
+      // "Under water" is water over the bed now: the permanently submerged bed,
+      // or sand the swash sheet is covering at this moment. It used to be the
+      // palette's `aboveWater` blend, which runs 1.6 m up the beach, so the
+      // caustic net lay across dry sand at three quarters strength at the
+      // still-water line and was still visible a metre and a half above it
+      // ("caustics on dry sand", beach-transparency-1 and foam-4, round 8).
+      const waterOver = depth.smoothstep(0, 0.1).max(swashState.z.mul(0.8)).toVar();
+      const reach = smoothstepDownNode(depth, 2, 48).mul(waterOver).toVar();
       const lit = mix(float(1), caustics, reach.mul(strength)).toVar();
       return vec4(surfed.mul(lit), 1);
     })();

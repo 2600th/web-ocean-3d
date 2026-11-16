@@ -666,6 +666,15 @@ const SCATTER_NORMALISE = 1 / 1.746;
  */
 const SCATTER_WRAP = 0.45;
 
+/**
+ * The backlit face of a shoaling breaker: how thick a sheet the light crosses,
+ * metres, and how bright the transmitted light is against the crest glow's
+ * authored scale. A third of a metre keeps nine tenths of the green and most of
+ * the blue through the extinction, and loses a little red: pale turquoise.
+ */
+const FACE_SHEET_METRES = 0.35;
+const FACE_GLOW = 4;
+
 export class OceanMaterial {
   readonly material: THREE.MeshBasicNodeMaterial;
 
@@ -1566,6 +1575,8 @@ export class OceanMaterial {
       const surfXi = float(1).toVar();
       /** Thin, steep, unbroken water near a breaker's crest: it glows. */
       const surfThin = float(0).toVar();
+      /** The upper front face of a steepening or just-broken breaker, lit through from behind, 0..1. */
+      const surfFace = float(0).toVar();
       if (floorDepth !== null) {
         If(seabedSigned.lessThan(surfReachDepth()), () => {
           inSurf.assign(1);
@@ -1605,6 +1616,41 @@ export class OceanMaterial {
               .exp()
               .mul(wave.steep)
               .mul(seabedDepth.smoothstep(wave.breakDepth.mul(0.85), wave.breakDepth))
+              .mul(surfUniforms.strength.min(1)),
+          );
+          // **The backlit face.** As a wave shoals its front face stands up
+          // and its upper part thins to a sheet the sky and sun shine through:
+          // the band of glowing turquoise just ahead of every white line in a
+          // surf photograph, and the biggest single difference from
+          // NeuralSpecOcean in foam-4 (round 8). `surfThin` only lit the last
+          // few percent of depth before the break, on the crest itself, where
+          // the white covers it. This is the face below the crest, from the
+          // moment the wave starts to steepen until the bore has run a little
+          // way in, peaking where the face is steepest.
+          //
+          // Placed by the profile's own front width, so it sits on the face
+          // `crestProfile` draws: three quarters of the way down it, where the
+          // water is a metre or less thick but no longer white.
+          const faceWidth = mix(float(0.15), float(0.055), wave.steep);
+          const faceX = wave.s.negate().div(faceWidth).sub(0.8).div(0.6);
+          const faceStage = seabedDepth
+            .lessThan(wave.breakDepth)
+            .select(seabedDepth.smoothstep(wave.breakDepth.mul(0.55), wave.breakDepth.mul(0.95)), wave.steep.pow(1.5));
+          // A set wave's face is taller and thinner at the top than a small
+          // one's, so the glow follows the sets too.
+          const faceSize = wave.breakDepth
+            .mul(BREAKER_INDEX / 0.8)
+            .div(surfUniforms.height.max(0.2))
+            .smoothstep(0.35, 1.1)
+            .mul(0.65)
+            .add(0.35);
+          surfFace.assign(
+            faceX
+              .mul(faceX)
+              .negate()
+              .exp()
+              .mul(faceStage)
+              .mul(faceSize)
               .mul(surfUniforms.strength.min(1)),
           );
 
@@ -2094,6 +2140,23 @@ export class OceanMaterial {
           .mul(across.mul(0.6).add(0.4))
           .mul(awayFromSun.mul(0.6).add(0.4))
           .mul(this.uCrestGlow)
+          .mul(this.uLightLevel.min(1.2)),
+      );
+      // The breaker's backlit face (`surfFace`): skylight and sunlight through
+      // a sheet of water a few tens of centimetres thick. Beer–Lambert through
+      // that thickness keeps the green and blue and loses some red, so it comes
+      // out the pale turquoise of a shoaling face rather than the body's deep
+      // blue-green. Brightest looking into the light but present cross-lit,
+      // because most of what comes through a face is skylight from above the
+      // wave behind it.
+      const faceTransmit: any = this.uExtinction.mul(FACE_SHEET_METRES).negate().exp();
+      scatter.addAssign(
+        (this.uScatterColor as any)
+          .mul(faceTransmit)
+          .mul(surfFace)
+          .mul(awayFromSun.mul(0.5).add(0.5))
+          .mul(across.mul(0.4).add(0.6))
+          .mul(FACE_GLOW)
           .mul(this.uLightLevel.min(1.2)),
       );
 
@@ -2632,6 +2695,8 @@ export class OceanMaterial {
       const surfAerated = float(0).toVar();
       /** Light on the surf's white water relative to flat foam: the roller's lit face and its lee. */
       const surfShade = float(1).toVar();
+      /** Clumps in the surf's white water, 0..1: where it is thick froth and where it has opened. */
+      const surfFroth = float(0.5).toVar();
       /** Where the surf's foam has been carried since it was made, metres. */
       const surfAdvect = vec2(0, 0).toVar();
       if (floorDepth !== null) {
@@ -2648,7 +2713,16 @@ export class OceanMaterial {
           // percent of a period: a broken crest is a row of tumbling sections,
           // not a ruled line. Five-metre noise, so the sections are a few
           // metres long.
-          const ragged = valueNoise(fieldXZ.mul(0.18).add(vec2(4.1, 2.7))).sub(0.5).mul(0.035);
+          //
+          // Two finer octaves, at 1.7 m and 0.6 m, so the front edge is torn as
+          // well as staggered: from the beach-surf view a five-metre wobble
+          // alone still drew each bore's leading edge as a ruled line ("uniform
+          // painted stripes", foam-4, round 8).
+          const ragged = valueNoise(fieldXZ.mul(0.18).add(vec2(4.1, 2.7)))
+            .sub(0.5)
+            .mul(0.035)
+            .add(valueNoise(fieldXZ.mul(0.6).add(vec2(9.2, 5.3))).sub(0.5).mul(0.02))
+            .add(valueNoise(fieldXZ.mul(1.7).add(vec2(2.6, 13.1))).sub(0.5).mul(0.008));
           const sr = s.add(ragged).toVar();
           // How hard this stretch of the nearest crest is breaking: gaps and
           // strong runs, about 25 m long and redrawn for every wave. Keyed to
@@ -2842,6 +2916,19 @@ export class OceanMaterial {
           // Dense where it is fresh, lanes as it ages: a bore's first second is
           // white all through, and only then tears.
           const tearing = age.smoothstep(0.015, 0.09).toVar();
+          // **Froth.** White water is clumped, not banded: thick heaps of
+          // froth with thinner, bubblier water between, at a few metres. Torn
+          // along the crest-parallel `lanes` alone, every bore's wake was a set
+          // of white stripes parallel to the next (foam-4, round 8). Half the
+          // tearing follows these isotropic clumps instead, and the surf's
+          // mask below thins and opens with them.
+          surfFroth.assign(
+            valueNoise(fieldXZ.mul(1 / 6.5).add(vec2(14.2, 6.6)))
+              .mul(0.55)
+              .add(valueNoise(fieldXZ.mul(1 / 2.3).add(vec2(3.9, 21.7))).mul(0.45))
+              .smoothstep(0.25, 0.72),
+          );
+          const torn = lanes.mul(0.5).add(surfFroth.mul(0.5)).toVar();
           // The wind sea's bores: a thinner roller and a short dense wake, where
           // its crests have broken. No lace of their own: their foam joins the
           // swell's field.
@@ -2884,7 +2971,7 @@ export class OceanMaterial {
           // `edgeLine` below), not a carpet over the water behind it.
           const sheetClear = d.smoothstep(0.1, 0.6).toVar();
           const whitewater = dense
-            .mul(mix(float(1), mix(float(0.1), float(1.05), lanes), tearing))
+            .mul(mix(float(1), mix(float(0.1), float(1.05), torn), tearing))
             .max(lace)
             .mul(sections)
             .mul(sheetClear)
@@ -3275,9 +3362,23 @@ export class OceanMaterial {
         const openMask = mix(openFar, open, resolved);
 
         // The surf keeps the feather: its amounts were tuned as white fractions.
+        //
+        // Froth, not paint: the white is thicker in some clumps than others
+        // (`surfFroth`), and riddled with the same bubble holes as the open
+        // sea's rafts (`foamLace`), pinholes where it is solid and opening into
+        // lace where it trails. Fed straight through the feather, a roller's
+        // amount near 1 cleared the whole pattern and came out as a flat
+        // white stripe of constant width and brightness (foam-4, round 8).
+        const frothAmount = surf.mul(mix(float(0.84), float(1.14), surfFroth)).toVar();
+        const frothOpacity = mix(float(0.82), float(1), surfFroth).toVar();
+        const surfLace = mix(
+          foamLace(foamXZ.add(vec2(5.3, 19.1)), frothAmount.mul(0.92), viewDistance),
+          float(1),
+          graze.mul(0.35),
+        );
         const surfMask = mix(
-          surf.clamp(0, 1).mul(mix(float(0.5), float(1.15), patternN)).clamp(0, 1),
-          featherFoam(surf, pattern),
+          frothAmount.clamp(0, 1).mul(mix(float(0.5), float(1.15), patternN)).mul(frothOpacity).clamp(0, 1),
+          featherFoam(frothAmount, pattern).mul(surfLace).mul(frothOpacity),
           smoothstepDownClamped(viewDistance, 60, 260),
         );
         foamMask.assign(openMask.max(surfMask));
