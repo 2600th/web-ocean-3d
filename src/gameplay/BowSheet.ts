@@ -1,0 +1,407 @@
+import * as THREE from 'three/webgpu';
+import {
+  Fn,
+  attribute,
+  cameraFar,
+  cameraNear,
+  cameraPosition,
+  cameraViewMatrix,
+  dFdx,
+  dFdy,
+  float,
+  mix,
+  modelWorldMatrixInverse,
+  perspectiveDepthToViewZ,
+  positionGeometry,
+  positionWorld,
+  smoothstep,
+  texture,
+  uniform,
+  varyingProperty,
+  vec2,
+  vec3,
+  vec4,
+} from 'three/tsl';
+import { smoothstepDown } from '../core/tslMath';
+import { hullShadow, sharedSceneDepth, sprayAtlas, sprayUniforms } from '../physics/sprayLook';
+
+/**
+ * The bow-wave sheet: the thin, connected curtain of water a bluff bow peels off
+ * at speed, attached to the hull at its root, rolling outward and down, its free
+ * edge tearing into strands and drops.
+ *
+ * ### Why a surface and not particles
+ *
+ * Round 10's critic still saw the bow spray as "a cluster of separate white
+ * chips": a particle system can only make a sheet out of many sheet-shaped
+ * particles, and however soft their edges, a few dozen overlapping quads read as
+ * a few dozen things. What a camera sees at a bow at six to eight knots is one
+ * surface — the bow wave's crest thrown clear of the hull — that is continuous
+ * where it leaves the planking and only breaks up toward its free edge. So the
+ * sheet is a mesh, and the particles (`BowSpray`) are only what it sheds: drops
+ * from its edge and mist downwind of it. Games draw it the same way (a hull-
+ * attached bow-wave mesh with scrolling breakup, soft-faded where it meets the
+ * hull and the sea, plus emitted spray; e.g. the Blood Stone water write-up,
+ * Computer Graphics World, 2010).
+ *
+ * ### Its shape: ballistic, steady in the hull's frame
+ *
+ * In the hull's frame the flow past a ship at steady speed is steady, so the
+ * sheet is a fixed surface swept by the water moving through it: the union of
+ * the trajectories of water leaving the hull along the bow-wave crest. Each
+ * station `s` along the root (stem to shoulder) launches water outward, upward
+ * and aft; `tau` is the fraction of its flight back to the sea. Position and
+ * velocity are closed-form (`sample`), evaluated identically here on the CPU,
+ * where `BowSpray` emits drops from the sheet's edge, and in the vertex stage.
+ *
+ * The scale follows Noblesse et al., "Simple analytical relations for ship bow
+ * waves" (J. Fluid Mech. 600, 2008): the bow wave's height is about
+ * `2.2 (U²/g) tan(α) / (1 + F_D)` for a bow of half-entrance angle `α` and draft
+ * Froude number `F_D`, which for a bluff bow (α ≈ 40°, 4 m draft) at seven
+ * knots is about 1.5 m, and it scales with `U²`. The sheet's crest height is a
+ * fraction of that, scaled by `intensity`.
+ *
+ * ### Intensity follows the bow
+ *
+ * `BowSpray` drives `intensity` from the ship's speed and the stem's immersion
+ * and plunge, attacking fast and releasing slowly: calm while the bow lifts out
+ * of a sea, a burst while it digs in.
+ *
+ * ### Its look
+ *
+ * Thin, translucent water near the root, aerated and white toward the edge,
+ * eroded through the spray atlas's sheet and ligament fields advected along the
+ * flow (the same alpha erosion as `sprayLook`), so the free edge tears into
+ * strands running the way the water goes. Lit like the particles: the sun
+ * through a Henyey–Greenstein forward lobe for the thin sheet, near-Lambertian
+ * for the white water, sky from above, the hull's shadow. Soft-faded against
+ * the scene's depth so it meets the planking and the sea without a seam.
+ */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** Grid resolution of one side's sheet: along the root, and along the flight. */
+const ROOT_SEGMENTS = 64;
+const FLIGHT_SEGMENTS = 12;
+
+const GRAVITY = 9.81;
+
+/**
+ * Height the bow wave climbs the planking at full intensity, metres: most of
+ * Noblesse's ~1.5 m bow wave, since the sheet leaves from its crest.
+ */
+const CREST_HEIGHT = 1.3;
+/** Launch speeds at full intensity, m/s: base plus the part that scales with intensity. */
+const UP_BASE = 1.2;
+const UP_GAIN = 3.6;
+const OUT_BASE = 2.6;
+const OUT_GAIN = 4.2;
+/** How far outside the waterline half-breadth the root sits, metres: the bow's flare above the water. */
+const ROOT_OFFSET = 0.12;
+/**
+ * The stem at the waterline, as a fraction of the half-length (the water
+ * material's hull band takes the waterline as 0.84 of the overall length: no
+ * bowsprit), and the length of root the sheet leaves from, aft of it.
+ */
+const STEM = 0.84;
+const ROOT_LENGTH = 0.24;
+
+/** Depth over which the sheet fades into the hull or the sea behind it, metres. */
+const SOFT_DEPTH = 0.35;
+
+/**
+ * The bow wave is not a steady crest: it surges with the pitch and with the
+ * turbulence in the bow's boundary layer, so the launch speed along the root
+ * pulses by about a third, in lumps a few stations long that run aft with the
+ * water. Without it every trajectory's apex lies on one smooth envelope and the
+ * sheet's top reads as a shell.
+ */
+function surge(s: number, side: number, time: number): number {
+  return (
+    1 +
+    0.4 * Math.sin(s * 29 - time * 5.3 + side * 1.3) * Math.sin(s * 17 - time * 3.1 + side * 0.7) +
+    0.2 * Math.sin(s * 53 - time * 8.9 + side * 2.1)
+  );
+}
+
+/** Per-station launch, in hull-local metres and m/s. */
+export interface SheetStation {
+  x: number;
+  y: number;
+  z: number;
+  up: number;
+  out: number;
+  aft: number;
+  flight: number;
+}
+
+/**
+ * Hull-local launch state at root station `s` (0 at the stem, 1 at the
+ * shoulder), for one side (`side` +1 starboard, -1 port). Mirrors the vertex
+ * stage's `stationNode` exactly.
+ */
+export function sheetStation(
+  s: number,
+  side: number,
+  intensity: number,
+  speed: number,
+  halfLength: number,
+  beam: number,
+  time: number,
+  out: SheetStation,
+): SheetStation {
+  const crest = Math.sqrt(Math.min(1, s / 0.12)) * Math.pow(1 - Math.min(1, s), 1.5);
+  // A bluff, elliptic waterline: the half-breadth a distance q (fraction of
+  // the waterline half-length) aft of the stem.
+  const q = (s * ROOT_LENGTH) / STEM;
+  const halfWidth = beam * 0.5 * Math.sqrt(Math.max(0, 2 * q - q * q));
+  out.x = halfLength * (STEM - ROOT_LENGTH * s);
+  out.y = -0.1 + CREST_HEIGHT * intensity * crest;
+  out.z = side * (halfWidth + ROOT_OFFSET);
+  out.up = UP_BASE + UP_GAIN * intensity * crest * surge(s, side, time);
+  out.out = (OUT_BASE + OUT_GAIN * intensity) * (1 - 0.4 * s) * (0.6 + 0.4 * crest);
+  out.aft = speed * (0.35 + 0.3 * s);
+  out.flight = (out.up + Math.sqrt(out.up * out.up + 2 * GRAVITY * (out.y + 0.25))) / GRAVITY;
+  return out;
+}
+
+/** Hull-local position and velocity at (s, tau) on the sheet. */
+export function sheetPoint(
+  station: SheetStation,
+  side: number,
+  tau: number,
+  position: THREE.Vector3,
+  velocity: THREE.Vector3,
+): void {
+  const t = tau * station.flight;
+  const roll = 1 + 0.25 * tau;
+  position.set(
+    station.x - station.aft * t,
+    station.y + station.up * t - 0.5 * GRAVITY * t * t,
+    station.z + side * station.out * t * roll,
+  );
+  velocity.set(-station.aft, station.up - GRAVITY * t, side * station.out * (1 + 0.5 * tau));
+}
+
+const vSheet = /*@__PURE__*/ varyingProperty('vec4', 'bowSheetUv');
+const vSheetMisc = /*@__PURE__*/ varyingProperty('vec4', 'bowSheetMisc');
+
+export class BowSheet {
+  readonly mesh: THREE.Mesh;
+
+  readonly uIntensity = uniform(0);
+  private readonly uSpeed = uniform(0);
+  private readonly uHalfLength = uniform(10);
+  private readonly uBeam = uniform(4);
+  private readonly uClock = uniform(0);
+  private readonly uHull = uniform(new THREE.Matrix4());
+
+  private readonly geometry: THREE.InstancedBufferGeometry;
+  private readonly material: THREE.MeshBasicNodeMaterial;
+
+  constructor() {
+    const positions: number[] = [];
+    const index: number[] = [];
+    for (let j = 0; j <= FLIGHT_SEGMENTS; j++) {
+      for (let i = 0; i <= ROOT_SEGMENTS; i++) {
+        positions.push(i / ROOT_SEGMENTS, j / FLIGHT_SEGMENTS, 0);
+      }
+    }
+    const row = ROOT_SEGMENTS + 1;
+    for (let j = 0; j < FLIGHT_SEGMENTS; j++) {
+      for (let i = 0; i < ROOT_SEGMENTS; i++) {
+        const a = j * row + i;
+        index.push(a, a + 1, a + row, a + 1, a + row + 1, a + row);
+      }
+    }
+    this.geometry = new THREE.InstancedBufferGeometry();
+    this.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    this.geometry.setIndex(index);
+    this.geometry.setAttribute('sheetSide', new THREE.InstancedBufferAttribute(new Float32Array([1, -1]), 1));
+    this.geometry.instanceCount = 2;
+    this.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Number.POSITIVE_INFINITY);
+
+    const material = new THREE.MeshBasicNodeMaterial();
+    material.side = THREE.DoubleSide;
+    material.transparent = true;
+    material.depthWrite = false;
+    // Aerial perspective comes from the volumetric pass, as for the spray.
+    material.fog = false;
+    material.positionNode = Fn(() => this.vertex())() as any;
+    material.colorNode = Fn(() => this.fragment())() as any;
+    this.material = material;
+
+    this.mesh = new THREE.Mesh(this.geometry, material);
+    this.mesh.name = 'gameplay-bow-sheet';
+    this.mesh.frustumCulled = false;
+    this.mesh.castShadow = false;
+    this.mesh.receiveShadow = false;
+    // Before the spray it sheds, so its drops draw over it.
+    this.mesh.renderOrder = 5;
+    this.mesh.matrixAutoUpdate = false;
+  }
+
+  update(time: number, hull: THREE.Object3D, intensity: number, speed: number, halfLength: number, beam: number): void {
+    this.uClock.value = time;
+    this.uIntensity.value = intensity;
+    this.uSpeed.value = Math.max(0, speed);
+    this.uHalfLength.value = halfLength;
+    this.uBeam.value = beam;
+    (this.uHull.value as THREE.Matrix4).copy(hull.matrixWorld);
+    this.mesh.visible = intensity > 0.01;
+    this.mesh.userData.intensity = intensity;
+  }
+
+  dispose(): void {
+    this.geometry.dispose();
+    this.material.dispose();
+  }
+
+  /** `sheetStation` and `sheetPoint` in TSL; returns the world position. */
+  private vertex(): any {
+    const s: any = (positionGeometry as any).x.toVar('bowSheetS');
+    const tau: any = (positionGeometry as any).y.toVar('bowSheetTau');
+    const side: any = attribute('sheetSide', 'float').toVar('bowSheetSide');
+    const intensity: any = this.uIntensity;
+
+    // The bow wave is highest just abaft the stem and dies away toward the
+    // shoulder; the hull widens from the stem.
+    const crest: any = s.div(0.12).min(1).sqrt().mul(s.oneMinus().clamp(0, 1).pow(1.5)).toVar('bowSheetCrest');
+    const q: any = s.mul(ROOT_LENGTH / STEM);
+    const halfWidth: any = this.uBeam.mul(0.5).mul(q.mul(2).sub(q.mul(q)).max(0).sqrt());
+    const x0: any = this.uHalfLength.mul(s.mul(-ROOT_LENGTH).add(STEM));
+    const y0: any = intensity.mul(crest).mul(CREST_HEIGHT).sub(0.1).toVar('bowSheetY0');
+    const z0: any = side.mul(halfWidth.add(ROOT_OFFSET));
+    const surgeNode: any = s
+      .mul(29)
+      .sub(this.uClock.mul(5.3))
+      .add(side.mul(1.3))
+      .sin()
+      .mul(s.mul(17).sub(this.uClock.mul(3.1)).add(side.mul(0.7)).sin())
+      .mul(0.4)
+      .add(s.mul(53).sub(this.uClock.mul(8.9)).add(side.mul(2.1)).sin().mul(0.2))
+      .add(1);
+    const up: any = intensity.mul(crest).mul(surgeNode).mul(UP_GAIN).add(UP_BASE).toVar('bowSheetUp');
+    const outward: any = intensity
+      .mul(OUT_GAIN)
+      .add(OUT_BASE)
+      .mul(s.mul(-0.4).add(1))
+      .mul(crest.mul(0.4).add(0.6));
+    const aft: any = this.uSpeed.mul(s.mul(0.3).add(0.35));
+    const flight: any = up
+      .add(up.mul(up).add(y0.add(0.25).mul(2 * GRAVITY)).max(0).sqrt())
+      .div(GRAVITY)
+      .toVar('bowSheetFlight');
+    const t: any = tau.mul(flight);
+    const roll: any = tau.mul(0.25).add(1);
+    const local: any = vec3(
+      x0.sub(aft.mul(t)),
+      y0.add(up.mul(t)).sub(t.mul(t).mul(0.5 * GRAVITY)),
+      z0.add(side.mul(outward).mul(t).mul(roll)),
+    );
+    const world: any = this.uHull.mul(vec4(local, 1)).xyz.toVar('bowSheetWorld');
+    const viewZ: any = cameraViewMatrix.mul(vec4(world, 1)).z;
+    // Root arc length in metres, for the breakup's scale across the flow.
+    const rootMetres: any = s.mul(this.uHalfLength).mul(ROOT_LENGTH);
+    vSheet.assign(vec4(rootMetres, t, tau, flight));
+    vSheetMisc.assign(vec4(viewZ, crest, side, 0));
+    // The mesh is drawn with an identity model matrix: the world position is
+    // the hull's transform applied here, so undo the object's own.
+    return modelWorldMatrixInverse.mul(vec4(world, 1)).xyz;
+  }
+
+  private fragment(): any {
+    const tex = sprayAtlas();
+    const rootMetres: any = vSheet.x;
+    const age: any = vSheet.y;
+    const tau: any = vSheet.z.clamp(0, 1).toVar('bowSheetFTau');
+    const crest: any = vSheetMisc.y;
+    const intensity: any = this.uIntensity;
+
+    // Breakup fields advected with the water: across the flow by the root's arc
+    // length, along it by time of flight, so the pattern moves out along the
+    // sheet at the water's own speed.
+    // A third of a metre of root and a third of a second of flight per tile of
+    // the atlas: tears a decimetre or two across and drawn out along the flow
+    // into fingers, as in footage of a bluff bow.
+    const flow: any = vec2(rootMetres.mul(3), age.sub(this.uClock).mul(3));
+    const t0: any = texture(tex, flow.mul(vec2(0.13, 0.45)).add(vec2(0.61, 0.13))).x;
+    const t1: any = texture(tex, flow.mul(vec2(1, 0.5))).toVar('bowSheetT1');
+    const t2: any = texture(tex, flow.mul(vec2(2.7, 1.4)).add(vec2(0.37, 0.71))).toVar('bowSheetT2');
+    // Intact sheet near the root, strands past mid-flight, drops at the edge;
+    // a finer octave on top so no edge is a smooth curve.
+    const toStrands: any = smoothstep(0.3, 0.75, tau);
+    const coarse: any = mix(t1.x, t1.z, toStrands);
+    const fine: any = mix(t2.x, t2.y, smoothstep(0.6, 1, tau));
+    // Summing two octaves narrows the spread; stretch it back so a threshold
+    // still cuts holes rather than shaving the extremes.
+    const field: any = coarse.mul(0.62).add(fine.mul(0.38)).sub(0.5).mul(1.7).add(0.5).toVar('bowSheetField');
+    // Torn everywhere a little — the sheet leaves the stem already broken by
+    // the turbulence of the bow wave's crest — and to strands past mid-flight.
+    // The rising half is the intact curtain; the falling half, outside it and
+    // in front of it from most views, is mostly strands so it never closes the
+    // holes behind it.
+    // A coarse tap moves the breakup front itself by a good part of the flight,
+    // so the intact sheet ends in tongues and bays rather than along one line.
+    const cut: any = mix(float(0.2), float(0.85), smoothstep(0.05, 0.9, tau))
+      .add(t0.sub(0.5).mul(0.9))
+      .toVar('bowSheetCut');
+    const torn: any = smoothstep(cut.sub(0.06), cut.add(0.04), field);
+    // Thin and translucent where it leaves the hull, aerated and white as it
+    // thins and tears; the hollows between strands keep a faint veil.
+    const membrane: any = mix(float(0.8), float(1), smoothstep(0.1, 0.5, tau));
+    const veil: any = smoothstep(0.85, 0.3, tau).mul(0.18);
+    // The free edge of each station and the two ends of the root fade out.
+    const ends: any = smoothstep(0, 0.04, vSheet.x.div(this.uHalfLength.mul(ROOT_LENGTH)))
+      .mul(smoothstepDown(vSheet.x.div(this.uHalfLength.mul(ROOT_LENGTH)), 0.6, 0.95));
+    const shape: any = torn.mul(membrane).max(veil).mul(ends).mul(crest.mul(0.6).add(0.4));
+
+    // Soft against the hull and the sea behind it.
+    const sceneZ: any = perspectiveDepthToViewZ(sharedSceneDepth().x, cameraNear, cameraFar);
+    const soft: any = vSheetMisc.x.sub(sceneZ).div(SOFT_DEPTH).clamp(0, 1);
+    const nearFade: any = smoothstep(0.4, 2.0, vSheetMisc.x.negate());
+
+    // --- light ---------------------------------------------------------------
+    const u = sprayUniforms;
+    const toEye: any = cameraPosition.sub(positionWorld).normalize();
+    const cosTheta: any = toEye.negate().dot(u.sunDirection);
+    const g: any = float(0.75);
+    const g2: any = g.mul(g);
+    const phase: any = float(1)
+      .sub(g2)
+      .div(float(1).add(g2).sub(g.mul(2).mul(cosTheta)).max(1e-3).pow(1.5))
+      .min(12);
+    // Thin water transmits forward; aerated water scatters many times.
+    // The root is the bow wave's own breaking crest, white with entrained air;
+    // the sheet above it is clearer water for a moment (never glass: it is
+    // full of bubbles from the crest), then white again as it thins and tears.
+    const aerated: any = smoothstep(0.1, 0.5, tau).max(smoothstepDown(tau, 0.03, 0.14).mul(0.85)).max(0.35);
+    const diffuse: any = mix(float(0.6), float(0.9), aerated);
+    const sunUp: any = u.sunDirection.y.smoothstep(-0.05, 0.12);
+    const shadow: any = hullShadow(positionWorld);
+    const sunTerm: any = diffuse.mul(0.8).add(diffuse.oneMinus().mul(0.3).mul(phase));
+    // Aerated from the moment it leaves the stem (white water, not glass), a
+    // little sea colour only where it is thinnest, and mottled by its own
+    // breakup field so it reads as tumbling water rather than a smooth shell.
+    const tint: any = mix(vec3(0.8, 0.92, 0.94), vec3(0.95, 0.97, 0.98), aerated).mul(field.mul(0.4).add(0.75));
+    const radiance: any = (u.sunColor as any)
+      .mul(sunTerm.mul(sunUp).mul(shadow))
+      // White water sees the whole sky, the bright horizon included.
+      .add((u.skyColor as any).mul(mix(float(0.6), float(0.95), aerated)))
+      .mul(tint);
+
+    // Seen edge-on, a torn sheet is its strands lined up along the eye ray, and
+    // drawn as a surface it would be a hard, solid outline: the "glass shell".
+    // So it thins out toward grazing and the outline is left to its strands,
+    // the drops and the mist.
+    const facetNormal: any = dFdx(positionWorld).cross(dFdy(positionWorld)).normalize();
+    const facing: any = smoothstep(0.06, 0.45, facetNormal.dot(toEye).abs());
+    const alpha: any = shape
+      .mul(soft)
+      .mul(nearFade)
+      .mul(facing)
+      .mul(intensity.mul(2).clamp(0, 1))
+      .clamp(0, 1);
+    return vec4(radiance, alpha);
+  }
+}
