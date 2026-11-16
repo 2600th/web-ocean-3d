@@ -228,6 +228,16 @@ const SWAY_GAIN = 0.024;
  * it gets that back here.
  */
 const BACKLIT = 6;
+/**
+ * [underwater-look-3] Round 5b. Under water, the share kept of the
+ * view-independent translucency (`trc * tr`, every blade whose far face the
+ * sun reaches) and of the ambient. Both lit the whole forest about evenly,
+ * which is what made the kelp frame high-key next to abyssal-garden's dark
+ * masses: the glow belongs to the blades the sun is behind, which the
+ * view-dependent lobe (`BACKLIT`) already gives.
+ */
+const UNDER_DIFFUSE_TR = 0.25;
+const UNDER_AMBIENT = 0.4;
 /** [underwater-look-3] How far a blade's edges curl back, as a share of its half-width. */
 const CUP = 0.28;
 const SWAY_POWER = 1.25;
@@ -265,6 +275,9 @@ export class LeafUniforms {
   readonly uGlint = uniform(1);
   /** [underwater-look-3] See `BACKLIT`. */
   readonly uBacklit = uniform(BACKLIT);
+  /** [underwater-look-3] See `UNDER_DIFFUSE_TR`. */
+  readonly uUnderDiffuseTr = uniform(UNDER_DIFFUSE_TR);
+  readonly uUnderAmbient = uniform(UNDER_AMBIENT);
 
   private swellOmega = Math.sqrt(GRAVITY * ((Math.PI * 2) / 47));
   private time = 0;
@@ -565,7 +578,7 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     mix(mix(a, b, ss(0.0, 0.5, s1)), c, ss(0.5, 1.0, s1));
   const kelpCol = mix(
     tri(vec3(0.11, 0.065, 0.018), vec3(0.07, 0.085, 0.02), vec3(0.03, 0.08, 0.035)),
-    tri(vec3(0.2, 0.13, 0.035), vec3(0.13, 0.15, 0.03), vec3(0.05, 0.16, 0.06)),
+    tri(vec3(0.17, 0.125, 0.04), vec3(0.12, 0.145, 0.035), vec3(0.05, 0.15, 0.06)),
     lift,
   );
   const col = byType(type, [
@@ -688,7 +701,9 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     // the thin margin than at the midrib, so the edges glow and the rib
     // reads as a darker line through the backlit blade.
     const thin = mix(float(0.55), float(1.3), ss(0.05, 0.85, uvx));
-    const trc = alb.mul(mix(vec3(1), vec3(1.5, 1.4, 0.75), translucency.mul(vPr.z.oneMinus()))).mul(thin);
+    // Under water a little less gold in the transmitted tint (round 5b).
+    const trTint = mix(vec3(1.5, 1.4, 0.75), vec3(1.25, 1.4, 0.85), underK);
+    const trc = alb.mul(mix(vec3(1), trTint, translucency.mul(vPr.z.oneMinus()))).mul(thin);
     // Occlusion: the baked crowding, and the base of every leaf is darker.
     const aoTerm = mix(float(0.3), float(1), occl).mul(mix(float(0.55), float(1), vv));
     const am = U.uAmbient
@@ -696,9 +711,9 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
       .add(U.uAmbient.mul(n.y.mul(-0.45).add(0.55)).mul(translucency.mul(0.55)).mul(vec3(1.1, 1.15, 0.7)))
       .mul(aoTerm);
     const c = E.mul(caustic)
-      .mul(alb.mul(ndl.max(0)).add(trc.mul(tr)))
+      .mul(alb.mul(ndl.max(0)).add(trc.mul(tr).mul(mix(float(1), U.uUnderDiffuseTr, underK))))
       .mul(aoTerm.mul(0.6).add(0.4))
-      .add(alb.mul(am))
+      .add(alb.mul(am).mul(mix(float(1), U.uUnderAmbient, underK)))
       .toVar();
     const H = V.add(L).normalize();
     const nh = n.dot(H).clamp(0, 1);
@@ -709,8 +724,11 @@ export function buildLeafMaterial(U: LeafUniforms, options: LeafMaterialOptions)
     // rest of the forest stays the dark mass abyssal-garden's frames show.
     const back = V.negate().dot(L).clamp(0, 1).toVar();
     const lobeAir = back.pow(2).mul(2);
+    // Round 5b: mu^12, from mu^6. At mu^6 every blade within forty degrees
+    // of the sun glowed, which lit the near forest about evenly.
     const back2 = back.mul(back);
-    const lobeWater = back2.mul(back2).mul(back2).mul(U.uBacklit);
+    const back6 = back2.mul(back2).mul(back2);
+    const lobeWater = back6.mul(back6).mul(U.uBacklit);
     c.addAssign(E.mul(trc).mul(translucency).mul(mix(lobeAir, lobeWater, underK)));
     const lum = (x: Node): Node => x.dot(vec3(0.1, 0.5, 0.5));
     c.addAssign(alb.mul(vPr.w).mul(lum(am.add(E.mul(0.3))).mul(3).add(0.5)));
