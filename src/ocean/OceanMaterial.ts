@@ -2559,8 +2559,17 @@ export class OceanMaterial {
           // The lace is held to two and a bit periods and then gone by three,
           // exactly when the oldest crest tracked here hands over to one that
           // is not — so nothing pops as the crests renumber.
-          const denseAt = (a: any) => a.mul(-3.2).exp().mul(0.92);
-          const laceAt = (a: any) => a.mul(-0.6).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3));
+          //
+          // Both are kept light. The dense stage is gone within about a fifth
+          // of a period (a second at these periods), so only the bore line and
+          // its immediate wake are solid white. The lace starts at a third
+          // and halves every 0.6 period. Once the section noise really cut
+          // gaps, the old amounts (a third of a period dense, half-strength
+          // lace fading over two periods) stacked into an opaque white blanket
+          // over the inner surf zone and the swash. That hid the clear sheet and
+          // its caustics that beach-transparency-1 was won on.
+          const denseAt = (a: any) => a.mul(-7).exp().mul(0.92);
+          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.34).mul(smoothstepDownClamped(a, 2.2, 3));
 
           // **Foam lines.** The white a bore leaves is not a sheet: it is torn
           // into streaks lying *along* the crest that made them, a metre or two
@@ -2585,7 +2594,7 @@ export class OceanMaterial {
             .toVar();
           // Dense where it is fresh, lanes as it ages: a bore's first second is
           // white all through, and only then tears.
-          const tearing = age.smoothstep(0.03, 0.18).toVar();
+          const tearing = age.smoothstep(0.015, 0.09).toVar();
           // The wind sea's bores: a thinner roller and a short dense wake, where
           // its crests have broken. No lace of their own: their foam joins the
           // swell's field.
@@ -2609,11 +2618,16 @@ export class OceanMaterial {
             .mul(lastBroke)
             .max(laceAt(age.add(1)).mul(previousBroke))
             .max(laceAt(age.add(2)).mul(olderBroke))
-            .mul(mix(float(0.06), float(1.3), lanes));
+            .mul(mix(float(0), float(1.3), lanes));
+          // Over the last half metre the bore has become the swash sheet, which
+          // stays clear: its foam is the lip at its leading edge (`thin` and
+          // `edgeLine` below), not a carpet over the water behind it.
+          const sheetClear = d.smoothstep(0.1, 0.6).toVar();
           const whitewater = dense
-            .mul(mix(float(1), mix(float(0.18), float(1.15), lanes), tearing))
+            .mul(mix(float(1), mix(float(0.1), float(1.05), lanes), tearing))
             .max(lace)
             .mul(sections)
+            .mul(sheetClear)
             .min(0.9)
             .toVar();
           // What is left of a bore is still being carried up the beach by the
@@ -2677,7 +2691,7 @@ export class OceanMaterial {
           const residual = lanes
             .mul(lanes)
             .mul(smoothstepDownClamped(d, surfBreak.mul(0.45), surfBreak.mul(1.15)))
-            .mul(d.smoothstep(0.05, 0.3))
+            .mul(sheetClear)
             .mul(0.2)
             .toVar();
           surf.assign(
@@ -2701,7 +2715,9 @@ export class OceanMaterial {
           // shallows and read as a decal.
           // The dense stage is what carries the bubbles; the lace floats on
           // water that has mostly cleared.
-          surfAerated.assign(roller.max(dense.mul(1.15)).max(whitewater.mul(0.5)).max(lip).clamp(0, 1).mul(strength));
+          surfAerated.assign(
+            roller.max(dense.mul(1.15).mul(sheetClear)).max(whitewater.mul(0.3)).max(lip).clamp(0, 1).mul(strength),
+          );
         });
       }
 
