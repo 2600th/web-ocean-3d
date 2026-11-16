@@ -98,12 +98,15 @@ const HOLDFAST_SINK = 0.3;
 /** Steepest floor a holdfast takes, as a gradient. */
 const MAX_SLOPE = 0.5;
 
-/** Distance bands, as fractions of the range: 9 rows, 5 rows, 3 rows at half. */
+/** Distance bands, as fractions of the range: 10x3 rows, 9, 5, 3 rows at half. */
 const KELP_LEVELS = [
-  // [underwater-look-3] Five across and twelve along near the eye, so a
-  // blade a metre from the lens cups and bends smoothly instead of showing
-  // its two-vertex section as one flat polygon.
-  { rows: 12, cols: 5, thin: 1, until: 0.24 },
+  // [underwater-look-3] Three across and ten along in the first tenth of
+  // the range, so a blade a metre or two from the lens cups and bends
+  // smoothly instead of showing its two-vertex section as one flat polygon.
+  // Only there: five across over the whole first band cost 0.8 ms in
+  // the forest, in the main and the shadow pass both.
+  { rows: 10, cols: 3, thin: 1, until: 0.1 },
+  { rows: 9, thin: 1, until: 0.24 },
   { rows: 5, thin: 1, until: 0.52 },
   { rows: 3, thin: 0.5, until: 1 },
 ] as const;
