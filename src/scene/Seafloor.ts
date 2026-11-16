@@ -1774,7 +1774,17 @@ export class Seafloor {
 
       // Shore hook: the swash darkens the sand it reaches and it dries over
       // seconds. Scales whatever the palette above produced; see `ocean/Surf`.
-      const swashed = applySwashToGround(mottled, wp, swashState).toVar();
+      //
+      // Sand the swash sheet covers right now is under water, so it is drawn in
+      // the in-water reflectance the shelf has (`shallowSand` against
+      // `sandDry`: a tenth darker and less yellow), not as the wet band's sand
+      // in air at a third of the dry value. The water drawn over it adds the
+      // tint. With the wet band under it, the clear sheet showed an almost
+      // black bed and read as opaque (beach-transparency-1, round 9).
+      const sheetBed: Node = beach.mul(vec3(0.84, 0.88, 0.93));
+      const underSheet: Node = swashState.z.mul(rockExposure.oneMinus()).toVar();
+      const sheetLaid: Node = mix(mottled, sheetBed, underSheet);
+      const swashed = applySwashToGround(sheetLaid, wp, swashState).toVar();
 
       // Rain on the island: the same darkening the ship and the props take
       // (`scene/Wetness`), so a squall does not soak the hull and leave the
