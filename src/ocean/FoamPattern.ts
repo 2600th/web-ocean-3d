@@ -236,11 +236,22 @@ function bubbleDistance(p: any, salt: number, rMin: number, rMax: number): any {
 
 /**
  * The filament field's frame: noise cells `FILAMENT_ACROSS` metres across the
- * axis and `FILAMENT_STRETCH` times that along it. 5 nominal is about 4:1 in
- * what survives the threshold, since gradient noise has little structure past
- * a cell along the stretch.
+ * axis and a stretch times that along it. Gradient noise has little structure
+ * past a cell along a stretch, so what survives the threshold is drawn out by
+ * about 0.8 of the nominal ratio: `FRESH_STRETCH` 2.8 reads as about 2.2:1,
+ * `AGED_STRETCH` 4.5 as about 3.5:1.
+ *
+ * Round 8's single 5:1 frame (about 4:1 on screen) turned whole whitecaps into
+ * thin brush strokes laid along the wind, which an earlier critic had already
+ * marked down as "brushed streaks". A breaking whitecap is a dense patch with a
+ * torn edge; only the foam it leaves behind is combed out. So fresh foam is
+ * read in the short frame, and the long one takes over only as the amount
+ * falls through the decay (`AGED_FROM`, `AGED_TO`).
  */
-const FILAMENT_STRETCH = 5;
+const FRESH_STRETCH = 2.8;
+const AGED_STRETCH = 4.5;
+const AGED_FROM = 0.2;
+const AGED_TO = 0.65;
 const FILAMENT_ACROSS = 1;
 
 /**
@@ -254,12 +265,29 @@ const FILAMENT_SD = 0.2404;
 
 /**
  * The finer octave groups, as frequency ratio and weight: 0.34 m strands that
- * fray the metre ones (Medium and up), 12 cm fibres in those (High and up).
+ * tear the metre ones (Medium and up), 12 cm fibres in those (High and up).
  */
 const FILAMENT_MID = 2.9;
-const FILAMENT_MID_WEIGHT = 0.85;
+const FILAMENT_MID_WEIGHT = 0.95;
 const FILAMENT_FINE = 8.4;
 const FILAMENT_FINE_WEIGHT = 0.5;
+
+/**
+ * Warp of the strand frame, in noise cells, by a noise about two cells along
+ * and two and a half across. Its gradient squeezes and stretches the strands
+ * and the gaps between them by up to about half either way, so neither comes in
+ * one length: the wake's gaps had been dashes of a single size (round 8's
+ * boat-chase). Half as much across, which varies their width the same way.
+ */
+const FILAMENT_WARP = 0.6;
+
+/**
+ * Width variation along a strand: the band's half-width is scaled by
+ * `0.65 + 0.7 n` for a value noise `n` at about 0.6 by 1.1 cells, so a strand
+ * swells and pinches rather than being one stroke of a brush.
+ */
+const STRAND_WIDTH_LOW = 0.65;
+const STRAND_WIDTH_SPAN = 0.7;
 
 /** Two octaves of gradient noise, the filament field's raw value. */
 function filamentNoise(q: any): any {
@@ -294,24 +322,26 @@ function bandCoverage(t: any): any {
  * round holes of a similar size in a white sheet are what the critic kept
  * reading as "leopard spots" (waves-4, foam-1, foam-3, boat-sea-1); the
  * smallest, 7 cm, were the worst, since every one of them came out the same
- * size on screen. A whitecap does not die that way. Its foam decays into
- * streaks and ragged filaments drawn out along the wind, with a few irregular
- * voids, and a wake's are drawn out along the ship's track.
+ * size on screen. A whitecap does not die that way. It is a dense white patch
+ * with a torn edge, trailing downwind into decaying lace and a few streaks;
+ * a wake's foam is drawn out along the ship's track.
  *
- * So the foam is now where a gradient-noise field, read in a frame stretched
- * about 4:1 along `axis` and bent by a 7–14 m meander, is near zero:
- * `|z| < t`. The zero set of such a field is a web of strands running along
- * the axis. The band's half-width `t` grows with the amount: thick foam is
- * nearly solid, with a few long ragged voids where the field peaks; thin foam
- * is the strands alone. A patch therefore thins from its crest outward into
- * filaments rather than opening holes in a solid sheet.
+ * So the foam is where a gradient-noise field, read in a frame stretched along
+ * `axis` and bent by a 7–14 m meander, is near zero: `|z| < t`. The zero set of
+ * such a field is a web of strands running along the axis. The band's
+ * half-width `t` grows with the amount, steeply at the top: fresh foam is
+ * nearly solid, with only the torn edge and a few small gaps; aged foam is
+ * lace; the last of it is strands. The frame's stretch grows as the amount
+ * falls (`FRESH_STRETCH`, `AGED_STRETCH`), so only the thinning foam is combed
+ * out, and the strands' length and width vary (`FILAMENT_WARP`,
+ * `STRAND_WIDTH_*`).
  *
  * Three octave groups, 1 m, 0.34 m and 12 cm across the axis, summed into one
- * field and divided by its spread (`FILAMENT_SD`), so the finer groups fray
- * the strands' outlines into fibres without changing how much water they
- * cover. Each finer group fades out with distance before its strands fall
- * under a pixel, and is tier-gated; the whole field fades to its analytic
- * coverage (`bandCoverage`) far off. Must be called inside a TSL `Fn`.
+ * field and divided by its spread (`FILAMENT_SD`), so the finer groups tear
+ * the outlines without changing how much water they cover. Each finer group
+ * fades out with distance before its strands fall under a pixel, and is
+ * tier-gated; the whole field fades to its analytic coverage (`bandCoverage`)
+ * far off. Must be called inside a TSL `Fn`.
  *
  * @param axis Unit xz direction the filaments run along; the wind by default.
  */
@@ -321,22 +351,41 @@ export function foamLace(p: any, amount: any, viewDistance: any, axis?: any): an
   const across = vec2(along.y.negate(), along.x);
   const frame = vec2(p.dot(along), p.dot(across)).toVar('foamLaceFrame');
   // The band's half-width, in units of the field's spread: the strands alone
-  // (about half the water) at 0, nearly solid at 1. Varied by ±20% over
-  // 8–15 m, so one raft is not one texture: in places it has already gone to
-  // strands, in others it still holds together.
+  // (about half the water) at 0, nearly solid from about 0.85. Varied by ±20%
+  // over 8–15 m, so one raft is not one texture: in places it has already
+  // gone to strands, in others it still holds together.
   const region = foamNoise(p.mul(1 / 9).add(vec2(7.3, 2.1))).toVar('foamLaceRegion');
-  const t = mix(float(0.65), float(2), a).mul(region.mul(0.4).add(0.8)).toVar('foamLaceBand');
-  const mean = bandCoverage(t).toVar('foamLaceMean');
+  const t0 = a
+    .mul(1.35)
+    .add(a.mul(a).mul(a).mul(0.6))
+    .add(0.65)
+    .mul(region.mul(0.4).add(0.8))
+    .toVar('foamLaceBand');
+  // The width variation is concave in coverage, so the mean is taken at the
+  // two ends of its range rather than at its middle.
+  const mean = bandCoverage(t0.mul(0.8)).add(bandCoverage(t0.mul(1.2))).mul(0.5).toVar('foamLaceMean');
   const strands = mean.toVar('foamLaceStrands');
   const near = smoothstepDownClamped(viewDistance, 60, 140).toVar('foamLaceNear');
   If(near.greaterThan(0.001), () => {
     // A strand meanders, as a streak follows the Langmuir cells rather than
     // a ruling; without it the stretched field reads as hatching.
     const bend = gradNoise(frame.mul(vec2(1 / 14, 1 / 7)).add(vec2(3.1, 7.7))).mul(1.6);
-    const q = vec2(
-      frame.x.div(FILAMENT_ACROSS * FILAMENT_STRETCH),
-      frame.y.add(bend).div(FILAMENT_ACROSS),
-    ).toVar('foamLaceQ');
+    const qy = frame.y.add(bend).div(FILAMENT_ACROSS).toVar('foamLaceQy');
+    const qx = frame.x.div(FILAMENT_ACROSS * FRESH_STRETCH).toVar('foamLaceQx');
+    const warp = vec2(
+      gradNoise(vec2(qx.mul(0.55).add(4.3), qy.mul(0.4).add(1.9))).mul(FILAMENT_WARP),
+      gradNoise(vec2(qx.mul(0.55).add(8.1), qy.mul(0.4).add(6.7))).mul(FILAMENT_WARP * 0.5),
+    ).toVar('foamLaceWarp');
+    const q = vec2(qx, qy).add(warp).toVar('foamLaceQ');
+    const z = filamentNoise(q).toVar('foamLaceZ');
+    // The long frame, for the foam that is thinning; its own field, blended in
+    // and renormalised so the blend has the spread of either.
+    const aged = a.smoothstep(AGED_FROM, AGED_TO).oneMinus().toVar('foamLaceAged');
+    If(aged.greaterThan(0.001), () => {
+      const qAged = vec2(frame.x.div(FILAMENT_ACROSS * AGED_STRETCH), qy).add(warp).add(vec2(13.7, 29.1));
+      const fresh = aged.oneMinus();
+      z.assign(mix(z, filamentNoise(qAged), aged).div(fresh.mul(fresh).add(aged.mul(aged)).sqrt()));
+    });
     const midWeight = foamUniforms.detail
       .greaterThan(0.5)
       .select(smoothstepDownClamped(viewDistance, 18, 45).mul(FILAMENT_MID_WEIGHT), float(0))
@@ -345,7 +394,6 @@ export function foamLace(p: any, amount: any, viewDistance: any, axis?: any): an
       .greaterThan(1.5)
       .select(smoothstepDownClamped(viewDistance, 7, 18).mul(FILAMENT_FINE_WEIGHT), float(0))
       .toVar('foamLaceFineWeight');
-    const z = filamentNoise(q).toVar('foamLaceZ');
     If(midWeight.greaterThan(0.001), () => {
       z.addAssign(filamentNoise(q.mul(FILAMENT_MID).add(vec2(2.9, 8.3))).mul(midWeight));
     });
@@ -353,6 +401,9 @@ export function foamLace(p: any, amount: any, viewDistance: any, axis?: any): an
       z.addAssign(filamentNoise(q.mul(FILAMENT_FINE).add(vec2(6.1, 3.7))).mul(fineWeight));
     });
     const spread = midWeight.mul(midWeight).add(fineWeight.mul(fineWeight)).add(1).sqrt().mul(FILAMENT_SD);
+    const t = t0
+      .mul(foamNoise(q.mul(vec2(1.6, 0.9)).add(vec2(2.2, 5.5))).mul(STRAND_WIDTH_SPAN).add(STRAND_WIDTH_LOW))
+      .toVar('foamLaceWidth');
     // The strand's edge drains over a fifth of the spread either side, so no
     // strand has a cut outline.
     const band = z.abs().div(spread).smoothstep(t.sub(0.22), t.add(0.22)).oneMinus();
