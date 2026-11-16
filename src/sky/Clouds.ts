@@ -659,6 +659,32 @@ const WIND_WRAP = 200_000;
  */
 const MOON_GAIN = 1.6;
 
+/**
+ * Daylight diffused down through a continuous deck, on its underside.
+ *
+ * A broken sky lights a cloud's base from the sky around it, which is what the
+ * ambient terms model. A solid deck has no sky around it: the dome under it is
+ * already darkened to stand for the deck (`Atmosphere`'s overcast term), so
+ * the ambient it gave the base was a few thousandths, and with the direct sun
+ * cut to a quarter under a deck (`setLighting`) the storm's base rendered at
+ * about 45 / 255, a navy-black ceiling that the round-6 critique read as a
+ * night sky. What lights the base of a real nimbostratus is sunlight that has
+ * scattered its way down through it: diffuse transmission, which for a thick
+ * slab falls off as `1 / (1 + c * tau)` rather than as `exp(-tau)` (the
+ * two-stream result: Bohren, "Multiple scattering of light and some of its
+ * observable consequences", Am. J. Phys. 55, 1987). So the base is grey by
+ * day, and darker where the column above it is deeper — the texture.
+ *
+ * Scaled by `uDeckHold`, so it is zero below 0.6 coverage and every broken
+ * sky (all the day, sunset and cloud shots) is untouched; by the sun's own
+ * `above`, so it goes with the day. `DECK_GLOW` 3 puts the storm's deck at a
+ * mean of about 93 / 255 where Water Pro's storm sits at 96 (round-6 pair);
+ * `DECK_GLOW_RATE` is the `c` against the march's optical depth toward the
+ * sun, 0.1 for a 10-90 % spread of about 30 / 255 against Water Pro's 35.
+ */
+const DECK_GLOW = 3;
+const DECK_GLOW_RATE = 0.1;
+
 /** Ambient gain on the base's shadow colour at a clear noon. */
 const AMBIENT_GAIN = 0.34;
 
@@ -757,6 +783,8 @@ export class Clouds {
   private readonly uLightColor: any = uniform(new THREE.Color(1, 1, 1));
   /** See `UNDER_GLOW`. Colour and strength in one. */
   private readonly uUnderGlow: any = uniform(new THREE.Color(0, 0, 0));
+  /** See `DECK_GLOW`: the key light's colour, times the gain and `uDeckHold`. */
+  private readonly uDeckGlow: any = uniform(new THREE.Color(0, 0, 0));
   /** Horizontal unit vector toward the key light, for the underside glow. */
   private readonly uSunFlat = uniform(new THREE.Vector3(1, 0, 0));
   /** See `CloudParams.baseRoughness`. */
@@ -1246,6 +1274,8 @@ export class Clouds {
       this.uSunGain.value = SUN_GAIN * MOON_GAIN * moonUp * Math.min(1, night) * this.skyLevel;
       color.copy(MOON_CLOUD_COLOR);
     }
+
+    (this.uDeckGlow.value as THREE.Color).copy(color).multiplyScalar(DECK_GLOW * above * this.uDeckHold.value);
 
     const flat = this.uSunFlat.value as THREE.Vector3;
     flat.set(dir.x, 0, dir.z);
@@ -1953,6 +1983,7 @@ export class Clouds {
                 const lum = ambient
                   .add(this.uColor.mul(this.uLightColor).mul(sunTerm))
                   .add(underGlow)
+                  .add(this.uColor.mul(this.uDeckGlow).div(opticalDepth.mul(DECK_GLOW_RATE).add(1)))
                   .toVar('cloudLum');
 
                 const sampleT = exp(d.mul(stepSize).mul(this.uExtinction).mul(this.uViewGain).negate());
