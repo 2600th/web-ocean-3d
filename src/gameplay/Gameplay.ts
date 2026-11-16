@@ -441,6 +441,7 @@ export class Gameplay {
       this.o.hullLength,
       this.o.hullBeam,
       this.o.camera,
+      (x, z) => this.o.sampler.height(x, z),
     );
     this.burst.mesh.visible = this.burst.alive;
   }
