@@ -12,6 +12,7 @@ import {
   length,
   max,
   min,
+  mix,
   pow,
   rtt,
   select,
@@ -606,6 +607,27 @@ export class PhysicalAtmosphere {
     const mu = sqrt(max(float(1).sub(x.mul(x)), 0));
     const limb = vec3(1).sub(vec3(0.397, 0.503, 0.652).mul(float(1).sub(mu)));
     return limb.mul(edge).mul(this.transNode(float(CAM_R), max(dir.y, -0.01)));
+  }
+
+  /**
+   * The solar aureole's angular profile outside the disc of `discRadius`,
+   * times the transmittance along `dir` (so the halo reddens toward the
+   * horizon the way the disc does). 1 at the disc's edge; the caller sets its
+   * level. Two exponentials in angle from the limb: a tight one of `core`
+   * radians and a broad one of `wide`, weighted `wideShare`.
+   *
+   * The shape follows measured solar aureoles, whose radiance falls steeply
+   * (roughly as the inverse square of angle) over the first degree or two and
+   * then slowly out to ten or more: aerosol forward scattering, the same Mie
+   * lobe the sky-view LUT integrates but resolved at a scale the LUT's 1-degree
+   * texels cannot carry.
+   */
+  sunAureole(dir: any, discRadius: number, core: any, wide: any, wideShare: any): any {
+    const c = dot(dir, this.uSunDir);
+    const ang = sqrt(max(float(1).sub(c).mul(2), 0));
+    const beyond = ang.sub(discRadius).max(0);
+    const profile = mix(exp(beyond.div(core).negate()), exp(beyond.div(wide).negate()), wideShare);
+    return this.transNode(float(CAM_R), max(dir.y, -0.01)).mul(profile);
   }
 
   dispose(): void {
