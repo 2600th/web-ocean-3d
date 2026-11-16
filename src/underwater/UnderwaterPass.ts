@@ -360,6 +360,17 @@ const SUN_CORE = 12;
 /** A broad `mu^16` halo under the glow: the forward scatter of the column above. */
 const SUN_HALO = 0.05;
 /**
+ * [underwater-look-3] Round 9. Highlight roll-off on the open surface round the
+ * sun: luminance above `SUN_KNEE` times the medium's is compressed toward
+ * `SUN_KNEE_RANGE` more, inside the cone `SUN_KNEE_CONE` (cosines off the
+ * refracted sun). The round-9 review read kelp-sun's sun as "a mushy bloom ...
+ * no visible surface": the surface's own ripples and window were there in the
+ * scene's light but clipped to one white patch on the way to the screen.
+ */
+const SUN_KNEE = 2.2;
+const SUN_KNEE_RANGE = 2.5;
+const SUN_KNEE_CONE: readonly [number, number] = [0.8, 0.95];
+/**
  * [underwater-look-3] Round 8b. Extra blur on the shafts' beam pattern looking
  * toward the sun: `SHAFT_SUN_LOD` more mip levels between the two cosines
  * (35 and 18 degrees off the refracted sun). Seen end-on a beam's broad patch
@@ -392,18 +403,34 @@ const SHAFT_SUN_LOD_COS: readonly [number, number] = [0.82, 0.95];
  * stays a silhouette across the rays rather than being lit by them. It fades
  * out as the sun's screen position leaves the frame (`RADIAL_EDGE`, in NDC).
  */
-const RADIAL_TAPS = 40;
-const RADIAL_SPAN = 0.85;
-const RADIAL_DECAY = 0.965;
-const RADIAL_FOCUS = 10;
-const RADIAL_PATTERN_LOD = 3.5;
+const RADIAL_TAPS = 48;
+const RADIAL_SPAN = 1.0;
+const RADIAL_DECAY = 0.98;
+const RADIAL_FOCUS = 4;
+const RADIAL_PATTERN_LOD = 3;
 const RADIAL_PATTERN = 1;
-const RADIAL_FLOOR = 0.3;
+const RADIAL_FLOOR = 0.05;
 const RADIAL_BLOCK = 0.8;
 const RADIAL_WINDOW: readonly [number, number] = [0.58, 0.7];
 const RADIAL_GAIN = 2.5;
 const RADIAL_ON_OCCLUDER = 0.15;
 const RADIAL_EDGE: readonly [number, number] = [1.0, 1.7];
+/**
+ * [underwater-look-3] Round 9. The same march also carries how much of the
+ * way toward the sun is clear water (green in the blur), and the in-scatter's
+ * forward glow is scaled by it, down to `RADIAL_SHADOW` where it is all solid.
+ * The round-9 review asked for "radial god rays occluded by the kelp": added
+ * light alone could not make them, as the frame round the sun was already
+ * bright water and a brighter streak on it read as a flare. A kelp stand
+ * between the eye and the sun now casts a dark fan through the glow, and the
+ * open gaps between stands are the rays. Solid means geometry nearer than the
+ * surface on a rising ray, or nearer than `RADIAL_SHADOW_FAR` metres on any
+ * other.
+ */
+const RADIAL_SHADOW = 0.1;
+const RADIAL_SHADOW_FAR = 60;
+/** How much of the glow's shadow the isotropic in-scatter takes, toward the sun. */
+const RADIAL_SHADOW_ISO = 0.6;
 /**
  * [underwater-look-3] A narrow forward lobe added to the shafts' phase, on top
  * of abyssal-garden's broad `2 mu^3`. Looking up-sun the beams converge on the
@@ -467,6 +494,58 @@ const FAR_SCATTER_TINT: readonly [number, number, number] = [0.95, 0.85, 0.78];
 const GRADE_CONTRAST = 1.5;
 /** The same curve's exponent above the pivot. */
 const GRADE_CONTRAST_HIGH = 1.04;
+/**
+ * [underwater-look-3] Round 9. Depth layering. The round-9 review read the reef
+ * frame as "everything at the same contrast plane": the fog had compressed the
+ * mound and the reef behind it toward the water, and the grade's curve, the
+ * same at every distance, pushed them straight back apart. Now:
+ * - the curve's exponent below the pivot runs from `GRADE_CONTRAST` near the
+ *   eye to `GRADE_CONTRAST_FAR` over `GRADE_FADE` metres, so the near rocks
+ *   keep dark feet and the distance keeps the fog's softness;
+ * - submerged surfaces past `MID_HAZE_START` metres take a further
+ *   `1 - exp(-MID_HAZE d)` of the colour their own ray of water converges on,
+ *   lifting and bluing the 5-15 m band.
+ * The preset's visibility is untouched, so the open-water and up-sun frames,
+ * which are mostly water, barely move.
+ */
+//
+// Both are weighted by how far below level the ray runs (`LAYER_RAY_Y`, full
+// below the first value, none above the second). Looking down into a reef the
+// eye sees the bed and its outcrops stacked behind each other through water
+// lit from above; looking level or up into kelp it sees blades in silhouette
+// against the bright surface, and the round-9 review marked abyssal-garden
+// down for fog that flattened exactly that (underwater-3, our win). The kelp
+// ranks keep their contrast; the reef gets its layers.
+const LAYER_RAY_Y: readonly [number, number] = [-0.2, 0.05];
+const GRADE_CONTRAST_FAR = 1.05;
+const GRADE_FADE: readonly [number, number] = [5, 28];
+const MID_HAZE_START = 3;
+const MID_HAZE = 0.03;
+/**
+ * The share of the haze a level, upward face (the open bed) takes. The bed is
+ * the backdrop the layers stand on, and its caustics are what the kelp-wide
+ * frame was praised for; the outcrops, corals and sponges standing on it are
+ * what reads as layers.
+ */
+const FLOOR_HAZE_KEEP = 0.3;
+/**
+ * And how much of it green leaves are spared: the kelp ranks of the kelp-wide
+ * frame are its subject, and their crisp mid-distance blades are what it won
+ * on against abyssal-garden's fogged-out forest (underwater-3).
+ */
+const LEAF_HAZE_RELIEF = 0.7;
+/**
+ * [underwater-look-3] Round 9. Colour accents in the reef's middle distance.
+ * abyssal-garden's reef frame keeps its tan and violet sponges at ten metres
+ * and more, and the round-9 review counted them in its depth; ours went blue
+ * by five, as red goes first down the column and along the path. Saturated
+ * surfaces whose hue is not green (the sponges, the encrusting crusts, the
+ * soft corals; not the kelp or the turf) lose only `1 - ACCENT_KEEP` of the
+ * extra red and blue loss over green, both the depth's and the path's, out to
+ * `ACCENT_RANGE` metres, past which they go to the water like everything else.
+ */
+const ACCENT_KEEP = 0.55;
+const ACCENT_RANGE: readonly [number, number] = [12, 26];
 
 /**
  * Saturation of the in-scatter relative to the preset's water colour.
@@ -655,6 +734,8 @@ export class UnderwaterPass {
    */
   private readonly uSunUv = uniform(new THREE.Vector2(0.5, 0.5));
   private readonly uRadialColor = uniform(new THREE.Vector3(0, 0, 0));
+  /** [underwater-look-3] Round 9. The rays' on-screen fade alone, for the glow's shadow. */
+  private readonly uRadialFade = uniform(0);
   private radialActive = false;
   /** The radial mask and blur targets, for the test hooks to read back. */
   radialTargets: unknown[] = [];
@@ -1054,9 +1135,20 @@ export class UnderwaterPass {
         // and bright only around it, and ours read bright cyan in every
         // direction. `PHASE_ISO + PHASE_FWD mu^3`; the exposure re-centres
         // the frame, so this moves the distribution, not the mean.
+        // [underwater-look-3] Round 9: the forward glow is shadowed by what
+        // stands between this ray and the sun on screen; see `RADIAL_SHADOW`.
+        const sunVis = float(1).toVar('uwSunVis');
+        If(this.uRadialFade.greaterThan(1e-3), () => {
+          const v = radial.sample(warpedUv).level(0).g;
+          sunVis.assign(mix(float(1), mix(float(RADIAL_SHADOW), float(1), v), this.uRadialFade));
+        });
+        // Toward the sun the isotropic part takes some of the shadow too: all
+        // of the in-scatter is sunlight, and near the sun the screen line to
+        // it is a fair stand-in for the light's own path.
+        const isoVis = mix(float(1), sunVis, muSun.smoothstep(0.6, 0.95).mul(RADIAL_SHADOW_ISO));
         const fogPhase = this.uPhaseIso
-          .add(mu2.mul(muSun).mul(this.uPhaseFwd))
-          .add(mu2.mul(mu2).mul(0.3))
+          .mul(isoVis)
+          .add(mu2.mul(muSun).mul(this.uPhaseFwd).add(mu2.mul(mu2).mul(0.3)).mul(sunVis))
           .toVar('uwFogPhase');
         // [underwater-look-3] Round 7: the water past `FAR_SCATTER_START`
         // metres scatters in a darker, greyer blue-green, on rays running level
@@ -1139,6 +1231,24 @@ export class UnderwaterPass {
           .mul(this.uFluorescence)
           .toVar('uwFluor');
         surfaceRgb.addAssign(vec3(warped.rgb).mul(fluor));
+        // [underwater-look-3] Round 9: green-dominant, saturated surfaces
+        // (kelp, turf); see `LEAF_HAZE_RELIEF`.
+        const leafGreen = warped.g
+          .sub(warped.r.max(warped.b))
+          .div(srcMax.max(1e-4))
+          .smoothstep(0.05, 0.25)
+          .mul(srcSat.smoothstep(0.3, 0.6))
+          .toVar('uwLeafGreen');
+        // [underwater-look-3] Round 9: colour accents; see `ACCENT_KEEP`.
+        const warmth = warped.r.max(warped.b).sub(warped.g).div(srcMax.max(1e-4)).smoothstep(0.02, 0.2);
+        const accent = srcSat
+          .smoothstep(0.4, 0.75)
+          .mul(warmth)
+          .mul(float(1).sub(warpedDist.smoothstep(ACCENT_RANGE[0], ACCENT_RANGE[1])))
+          .mul(isSubmergedSurface)
+          .mul(ACCENT_KEEP)
+          .toVar('uwAccent');
+        surfaceRgb.mulAssign(mix(vec3(1, 1, 1), vec3(downwell.y).div(downwell.max(1e-3)).min(4), accent as any));
 
         // --- 2d. the surface's own lighting under water ----------------------
         //
@@ -1148,6 +1258,8 @@ export class UnderwaterPass {
         // the medium's units rather than the air rig's, so it is added after
         // `SURFACE_LIGHT` and not scaled by it.
         const waterLight = vec3(0, 0, 0).toVar('uwWaterLight');
+        /** [underwater-look-3] Round 9: how level and upward a face is; see `FLOOR_HAZE_KEEP`. */
+        const floorFacing = float(0).toVar('uwFloorFacing');
         if (normalNode !== null) {
           const isSurface = warpedDist.lessThan(this.uFar.mul(0.9)).select(float(1), float(0));
           // Sky pixels carry a zero normal, and `normalize(0)` is NaN — which a
@@ -1159,6 +1271,7 @@ export class UnderwaterPass {
           const nView = nLen.greaterThan(0.1).select(nRaw.div(nLen.max(0.1)), vec3(0, 0, 1)).toVar('uwNSafe');
           const nWorld = this.uCameraWorld.mul(vec4(nView, 0)).xyz.toVar('uwN');
           const submergedHit = hitDepth.smoothstep(0.2, 1.2).mul(isSurface).toVar('uwHitSub');
+          floorFacing.assign(nWorld.y.smoothstep(0.75, 0.95));
 
           // Lit tops, dark undersides. Every bit of light under water comes
           // from above — the sun through the surface and the sky through the
@@ -1238,7 +1351,24 @@ export class UnderwaterPass {
         );
         surfaceRgb.addAssign(waterLight);
 
-        const fogged = surfaceRgb.mul(transmit).add(inscatter).toVar('uwFog');
+        const fogged = surfaceRgb
+          .mul(mix(transmit, vec3(transmit.y), accent as any))
+          .add(inscatter)
+          .toVar('uwFog');
+        // [underwater-look-3] Round 9: haze on submerged surfaces past
+        // `MID_HAZE_START`, toward the colour this ray's own water converges
+        // on; see `MID_HAZE`.
+        const hazeColor = inscatter.div(float(1).sub(transmit.y).max(0.05));
+        // Looking down into the reef; see `LAYER_RAY_Y`.
+        const layerWeight = worldRay.y.smoothstep(LAYER_RAY_Y[1], LAYER_RAY_Y[0]).toVar('uwLayerW');
+        const haze: any = float(1)
+          .sub(exp(warpedDist.sub(MID_HAZE_START).max(0).mul(MID_HAZE).negate()))
+          .mul(isSubmergedSurface)
+          .mul(layerWeight)
+          .mul(mix(float(1), float(FLOOR_HAZE_KEEP), floorFacing))
+          .mul(float(1).sub(leafGreen.mul(LEAF_HAZE_RELIEF)))
+          .toVar('uwHaze');
+        fogged.assign(mix(fogged, hazeColor, haze as any));
 
         // [underwater-look-3] The sun burst; see `SUN_GLOW`. Only where the ray
         // reaches the surface before anything else, so whatever stands in front
@@ -1315,7 +1445,22 @@ export class UnderwaterPass {
           });
         }
 
-        const lit = fogged.add(rays).toVar('uwLit');
+        // [underwater-look-3] Round 9: the march's shafts near the sun take the
+        // same shadow as the glow; kelp casts nothing into the shadow map, so
+        // end-on they would otherwise fill the gaps the glow's shadow opens.
+        // Only close to the sun, where the march sees the beams end-on: off it,
+        // a shaft beside a hull is lit past the hull, not through it.
+        const shaftVis = mix(float(1), sunVis, muSun.smoothstep(SUN_KNEE_CONE[0], SUN_KNEE_CONE[1]));
+        const lit = fogged.add(rays.mul(shaftVis)).toVar('uwLit');
+        // [underwater-look-3] Round 9: the surface round the sun rolls off
+        // instead of clipping; see `SUN_KNEE`.
+        const kneePivot = luminance(medium).max(1e-4);
+        const litLum = luminance(lit).max(1e-5).toVar('uwLitLum');
+        const knee = kneePivot.mul(SUN_KNEE);
+        const over = litLum.sub(knee).max(0);
+        const rolled = knee.add(over.div(over.div(kneePivot.mul(SUN_KNEE_RANGE)).add(1)));
+        const sunCone = muSun.smoothstep(SUN_KNEE_CONE[0], SUN_KNEE_CONE[1]).mul(openToSurface);
+        lit.mulAssign(mix(float(1), litLum.min(rolled).div(litLum) as any, sunCone as any));
 
         // --- 3. grade --------------------------------------------------------
         // Depth robs the image of saturation first and of contrast second; both
@@ -1335,8 +1480,15 @@ export class UnderwaterPass {
         // depth went missing, and pushing the highlights by the same power
         // blew the shafts looking up-sun into flat white.
         const ratio = lumFlat.div(pivot).toVar('uwCurveRatio');
+        // [underwater-look-3] Round 9: the curve's darks fade out with
+        // distance; see `GRADE_CONTRAST_FAR`.
+        const contrastLow = mix(
+          this.uContrast,
+          float(GRADE_CONTRAST_FAR),
+          warpedDist.smoothstep(GRADE_FADE[0], GRADE_FADE[1]).mul(layerWeight),
+        ).toVar('uwContrastLow');
         const curved = pivot
-          .mul(ratio.lessThan(1).select(ratio.pow(this.uContrast), ratio.pow(GRADE_CONTRAST_HIGH)))
+          .mul(ratio.lessThan(1).select(ratio.pow(contrastLow), ratio.pow(GRADE_CONTRAST_HIGH)))
           .toVar('uwCurved');
         const lifted = flat.mul(curved.div(lumFlat).min(2));
         // A mask's worth of vignette, only while the eye itself is under: the
@@ -1614,7 +1766,11 @@ export class UnderwaterPass {
         .pow(RADIAL_FOCUS)
         .mul(exp(this.uSigma.y.mul(crossT.min(200)).negate()))
         .mul(beams.mul(RADIAL_PATTERN).add(RADIAL_FLOOR));
-      return vec4(open.mul(emit), open, 0, 1);
+      // For the glow's shadow: is anything solid here at all, nearer than
+      // the surface (rising rays) or than `RADIAL_SHADOW_FAR` (the rest).
+      const reach = crossT.sub(RADIAL_BLOCK).min(RADIAL_SHADOW_FAR);
+      const clear = dist.sub(reach).smoothstep(-0.5, 0.5);
+      return vec4(open.mul(emit), clear, 0, 1);
     })();
     const maskRt: any = rtt(mask as THREE.Node, null, null, { type: THREE.HalfFloatType });
     maskRt.setResolutionScale(0.5);
@@ -1626,6 +1782,8 @@ export class UnderwaterPass {
       const coord = suv.add(step.mul(interleavedGradientNoise(screenCoordinate))).toVar('urbCoord');
       const weight = float(1).toVar('urbWeight');
       const acc = float(0).toVar('urbAcc');
+      const vis = float(0).toVar('urbVis');
+      const visW = float(0).toVar('urbVisW');
       Loop(RADIAL_TAPS, () => {
         // Off the frame there is nothing to sample, not the edge texel again.
         const inside = coord.x
@@ -1633,11 +1791,14 @@ export class UnderwaterPass {
           .mul(coord.x.oneMinus().smoothstep(0, 0.01))
           .mul(coord.y.smoothstep(0, 0.01))
           .mul(coord.y.oneMinus().smoothstep(0, 0.01));
-        acc.addAssign(maskRt.sample(coord.clamp(0, 1)).level(0).r.mul(weight).mul(inside));
+        const m = maskRt.sample(coord.clamp(0, 1)).level(0);
+        acc.addAssign(m.r.mul(weight).mul(inside));
+        vis.addAssign(m.g.mul(weight).mul(inside));
+        visW.addAssign(weight.mul(inside));
         weight.mulAssign(RADIAL_DECAY);
         coord.addAssign(step);
       });
-      return vec4(acc.mul(1 / RADIAL_TAPS), 0, 0, 1);
+      return vec4(acc.mul(1 / RADIAL_TAPS), vis.div(visW.max(1e-3)).mul(visW.min(1)).add(float(1).sub(visW.min(1))), 0, 1);
     })();
     const blurred: any = rtt(blur as THREE.Node, null, null, { type: THREE.HalfFloatType });
     blurred.setResolutionScale(0.5);
@@ -1761,6 +1922,7 @@ export class UnderwaterPass {
     }
     fade *= smoothstepNumber(this.uSubmersion.value, 0.5, 1);
     (this.uRadialColor.value as THREE.Vector3).copy(this.radialBase).multiplyScalar(fade);
+    this.uRadialFade.value = this.radialBase.lengthSq() > 0 ? fade : 0;
     this.radialActive = fade > 1e-3 && this.radialBase.lengthSq() > 0;
   }
 
