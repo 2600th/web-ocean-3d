@@ -42,6 +42,7 @@ import {
   setFoamWind,
 } from './FoamPattern';
 import {
+  BREAKER_INDEX,
   breaker,
   chopBreaker,
   CHOP_PERIOD,
@@ -2595,6 +2596,8 @@ export class OceanMaterial {
       const surf = float(0).toVar();
       /** Milky, bubble-laden water under and behind the white water, 0..1. */
       const surfAerated = float(0).toVar();
+      /** Light on the surf's white water relative to flat foam: the roller's lit face and its lee. */
+      const surfShade = float(1).toVar();
       /** Where the surf's foam has been carried since it was made, metres. */
       const surfAdvect = vec2(0, 0).toVar();
       if (floorDepth !== null) {
@@ -2626,17 +2629,81 @@ export class OceanMaterial {
           // bits. The field came out nearly constant, so the gaps this and
           // `sections` were meant to cut never appeared.
           const waveOffset = (n: any): any => vec2(n.mul(0.618034).fract().mul(47), n.mul(0.414214).fract().mul(53));
-          const crestSection = valueNoise(fieldXZ.mul(1 / 25).add(waveOffset(surfPhaseValue.add(0.5).floor())))
-            .smoothstep(0.36, 0.64)
-            .mul(0.94)
-            .add(0.06)
+          //
+          // Two scales, 45 m and 18 m, so a crest breaks in runs of 20 to 60 m
+          // with gaps between them: the scale that reads from the beach-surf
+          // view 11 m up. At 25 m alone the gaps were a few pixels at that
+          // range and the lines still read as continuous (foam-4, round 7). A
+          // set's big waves break more of their length than the small ones
+          // between sets.
+          const waveNumber = surfPhaseValue.add(0.5).floor().toVar();
+          // The nearest crest's height against a typical breaker (the set
+          // envelope averages 0.8 of `height`): about 0.5 between sets, up to
+          // 2 at the peak of a strong set.
+          const heightRatio = surfBreak
+            .mul(BREAKER_INDEX / 0.8)
+            .div(surfUniforms.height.max(0.2))
+            .clamp(0.25, 2)
             .toVar();
+          const crestSection = valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(waveNumber)))
+            .mul(0.65)
+            .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(waveNumber.add(7)))).mul(0.35))
+            .add(heightRatio.sub(1).mul(0.15))
+            .smoothstep(0.28, 0.5)
+            .mul(0.96)
+            .add(0.04)
+            .toVar();
+          // The roller is as wide as the wave is tall: a set wave's broken
+          // crest is a white roll metres across, and a small one between sets
+          // is a thin line.
+          const rollerScale = mix(float(0.9), float(2.2), heightRatio.smoothstep(0.5, 1.5)).toVar();
+          const rollerFront = float(-0.055).mul(rollerScale).toVar();
+          const rollerBack = float(0.12).mul(rollerScale).toVar();
           const roller = sr
-            .smoothstep(-0.055, -0.012)
-            .mul(smoothstepDownClamped(sr, 0.03, 0.12))
+            .smoothstep(rollerFront, rollerFront.mul(0.22))
+            .mul(smoothstepDownClamped(sr, rollerBack.mul(0.25), rollerBack))
             .mul(brokenNear)
             .mul(crestSection)
             .toVar();
+
+          // **The roll's volume.** Seen from the beach a broken crest is a
+          // raised roll of white water: its face toward the shore, its top
+          // catching the sun, the turbulent water behind it lower and in its
+          // shade. Flat-lit, the roller was a white stripe of even brightness
+          // (foam-4: "evenly spaced straight white stripes", no lip and no
+          // spill). The roll's cross-section is taken as a half ellipse across
+          // the roller's width, as tall as half that width. Its normal lights
+          // the foam against flat foam's light, and the ten metres behind it
+          // are shaded where the roll stands between them and the sun.
+          const rollCentre = rollerFront.add(rollerBack).mul(0.5).toVar();
+          const rollHalf = rollerBack.sub(rollerFront).mul(0.5).toVar();
+          const rollX = sr.sub(rollCentre).div(rollHalf).clamp(-1, 1).toVar();
+          const rollUp = rollX.mul(rollX).oneMinus().max(0).sqrt().add(0.15).toVar();
+          // Positive x is seaward (behind the crest), so the face at x = -1
+          // looks shoreward.
+          const rollNormal: any = normalize(
+            vec3(shoreward.x.mul(rollX.negate()), rollUp, shoreward.y.mul(rollX.negate())) as any,
+          ).toVar();
+          const sunUnit: any = normalize(this.uSunDirection as any).toVar();
+          const rollLit = rollNormal.dot(sunUnit).clamp(0, 1).mul(0.75).add(0.4);
+          const flatLit = sunUnit.y.clamp(0, 1).mul(0.75).add(0.4);
+          const onRoll = roller.smoothstep(0.05, 0.4).toVar();
+          // The lee: shaded from the roll's back edge over most of a tenth of
+          // a period, deepest where the roll is tallest, and only where the sun
+          // is on the far side of it.
+          const leeDepth = sr.sub(rollerBack).div(float(0.1).mul(rollerScale)).toVar();
+          const sunBehind = vec2(sunUnit.x, sunUnit.z).dot(shoreward).max(0).add(0.35).min(1);
+          const lee = leeDepth
+            .smoothstep(-0.15, 0.05)
+            .mul(smoothstepDownClamped(leeDepth, 0.4, 1))
+            .mul(brokenNear)
+            .mul(crestSection)
+            .mul(sunBehind)
+            .mul(heightRatio.smoothstep(0.4, 1.2))
+            .toVar();
+          surfShade.assign(
+            (mix as any)(float(1), rollLit.div(flatLit.max(0.2)).clamp(0.6, 1.35), onRoll).mul(lee.mul(-0.35).add(1)),
+          );
 
           const lipBand = d.sub(surfBreak).div(surfBreak.mul(0.22).add(0.12)).toVar();
           const lipLine = s.div(0.035).toVar();
@@ -2757,7 +2824,20 @@ export class OceanMaterial {
             .mul(chopBroken)
             .mul(mix(float(0.3), float(1.1), lanes))
             .mul(0.7);
-          const dense = denseAt(age).mul(lastBroke).max(denseAt(age.add(1)).mul(previousBroke)).max(chopDense);
+          // The newest wake belongs to the crest that just passed, so it breaks
+          // where that crest broke and is as heavy as that wave was big.
+          // A set wave's white water is a mass that takes longer to tear than a
+          // small wave's line: its dense stage lasts in proportion to its
+          // height, about a third of a period at a set's peak.
+          const dense = age
+            .mul(-7)
+            .div(heightRatio.clamp(0.6, 1.8))
+            .exp()
+            .mul(0.92)
+            .mul(lastBroke)
+            .mul(age.lessThan(0.5).select(crestSection.mul(heightRatio.sqrt().clamp(0.85, 1.25)), float(1)))
+            .max(denseAt(age.add(1)).mul(previousBroke))
+            .max(chopDense);
           // The lace is the foam lines and nothing else: aged foam has torn all
           // the way into them, with clear water between.
           const lace = laceAt(age)
@@ -3215,7 +3295,7 @@ export class OceanMaterial {
         .add(foamSky)
         .max(bodyLight.mul(foamSun.div(0.85).mul(0.75).add(0.25)))
         .toVar();
-      const foamColor = this.uFoamColor.mul(bubbles).mul(foamLight).toVar();
+      const foamColor = this.uFoamColor.mul(bubbles).mul(foamLight).mul(surfShade).toVar();
 
       // The aerated layer: the same light on a pale turquoise — water seen
       // through bubbles, Crest's bubble colour (0.64, 0.83, 0.82) — at a

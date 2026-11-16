@@ -37,7 +37,8 @@ export { foamCells };
  * in `Seafloor`, where `shoalingRoot` adds the slower crossing of each shelf.
  *
  * **Sets.** `floor(phi)` numbers the breakers, so a wave's height can be a
- * function of its number: a seven-wave group envelope times a per-wave jitter.
+ * function of its number: a 5.5-wave group envelope, a slower set-to-set one
+ * and a per-wave jitter.
  * A crest keeps its number along its whole length, so a big wave is big all
  * the way down the beach — and breaks further out, because a wave breaks where
  * the depth falls to `H / 0.78` (McCowan). The along-shore terms shift the
@@ -88,8 +89,17 @@ const NOMINAL_SLOPE = 0.1;
 /** McCowan's breaker index: a wave breaks when H reaches this times the depth. */
 export const BREAKER_INDEX = 0.78;
 
-/** Waves in one set: the group envelope's period, in breakers. */
-const SET_LENGTH = 7;
+/**
+ * Waves in one set: the group envelope's period, in breakers.
+ *
+ * Surf arrives in groups of three to seven waves (the groupiness every surf
+ * forecast talks about; Goda's run-length statistics put a swell's groups at
+ * about that). Five and a half, so the sets do not lock to whole waves and
+ * each set peaks on a different wave. A second, slower envelope makes one set
+ * stronger than the next.
+ */
+const SET_LENGTH = 5.5;
+const SET_OF_SETS = 13.7;
 
 /**
  * Vertical run-up as a multiple of Hunt's `slope * sqrt(H L0)`.
@@ -209,10 +219,10 @@ export function setSurfState(
 /**
  * Highest the swash can climb, metres above still water: the run-up of the
  * largest wave a set can hold (see `waveHeight`, whose factors top out at
- * 1.2 x 1.15 x 1.15 x 1.5 = 2.38), with the 18% lobe `runup` adds.
+ * 1.61 x 1.15 x 1.15 x 1.5 = 3.19), with the 18% lobe `runup` adds.
  */
 function maxRunup(): any {
-  return surfUniforms.runupScale.mul(surfUniforms.height.mul(2.38).sqrt()).mul(1.18);
+  return surfUniforms.runupScale.mul(surfUniforms.height.mul(3.19).sqrt()).mul(1.18);
 }
 
 /** Deepest water, metres, in which anything here is non-zero. */
@@ -314,7 +324,8 @@ export function surfPhaseGradient(depth: any): any {
 
 /** Height of breaker number `n` at `xz`, metres. */
 export function waveHeight(n: any, xz: any): any {
-  const envelope = sin(n.mul((Math.PI * 2) / SET_LENGTH).add(1.3)).mul(0.5).add(0.5);
+  const envelope = sin(n.mul((Math.PI * 2) / SET_LENGTH).add(3.6)).mul(0.5).add(0.5);
+  const setStrength = sin(n.mul((Math.PI * 2) / SET_OF_SETS).add(0.4)).mul(0.15).add(1);
   const jitter = hash1(n).mul(0.3).add(0.85);
   const along = surfNoise(xz.div(90).add(vec2(3.7, 9.2))).mul(0.3).add(0.85);
   // Peaks along the crest, re-drawn for every wave. A wave is never the same
@@ -334,7 +345,11 @@ export function waveHeight(n: any, xz: any): any {
     .mul(1.05)
     .add(0.45);
   return surfUniforms.height
-    .mul(envelope.pow(1.5).mul(0.7).add(0.5))
+    // Squared, so a set is a few big waves among small ones rather than a
+    // swell of evenly growing heights: 0.45 between sets, 1.4 at a set's peak.
+    // At 0.5-1.2 every breaker drew the same white line (foam-4).
+    .mul(envelope.mul(envelope).mul(0.95).add(0.45))
+    .mul(setStrength)
     .mul(jitter)
     .mul(along)
     .mul(peaks)
