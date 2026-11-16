@@ -51,6 +51,7 @@ import {
   BuoyancySystem,
   BuoyantBody,
   ShipController,
+  Splash,
   Spray,
   Wake,
   createRadialProbes,
@@ -439,6 +440,8 @@ class App {
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
+  /** Things hitting the water: crown, jet, drops, foam and ring wave. See `Splash`. */
+  private splash!: Splash;
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
   private fish!: FishSchool;
   private kelp!: KelpForest;
@@ -876,6 +879,13 @@ class App {
     // spray it draws, the camera shake, the audio, the foam it leaves on the
     // water and the water it puts on the deck. See `onSprayImpact`.
     this.spray.onImpact((impact) => this.onSprayImpact(impact));
+    // Floats coming down off a swell splash through `Splash`, like the anchor,
+    // rather than as a fan of slam spray.
+    this.spray.floatParticles = false;
+    this.splash = new Splash();
+    this.splash.setWake(this.wake);
+    this.splash.setSurface((x, z) => this.sampler.height(x, z));
+    this.scene.add(this.splash.object);
 
     this.fish = new FishSchool(quality.fish);
     this.scene.add(this.fish.object);
@@ -1728,12 +1738,17 @@ class App {
     const s = impact.strength;
     const p = impact.position;
     if (!impact.hull) {
-      // A buoy or a barrel: a little foam the size of what came down. The
-      // radius follows the floater (the spray's impact radius; 0.5 m is the
-      // splash's own floor, 1.2 m the old fixed size that stamped a visibly
-      // square patch on a buoy). The amount is low because every bob of a
-      // cask re-deposits: at up to 0.75 it kept a white disc round it.
-      this.wake.splash(p.x, p.z, Math.min(1.2, Math.max(0.5, impact.radius * 1.1)), 0.15 + 0.25 * s);
+      // A buoy or a barrel coming down off a swell: a splash sized by what came
+      // down and how hard. The probe's strength is (closing − 0.75) / 3.6, so
+      // this is its closing speed back; the mass is a floater's (half water's
+      // density, a sphere of the impact radius). `Splash` puts its own foam
+      // and ring on the water.
+      const r = Math.max(0.1, impact.radius);
+      this.splash.fire(p.x, p.y, p.z, {
+        radius: r,
+        speed: 0.75 + 3.6 * s,
+        mass: 500 * (4 / 3) * Math.PI * r * r * r,
+      });
       return;
     }
 
@@ -2471,6 +2486,7 @@ class App {
         audio: this.audio,
         ui,
         shake: this.director,
+        splash: (x, y, z, options) => this.splash.fire(x, y, z, options),
       });
       this.gameplay.object.visible = false;
       loaded.push(this.gameplay.object);
@@ -3788,6 +3804,7 @@ class App {
     // pitching at the bow off the impact spray; see `SHEET_COVERS_CLOSING`.
     this.spray.setBowSheet(this.gameplay?.bowSheetUp ?? false);
     this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
+    this.splash.update(elapsed);
     // Wood and canvas darken and gloss in a squall, and stay damp well after it
     // passes — see `SurfaceWetness` for the asymmetric time constants.
     this.wetness.update(dt, raining);
@@ -4449,6 +4466,7 @@ class App {
           this.clouds.resetWind();
           this.birds.resetClock(start);
           this.spray.resetClock(start);
+          this.splash.resetClock(start);
           this.fish.resetClock(start);
           this.kelp.resetClock(start);
           this.reefLife.resetClock(start);
@@ -4629,6 +4647,8 @@ class App {
         sprayLiveEvents: () => this.spray.liveEvents(),
         /** The spray system itself, for probing its event table. */
         spray: this.spray,
+        /** The impact splashes, for firing one by hand. */
+        splash: this.splash,
         /** The tour's environment curves, for the seam and coverage tests. */
         cinematicEnvironment: (time?: number) => ({
           ...this.director.cinematicEnvironment(time),

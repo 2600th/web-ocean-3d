@@ -252,6 +252,12 @@ export class Spray {
   private eventSerial = 0;
   /** True while the bow sheet is drawn; see `SHEET_COVERS_CLOSING`. */
   private bowSheet = false;
+  /**
+   * Whether a float's impact throws particles here. Off when the caller draws
+   * floats' splashes itself (`physics/Splash`, from `onImpact`); the impact is
+   * reported either way.
+   */
+  floatParticles = true;
   private disposed = false;
   private listener: ((impact: SprayImpact) => void) | null = null;
   private readonly impact: SprayImpact = {
@@ -571,7 +577,7 @@ export class Spray {
       if (role === 'float') {
         this.lastFloat = this.clock;
         _out.set(1, 0, 0);
-        this.write(_at, carry, _out, _forward, 1, KIND_FLOAT, strength, source.scale);
+        if (this.floatParticles) this.write(_at, carry, _out, _forward, 1, KIND_FLOAT, strength, source.scale);
         this.report('float', strength, _at, 0, false, source.scale);
       } else if (role === 'bow') {
         // A stem throws a V: one sheet off each bow, forward and out.
