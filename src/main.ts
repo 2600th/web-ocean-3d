@@ -1086,6 +1086,8 @@ class App {
       // Sway-aware motion vectors and shaded normals for the leaves; see `LeafField`.
       this.kelp.setVelocity(this.prevViewProjection, this.currViewProjection);
       this.seabedCover.setVelocity(this.prevViewProjection, this.currViewProjection);
+      // [underwater-look-3] Round 12: see `SeaCreatures.attachMrt`.
+      this.creatures.attachMrt();
       // The ocean mesh is re-centred under the camera every frame, so its model
       // matrix moves with the eye while the surface it draws is anchored to the
       // world. Stock velocity would read that re-centring as motion and smear
@@ -3838,6 +3840,8 @@ class App {
     });
     // What the surface shows from below outside Snell's window: the medium.
     this.water.setUnderwaterMedium(this.underwater.mediumColor(_underMedium));
+    // [underwater-look-3] Round 12: the jellies' bells transmit it; see `SeaCreatures.setWater`.
+    this.creatures.setWater(_underMedium);
     // [underwater-look-2] The submerged eye's own exposure target; see
     // `AutoExposure.setSubmerged`. A uniform write.
     this.postChain.exposure?.setSubmerged(submersion);

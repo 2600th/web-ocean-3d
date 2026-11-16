@@ -3,6 +3,8 @@ import {
   Fn,
   attribute,
   cameraPosition,
+  cameraViewMatrix,
+  mrt,
   cos,
   faceDirection,
   float,
@@ -119,6 +121,28 @@ const _right = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _roll = new THREE.Quaternion();
 
+/**
+ * [underwater-look-3] Round 12. Jellies as translucent animals. Coverage of
+ * the dithered mask: the bell from `JELLY_BELL_ALPHA[0]` face-on to `[1]` at
+ * the rim, the oral arms `JELLY_ARM_ALPHA` thinning to 30% at their ends, the
+ * tentacles `JELLY_TENTACLE_ALPHA` falling to nothing at the tip; all of it
+ * down to `JELLY_FAR_ALPHA` of that between `JELLY_THIN_RANGE` metres. Colour:
+ * `JELLY_TRANSMIT` times the water's in-scatter colour, `JELLY_FORWARD` of the
+ * sun seen through the bell, `JELLY_SURFACE_LIGHT` of the surface model, and
+ * the rim brightened by up to `JELLY_RIM`. The round-11 review read the jellies
+ * at a distance as opaque blobs: the bell was at least 22% opaque everywhere,
+ * lit as a surface, and its dark underside faced the camera.
+ */
+const JELLY_BELL_ALPHA: readonly [number, number] = [0.1, 0.85];
+const JELLY_ARM_ALPHA = 0.45;
+const JELLY_TENTACLE_ALPHA = 0.4;
+const JELLY_FAR_ALPHA = 0.55;
+const JELLY_THIN_RANGE: readonly [number, number] = [8, 40];
+const JELLY_TRANSMIT = 4;
+const JELLY_FORWARD = 0.5;
+const JELLY_SURFACE_LIGHT = 0.18;
+const JELLY_RIM = 1.2;
+
 export class SeaCreatures {
   readonly object = new THREE.Group();
 
@@ -133,6 +157,9 @@ export class SeaCreatures {
   private readonly uSunDir = uniform(new THREE.Vector3(0.35, 0.62, 0.7).normalize());
   private readonly uSunColor = uniform(new THREE.Color(0.9, 0.88, 0.78));
   private readonly uAmbient = uniform(new THREE.Color(0.24, 0.34, 0.38));
+  /** [underwater-look-3] Round 12: the water's own in-scatter colour; see `setWater`. */
+  private readonly uWater = uniform(new THREE.Color(0.1, 0.32, 0.4));
+  private jellyMaterial: THREE.MeshBasicNodeMaterial | null = null;
 
   private readonly cruisers: Cruiser[] = [];
   private readonly crowds: { mesh: THREE.Mesh; geometry: THREE.InstancedBufferGeometry; capacity: number }[] = [];
@@ -190,6 +217,30 @@ export class SeaCreatures {
     if (d.lengthSq() < 1e-8) d.set(0, 1, 0);
     d.normalize();
     (this.uSunColor.value as THREE.Color).copy(color);
+  }
+
+  /**
+   * [underwater-look-3] Round 12. The medium's in-scatter colour
+   * (`UnderwaterPass.mediumColor`): what a jelly's bell transmits, so it reads
+   * as the water seen through it. A uniform write; call per frame.
+   */
+  setWater(color: { x: number; y: number; z: number }): void {
+    (this.uWater.value as THREE.Color).setRGB(color.x, color.y, color.z);
+  }
+
+  /**
+   * [underwater-look-3] Round 12. With the scene pass's MRT only: the jellies
+   * write a normal straight up into it. `UnderwaterPass` relights submerged
+   * surfaces by that normal (dark undersides, upwelling on faces turned down),
+   * and a bell or an arm is lit through, not on a face: its own normals put
+   * dark specks of underside through the translucent body.
+   */
+  attachMrt(): void {
+    if (!this.jellyMaterial) return;
+    this.jellyMaterial.mrtNode = mrt({
+      normal: vec4(cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz.normalize(), 1),
+    });
+    this.jellyMaterial.needsUpdate = true;
   }
 
   setAmbient(color: THREE.Color): void {
@@ -491,6 +542,7 @@ export class SeaCreatures {
 
     const material = this.track(new THREE.MeshBasicNodeMaterial());
     material.name = 'jellyfish';
+    this.jellyMaterial = material;
     material.vertexColors = true;
     material.side = THREE.DoubleSide;
     material.fog = false;
@@ -539,17 +591,39 @@ export class SeaCreatures {
     const view = cameraPosition.sub(positionWorld).normalize();
     const facing = nW.dot(view).abs();
     const fresnel = float(1).sub(facing).pow(1.5);
+    // [underwater-look-3] Round 12: translucent bells; see `JELLY_BELL_ALPHA`.
+    // The bell is mostly see-through and dense at its rim, where the eye looks
+    // through the most tissue; the arms thin out and the tentacles fade to
+    // nothing toward their tips. With distance the whole animal thins, so a
+    // far bell is a pale ring and a haze of threads, not a solid disc.
+    const far = positionWorld.sub(cameraPosition).length().smoothstep(JELLY_THIN_RANGE[0], JELLY_THIN_RANGE[1]);
     const alpha = select(
       isBell,
-      fresnel.mul(0.7).add(0.22),
-      select(part.lessThan(1.5), float(0.55), float(0.4)),
-    ).mul(fade);
+      fresnel.mul(JELLY_BELL_ALPHA[1] - JELLY_BELL_ALPHA[0]).add(JELLY_BELL_ALPHA[0]),
+      select(
+        part.lessThan(1.5),
+        float(JELLY_ARM_ALPHA).mul(float(1).sub(along.mul(0.7))),
+        float(JELLY_TENTACLE_ALPHA).mul(float(1).sub(along).pow(1.5)),
+      ),
+    )
+      .mul(mix(float(1), float(JELLY_FAR_ALPHA), far))
+      .mul(fade);
     const threshold = interleavedGradientNoise(screenCoordinate.add(vec2(this.uFrame.mul(5.588), this.uFrame.mul(3.11))));
     material.maskNode = alpha.greaterThan(threshold);
+    // [underwater-look-3] Round 12. Lit as translucent tissue rather than as a
+    // surface: the water's light comes through the bell (a little brighter, the
+    // jelly's own scatter), the sun comes through it when the eye looks toward
+    // it, and the rim catches light. Was the surface model at 0.55, which read
+    // as a dark solid against the bright water above it.
     material.colorNode = Fn(() => {
       const light = this.light(nW, positionWorld, 0.8);
-      const glow = fresnel.mul(0.25).add(0.05);
-      return vec4(tint.rgb.mul(light.mul(0.55).add(glow)), 1);
+      const forward = view.negate().dot(this.uSunDir).max(0).pow(4);
+      const through = (this.uWater as Node)
+        .mul(JELLY_TRANSMIT)
+        .add((this.uSunColor as Node).mul(forward.mul(JELLY_FORWARD)))
+        .add(light.mul(JELLY_SURFACE_LIGHT));
+      const rim = fresnel.mul(JELLY_RIM).add(1);
+      return vec4(tint.rgb.mul(through).mul(rim), 1);
     })();
 
     const mesh = new THREE.Mesh(geometry, material);
