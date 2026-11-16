@@ -13,8 +13,8 @@ import {
   createWoodMaterial,
   tileQuadUv,
 } from './parts';
-import { buildArch, buildRock, buildSkullRock, createRockMaterial } from './rock';
-import { BEACHROCK_HEAD_SIZE, BEACHROCK_SLAB_SIZE, beachrockPieces, shoreRadius, yawToward } from './beachrock';
+import { buildArch, buildRock, buildSkullRock, createBeachrockMaterial, createRockMaterial } from './rock';
+import { beachrockMatrix, beachrockPieces, buildBeachrockGeometry, shoreRadius, yawToward } from './beachrock';
 
 export { applyTideline } from './rock';
 
@@ -97,19 +97,22 @@ export class IslandDetail {
     const cloth = createClothMaterial();
     const decal = createDecalMaterial();
     const ember = createEmberMaterial(this.clock);
-    this.materials.push(rock, wood, cloth, decal, ember);
+    const limestone = createBeachrockMaterial(this.clock.uSmokeLight);
+    this.materials.push(rock, wood, cloth, decal, ember, limestone);
 
     const rocks = new PartBuilder();
     this.landmarks(rocks, rng);
     this.outcrops(rocks, rng);
-    // Its own stream (`beachrock.ts`), so nothing drawn from `rng` after this moves.
-    this.beachrock(rocks);
+    // Its own stream (`beachrock.ts`), so nothing drawn from `rng` moves.
+    const beachrock = new PartBuilder();
+    this.beachrock(beachrock);
     const woodParts = new PartBuilder();
     const clothParts = new PartBuilder();
     const emberParts = new PartBuilder();
     this.camp(cove, rocks, woodParts, clothParts, emberParts, rng);
 
     this.mesh(rocks, rock, 'island-landmarks', true);
+    this.mesh(beachrock, limestone, 'beachrock', true);
     this.mesh(woodParts, wood, 'camp-wood', true);
     this.mesh(clothParts, cloth, 'camp-canvas', true);
     this.mesh(emberParts, ember, 'camp-embers', false);
@@ -323,41 +326,16 @@ export class IslandDetail {
    * further out. Where they lie is `beachrock.ts`, which the sea's surf reads
    * too, so the bores pile up white against them and leave a gap in their lee.
    *
-   * Pale, as beachrock is (the tint lifts the rock material's dark volcanic
-   * palette toward grey-tan limestone); the material's own waterline does the
-   * wet band, the barnacle crust and the weed.
+   * Its own mesh and material (`createBeachrockMaterial`): pale limestone
+   * with its wet band and algae set by how high the waves reach, not the
+   * island stone's waterline, which covered all of it.
    */
   private beachrock(out: PartBuilder): void {
-    const limestone: [number, number, number] = [1.55, 1.5, 1.38];
-    const slabShapes = [0, 1, 2].map((i) =>
-      buildRock({
-        detail: 6,
-        size: BEACHROCK_SLAB_SIZE,
-        rough: 0.07,
-        roughScale: 0.3,
-        terrace: 0.06,
-        terraceStrength: 0.7,
-        base: 0.2,
-        seed: 0xbe0 + i * 131,
-      }),
-    );
-    const headShapes = [0, 1].map((i) =>
-      buildRock({
-        detail: 6,
-        size: BEACHROCK_HEAD_SIZE,
-        rough: 0.14,
-        roughScale: 0.32,
-        terrace: 0.12,
-        terraceStrength: 0.5,
-        base: 0.35,
-        seed: 0xbe7 + i * 59,
-      }),
-    );
     for (const piece of beachrockPieces()) {
-      const shapes = piece.kind === 'slab' ? slabShapes : headShapes;
-      out.add(shapes[piece.shape], piece.matrix, limestone);
+      const g = buildBeachrockGeometry(piece);
+      out.add(g, beachrockMatrix(piece));
+      g.dispose();
     }
-    for (const g of [...slabShapes, ...headShapes]) g.dispose();
   }
 
   /**
