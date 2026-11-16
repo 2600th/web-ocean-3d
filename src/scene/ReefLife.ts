@@ -3,9 +3,13 @@ import {
   Fn,
   attribute,
   cos,
+  float,
   mix,
+  mx_noise_float,
   positionGeometry,
   positionLocal,
+  positionWorld,
+  select,
   sin,
   uniform,
   vec3,
@@ -1003,7 +1007,25 @@ export class ReefLife {
     // --- surface detail ---------------------------------------------------------
     // Template-space position, so the pattern sits still on a swaying instance —
     // brain-coral meanders, polyp pores; see `reef/LifeShading`.
-    const pattern = lifePattern(surf, positionGeometry);
+    // [underwater-look-3] Round 7: rigid pieces (a bommie's rock, a boulder
+    // coral) read the pattern in world space instead, at `WORLD_PATTERN_SCALE`.
+    // In template space every boulder of a kind carried the same spots in the
+    // same places, and the round-7 review read the reef's boulders as one
+    // leopard-spot texture tiled across them. A rigid piece never moves, so
+    // nothing swims.
+    const rigid = swayData.x.lessThan(1e-4);
+    const pg = select(rigid, positionWorld.mul(WORLD_PATTERN_SCALE), positionGeometry);
+    const raw = lifePattern(surf, pg);
+    // And a macro field over the reef: whole faces where the pattern is faint
+    // (smoother, encrusted) or strong, and a shade lighter or darker.
+    const macro = mx_noise_float(positionWorld.mul(MACRO_FREQ)).mul(0.5).add(0.5).smoothstep(0.25, 0.75);
+    const shade = mx_noise_float(positionWorld.mul(MACRO_FREQ * 0.31).add(vec3(3.1, 0.7, 5.3))).mul(0.5).add(0.5);
+    const strength = mix(float(MACRO_FAINT), float(1), macro);
+    const pattern = vec3(
+      raw.x.mul(strength),
+      mix(float(1), raw.y, strength).mul(mix(float(MACRO_SHADE[0]), float(MACRO_SHADE[1]), shade)),
+      0,
+    );
     material.colorNode = vec4(pattern.y, pattern.y, pattern.y, 1);
     const bumped = bumpedNormal(pattern.x, 0.012);
     if (side === THREE.DoubleSide) {
@@ -1021,6 +1043,17 @@ export class ReefLife {
     return material;
   }
 }
+
+/**
+ * [underwater-look-3] Round 7. Template units per world metre for the pattern
+ * on rigid pieces: about what a mid-sized boulder's template scale gave, so
+ * the spots keep their size.
+ */
+const WORLD_PATTERN_SCALE = 0.4;
+/** [underwater-look-3] Round 7. The macro field: frequency per metre, faintest pattern, shade range. */
+const MACRO_FREQ = 0.45;
+const MACRO_FAINT = 0.3;
+const MACRO_SHADE: readonly [number, number] = [0.82, 1.14];
 
 /** A point inside a reef site, centre-weighted. */
 function colonySample(random: () => number, site: Site): { x: number; z: number } {

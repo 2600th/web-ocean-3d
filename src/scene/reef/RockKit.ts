@@ -505,8 +505,28 @@ const SCALE_BROAD = 11;
 const SCALE_MID = 2.6;
 const SCALE_FINE = 0.62;
 /** The fine scale fades out between these distances; past them it only crawls. */
-const FINE_FADE_NEAR = 6;
-const FINE_FADE_FAR = 26;
+// [underwater-look-3] Round 7: 6-26 m -> 10-38 m; see `SCALE_GRAIN`.
+const FINE_FADE_NEAR = 10;
+const FINE_FADE_FAR = 38;
+/**
+ * [underwater-look-3] Round 7. A fourth, finer scale, abyssal-garden's fourth
+ * read of its detail texture: pits and grain about 5 cm across, faded out
+ * between `GRAIN_FADE_NEAR` and `GRAIN_FADE_FAR` metres. The round-7 review
+ * read the reef mound eight to fifteen metres off as "blurry and smeared":
+ * with the fine scale fading from six metres there was nothing under the
+ * half-metre features but the 2.6 m and 11 m fields, stretched across a face
+ * the size of a house.
+ */
+const SCALE_GRAIN = 0.19;
+const GRAIN_FADE_NEAR = 4;
+const GRAIN_FADE_FAR = 22;
+/**
+ * [underwater-look-3] Round 7. World metres of the macro brightness field, and
+ * its range: whole faces a shade lighter or darker, so a large mass is not
+ * one even value across its width (the review's "tiled" read).
+ */
+const MACRO_METRES = 37;
+const MACRO_RANGE: readonly [number, number] = [0.72, 1.22];
 
 /**
  * The rock material: one for every outcrop, boulder and pebble, so the shelf
@@ -569,11 +589,13 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
   const A = tri(SCALE_BROAD, 'rockA');
   const B = tri(SCALE_MID, 'rockB');
   const C = tri(SCALE_FINE, 'rockC');
-  const fine: Node = positionWorld
-    .distance(cameraPosition)
-    .smoothstep(FINE_FADE_NEAR, FINE_FADE_FAR)
-    .oneMinus()
-    .toVar('rockFine');
+  const D = tri(SCALE_GRAIN, 'rockD');
+  const eyeDist: Node = positionWorld.distance(cameraPosition).toVar('rockEyeD');
+  const fine: Node = eyeDist.smoothstep(FINE_FADE_NEAR, FINE_FADE_FAR).oneMinus().toVar('rockFine');
+  const grain: Node = eyeDist.smoothstep(GRAIN_FADE_NEAR, GRAIN_FADE_FAR).oneMinus().toVar('rockGrain');
+  const macro: Node = texture(detail, vec2(wp.x, wp.z).mul(1 / MACRO_METRES).add(wp.y.mul(0.011)).add(0.61))
+    .a.smoothstep(0.3, 0.7)
+    .toVar('rockMacro');
   const height: Node = A.hc.x.mul(0.5).add(B.hc.x.mul(0.35)).add(C.hc.x.mul(0.15)).toVar('rockH');
   // Two planar reads, skewed by height, for colour patches that span metres
   // and do not line up with any projection seam.
@@ -612,7 +634,13 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     const turf = n0.y.smoothstep(0.1, 0.7).mul(B.hc.y.mul(0.55).add(big.mul(0.5)).smoothstep(0.45, 0.62));
     albedo.assign(mix(albedo, vec3(0.07, 0.1, 0.04), turf.mul(0.75)));
     // Cavities of the height field, with the fine scale breaking it up close.
-    albedo.mulAssign(height.mul(1.3).add(0.22).mul(mix(float(1), C.hc.x.mul(0.76).add(0.62), fine)));
+    // [underwater-look-3] Round 7: the fine scale at 1.1 from 0.76 (0.45..1.55
+    // across its range rather than 0.62..1.38); see `SCALE_GRAIN`.
+    albedo.mulAssign(height.mul(1.3).add(0.22).mul(mix(float(1), C.hc.x.mul(1.1).add(0.45), fine)));
+    // [underwater-look-3] Round 7: the grain's pits, and the macro field; see
+    // `SCALE_GRAIN` and `MACRO_METRES`.
+    albedo.mulAssign(mix(float(1), D.hc.x.mul(1.3).add(0.35), grain));
+    albedo.mulAssign(mix(float(MACRO_RANGE[0]), float(MACRO_RANGE[1]), macro));
     return vec4(albedo, 1);
   })();
 
@@ -620,7 +648,7 @@ export function createRockMaterial(name: string): THREE.MeshStandardNodeMaterial
     // Seam grooves bend the normal down into the bed line on the steep faces.
     const groove = seam.smoothstep(0.14, 0).mul(n0.y.abs().oneMinus()).mul(-1.2);
     const n = n0
-      .add(A.bump.mul(0.85).add(B.bump.mul(0.65)).add(C.bump.mul(fine.mul(0.5))).mul(1.6))
+      .add(A.bump.mul(0.85).add(B.bump.mul(0.65)).add(C.bump.mul(fine.mul(0.5))).add(D.bump.mul(grain.mul(0.45))).mul(1.6))
       .add(vec3(0, groove, 0));
     return cameraViewMatrix.mul(vec4(n.normalize(), 0)).xyz.normalize();
   })();

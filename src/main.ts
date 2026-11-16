@@ -990,7 +990,12 @@ class App {
         // and per leaf fragment across a meadow that is the most expensive term
         // in the shader for a shade the sand under the leaves already shows.
       };
-      this.kelp = new KelpForest(quality.kelp, { clearings, shading, range: quality.vegetationRange });
+      this.kelp = new KelpForest(quality.kelp, {
+        clearings,
+        shading,
+        range: quality.vegetationRange,
+        reefs: sites.plateau,
+      });
       this.kelp.setCastShadow(quality.vegetationShadows);
       this.scene.add(this.kelp.object);
       this.seabedCover = new GroundCover(quality.seabedCover, {
