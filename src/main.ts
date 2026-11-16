@@ -1613,8 +1613,30 @@ class App {
     };
     const pipelines = internals._pipelines;
     const getForRender = pipelines.getForRender.bind(pipelines);
+    // **One-shot renders are exempt.** Leaving an object out of a frame is only
+    // harmless when it is drawn again next frame. A render that happens once per
+    // change — the sky-view LUT, the environment cube capture, the PMREM chain
+    // built from it — and that clears its own request before drawing is simply
+    // lost, and nothing asks for it again until the sun moves. That was a black
+    // sky between the clouds with a grey sea and a blue island, whenever the
+    // boot prewarm timed out before those pipelines were built. They are few and
+    // small, so they take the synchronous build. Opt in with
+    // `userData.syncPipeline`; three's PMREM materials are matched by name.
+    const syncPipeline = (renderObject: unknown): boolean => {
+      const ro = renderObject as {
+        object?: { userData?: Record<string, unknown> };
+        material?: { name?: string };
+      };
+      if (ro.object?.userData?.syncPipeline === true) return true;
+      const name = ro.material?.name;
+      return typeof name === 'string' && name.startsWith('PMREM');
+    };
     pipelines.getForRender = (renderObject, promises = null) => {
-      if (promises === null && (this.liveFrame || this.compilesInFlight > 0)) {
+      if (
+        promises === null &&
+        (this.liveFrame || this.compilesInFlight > 0) &&
+        !syncPipeline(renderObject)
+      ) {
         return getForRender(renderObject, []);
       }
       return getForRender(renderObject, promises);
@@ -4524,6 +4546,14 @@ class App {
           if (shipInput) this.shipControls?.setInput(shipInput.throttle, shipInput.rudder);
           this.ship?.resetClock(start);
           this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);
+          // The resets above write each body's position and quaternion, not its
+          // world matrix, which only refreshes when a frame renders — and the
+          // spray's impact probes read the matrix. So the first settle step
+          // primed every float on the pose it had *before* the rewind, the next
+          // read the home pose, and the jump between them fired a splash with
+          // foam and a ring wave wherever a float had drifted far enough: the
+          // first capture after a live session differed from every later one.
+          this.scene.updateMatrixWorld();
 
           // The sampler holds a readback of the *previous* wave field; drop it so
           // buoyancy re-derives from the field at `time`.

@@ -95,15 +95,22 @@ test.describe('the lens coming out of the water', () => {
     storm.setIntensity(1);
     run(storm, 0, 20);
 
-    expect(coverage(wet)).toBeLessThan(coverage(storm));
-    // The defocus is the term that ruins the frame: at storm weight it replaces
-    // 70% of every pixel outside a droplet with a nine-tap ring, which ghosts
-    // rigging and turns sun glitter into a milky wash. A dive must not ask for
-    // it — see the attribution captures in the plan doc.
+    // Drop count is not compared: rain's drops were cut to `RAIN_DROP_SHARE` of
+    // the lattice after the A/B critic found them dominating the storm frame,
+    // while a fresh film is meant to bead heavily and drain in a few seconds.
+    // The defocus is the term that ruins the frame: at full authored weight it
+    // replaces 70% of every pixel outside a droplet with a ring of taps, which
+    // ghosts rigging and turns sun glitter into a milky wash. Neither a dive
+    // nor a storm may ask for more than a share of it, and a dive no more than
+    // the storm does — see the attribution captures in the plan doc.
     expect(
       glass(wet),
-      'surfacing is driving the glass defocus at storm strength',
-    ).toBeLessThan(0.45 * glass(storm));
+      'surfacing is driving the glass defocus harder than a storm does',
+    ).toBeLessThanOrEqual(glass(storm) + 1e-6);
+    expect(
+      glass(wet),
+      'surfacing is driving the glass defocus near full authored weight',
+    ).toBeLessThan(0.45);
   });
 
   test('a splash wets less than a dive', () => {
@@ -163,11 +170,11 @@ test.describe('the lens coming out of the water', () => {
     rain.setIntensity(1);
     run(rain, 0, 20);
 
-    // Rain drives coverage and glass together and to the full value. Any split
-    // between them belongs to the dive, not to the weather — this is what keeps
-    // `storm.png` and the rest of the baselines untouched.
-    expect(coverage(rain)).toBeCloseTo(rain.getWetness(), 6);
-    expect(glass(rain)).toBeCloseTo(rain.getWetness(), 6);
+    // Rain drives coverage and glass together, each a fixed share of the
+    // wetness (`RAIN_DROP_SHARE` drops, `RAIN_GLASS` misting and defocus) set
+    // from the storm-shot attribution. The dive's film must not leak into it.
+    expect(coverage(rain)).toBeCloseTo(rain.getWetness() * 0.2, 6);
+    expect(glass(rain)).toBeCloseTo(rain.getWetness() * 0.3, 6);
     expect(rain.getWetness()).toBeGreaterThan(0.99);
   });
 

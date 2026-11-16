@@ -220,6 +220,12 @@ export class PhysicalAtmosphere {
     this.msData = m.data;
     this.skyViewNode = rtt(this.buildSkyViewNode(), SKY_W, SKY_H, { type: THREE.HalfFloatType });
     this.skyViewNode.autoUpdate = false;
+    // Drawn once per sun or haze change, and `RTTNode` clears its request before
+    // it draws — so a draw skipped because the pipeline was still building is
+    // never retried, and the dome stays black between the clouds until the sun
+    // moves (measured: the test harness, after a prewarm timeout). See
+    // `syncPipeline` in `main.ts`.
+    this.skyViewNode._quadMesh.userData.syncPipeline = true;
   }
 
   get currentHaze(): number {

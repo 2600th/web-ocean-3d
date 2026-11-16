@@ -60,6 +60,15 @@ export async function waitForOcean(page: Page, settleMs = 2500): Promise<void> {
     // automation throttling rAF and are not what a user waits for.
     { timeout: 240_000 },
   );
+  // A first frame is not a ready frame. On the WebGL2 fallback the loop starts
+  // drawing while two dozen pipelines are still being built in the background,
+  // at seconds a frame, and those frames are black. `isReady` waits for the
+  // pipeline backlog, the sampler and the scene content.
+  await page.waitForFunction(
+    () => (window as unknown as { __ocean: { isReady: () => boolean } }).__ocean.isReady(),
+    undefined,
+    { timeout: 240_000 },
+  );
   // Settle: shader compilation, mip chain construction, first sampler readback,
   // and the boot overlay fade so it never bleeds into a screenshot.
   await page.waitForTimeout(settleMs);
