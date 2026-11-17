@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { Fn, If, float, mix, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { Fn, If, float, mix, smoothstep, texture, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import { seafloorDepth } from '../scene/Seafloor';
 import { breaker } from '../ocean/Surf';

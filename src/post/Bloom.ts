@@ -1,5 +1,6 @@
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
-import { uniform, vec4 } from 'three/tsl';
+import { vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Veiling glare, from three's own bloom node.

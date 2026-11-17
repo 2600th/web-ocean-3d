@@ -1,5 +1,6 @@
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
-import { mix, uniform, vec4 } from 'three/tsl';
+import { mix, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * A spatial anti-alias resolve, sitting between the transfer function and the

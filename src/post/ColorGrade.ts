@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { Fn, dot, float, max, mix, pow, screenSize, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { Fn, dot, float, max, mix, pow, screenSize, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * A global colour grade, as the last thing that happens to the image before the

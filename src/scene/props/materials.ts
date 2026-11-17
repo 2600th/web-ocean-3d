@@ -21,12 +21,12 @@ import {
   positionWorld,
   sin,
   smoothstep,
-  uniform,
   uv,
   vec2,
   vec3,
   vertexColor,
 } from 'three/tsl';
+import { uniform } from '../../core/uniform';
 import type { Slot } from './kit';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

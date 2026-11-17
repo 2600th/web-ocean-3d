@@ -9,10 +9,10 @@ import {
   positionGeometry,
   positionLocal,
   positionWorld,
-  uniform,
   vec2,
   vec3,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { occludeLight } from '../core/lightOcclusion';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

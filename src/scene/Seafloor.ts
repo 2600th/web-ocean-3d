@@ -14,11 +14,11 @@ import {
   normalize,
   positionWorld,
   texture,
-  uniform,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 // Aliased because this module needs a CPU twin of the same ramp under the
 // unqualified name; see `smoothstepDown` below.
 import { smoothstepDown as smoothstepDownNode } from '../core/tslMath';

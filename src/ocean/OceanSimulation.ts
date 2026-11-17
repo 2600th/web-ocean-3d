@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { Fn, float, int, ivec2, mix, select, texture, textureLoad, uniform, uv, vec2, vec4 } from 'three/tsl';
+import { Fn, float, int, ivec2, mix, select, texture, textureLoad, uv, vec2, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { butterflyPassNode, cMul, createFFTResources, type FFTResources } from './FFT';
 import {
   CASCADES,

@@ -8,12 +8,12 @@ import {
   perspectiveDepthToViewZ,
   screenSize,
   sin,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Depth of field, from a lens rather than from a blur radius.

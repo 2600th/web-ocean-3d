@@ -8,11 +8,11 @@ import {
   mx_noise_float,
   positionGeometry,
   sin,
-  uniform,
   vec3,
   vec4,
   vertexColor,
 } from 'three/tsl';
+import { uniform } from '../../core/uniform';
 import { getLeafAtlas, tileUv, type TileName } from '../flora/leafAtlas';
 import { mulberry32 } from '../../core/random';
 

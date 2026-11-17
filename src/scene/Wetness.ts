@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { float, materialColor, materialRoughness, mix, normalWorldGeometry, uniform } from 'three/tsl';
+import { float, materialColor, materialRoughness, mix, normalWorldGeometry } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Rain wetting for loaded glTF surfaces.

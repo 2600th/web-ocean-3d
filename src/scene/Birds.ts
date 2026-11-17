@@ -7,11 +7,11 @@ import {
   instanceIndex,
   mix,
   positionGeometry,
-  uniform,
   varying,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { mulberry32 } from '../core/random';
 import { ISLAND } from './Seafloor';
 

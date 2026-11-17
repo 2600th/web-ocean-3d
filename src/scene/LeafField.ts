@@ -14,12 +14,12 @@ import {
   positionGeometry,
   select,
   sin,
-  uniform,
   varying,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { seafloorHeight, SEAFLOOR_EXTENT, SEAFLOOR_SEGMENTS } from './Seafloor';
 
 /**

@@ -277,9 +277,11 @@ export class Loop {
       for (const update of this.updates) update(dt, this.elapsed);
       await this.renderFn(dt, this.elapsed, true);
       // Timed from the callback, not from `started`: the latency a frame has
-      // to fit is the one from its refresh to the GPU finishing it.
+      // to fit is the one from its refresh to the GPU finishing it. The encode
+      // share is passed too; see `FramePacer.gpuLatency`.
+      const encoded = performance.now() - now;
       this.gpuFence?.()
-        .then(() => this.pacer.gpuLatency(performance.now() - now))
+        .then(() => this.pacer.gpuLatency(performance.now() - now, encoded))
         .catch(() => undefined);
     } finally {
       this.inFlight = false;

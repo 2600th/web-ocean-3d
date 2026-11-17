@@ -18,12 +18,12 @@ import {
   screenCoordinate,
   select,
   sin,
-  uniform,
   varying,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { mulberry32 } from '../core/random';
 import { seafloorHeight } from './Seafloor';
 import {

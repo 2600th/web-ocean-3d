@@ -10,12 +10,12 @@ import {
   min,
   screenSize,
   smoothstep,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

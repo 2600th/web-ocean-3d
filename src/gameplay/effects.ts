@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { attribute, exp, float, normalView, smoothstep, uniform, uv, vec2, vec3 } from 'three/tsl';
+import { attribute, exp, float, normalView, smoothstep, uv, vec2, vec3 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import {
   CLASS_CLUSTER,

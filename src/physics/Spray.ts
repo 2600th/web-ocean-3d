@@ -5,11 +5,11 @@ import {
   float,
   mix,
   smoothstep,
-  uniform,
   uniformArray,
   vec2,
   vec3,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import { CLASS_CLUSTER, CLASS_DROP, CLASS_MIST, CLASS_SHEET, particleVertex, sprayMaterial, sprayUniforms } from './sprayLook';
 

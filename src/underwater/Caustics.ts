@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { Fn, exp, float, mix, sin, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { Fn, exp, float, mix, sin, texture, uv, vec2, vec3, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Procedural light caustics: one small, periodic, animated tile, read at

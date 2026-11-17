@@ -10,11 +10,11 @@ import {
   rtt,
   screenCoordinate,
   sin,
-  uniform,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import TRAANode, { traa } from 'three/addons/tsl/display/TRAANode.js';
 import type { QualityTier } from '../core/QualityManager';
 import { AmbientOcclusion } from './AmbientOcclusion';

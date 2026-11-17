@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { attribute, cameraPosition, float, mix, normalWorld, positionWorld, uniform, vec3, vec4 } from 'three/tsl';
+import { attribute, cameraPosition, float, mix, normalWorld, positionWorld, vec3, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { mulberry32 } from '../core/random';
 import { seafloorHeight } from './Seafloor';
 

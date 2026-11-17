@@ -1,4 +1,5 @@
-import { If, cameraPosition, float, fract, mix, sin, uniform, vec2, vec3, vec4 } from 'three/tsl';
+import { If, cameraPosition, float, fract, mix, sin, vec2, vec3, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown, smoothstepDownClamped } from '../core/tslMath';
 import { featherFoam, foamCells, foamPattern } from './FoamPattern';
 // A cycle (Seafloor draws the swash from here), safe because both sides read

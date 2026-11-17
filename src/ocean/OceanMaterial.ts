@@ -19,7 +19,6 @@ import {
   dFdy,
   screenUV,
   texture,
-  uniform,
   vec2,
   vec3,
   vec4,
@@ -28,6 +27,7 @@ import {
   viewportSharedTexture,
   varyingProperty,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDownClamped } from '../core/tslMath';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import { ISLAND } from '../scene/Seafloor';

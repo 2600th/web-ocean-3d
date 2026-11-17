@@ -19,10 +19,10 @@ import {
   select,
   sin,
   smoothstep,
-  uniform,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import { PhysicalAtmosphere, SUN_ANG_R } from './PhysicalAtmosphere';
 

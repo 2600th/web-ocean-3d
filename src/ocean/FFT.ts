@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { Fn, float, int, ivec2, uniform, textureLoad, uv, vec2, vec4 } from 'three/tsl';
+import { Fn, float, int, ivec2, textureLoad, uv, vec2, vec4 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Cooley–Tukey radix-2 IFFT executed as ping-ponged fullscreen passes.

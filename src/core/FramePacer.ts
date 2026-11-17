@@ -50,13 +50,14 @@ export class FramePacer {
   static readonly BACKOFF_MIN_MS = 4000;
   static readonly BACKOFF_MAX_MS = 60000;
   /**
-   * A probe is skipped when the median GPU latency is over this many times
-   * the faster rate's interval. Latency counts the CPU submit and the GPU work
-   * end to end, so it overstates what a frame costs when the two overlap, and
-   * the margin keeps a machine that could make the rate from being kept off
-   * it. Not much margin: a probe that fails is a second and a half of the
-   * judder this class exists to remove, and a device within 15% of the budget
-   * fails it.
+   * A probe is skipped when the median frame cost is over this many times
+   * the faster rate's interval. The cost is the slower of a frame's two stages
+   * (see `gpuLatency`); the GPU stage still counts the browser's GPU process
+   * and the GPU end to end, which overlap across frames, so it overstates a
+   * little, and the margin keeps a machine that could make the rate from being
+   * kept off it. Not much margin: a probe that fails is a second and a half of
+   * the judder this class exists to remove, and a device within 15% of the
+   * budget fails it.
    */
   static readonly PROBE_LATENCY_RATIO = 1.15;
   /** Slowest display refresh believed, ms: 45 Hz. */
@@ -224,10 +225,22 @@ export class FramePacer {
     }
   }
 
-  /** Records how long a frame took from its callback to the GPU finishing it. */
-  gpuLatency(ms: number): void {
+  /**
+   * Records how long a frame took from its callback to the GPU finishing it,
+   * and how much of that was the page encoding it (callback to last submit).
+   *
+   * What is kept is the slower *stage*, not the sum. Encoding frame N+1
+   * overlaps the browser's GPU process and the GPU working on frame N, so a
+   * device holds a rate when each stage fits the interval, though the whole
+   * trip from callback to finished frame takes longer: measured at High on a
+   * 100 Hz display, 17 ms end to end with 99.8 fps delivered unpaced. Gating
+   * probes on the sum kept that device at half rate. A caller that does not
+   * know its encode time passes none, and the latency is the cost as before.
+   */
+  gpuLatency(ms: number, encodeMs = 0): void {
     if (!(ms > 0 && ms < 1000)) return;
-    this.latencies.push(ms);
+    const encode = encodeMs > 0 && encodeMs < ms ? encodeMs : 0;
+    this.latencies.push(Math.max(encode, ms - encode));
     if (this.latencies.length > 60) this.latencies.shift();
   }
 

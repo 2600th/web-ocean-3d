@@ -10,8 +10,17 @@ import { FramePacer } from '../src/core/FramePacer';
  */
 function drive(
   pacer: FramePacer,
-  opts: { periodMs: number; costMs: (t: number) => number; seconds: number; start?: number; noise?: number },
+  opts: {
+    periodMs: number;
+    costMs: (t: number) => number;
+    seconds: number;
+    start?: number;
+    noise?: number;
+    /** Page encode time before the GPU stage starts; overlaps the previous frame's GPU work. */
+    encodeMs?: number;
+  },
 ): { gaps: number[]; end: number } {
+  const encodeMs = opts.encodeMs ?? 0;
   const { periodMs, seconds } = opts;
   const noise = opts.noise ?? 0;
   let t = opts.start ?? 0;
@@ -33,9 +42,9 @@ function drive(
     pacer.rendered(stamp, last);
     gaps.push(stamp - last);
     last = stamp;
-    gpuFree = Math.max(t, gpuFree) + opts.costMs(t);
+    gpuFree = Math.max(t + encodeMs, gpuFree) + opts.costMs(t);
     queued.push(gpuFree);
-    pacer.gpuLatency(gpuFree - t);
+    pacer.gpuLatency(gpuFree - t, encodeMs);
   }
   return { gaps, end: t };
 }
@@ -72,6 +81,25 @@ test('a hopeless probe is skipped rather than juddered through', () => {
   const { gaps } = drive(pacer, { periodMs: P120, costMs: () => 14, seconds: 20 });
   expect(pacer.divisor).toBe(2);
   // After settling, no frame is shown for more than its two refreshes.
+  const tail = gaps.slice(-14 * 60);
+  expect(tail.filter((gap) => Math.round(gap / P120) !== 2)).toHaveLength(0);
+});
+
+test('a pipelined frame longer than the interval end to end still gets the full rate', () => {
+  // Measured shape at High on 100 Hz: ~7 ms encoding, ~10 ms after submit,
+  // 17 ms end to end, and each stage fits the 10 ms interval.
+  const P100 = 10;
+  const pacer = new FramePacer();
+  const first = drive(pacer, { periodMs: P100, costMs: () => 14, seconds: 4 });
+  expect(pacer.divisor).toBe(2);
+  drive(pacer, { periodMs: P100, costMs: () => 9.5, encodeMs: 7, seconds: 14, start: first.end });
+  expect(pacer.divisor).toBe(1);
+});
+
+test('a pipelined frame whose slower stage misses the interval is not probed', () => {
+  const pacer = new FramePacer();
+  const { gaps } = drive(pacer, { periodMs: P120, costMs: () => 12, encodeMs: 6, seconds: 20 });
+  expect(pacer.divisor).toBe(2);
   const tail = gaps.slice(-14 * 60);
   expect(tail.filter((gap) => Math.round(gap / P120) !== 2)).toHaveLength(0);
 });

@@ -10,7 +10,6 @@ import {
   positionGeometry,
   rtt,
   texture,
-  uniform,
   uniformArray,
   uv,
   vec2,
@@ -18,6 +17,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { mulberry32 } from '../core/random';
 import { ISLAND, seafloorHeight } from './Seafloor';
 import { inLighthouseClearing } from './props/site';

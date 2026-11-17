@@ -11,10 +11,10 @@ import {
   screenCoordinate,
   sin,
   toneMappingExposure,
-  uniform,
   vec2,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Tone mapping, the sRGB transfer function, and a dither — done here rather

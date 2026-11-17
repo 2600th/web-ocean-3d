@@ -160,6 +160,113 @@ has already been burned once by treating the second as if it were the first.
 
 ## Results
 
+### 2026-11-17: High at the display rate, and a shorter boot
+
+Not from `npm run bench`. The harness unhooks rAF from the display, and this
+work is about holding the display rate, so it was measured with the pacer on, in
+a plain headed Chrome on a ~100 Hz display. The page was the production build at
+High, 1920x1080, sailing from the start position, with nothing else on the GPU.
+The measuring scripts (CDP probes, CPU profiles, GPU-process thread sampling)
+were scratch work and are not checked in. The method is below, so the numbers
+can be reproduced.
+
+**Before**, High held a divisor of 2: ~50 fps, 24-29 ms from callback to
+finished frame. The GPU was not the limit (6.7 ms a frame). The page spent
+~10 ms encoding the render and 1.6 ms in updates. Chrome's GPU-process main
+thread spent 11.3-15 ms a frame replaying the commands, and that was the
+bottleneck. Dawn's costs per command were measured by duplicating commands in
+a live frame:
+
+| Command | Cost in the GPU process |
+|---|---|
+| `queue.writeBuffer` | ~0.8 µs |
+| `setBindGroup` | ~1.4 µs |
+| empty `queue.submit` | ~6.5 µs |
+| an extra render pass | ~1.8 µs |
+| a three render call (encoder + submit) | ~35-40 µs |
+| vertex-buffer binds, draws | negligible |
+
+Five changes, none of which changes a pixel:
+
+- **Scene-wide uniforms in the render group** (`core/uniform.ts`). By default,
+  TSL's `uniform()` puts a value in the per-object group. That group is
+  compared and written for every draw that uses it. The app's own uniforms
+  (time, wind, sun, exposure and so on) now go to the render group, which is
+  written once per render. A uniform with an `onObjectUpdate` callback still
+  goes back to the object group.
+- **Shadow passes stop re-validating every caster** (`installSubmissionFixes`).
+  Alternating alpha-tested and opaque casters moved the shared override
+  material's `version` on nearly every draw. That rebuilt 163 material cache
+  keys a frame, about 1.5 ms.
+- **One `writeBuffer` per uniform buffer**, not one per contiguous run of
+  changed values. That was ~2,150 writes a frame.
+- **Framebuffer copies: 27 a frame down to 4** (`installFramebufferCopyFixes`).
+  The ocean's 18 shared-colour and 5 depth nodes each copied the same pixels
+  and split the scene pass for each copy.
+- **Submits batched** (`installSubmitBatching`). three submits once per render
+  call. Command buffers are now held until a microtask and submitted together.
+  The batch is flushed first by any `writeBuffer` to a buffer a held command
+  buffer references, and by anything else whose order matters. This took the
+  GPU-process main thread from 11.3 to 5.4 ms a frame on its own. `?batch=0`
+  turns it off for A/B runs.
+
+The pacer then had to stop refusing the faster rate (`FramePacer.gpuLatency`).
+It gated its probes on the time from callback to finished frame, about 17 ms
+here. But encoding frame N+1 overlaps the GPU working on frame N, so the device
+holds a rate when *each stage* fits the interval. The gate is now the slower of
+the two stages.
+
+**After** (three runs):
+
+| | Before | After |
+|---|---|---|
+| Drawn fps | ~50 (divisor 2) | **98.5-98.6** (divisor 1) |
+| Frame interval p50 / p99 | ~20 / 21.7 ms (scoreboard, 2026-11-16) | **10.0 / 10.5-10.6 ms** |
+| Render call, awaited | ~10 ms | 5.4 ms |
+| Slower stage (pacer's input) | — | 10.5 ms |
+| GPU-process main thread | 11.3-15 ms/frame | ~7.4 ms/frame |
+
+**Boot.** Measured from clicking *Set sail* to `isReady()`, on a warm profile.
+The click starts with ~2 s of island generation. Then the first view's node
+builds run on the page's main thread (~5 s). The content's builds follow
+(~8 s), and then pipeline compiles finish. Chrome's GPU process compiles
+pipelines with FXC on a worker pool. For the whole content phase it had 15
+threads at full load, so the boot was bound by the total compile work. At High
+it made 447 node builds, 295 asynchronous pipelines and 423 shader modules.
+
+Half the node builds were one material built again for each `InstancedMesh`,
+because r185 puts the mesh's uuid in the material cache key. Their WGSL differed
+only in buffer names, which r185 takes from global node ids
+(`NodeBuffer_76015`). `installStableBufferNames` names them by first use within
+the build, so the copies come out identical. three then shares a shader module
+and a pipeline across them. The result: **295 → 235 pipelines and 423 → 362
+modules, and click to ready went from 24.4 to 22.9 s** (two runs each, same
+session). The node builds themselves are still made per mesh, because each one
+binds its own mesh's matrix buffer.
+
+**Still open**, measured but not fixed:
+
+- **At 120 Hz the target is likely still missed.** The slower stage (~10 ms)
+  is over that display's 8.3 ms interval (9.6 ms with the probe's margin).
+  High would hold 60 there. The larger risk: if the pacer settles on a divisor
+  of 3 (40 fps), `AdaptiveQuality` reads that as under 75% of its 55 fps
+  target, drops a tier, and recompiles for about a minute at 1-2 fps.
+- **Periodic stalls.** A 60-250 ms gap about every 15 s, with no long task on
+  the page's main thread or the GPU process's. It is also present before these
+  changes and absent on a trivial WebGPU page. Probably GPU-side; not
+  diagnosed.
+- **Hitches just after ready.** About 30 pipelines are first requested in the
+  0.4 s after ready, which the prewarm does not reach: the ocean as a live frame
+  draws it, the lantern glow, the spray and splash sprites, bloom's high-pass
+  and composite, and one RTT. They build asynchronously, but their node builds
+  cost frames of 50-80 ms.
+- **The overlay lifts before the scene moves.** The boot overlay's hide timer
+  is starved while the content builds run. It fires once they finish, and the
+  loop then stays held for the 3-5 s the remaining compiles take. The user sees
+  a still frame for that long before the first moving one.
+
+### 2026-11-15, after the canopy rebuild, the foam rebuild and frame pacing
+
 **Re-measured 2026-11-15, after the canopy rebuild, the foam rebuild and frame
 pacing.** Full matrix in `bench-results/bench-2026-11-15T09-31-29-528Z.json`.
 All nine configurations pass, both gates and the Low boot budget included. Every

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { If, cos, float, fract, mix, sin, uniform, vec2 } from 'three/tsl';
+import { If, cos, float, fract, mix, sin, vec2 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDownClamped } from '../core/tslMath';
 
 /**

@@ -15,12 +15,12 @@ import {
   select,
   sin,
   texture,
-  uniform,
   uv,
   varying,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { mulberry32 } from '../core/random';
 import { dequantiseGeometry, type AssetLoader } from './AssetLoader';
 import { ISLAND, reefPatches, seafloorHeight, seafloorPlacementHeight } from './Seafloor';

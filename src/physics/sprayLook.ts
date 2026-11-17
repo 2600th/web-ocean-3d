@@ -13,13 +13,13 @@ import {
   screenUV,
   smoothstep,
   texture,
-  uniform,
   varyingProperty,
   vec2,
   vec3,
   vec4,
   viewportDepthTexture,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 
 /**

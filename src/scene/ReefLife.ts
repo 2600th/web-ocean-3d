@@ -15,11 +15,11 @@ import {
   screenCoordinate,
   select,
   sin,
-  uniform,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { mulberry32 } from '../core/random';
 import { ISLAND, REEF_BAND, reefPatches, seafloorHeight, seafloorPlacementHeight } from './Seafloor';
 import { applyGroundShading, type GroundShadingInputs } from './groundShading';

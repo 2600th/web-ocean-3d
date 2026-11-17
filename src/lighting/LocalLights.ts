@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { color, materialEmissive, normalView, uniform, vec3 } from 'three/tsl';
+import { color, materialEmissive, normalView, vec3 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Fire, torch and lantern light after dark.

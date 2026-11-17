@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
-import { positionWorld, shadowPositionWorld, uniform, vec3 } from 'three/tsl';
+import { positionWorld, shadowPositionWorld, vec3 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Cascaded shadow maps for the key light.

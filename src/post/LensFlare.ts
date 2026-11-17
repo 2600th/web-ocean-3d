@@ -8,12 +8,12 @@ import {
   perspectiveDepthToViewZ,
   screenSize,
   smoothstep,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Flare from the key light — anchored to it, occluded by the scene, and above

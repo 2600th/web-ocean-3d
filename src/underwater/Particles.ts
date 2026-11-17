@@ -8,12 +8,12 @@ import {
   mod,
   sin,
   smoothstep,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import { SEEDS, fillRandom, mulberry32 } from '../core/random';
 

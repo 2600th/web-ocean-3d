@@ -12,13 +12,13 @@ import {
   screenCoordinate,
   screenSize,
   screenUV,
-  uniform,
   vec2,
   vec3,
   vec4,
   viewportDepthTexture,
   viewportSharedTexture,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDownClamped } from '../core/tslMath';
 
 import type { QualityTier } from '../core/QualityManager';

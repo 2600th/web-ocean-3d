@@ -9,12 +9,12 @@ import {
   pow,
   screenSize,
   sin,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 
 /**

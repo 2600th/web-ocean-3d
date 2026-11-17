@@ -5,12 +5,18 @@ import {
   pass,
   positionWorld,
   rtt,
-  uniform,
   vec4,
   velocity,
 } from 'three/tsl';
+import { uniform } from './core/uniform';
 import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
-import { installInstanceCopySync, installThreeFixes, installWebGLFixes } from './core/threeFixes';
+import {
+  installInstanceCopySync,
+  installStableBufferNames,
+  installSubmissionFixes,
+  installThreeFixes,
+  installWebGLFixes,
+} from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import {
   AssetLoader,
@@ -663,9 +669,15 @@ class App {
     if (bootstrap.backend === 'webgpu') {
       installThreeFixes(this.renderer);
       installInstanceCopySync(this.renderer);
+      installStableBufferNames();
     } else {
       installWebGLFixes(this.renderer);
     }
+    // `?batch=0`: submit every render call on its own, as three does. For A/B
+    // measurements of `installSubmitBatching`.
+    installSubmissionFixes(this.renderer, {
+      batchSubmits: new URLSearchParams(window.location.search).get('batch') !== '0',
+    });
     this.backend = bootstrap.backend;
     console.info(`[ocean] renderer backend: ${this.backend}`);
 

@@ -9,10 +9,10 @@ import {
   output,
   positionWorld,
   smoothstep,
-  uniform,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;

@@ -25,12 +25,12 @@ import {
   screenSize,
   smoothstep,
   texture,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import type { AerialPerspective } from './AerialPerspective';
 import { BLUE_NOISE_SIZE, blueNoiseTexture } from './blueNoise';

@@ -94,13 +94,14 @@ Sources, and what each one gave:
 
 | Demo | Drawn fps | p99 frame | Hitches in 12 s | Download | Ready |
 |---|---|---|---|---|---|
-| Ours (High, full scene) | 50.4 (steady half rate) | 21.7 ms | 0-3 | 36.9 MB | 23.5 s to playable |
+| Ours (High, full scene), 2026-11-16 | 50.4 (steady half rate) | 21.7 ms | 0-3 | 36.9 MB | 23.5 s to playable |
+| Ours (High, full scene), 2026-11-17 | **98.5 (full rate)** | **10.6 ms** | 0-1 | 36.9 MB | 22.9 s to playable (warm; was 24.4 the same session) |
 | web-ocean | 101 | 10.5 ms | 0 | ~0 (procedural) | 0.4 s |
 | Three.js Water Pro | 101 | 10.5 ms | 0 | 19.4 MB | ~4 s |
 | NeuralSpecOcean | 101 | 10.5 ms | 0 | 0.6 MB | ~1 s |
 | abyssal-garden | 104 | 10.4 ms | 0 | ~0 | ~5 s |
 
-Pacing now matches (the 28-32 fps judder came from re-uploading every instance buffer on every draw, fixed). Frame rate and start-up do not: the frame is CPU-bound at 8-11 ms of render submission (three r185's per-object overhead), and start-up is dominated by pipeline compilation. Both are the next performance work. Method: `perf-compare.mjs` in the session scratchpad (rAF intervals for references, the app's own render calls for ours).
+Pacing now matches (the 28-32 fps judder came from re-uploading every instance buffer on every draw, fixed). As of 2026-11-17 the frame rate matches too, on this ~100 Hz display. The bottleneck had been replaying submission in Chrome's GPU process, not the GPU. Batched submits, scene-wide uniforms in the render group, fewer uniform writes and framebuffer copies, and a pacer gate on the slower pipeline stage took High from a steady 50 to 98.5 fps, p99 10.6 ms (`docs/PERFORMANCE.md`, Results, 2026-11-17). A 120 Hz display is likely still out of reach. Start-up is the remaining gap. It is bound by FXC pipeline compiles in the GPU process, and sharing the per-mesh shader copies cut those from 295 to 235. The reference demos are ready in 0.4-5 s. Method: `perf-compare.mjs` in the session scratchpad (rAF intervals for references, the app's own render calls for ours).
 
 ## Using this
 

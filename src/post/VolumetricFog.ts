@@ -12,12 +12,12 @@ import {
   pow,
   screenCoordinate,
   select,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 
 /**
  * Volumetric sea fog, as a post-processing node graph.

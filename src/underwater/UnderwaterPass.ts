@@ -14,12 +14,12 @@ import {
   screenCoordinate,
   screenSize,
   texture,
-  uniform,
   uv,
   vec2,
   vec3,
   vec4,
 } from 'three/tsl';
+import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import type { ShadowVolumeSource } from '../lighting/SunShadows';
 
