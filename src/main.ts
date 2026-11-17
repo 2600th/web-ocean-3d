@@ -1735,21 +1735,12 @@ class App {
 
     this.gameplay?.reportImpact(impact.kind, s);
 
-    // Stereo position of the impact relative to the listener's view, -1..1.
-    this.camera.getWorldDirection(_impactForward);
-    _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
-    _impactOffset.copy(p).sub(this.camera.position);
-    const distance = Math.max(1, _impactOffset.length());
-    const pan = Math.max(-1, Math.min(1, _impactOffset.dot(_impactRight) / distance));
-    // Heard less the further away it is, not at all past a few hundred metres.
-    const audible = s * Math.min(1, 30 / distance);
+    // A side slap is heard from the hull probes in `updateShipAudio`, which sit
+    // beside these spray probes and fire on the same crest; playing both made
+    // every beam sea slap twice. Slams and green water go in at their own
+    // strength: the ship bus already gains by distance and pans by bearing.
     const audio = this.audio as unknown as ImpactAudio | undefined;
-    if (impact.kind === 'slap') {
-      if (audible > 0.02) audio?.waveSlap?.(audible, pan);
-    } else if (s > 0.02) {
-      // At its own strength: the ship bus already gains by distance and pans by bearing.
-      audio?.hullImpact?.(s);
-    }
+    if (impact.kind !== 'slap' && s > 0.02) audio?.hullImpact?.(s);
 
     // White water where it hit, and water on the deck when it came aboard.
     const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
