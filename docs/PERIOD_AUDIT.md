@@ -86,3 +86,14 @@ Provenance notes:
 - **Flintlock pistol** and **hanger** with scabbard.
 - **Case bottles, Bartmann jugs and a Spanish olive jar** as camp or wreck debris; **pieces of eight** and silver bars as the reef find.
 - **Fixed-light lighthouse** for the world scene: masonry tower with slight batter, gallery with iron rail, glazed lantern or open chauffer fire with smoke, flickering warm point light.
+
+## E. The score
+
+The music is not a period reconstruction, and this audit does not claim it is. The score uses a concertina, a hurdy-gurdy and a bodhrán, and its genre is the work shanty. These are **stylistic licence**, kept because the genre expects them (`docs/AAA_ROADMAP.md`, decision 8).
+
+- **Concertina:** invented in the 1820s-30s. Anachronistic for c.1700.
+- **Work shanty as a genre:** a nineteenth-century merchant-ship practice, not an early-eighteenth-century one.
+- **Hurdy-gurdy and bodhrán:** folk instruments that existed around then, but this audit found no source placing either aboard a ship of the period. Treated as licence, not as evidence.
+- **Documented aboard ships of the period:** fiddle, fife, drum and trumpet (Folger Shakespeare Library, "Musicians on ships", listed in the roadmap's sources; seen only as a search summary, not read in full).
+
+If a tune is ever meant to read as period, build it from the fiddle, fife and drum. Nothing in the interface or the copy should say the music is of the period.
