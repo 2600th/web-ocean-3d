@@ -122,6 +122,13 @@ export const sprayUniforms = {
   /** Hull box in hull-local space: centre and half-extents. Zero extents disable it. */
   hullCenter: uniform(new THREE.Vector3()),
   hullHalf: uniform(new THREE.Vector3()),
+  /**
+   * The quality tier's `spray`, for every system of thrown water: the slam
+   * spray, the bow spray and sheet, and the splashes. 0 draws none of them;
+   * below 1 they draw fewer particles. Written by `Spray.setStrength`, which is
+   * the tier's one control, so the others follow it without wiring of their own.
+   */
+  strength: uniform(1),
 };
 
 /** Radiance and opacity, quad shape, and the fragment's age/depth/softness. */

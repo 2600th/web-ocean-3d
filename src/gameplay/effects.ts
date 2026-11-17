@@ -364,6 +364,8 @@ export class BowSpray {
   private speed = 0;
   /** Clock of the last particle thrown; see `idle`. */
   private lastEmit = -1000;
+  /** Ring slots in use at this tier; see `update`. */
+  private capacity = SPRAY_COUNT;
 
   constructor() {
     this.geometry = new THREE.InstancedBufferGeometry();
@@ -436,6 +438,18 @@ export class BowSpray {
     this.time += dt;
     this.uClock.value = this.time;
 
+    // The quality tier's spray control (`sprayUniforms.strength`): below 1 a
+    // shorter ring at a lower rate, so the same seconds of spray are in the air
+    // but thinner; at 0 nothing, the sheet included.
+    const tier = Math.max(0, sprayUniforms.strength.value as number);
+    const capacity = tier <= 0 ? 0 : Math.max(64, Math.round(SPRAY_COUNT * Math.min(1, tier)));
+    if (capacity !== this.capacity) {
+      this.capacity = capacity;
+      this.geometry.instanceCount = Math.max(1, capacity);
+      if (this.cursor >= capacity) this.cursor = 0;
+    }
+    this.sheet.mesh.visible = tier > 0;
+
     // How fast the stem is driving down, from its own track: a plunge into a
     // sea throws a burst on top of the steady fan.
     this.bow.set(hullLength * 0.5, 0, 0).applyMatrix4(hull.matrixWorld);
@@ -457,7 +471,7 @@ export class BowSpray {
     this.speed = Math.max(0, speed);
     this.sheet.update(this.time, hull, this.intensity, this.speed, hullLength * 0.5, hullBeam);
 
-    this.pending += SPRAY_RATE * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
+    this.pending += SPRAY_RATE * Math.min(1, tier) * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
     if (this.pending >= 1) {
       this.forward.set(1, 0, 0).applyQuaternion(hull.quaternion).setY(0);
       if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
@@ -484,7 +498,7 @@ export class BowSpray {
 
   /** Nothing to draw: no sheet, and the last particle thrown has come down. */
   get idle(): boolean {
-    return this.intensity < 0.005 && this.time - this.lastEmit > 2;
+    return this.capacity === 0 || (this.intensity < 0.005 && this.time - this.lastEmit > 2);
   }
 
   clear(): void {
@@ -520,7 +534,7 @@ export class BowSpray {
     hullBeam: number,
   ): void {
     const i = this.cursor;
-    this.cursor = (this.cursor + 1) % SPRAY_COUNT;
+    this.cursor = (this.cursor + 1) % Math.max(1, this.capacity);
     const n = this.serial++;
     this.lastEmit = this.time;
     const r1 = hash(n, 1);
@@ -636,7 +650,12 @@ export class BowSpray {
     // Back into the sea a little below where it left the crest.
     const water: any = attribute('bowWater', 'float');
     const submerged: any = smoothstepDown(water.sub(centre.y), 0.05, 0.4);
-    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged).mul(strength.sqrt());
+    const opacity: any = density
+      .mul(fadeIn)
+      .mul(fadeOut)
+      .mul(submerged)
+      .mul(strength.sqrt())
+      .mul(sprayUniforms.strength.min(1));
 
     return particleVertex({
       centre,

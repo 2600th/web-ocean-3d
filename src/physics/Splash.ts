@@ -204,9 +204,11 @@ export class Splash {
     const seed = new Float32Array(count * 4);
     const cls = new Float32Array(count);
     const fromJet = new Float32Array(count);
+    // Slot-fastest, as `Spray` lays out its events: trimming `instanceCount`
+    // for a lower tier then takes particles from every splash evenly.
     for (let i = 0; i < count; i++) {
-      slot[i] = Math.floor(i / PER_SLOT);
-      const k = i % PER_SLOT;
+      slot[i] = i % SLOTS;
+      const k = Math.floor(i / SLOTS);
       for (let c = 0; c < 4; c++) seed[i * 4 + c] = hash(k, 31 + c);
       const [c, j] = PARTICLE_LAYOUT[k % PARTICLE_LAYOUT.length];
       cls[i] = c;
@@ -341,7 +343,7 @@ export class Splash {
     if (jetSpeed > 0) {
       this.queue(x, z, radius * 1.8 + 0.3, 0.18 + 0.22 * heavy, this.clock + jetStart + jetSpan + (2 * jetSpeed) / GRAVITY);
     }
-    this.setVisible(true);
+    this.setVisible((sprayUniforms.strength.value as number) > 0);
   }
 
   /** Advances the clock to `elapsed` (simulation seconds); deposits foam and drives the rings. */
@@ -361,6 +363,13 @@ export class Splash {
         i++;
       }
     }
+
+    // The quality tier's spray control (`sprayUniforms.strength`): fewer drops
+    // per splash below 1, and at 0 nothing in the air. The foam and the ring on
+    // the water stay at every tier; they cost the wake pass a few uniforms.
+    const tier = Math.max(0, sprayUniforms.strength.value as number);
+    const perSlot = tier <= 0 ? 0 : Math.max(16, Math.round(PER_SLOT * Math.min(1, tier)));
+    (this.particles.geometry as THREE.InstancedBufferGeometry).instanceCount = Math.max(1, SLOTS * perSlot);
 
     let alive = false;
     for (let slot = 0; slot < SLOTS; slot++) {
@@ -392,7 +401,7 @@ export class Splash {
         this.ringWave[slot],
       );
     }
-    this.setVisible(alive);
+    this.setVisible(alive && tier > 0);
   }
 
   /** Clears every splash and pending fleck: the state at `elapsed` with nothing in the air. */
@@ -609,7 +618,7 @@ export class Splash {
     const fadeOut: any = smoothstepDown(life, isMist.mul(-0.4).add(0.8), 1);
     // Back into the sea a little below where it left it.
     const submerged: any = smoothstepDown(origin.y.sub(centre.y), -0.02, 0.15);
-    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged);
+    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged).mul(sprayUniforms.strength.min(1));
 
     return particleVertex({
       centre,
@@ -684,7 +693,9 @@ function sheetFragment(options: { rimFingers: boolean }): any {
     .max(age.mul(0.9))
     .max(options.rimFingers ? 0.3 : 0.55);
   const radiance: any = sheetRadiance(aerated, field.mul(0.4).add(0.75));
-  const alpha: any = torn.mul(membrane).mul(above).mul(ending).mul(soft).mul(nearFade).mul(facing).clamp(0, 1);
+  // Off with the tier's spray control at 0, at once rather than on the next update.
+  const enabled: any = sprayUniforms.strength.mul(1000).clamp(0, 1);
+  const alpha: any = torn.mul(membrane).mul(above).mul(ending).mul(soft).mul(nearFade).mul(facing).mul(enabled).clamp(0, 1);
   return vec4(radiance, alpha);
 }
 

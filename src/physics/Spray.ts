@@ -359,6 +359,8 @@ export class Spray {
   setStrength(strength: number): void {
     const s = Math.max(0, strength);
     this.uStrength.value = s;
+    // The bow spray and the splashes follow the same control.
+    sprayUniforms.strength.value = s;
     const perEvent = s <= 0 ? 0 : Math.max(8, Math.round(PER_EVENT * Math.min(1, s)));
     // Instances are laid out event-fastest (see `buildGeometry`), so trimming
     // the count trims particles from every impact evenly.
