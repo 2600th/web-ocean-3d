@@ -675,7 +675,7 @@ export class Hud {
       gone = true;
       window.clearTimeout(timer);
       node.classList.add('is-leaving');
-      window.setTimeout(() => node.remove(), reducedMotion() ? 0 : 420);
+      window.setTimeout(() => node.remove(), reducedMotion() ? 0 : 360); // the roll-away is --dur-move, 320 ms
     };
     const timer = window.setTimeout(dismiss, duration);
     return dismiss;

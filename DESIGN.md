@@ -407,7 +407,11 @@ clears the sail orders and the stick. Landscape phones show none.
 
 ## Motion
 
-Exponential ease-out (`cubic-bezier(.16,1,.3,1)`) everywhere. The authored
+Exponential ease-out (`cubic-bezier(.16,1,.3,1)`) everywhere, over one scale of
+six durations kept as custom properties: `--dur-press` 120ms, `--dur-state`
+200ms, `--dur-move` 320ms, `--dur-reveal` 560ms, `--dur-arrive` 900ms and
+`--dur-slow` 1600ms. The camera's mode-change sweep uses the same 900ms, and
+is a cut under reduced motion. The authored
 moments are the toast unroll, the objective unfurl, the score bump, the
 tab arrival, the chart laid on the table, the boot ship's bob, the ink
 running on the course, and the menu sea. `prefers-reduced-motion` collapses every transition and

@@ -192,7 +192,8 @@ export class CameraDirector {
   private transition = 0;
   private readonly fromPosition = new THREE.Vector3();
   private readonly fromQuaternion = new THREE.Quaternion();
-  private static readonly TRANSITION_SECONDS = 0.85;
+  /** The interface's `--dur-arrive` (styles.css): one duration for a whole view arriving. */
+  private static readonly TRANSITION_SECONDS = 0.9;
 
   // Scratch — the update path must not allocate.
   private readonly tmpVec = new THREE.Vector3();
@@ -348,7 +349,8 @@ export class CameraDirector {
     this.fromPosition.copy(this.camera.position);
     this.fromQuaternion.copy(this.camera.quaternion);
     this.fromFov = this.camera.fov;
-    this.transition = 1;
+    // A cut, not a sweep, for a viewer who asked for less motion.
+    this.transition = this.motionQuery?.matches ? 0 : 1;
 
     if (this.mode === 'fly') this.exitPointerLock();
     if (this.mode === 'cinematic') {
