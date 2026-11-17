@@ -223,7 +223,7 @@ with content, XL several systems. Each task says what done looks like.
   - wave height guessed from wavelength instead of the spectrum's own figure
     (`main.ts:3869`);
   - barrel and buoy splashes making no sound.
-- [ ] **V2 Motion clips** (S). A script that saves ten-second frame strips of
+- [x] **V2 Motion clips** (S). A script that saves ten-second frame strips of
   four situations: helm in a breeze, a hard turn, the storm, and landfall. The
   texture-scroll foam fault was invisible in stills; this is how the next one
   is caught.
