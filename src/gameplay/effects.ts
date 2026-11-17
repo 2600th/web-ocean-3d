@@ -1,5 +1,18 @@
 import * as THREE from 'three/webgpu';
-import { attribute, exp, float, normalView, smoothstep, uv, vec2, vec3 } from 'three/tsl';
+import {
+  attribute,
+  cameraFar,
+  cameraNear,
+  exp,
+  float,
+  normalView,
+  perspectiveDepthToViewZ,
+  positionView,
+  smoothstep,
+  uv,
+  vec2,
+  vec3,
+} from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import {
@@ -7,6 +20,7 @@ import {
   CLASS_DROP,
   CLASS_MIST,
   particleVertex,
+  sharedSceneDepth,
   sprayMaterial,
   sprayUniforms,
 } from '../physics/sprayLook';
@@ -171,7 +185,11 @@ export class Burst {
     this.material.colorNode = (this.uTint as any).mul(3);
     const radius = uv().sub(vec2(0.5, 0.5)).length().mul(2);
     const glow = float(1).sub(radius).clamp(0, 1).pow(2.2);
-    this.material.opacityNode = glow.mul(this.uFade) as any;
+    // Soft against what is behind it, as spray is: a spark passing into the
+    // water or the planks fades out over half a metre instead of being cut.
+    const sceneZ: any = perspectiveDepthToViewZ(sharedSceneDepth().x, cameraNear, cameraFar);
+    const soft: any = (positionView as any).z.sub(sceneZ).div(0.5).clamp(0, 1);
+    this.material.opacityNode = glow.mul(this.uFade).mul(soft) as any;
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, BURST_COUNT);
     this.mesh.name = 'gameplay-burst';
     this.mesh.frustumCulled = false;
