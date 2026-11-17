@@ -188,7 +188,7 @@ with content, XL several systems. Each task says what done looks like.
 - [x] **P0.2 Extend the reference board** (S). Add rows to
   `docs/REFERENCE_TARGETS.md` for the ship under sail, the ship at night, the
   island from sea, and a squall front. View references; do not download them.
-- [ ] **P0.3 Set budgets** (S). A table per tier of frame time, start-up time
+- [x] **P0.3 Set budgets** (S). A table per tier of frame time, start-up time
   and download size, with a cap for every new system below. Add rows to
   `scripts/profile-frame.mjs`.
 - [ ] **P0.4 Fix what the audit found** (S each):
