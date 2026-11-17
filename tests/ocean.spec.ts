@@ -1133,6 +1133,14 @@ test.describe('interaction', () => {
     // island anchors; the old north-east aim caught two or three gulls, about
     // 30 pixels, and failed on a flock that was rendering fine.
     await setCamera(page, [0, 12, 0], [60, 40, -60]);
+    // The camera stands where the ship floats. Away from the helm she now
+    // carries full sail, and the canvas filled this view: hiding the flock
+    // changed no pixels because none of it could be seen. The ship is not
+    // what this test is about, so she is taken out of the frame.
+    await page.evaluate(() => {
+      const ship = window.__ocean.scene.getObjectByName('ship');
+      if (ship) ship.visible = false;
+    });
     await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
 
     const withFlock = await capture(page);

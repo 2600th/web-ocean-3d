@@ -181,6 +181,42 @@ it does not invalidate the rest.
    Recommendation: keep them as stylistic licence, as the genre does, and say
    so in `docs/PERIOD_AUDIT.md`.
 
+## Status after wave 1 (2026-11-18)
+
+Nine agents, merged on `aaa-roadmap-m1`. Ticked below: P0.1 to P0.3, P0.5,
+P0.6, V2, V5, S1, S4, S5, W1, W2, W5, F1 to F3, F6, F8 to F10, X1 to X4, A1
+and A2.
+
+Measured in real Chrome at 1920x1080, High, 120 Hz, alternating with `main`:
+113 frames drawn a second in the default view and 118 in the storm at the
+helm, the same as `main` in both. Ready to play is 14.5 to 16.2 s against
+13.7 to 17.8 s, about a second slower like for like. The functional suite
+passes (85 of 85 run; one skipped).
+
+Found along the way, and carried into wave 2:
+
+- **The ship model is three joined meshes.** The wheel, the rudder and the
+  yards are not separate parts, so S3 is only half done (pennant and anchor
+  cable). The model must be split, or replaced by a free one with separate
+  parts.
+- **The horizon line (W6) is in the sky, not the water.** The haze at the
+  horizon comes out far darker than the sky above it; the fix belongs in
+  `src/sky/AerialPerspective.ts`.
+- **Spindrift** shows as a grey smudge in daylight at 18 m/s and as a heavy
+  white wall close to the camera in the storm.
+- **Lanterns** are dim: the deck and sails barely catch their light, and they
+  do not reflect in the sea.
+- **The anchor cable** reads as a rigid pole.
+- **Water streaming off the hull** shows as a pale blob on the hull side in
+  the `boat` gallery image.
+- **The grounding plume** reads as a white splash, not sand. The shake
+  setting is not saved. The cask glint is lost in the beacon at range.
+- **Still open from P0.4:** the dark wedge by the beached pinnace and the
+  straight ridge in the breaker. From P0.5: rain carried with the camera and
+  its streak tilt, which X6 replaces.
+- **Baselines:** every shot with the ship in it has changed and is recaptured
+  after wave 2.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system
