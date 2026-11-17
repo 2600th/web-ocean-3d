@@ -624,7 +624,10 @@ export class Spray {
         1,
       );
     }
-    _at.set(0, source.railHeight, source.hullLength * 0.3).applyMatrix4(object.matrixWorld);
+    // On the centreline over the foredeck, where the water came aboard: the
+    // hull's +X is the bow and Z the beam, so a length along Z put the foam and
+    // the sound eight metres off the starboard side.
+    _at.set(source.hullLength * 0.3, source.railHeight, 0).applyMatrix4(object.matrixWorld);
     this.report('wash', strength, _at, 0, true);
   }
 
