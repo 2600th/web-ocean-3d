@@ -914,6 +914,29 @@ const SCATTER_WRAP = 0.45;
 const FACE_SHEET_METRES = 0.35;
 const FACE_GLOW = 4;
 
+/**
+ * The crest blend (Sea of Thieves, SIGGRAPH 2018): where on a wave it starts
+ * and is full, as height over the crest scale (`uCrestScale`; most crests
+ * stand under a third of it, and a mask that only lit the tallest left the
+ * storm's near waves slate); how much of the lobe is left cross-lit and
+ * down-light; how far toward the scatter colour a backlit crest goes; and
+ * that colour's luminance against the sky it is lit by. A little over 1,
+ * because the sky behind a crest seen toward the light is the bright part
+ * of it, brighter than the sky the facet itself mirrors.
+ */
+const CREST_PEAK: readonly [number, number] = [0.03, 0.32];
+const CREST_CROSS_LIT = 0.2;
+const CREST_BLEND = 0.6;
+const CREST_LIFT = 1.1;
+
+/**
+ * Bubbles under the foam (Atlas, GDC 2019): how far the water under foam goes
+ * toward the lit bubble colour, per unit of aeration (which tops out at 0.5),
+ * and that colour's albedo against the foam's. Milky turquoise, not white.
+ */
+const BUBBLE_MILK = 1.3;
+const BUBBLE_ALBEDO = 0.42;
+
 export class OceanMaterial {
   readonly material: THREE.MeshBasicNodeMaterial;
 
@@ -1005,6 +1028,8 @@ export class OceanMaterial {
   private readonly uLightLevel = uniform(1);
   /** Significant wave height, metres. Sets the scale a crest is measured against. */
   private readonly uWaveScale = uniform(3.5);
+  /** Significant height the crest blend measures a crest against. See `setSurf`. */
+  private readonly uCrestScale = uniform(3.5);
   private readonly uSkyColor = uniform(new THREE.Color(0x5793d0));
   private readonly uHorizonColor = uniform(new THREE.Color(0xbdd6ec));
   private readonly uFogColor = uniform(new THREE.Color(0xb9d2e8));
@@ -1208,6 +1233,10 @@ export class OceanMaterial {
     // the surf zone running out past the shelf it sits on.
     const height = Math.min(3.6, (this.uWaveScale.value as number) * 0.3 + 0.6);
     setSurfState(phase, period, height, strength, shoreNear);
+    // The crest blend's scale: the fully developed height, but no taller than
+    // a wind sea of this peak can stand (steepness Hs / L near 1/14), since
+    // the storm's 21 m/s gives 10.8 m while its 60 m peak carries about 4.
+    this.uCrestScale.value = Math.max(0.35, Math.min(this.uWaveScale.value as number, Math.max(4, peakWavelength) / 14));
   }
 
   setWind(bearingRadians: number, speed: number): void {
@@ -2581,6 +2610,8 @@ export class OceanMaterial {
       const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
         .mul(mix(float(1), float(SKY_REFLECTION_GAIN), smoothstep(REFLECTION_GAIN_GRAZE[0], REFLECTION_GAIN_GRAZE[1], viewDir.y)))
         .toVar();
+      /** The sky's brightness on this facet, before any object takes the ray. */
+      const skyLuma = reflection.dot(vec3(0.2126, 0.7152, 0.0722)).toVar();
       /** How much of this pixel's mirror ray an object (hull, island) takes. */
       const objectCover = float(0).toVar();
 
@@ -2979,6 +3010,44 @@ export class OceanMaterial {
         .add(seenThrough)
         .mul(bedShade)
         .add(scatter.mul(sunShade))
+        .toVar();
+
+      // --- light through the crests --------------------------------------------
+      //
+      // Sea of Thieves' blend (Ang, "The Technical Art of Sea of Thieves",
+      // SIGGRAPH 2018 talks): the body is blended from its deep colour toward
+      // the scatter colour by a wave-peak mask, a forward lobe toward the light
+      // and the view's grazing angle. The terms above add light; they are sun
+      // terms, and a storm's deck takes the sun (`sunShade`, `uLightLevel`), so
+      // its crests stayed the slate of the troughs (REFERENCE_TARGETS, storm).
+      // What lights a crest from behind under an overcast is the bright sky
+      // behind the wave: so the crest colour is the scatter albedo's hue
+      // through a thin crest at the sky's own brightness, and it is blended
+      // over the reflection as well as the body (in `surface`, below), because
+      // at a grazing view Fresnel leaves the body a few percent of the pixel
+      // and a crest tip lit from behind is still seen green against a grey sky.
+      // Gone after dark with the sky (`skyLight`), so a night crest is not
+      // green. Near zero cost: a dozen ALU on values already in registers.
+      const crestPeak = worldPos.y.div(this.uCrestScale).smoothstep(CREST_PEAK[0], CREST_PEAK[1]).max(surfThin).toVar();
+      const lightBearing = vec2(sunDir.x, sunDir.z).add(vec2(1e-5, 0)).normalize();
+      const viewBearing = vec2(viewDir.x, viewDir.z).negate().add(vec2(1e-5, 0)).normalize();
+      const towardLight = viewBearing.dot(lightBearing).mul(0.5).add(0.5).toVar();
+      const crestLobe = mix(float(CREST_CROSS_LIT), float(1), towardLight.mul(towardLight).mul(towardLight));
+      const scatterHue = (this.uScatterColor as any)
+        .mul(this.uExtinction.mul(THIN_CREST_METRES).negate().exp())
+        .toVar();
+      const crestColor = scatterHue
+        .div(scatterHue.dot(vec3(0.2126, 0.7152, 0.0722)).max(1e-4))
+        .mul(skyLuma.mul(CREST_LIFT))
+        .toVar();
+      const crestBlend = crestPeak
+        .mul(crestLobe)
+        .mul(awayFromSun.mul(0.5).add(0.5))
+        .mul(across.mul(0.6).add(0.4))
+        .mul(this.uCrestGlow.div(DEFAULT_APPEARANCE.crestGlow).min(1.5))
+        .mul(skyLight)
+        .mul(CREST_BLEND)
+        .clamp(0, 0.8)
         .toVar();
 
       // --- foam --------------------------------------------------------------------
@@ -4206,6 +4275,17 @@ export class OceanMaterial {
       // turned the bubble cloud under every deep-water whitecap into a grey disc:
       // the bubbles brighten the water they are in, they do not repaint it.
       const aeratedLift = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(0.34);
+      // Atlas's bubble colour (GDC 2019): the water under and around foam is
+      // full of bubbles, so it goes milky toward their lit colour in
+      // proportion to the foam's density, instead of staying as clear as open
+      // water with a white film on top. Toward `max(water, bubbles)`, so it
+      // only ever lightens: the grey disc above came from a blend that could
+      // darken the body. Under Fresnel, where bubbles below the surface
+      // belong, so it shows looking down into the water more than from a
+      // deck. (Blended over the reflection as well, it washed the storm's
+      // green crests grey and still barely read at grazing.)
+      const bubbleLit = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(BUBBLE_ALBEDO);
+      litBody.assign(mix(litBody, litBody.max(bubbleLit), aeration.mul(BUBBLE_MILK).clamp(0, 0.7)));
       litBody.addAssign(aeratedLift.mul(aeration));
 
       // Foam kills the specular under it. Bubbles are a diffuse rough medium, so a
@@ -4221,7 +4301,7 @@ export class OceanMaterial {
       // contour, and not the mesh.
       const nearLand = smoothstepDownClamped(seabedSigned, 0.4, 1.2);
       const edgeVisible = mix(float(1), straightThickness.smoothstep(0.0, 0.045), nearLand).toVar();
-      const surface = mix(litBody, reflection, fresnel.mul(edgeVisible))
+      const surface = mix(mix(litBody, reflection, fresnel.mul(edgeVisible)), crestColor, crestBlend.mul(edgeVisible))
         .add(specular.mul(foamMask.mul(0.88).oneMinus()).mul(edgeVisible))
         .toVar();
 
