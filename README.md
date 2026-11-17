@@ -403,7 +403,7 @@ Bugs found by measuring rather than looking, none of them visible to typecheck:
 Frame work measures **0.86 / 8.26 / 13.72 ms** GPU p50 at Low / High / Max on WebGPU at
 1600 × 900 DPR 1, against a 16.7 ms budget. All benchmarked configurations pass, with no
 console errors during the sample. Live at High, 1920 × 1080 on a 120 Hz display, the r187 build
-draws about 112 fps (r185: a steady 60) and is ready to play in 17–20 s (r185: 23–24 s).
+draws 113–119 fps (r185: a steady 60) and is ready to play in 14–19 s (r185: 23–24 s).
 
 Those numbers are two to three times what they were, and the trade is written down in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md): the sky is a cloud layer wrapped on a sphere
