@@ -149,7 +149,7 @@ const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'night
 // --- arguments ---------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { states: DEFAULT_STATES, seconds: 60, tier: 'high', volume: 1, music: 0.5, saveBaseline: false, wav: true };
+  const args = { states: DEFAULT_STATES, seconds: 60, tier: 'high', volume: 1, music: 0.5, saveBaseline: false, wav: true, src: ROOT };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--states') args.states = argv[++i].split(',');
@@ -158,6 +158,9 @@ function parseArgs(argv) {
     else if (a === '--volume') args.volume = Number(argv[++i]);
     else if (a === '--music') args.music = Number(argv[++i]);
     else if (a === '--save-baseline') args.saveBaseline = true;
+    // A checkout of another revision (it needs src/audio and src/core), e.g. to
+    // re-record the baseline: git archive <rev> src/audio src/core | tar -x -C <dir>
+    else if (a === '--src') args.src = resolve(argv[++i]);
     else if (a === '--no-wav') args.wav = false;
     else throw new Error(`audio-bench: unknown argument ${a}`);
   }
@@ -167,14 +170,14 @@ function parseArgs(argv) {
 
 // --- bundle ------------------------------------------------------------------
 
-async function bundleAudio() {
+async function bundleAudio(src) {
   mkdirSync(OUT_DIR, { recursive: true });
   const entry = join(OUT_DIR, '_bench-entry.ts');
   writeFileSync(
     entry,
     [
-      `export { AudioSystem } from ${JSON.stringify(join(ROOT, 'src/audio/AudioSystem.ts').replace(/\\/g, '/'))};`,
-      `export { ORDERS, BARS_PER_PHRASE, STEPS_PER_BAR } from ${JSON.stringify(join(ROOT, 'src/audio/music/score.ts').replace(/\\/g, '/'))};`,
+      `export { AudioSystem } from ${JSON.stringify(join(src, 'src/audio/AudioSystem.ts').replace(/\\/g, '/'))};`,
+      `export { ORDERS, BARS_PER_PHRASE, STEPS_PER_BAR } from ${JSON.stringify(join(src, 'src/audio/music/score.ts').replace(/\\/g, '/'))};`,
       '',
     ].join('\n'),
   );
@@ -245,6 +248,27 @@ async function renderInPage(cfg) {
   };
 
   const sys = new AudioSystem({ context: ctx, volume: cfg.volume, musicVolume: cfg.music, quality: cfg.tier });
+  // Events refused for want of a voice (the deck's, and the gulls' share of it).
+  let refused = 0;
+  for (const name of ['acquireVoice', 'acquireGullVoice']) {
+    const original = sys[name];
+    if (typeof original !== 'function') continue;
+    sys[name] = (...a) => {
+      const ok = original.apply(sys, a);
+      if (!ok) refused++;
+      return ok;
+    };
+  }
+  // The ship's ambience (creaks, blocks, canvas) asks through its own gate.
+  const host = sys.shipSfx?.host;
+  if (host && typeof host.acquireAmbient === 'function') {
+    const original = host.acquireAmbient;
+    host.acquireAmbient = () => {
+      const ok = original();
+      if (!ok) refused++;
+      return ok;
+    };
+  }
   const st = cfg.state;
   const params = { ...st.params, shipHeel: 0, shipPitch: 0 };
   sys.setMusicState(st.music, st.energy);
@@ -293,7 +317,8 @@ async function renderInPage(cfg) {
     sys.update(i === 0 ? 0 : dt, params);
 
     const music = sys.music;
-    const fx = sys.voices?.length ?? 0;
+    // Thunder has its own voices once P0.6 landed; before, it held deck slots.
+    const fx = (sys.voices?.length ?? 0) - (sys.thunderLive ?? 0);
     const notes = music?.voicesInUse ?? 0;
     if (fx > peakFx) peakFx = fx;
     if (notes > peakMusic) peakMusic = notes;
@@ -353,6 +378,7 @@ async function renderInPage(cfg) {
     ...analysis,
     peakFxVoices: peakFx,
     fxVoiceCap: peakFxCap,
+    refused,
     peakMusicNotes: peakMusic,
     peakLiveNodes: peakLive,
     peakNodesPerSecond: Math.max(...perSecond),
@@ -593,7 +619,7 @@ function row(r) {
     fmt.lufs(r.shortTermMaxLufs),
     fmt.db(r.truePeakDb),
     String(r.clicks),
-    `${r.peakFxVoices}/${r.fxVoiceCap ?? '?'} fx, ${r.peakMusicNotes} notes`,
+    `${r.peakFxVoices}/${r.fxVoiceCap ?? "?"} fx${r.refused !== undefined ? ` (${r.refused} refused)` : ""}, ${r.peakMusicNotes} notes`,
     `${r.peakLiveNodes} live, ${r.peakNodesPerSecond}/s`,
     `${r.bedsAtZero} of ${r.bedsRendering}`,
     fmt.repeat(r),
@@ -651,7 +677,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   mkdirSync(OUT_DIR, { recursive: true });
   console.log('[audio-bench] bundling src/audio');
-  const code = await bundleAudio();
+  const code = await bundleAudio(args.src);
 
   const browser = await chromium.launch({ headless: true, args: ['--autoplay-policy=no-user-gesture-required'] });
   const results = {};
@@ -711,7 +737,7 @@ async function main() {
         console.log(
           `[audio-bench] ${name.padEnd(10)} ${fmt.lufs(r.integratedLufs).padStart(6)} LUFS  ` +
             `TP ${fmt.db(r.truePeakDb).padStart(5)} dBTP  clicks ${String(r.clicks).padStart(3)}  ` +
-            `fx ${r.peakFxVoices}/${r.fxVoiceCap}  notes ${r.peakMusicNotes}  nodes ${r.peakLiveNodes} (${r.peakNodesPerSecond}/s)  ` +
+            `fx ${r.peakFxVoices}/${r.fxVoiceCap} refused ${r.refused}  notes ${r.peakMusicNotes}  nodes ${r.peakLiveNodes} (${r.peakNodesPerSecond}/s)  ` +
             `beds@0 ${r.bedsAtZero}/${r.bedsRendering}  repeat ${fmt.repeat(r)}  (${((Date.now() - started) / 1000).toFixed(1)} s)`,
         );
       }
@@ -723,7 +749,7 @@ async function main() {
     await browser.close();
   }
 
-  const current = { date: new Date().toISOString(), args, clickRatio: CLICK_RATIO, clickFloor: CLICK_FLOOR, selfTest: selfTestResult, results };
+  const current = { date: new Date().toISOString(), args: { ...args, src: undefined }, clickRatio: CLICK_RATIO, clickFloor: CLICK_FLOOR, selfTest: selfTestResult, results };
   writeFileSync(join(OUT_DIR, 'bench.json'), JSON.stringify(current, null, 2));
   if (args.saveBaseline) writeFileSync(BASELINE, JSON.stringify(current, null, 2) + '\n');
   const full =
