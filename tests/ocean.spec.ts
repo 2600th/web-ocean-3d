@@ -1835,8 +1835,11 @@ test.describe('responsiveness', () => {
       'a declared slider is missing from the panel',
     ).toEqual(
       [
+        'ambienceVolume',
         'cloudCoverage',
+        'effectsVolume',
         'fogDensity',
+        'interfaceVolume',
         'musicVolume',
         'peakWavelength',
         'pixelRatio',

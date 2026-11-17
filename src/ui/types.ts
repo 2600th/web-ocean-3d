@@ -52,6 +52,17 @@ export interface UiState {
    * (nothing is scheduled), so it is also the "music off" switch.
    */
   musicVolume: number;
+  /** Sea, wind, rain, thunder and gulls, 0..1, under the master volume. */
+  ambienceVolume: number;
+  /** The ship, splashes and impacts, 0..1, under the master volume. */
+  effectsVolume: number;
+  /** Clicks and chimes of the ledger and buttons, 0..1, under the master volume. */
+  interfaceVolume: number;
+  /** Per-kind mutes; each keeps its level for when it is unmuted. */
+  musicMuted: boolean;
+  ambienceMuted: boolean;
+  effectsMuted: boolean;
+  interfaceMuted: boolean;
   buoyancyProbes: boolean;
   wakeProbes: boolean;
   /** Device pixel ratio multiplier, 0.5..2. */
@@ -127,6 +138,13 @@ export const DEFAULT_UI_STATE: UiState = {
   fogDensity: 0.35,
   volume: 0.4,
   musicVolume: 0.5,
+  ambienceVolume: 1,
+  effectsVolume: 1,
+  interfaceVolume: 1,
+  musicMuted: false,
+  ambienceMuted: false,
+  effectsMuted: false,
+  interfaceMuted: false,
   buoyancyProbes: false,
   wakeProbes: false,
   pixelRatio: 1,

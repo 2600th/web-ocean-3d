@@ -100,6 +100,7 @@ import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
 import { DEFAULT_UI_STATE, type UiState } from './ui/types';
+import { loadSoundPrefs, saveSoundPrefs } from './ui/soundPrefs';
 import { openStartGate, showWebGPURequired, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
@@ -645,6 +646,7 @@ class App {
     this.adapter = options.adapter;
     this.state = {
       ...DEFAULT_UI_STATE,
+      ...loadSoundPrefs(),
       quality: options.quality,
     };
   }
@@ -960,6 +962,7 @@ class App {
     this.audio = new AudioSystem({
       volume: this.state.volume,
       musicVolume: this.state.musicVolume,
+      mix: this.state,
       quality: this.state.quality,
     });
     this.audio.resumeOnGesture();
@@ -2784,10 +2787,16 @@ class App {
         break;
       }
       case 'volume':
-        this.audio.setVolume(this.state.volume);
-        break;
       case 'musicVolume':
-        this.audio.setMusicVolume(this.state.musicVolume);
+      case 'ambienceVolume':
+      case 'effectsVolume':
+      case 'interfaceVolume':
+      case 'musicMuted':
+      case 'ambienceMuted':
+      case 'effectsMuted':
+      case 'interfaceMuted':
+        this.audio.applyMix(this.state);
+        saveSoundPrefs(this.state);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
