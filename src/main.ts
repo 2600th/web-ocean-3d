@@ -1723,6 +1723,13 @@ class App {
         speed: 0.75 + 3.6 * s,
         mass: 500 * (4 / 3) * Math.PI * r * r * r,
       });
+      // And heard: sized by the body, quieter with distance, placed by bearing.
+      this.camera.getWorldDirection(_impactForward);
+      _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
+      _impactOffset.copy(p).sub(this.camera.position);
+      const far = Math.max(1, _impactOffset.length());
+      const loud = 0.6 * s * Math.min(1, r / 0.5) * Math.min(1, 20 / far);
+      if (loud > 0.03) this.audio.playSplash(loud, _impactOffset.dot(_impactRight) / far);
       return;
     }
 

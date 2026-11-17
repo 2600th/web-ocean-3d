@@ -1565,8 +1565,10 @@ export class AudioSystem {
    *
    * @param intensity 0..1. Scales the level, how far the band sweeps, how long the
    *                  cavity takes to collapse, and how much air is entrained.
+   * @param pan       -1 (left) .. 1 (right) from the listener's view; 0, the
+   *                  default, is unpanned (the lens itself going under).
    */
-  playSplash(intensity = 1): void {
+  playSplash(intensity = 1, pan = 0): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
     const amount = clamp01(finite(intensity, 0));
@@ -1577,6 +1579,16 @@ export class AudioSystem {
     const now = ctx.currentTime;
     const decay = SPLASH_DECAY_MIN + SPLASH_DECAY_SPAN * amount;
     const level = SPLASH_LEVEL * Math.pow(amount, 0.8);
+
+    // A barrel or a buoy coming down somewhere off to one side.
+    const side = clampNumber(finite(pan, 0), -1, 1);
+    const panner = side !== 0 ? createStereoPanner(ctx) : null;
+    let out: AudioNode = this.airBus;
+    if (panner !== null) {
+      panner.pan.value = side;
+      panner.connect(this.airBus);
+      out = panner;
+    }
 
     const source = ctx.createBufferSource();
     source.buffer = this.white;
@@ -1603,25 +1615,28 @@ export class AudioSystem {
 
     source.connect(band);
     band.connect(crown);
-    crown.connect(this.airBus);
+    crown.connect(out);
     source.connect(body);
     body.connect(thump);
-    thump.connect(this.airBus);
+    thump.connect(out);
 
     const tail = decay * 1.6 + 0.05;
     source.start(now, random() * this.white.duration);
-    source.stop(now + tail);
-    this.trackVoice(source, band, crown, body, thump);
+    if (panner === null) this.trackVoice(source, band, crown, body, thump);
+    else this.trackVoice(source, band, crown, body, thump, panner);
 
     // Entrained air, surfacing behind the impact.
     const count = Math.round(1 + SPLASH_BUBBLES * amount);
+    let lastBubble = now;
     for (let i = 0; i < count; i++) {
-      this.spawnBubble(
-        now + 0.02 + random() * SPLASH_BUBBLE_WINDOW * (0.5 + amount),
-        this.airBus,
-        BUBBLE_LEVEL * (0.4 + 0.6 * amount),
-      );
+      const at = now + 0.02 + random() * SPLASH_BUBBLE_WINDOW * (0.5 + amount);
+      this.spawnBubble(at, out, BUBBLE_LEVEL * (0.4 + 0.6 * amount));
+      lastBubble = Math.max(lastBubble, at);
     }
+    // The panner is unhooked with the source, so the source has to outlast the
+    // bubbles routed through it.
+    const bubbleEnd = lastBubble + BUBBLE_DECAY_MIN + BUBBLE_DECAY_SPAN + 0.03 - now;
+    source.stop(now + (panner === null ? tail : Math.max(tail, bubbleEnd)));
   }
 
   /**

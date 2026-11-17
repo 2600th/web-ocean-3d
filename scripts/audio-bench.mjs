@@ -284,7 +284,7 @@ async function renderInPage(cfg) {
         case 'thunder': sys.playThunder(e.km, e.delay); break;
         case 'slap': sys.waveSlap(e.strength, e.pan); break;
         case 'impact': sys.hullImpact(e.strength, false); break;
-        case 'splash': sys.playSplash(e.strength); break;
+        case 'splash': sys.playSplash(e.strength, e.pan ?? 0); break;
         case 'chime': sys.playChime(); break;
         case 'tier': sys.setQuality(e.tier); break;
       }
@@ -676,7 +676,9 @@ async function main() {
       for (const name of args.states) {
         const st = STATES[name];
         const started = Date.now();
-        const state = { ...st, submersion: st.submersion ? st.submersion.toString() : null };
+        // BENCH_EVENTS='[{"t":5,"type":"splash","strength":0.4,"pan":0.5}]' adds events to every state.
+        const extra = process.env.BENCH_EVENTS ? JSON.parse(process.env.BENCH_EVENTS) : [];
+        const state = { ...st, events: [...st.events, ...extra], submersion: st.submersion ? st.submersion.toString() : null };
         const r = await page.evaluate(
           async ({ src, cfg }) => {
             const fn = new Function(`return (${src})`)();
@@ -724,9 +726,16 @@ async function main() {
   const current = { date: new Date().toISOString(), args, clickRatio: CLICK_RATIO, clickFloor: CLICK_FLOOR, selfTest: selfTestResult, results };
   writeFileSync(join(OUT_DIR, 'bench.json'), JSON.stringify(current, null, 2));
   if (args.saveBaseline) writeFileSync(BASELINE, JSON.stringify(current, null, 2) + '\n');
-  const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : null;
-  writeReport(baseline, current, args);
-  console.log(`[audio-bench] wrote ${REPORT} and ${OUT_DIR}`);
+  const full =
+    args.seconds === 60 && args.tier === 'high' && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS &&
+    DEFAULT_STATES.every((s) => args.states.includes(s));
+  if (full) {
+    const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : null;
+    writeReport(baseline, current, args);
+    console.log(`[audio-bench] wrote ${REPORT} and ${OUT_DIR}`);
+  } else {
+    console.log(`[audio-bench] partial or diagnostic run: ${REPORT} left alone; results in ${OUT_DIR}`);
+  }
 }
 
 main().catch((e) => {
