@@ -334,6 +334,28 @@ const SKY_REFLECTION_GAIN = 1.3;
 const REFLECTION_GAIN_GRAZE = [0.0015, 0.012] as const;
 
 /**
+ * Where the swell stops displacing geometry, metres from the eye. Atlas fades
+ * each band's displacement at about thirty of its wave periods (GDC 2019);
+ * the two shorter cascades already go long before that, cut by the mesh's
+ * own band limit (`cascadeReach`), and this is the swell's. Past 4 km a
+ * metre-high crest is under a pixel from a deck, and the geometry only
+ * shimmers along the horizon row; its shading carries on in the normal.
+ * Far past the ship, so the buoyancy sampler's near field is untouched.
+ *
+ * The horizon line itself is not this file's to close. Blending the last
+ * pixels of sea toward the environment's horizon or toward `uHorizonColor`
+ * was tried (2026-11-18) and made the lines worse. By day and in the storm
+ * the scene's aerial perspective lays most of the colour on those pixels,
+ * and with the water drawn black the haze alone sat far under the dome's
+ * horizon (sRGB 115 against 204-224 in clear-day-wide, 86 against 148 in
+ * storm), so nothing the water draws beneath it can meet the dome; matching
+ * the haze's level-ray inscatter to the dome is `sky/AerialPerspective`'s
+ * job. At night the haze is dark and the far sea's own colour is the
+ * brighter side of the edge; neither target colour was the dome's there.
+ */
+const SWELL_DISPLACEMENT_FADE: readonly [number, number] = [4000, 12000];
+
+/**
  * Fresnel's flattening of the normal toward vertical, at a grazing view.
  *
  * web-ocean's 45% stands for the visible-facet statistics of everything finer
@@ -1647,6 +1669,8 @@ export class OceanMaterial {
           0.5,
           1,
         ).toVar();
+        // The swell's far fade; see SWELL_DISPLACEMENT_FADE.
+        if (i === 0) reach.mulAssign(smoothstepDownClamped(groundDistance, SWELL_DISPLACEMENT_FADE[0], SWELL_DISPLACEMENT_FADE[1]));
         const sample = this.displacementNodes[i]
           .sample(worldXZ.div(this.uTileSizes[i]))
           .level(lod)
