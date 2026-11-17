@@ -5,7 +5,8 @@
  * left and right are the rudder, written to `ShipController.setRudderInput`.
  * It used to be a throttle as well, and that opened an engine the ship only has
  * for the tour and the tests: at the helm the sails drive her, and they are
- * set with the buttons beside the stick.
+ * set with the buttons beside the stick. Up and down work the sheets instead:
+ * up hauls the sails in, down eases them out, the keyboard's Q and E.
  *
  * Shown only when there is a coarse pointer *and* Boat mode is selected. A mouse
  * user already has better controls and a stick over the frame would only be in
@@ -29,10 +30,17 @@ const KNOB_TRAVEL = 0.62;
  * all. 0.12 is small enough that deliberate input still feels immediate.
  */
 const DEAD_ZONE = 0.12;
+/** Dead zone for the stick's vertical, the sheets. */
+const TRIM_DEAD_ZONE = 0.3;
 
 export interface TouchControlsCallbacks {
   /** Rudder, -1..1. Called only when the value changes. */
   onSteer(rudder: number): void;
+  /**
+   * Sheet rate, -1 (haul in, stick up) .. 1 (ease out, stick down). Called only
+   * when the value changes. Omitted: the stick's vertical does nothing.
+   */
+  onTrim?(rate: number): void;
   /** Sail trim one step up (1) or down (-1). Omitted: no sail buttons. */
   onSail?(direction: 1 | -1): void;
   /** Drop or weigh the anchor. Omitted: no anchor button. */
@@ -50,6 +58,7 @@ export class TouchControls {
 
   private activePointer: number | null = null;
   private rudder = 0;
+  private trim = 0;
   private visible = false;
   private disposed = false;
 
@@ -61,7 +70,12 @@ export class TouchControls {
     const pad = document.createElement('div');
     pad.className = 'touchpad';
     pad.setAttribute('role', 'group');
-    pad.setAttribute('aria-label', 'Steering stick: left and right to steer');
+    pad.setAttribute(
+      'aria-label',
+      callbacks.onTrim
+        ? 'Steering stick: left and right to steer, up to haul the sails in, down to ease them out'
+        : 'Steering stick: left and right to steer',
+    );
     pad.hidden = true;
 
     const ring = document.createElement('div');
@@ -72,6 +86,15 @@ export class TouchControls {
 
     ring.append(knob);
     pad.append(ring);
+    if (callbacks.onTrim) {
+      const haul = document.createElement('span');
+      haul.className = 'touchpad__label touchpad__label--ahead';
+      haul.textContent = 'HAUL IN';
+      const ease = document.createElement('span');
+      ease.className = 'touchpad__label touchpad__label--astern';
+      ease.textContent = 'EASE OUT';
+      pad.append(haul, ease);
+    }
 
     pad.addEventListener('pointerdown', this.onPointerDown, { signal });
     pad.addEventListener('pointermove', this.onPointerMove, { signal });
@@ -197,7 +220,7 @@ export class TouchControls {
   private release(): void {
     this.activePointer = null;
     this.knob.style.transform = 'translate(-50%, -50%)';
-    this.emit(0);
+    this.emit(0, 0);
   }
 
   private applyFromEvent(event: PointerEvent): void {
@@ -220,13 +243,21 @@ export class TouchControls {
       `translate(calc(-50% + ${(nx * KNOB_TRAVEL * radius).toFixed(1)}px), ` +
       `calc(-50% + ${(ny * KNOB_TRAVEL * radius).toFixed(1)}px))`;
 
-    this.emit(deadZone(nx));
+    // Screen y grows downward: up hauls the sheets in (negative), down eases.
+    // A wider dead zone than the rudder's, so steering with a thumb that is
+    // not perfectly level does not also work the sheets.
+    this.emit(deadZone(nx), deadZone(ny, TRIM_DEAD_ZONE));
   }
 
-  private emit(rudder: number): void {
-    if (rudder === this.rudder) return;
-    this.rudder = rudder;
-    this.callbacks.onSteer(rudder);
+  private emit(rudder: number, trim: number): void {
+    if (rudder !== this.rudder) {
+      this.rudder = rudder;
+      this.callbacks.onSteer(rudder);
+    }
+    if (trim !== this.trim) {
+      this.trim = trim;
+      this.callbacks.onTrim?.(trim);
+    }
   }
 }
 
@@ -236,9 +267,9 @@ export class TouchControls {
  * Clipping leaves a step: the first input past the threshold jumps straight to
  * 0.12 of full rudder. Rescaling means the usable range still starts at zero.
  */
-function deadZone(value: number): number {
+function deadZone(value: number, zone = DEAD_ZONE): number {
   const magnitude = Math.abs(value);
-  if (magnitude <= DEAD_ZONE) return 0;
-  const scaled = (magnitude - DEAD_ZONE) / (1 - DEAD_ZONE);
+  if (magnitude <= zone) return 0;
+  const scaled = (magnitude - zone) / (1 - zone);
   return value < 0 ? -scaled : scaled;
 }
