@@ -2468,6 +2468,10 @@ class App {
         ui,
         shake: this.director,
         splash: (x, y, z, options) => this.splash.fire(x, y, z, options),
+        shakeScale: () => this.state.shake,
+        hitStop: (ms) => {
+          if (!this.captureOwnsClock) this.loop.hitStop(ms);
+        },
       });
       this.gameplay.object.visible = false;
       loaded.push(this.gameplay.object);
@@ -3543,6 +3547,7 @@ class App {
       );
       if (strike) {
         this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+        this.gameplay?.reportThunder(strike.distance);
       }
       // Less of the flash as a grade lift now the strike lights the scene for
       // real (`lighting/LightningLight`); what is left is the eye's response to

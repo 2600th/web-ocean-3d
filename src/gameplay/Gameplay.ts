@@ -150,6 +150,22 @@ const SHAKE_PITCH = THREE.MathUtils.degToRad(0.9);
 const SHAKE_YAW = THREE.MathUtils.degToRad(0.5);
 const SHAKE_ROLL = THREE.MathUtils.degToRad(1.3);
 const SHAKE_LIFT = 0.12;
+/**
+ * Thunder shakes the hull a little, by how close it is: the trauma at the
+ * nearest strike (`sky/Lightning` puts them 900 m to 6.5 km out) and the range
+ * past which it adds none. It lands when the sound does, not with the flash.
+ */
+const THUNDER_TRAUMA = 0.3;
+const THUNDER_RANGE = 6500;
+const SPEED_OF_SOUND = 343;
+/**
+ * A single event this hard also holds the world for a moment: milliseconds of
+ * hit-stop as a base plus a share of the trauma, ignored below the threshold.
+ * Real time, not simulation time, so it is the same on a 60 and a 120 Hz screen.
+ */
+const HIT_STOP_TRAUMA = 0.45;
+const HIT_STOP_BASE_MS = 40;
+const HIT_STOP_PER_TRAUMA_MS = 70;
 
 /** Seconds between HUD pushes for the continuous readouts. */
 const UI_INTERVAL = 0.1;
@@ -213,6 +229,10 @@ export interface GameplayOptions {
    * the old white burst.
    */
   splash?: ((x: number, y: number, z: number, options: { radius: number; speed: number; mass: number }) => void) | null;
+  /** The player's shake intensity, 0..1. Polled each use; 0 also turns hit-stop off. */
+  shakeScale?: () => number;
+  /** Holds the simulation nearly still for this many real milliseconds. */
+  hitStop?: (ms: number) => void;
 }
 
 export interface GameplaySnapshot {
@@ -280,6 +300,8 @@ export class Gameplay {
   /** Seconds until an impact may add trauma again; see `IMPACT_COOLDOWN`. */
   private impactCooldown = 0;
   private grounded = false;
+  /** Thunder on its way: seconds until it is heard and the trauma it brings. */
+  private readonly thunder: { delay: number; amount: number }[] = [];
   private reducedMotion = false;
   private readonly motionQuery: MediaQueryList | null;
   private clock = 0;
@@ -374,6 +396,7 @@ export class Gameplay {
     this.gold = 0;
     this.trauma = 0;
     this.impactCooldown = 0;
+    this.thunder.length = 0;
     this.grounded = false;
     this.clock = 0;
     this.uiTimer = 0;
@@ -880,11 +903,18 @@ export class Gameplay {
       this.ui.toast('Shallows! Turn her away', 'danger');
     }
 
+    for (let i = this.thunder.length - 1; i >= 0; i--) {
+      const rumble = this.thunder[i];
+      rumble.delay -= dt;
+      if (rumble.delay > 0) continue;
+      this.thunder.splice(i, 1);
+      this.trauma = Math.min(1, this.trauma + rumble.amount);
+    }
     this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * dt);
     this.impactCooldown = Math.max(0, this.impactCooldown - dt);
     const shake = this.o.shake;
     if (!shake) return;
-    const amount = this.reducedMotion ? 0 : this.trauma * this.trauma;
+    const amount = this.reducedMotion ? 0 : this.trauma * this.trauma * this.shakeScale();
     if (amount <= 1e-5) {
       this.clearShake();
       return;
@@ -955,6 +985,27 @@ export class Gameplay {
 
   private addTrauma(amount: number): void {
     this.trauma = Math.min(1, this.trauma + amount);
+    if (amount >= HIT_STOP_TRAUMA && !this.reducedMotion && this.shakeScale() > 0) {
+      this.o.hitStop?.(HIT_STOP_BASE_MS + HIT_STOP_PER_TRAUMA_MS * amount);
+    }
+  }
+
+  private shakeScale(): number {
+    return THREE.MathUtils.clamp(this.o.shakeScale?.() ?? 1, 0, 1);
+  }
+
+  /**
+   * Thunder from a strike `distanceM` away. The shake arrives with the sound
+   * (`distance / 343` s late) and fades with range; a strike out of range, or
+   * under reduced motion or a zero intensity, adds nothing. Ignored off the helm
+   * like every impact.
+   */
+  reportThunder(distanceM: number): void {
+    if (!this.active || this.reducedMotion) return;
+    const near = 1 - THREE.MathUtils.clamp(distanceM / THUNDER_RANGE, 0, 1);
+    const amount = THUNDER_TRAUMA * near * near;
+    if (amount < 0.01) return;
+    this.thunder.push({ delay: distanceM / SPEED_OF_SOUND, amount });
   }
 
   private clearShake(): void {

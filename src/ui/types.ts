@@ -52,6 +52,11 @@ export interface UiState {
    * (nothing is scheduled), so it is also the "music off" switch.
    */
   musicVolume: number;
+  /**
+   * Camera shake and hit-stop at the helm, 0..1. 0 turns both off. Reduced
+   * motion turns them off whatever this says.
+   */
+  shake: number;
   buoyancyProbes: boolean;
   wakeProbes: boolean;
   /** Device pixel ratio multiplier, 0.5..2. */
@@ -127,6 +132,7 @@ export const DEFAULT_UI_STATE: UiState = {
   fogDensity: 0.35,
   volume: 0.4,
   musicVolume: 0.5,
+  shake: 1,
   buoyancyProbes: false,
   wakeProbes: false,
   pixelRatio: 1,
