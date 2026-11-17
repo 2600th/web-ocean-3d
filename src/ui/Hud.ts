@@ -197,6 +197,19 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'OPTION';
 }
 
+/** One line of the score plate. `shown` is the figure on screen while it counts up. */
+interface ScoreRow {
+  row: HTMLElement;
+  value: HTMLElement;
+  /** The text the line is settling on. */
+  text: string;
+  shown: number | null;
+  frame: number;
+}
+
+/** How long a rising figure takes to count up to its new value, ms. */
+const SCORE_COUNT_MS = 900;
+
 function reducedMotion(): boolean {
   return typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -238,6 +251,7 @@ export class Hud {
   private readonly windFromText: HTMLElement;
   private readonly windForceText: HTMLElement;
   private readonly logBlock: HTMLElement;
+  private readonly logSub: HTMLElement;
   private readonly logKnotsText: HTMLElement;
 
   // toasts
@@ -251,7 +265,7 @@ export class Hud {
   private readonly objectiveArrow: HTMLElement;
   private readonly objectiveBearingText: HTMLElement;
   private readonly scoreEl: HTMLElement;
-  private readonly scoreRows = new Map<string, { row: HTMLElement; value: HTMLElement }>();
+  private readonly scoreRows = new Map<string, ScoreRow>();
 
   private mode: CameraMode;
   private pendingFps = 0;
@@ -283,6 +297,8 @@ export class Hud {
   private shipKnots: number | null = null;
   private objective: Objective | null = null;
   private writtenObjectiveArrow = Number.NaN;
+  /** The needle's unwrapped angle, so the transition turns the short way across 180. */
+  private objectiveArrowTurn = 0;
   private lastObjectiveWrite = 0;
   private shipHeading: number | null = null;
 
@@ -405,7 +421,8 @@ export class Hud {
     const logFigure = el('span', 'reading__figure');
     const logKnotsText = el('span', 'reading__value', '0.0');
     logFigure.append(logKnotsText, el('span', 'reading__unit', 'kn'));
-    logBlock.append(logFigure, el('span', 'reading__sub', 'through water'));
+    const logSub = el('span', 'reading__sub', 'through water');
+    logBlock.append(logFigure, logSub);
     logBlock.hidden = true;
     readings.append(windBlock, logBlock);
     instruments.append(dial, readings);
@@ -464,6 +481,7 @@ export class Hud {
     this.windFromText = windFromText;
     this.windForceText = windForceText;
     this.logBlock = logBlock;
+    this.logSub = logSub;
     this.logKnotsText = logKnotsText;
     this.toastStack = toastStack;
     this.objectiveEl = objectiveEl;
@@ -657,7 +675,7 @@ export class Hud {
       gone = true;
       window.clearTimeout(timer);
       node.classList.add('is-leaving');
-      window.setTimeout(() => node.remove(), reducedMotion() ? 0 : 420);
+      window.setTimeout(() => node.remove(), reducedMotion() ? 0 : 360); // the roll-away is --dur-move, 320 ms
     };
     const timer = window.setTimeout(dismiss, duration);
     return dismiss;
@@ -714,12 +732,21 @@ export class Hud {
       const value = el('dd', 'score__value');
       row.append(el('dt', 'score__label', label), value);
       this.scoreEl.append(row);
-      entry = { row, value };
+      entry = { row, value, text: '', shown: null, frame: 0 };
       this.scoreRows.set(label, entry);
-    } else if (entry.value.textContent === text) {
+    } else if (entry.text === text) {
       return;
     }
-    entry.value.textContent = text;
+    window.cancelAnimationFrame(entry.frame);
+    const from = entry.shown;
+    entry.text = text;
+    if (typeof value === 'number' && from !== null && value > from && !reducedMotion()) {
+      // Gold and cargo count up to the new figure rather than snapping to it.
+      this.countScore(entry, from, value);
+    } else {
+      entry.value.textContent = text;
+      entry.shown = typeof value === 'number' ? value : null;
+    }
     this.wake();
     this.scoreEl.hidden = false;
     if (!reducedMotion()) {
@@ -729,11 +756,35 @@ export class Hud {
     }
   }
 
+  private countScore(entry: ScoreRow, from: number, to: number): void {
+    const started = performance.now();
+    const step = (now: number): void => {
+      const p = Math.min(1, (now - started) / SCORE_COUNT_MS);
+      const eased = 1 - (1 - p) ** 3;
+      entry.shown = p >= 1 ? to : Math.round(from + (to - from) * eased);
+      entry.value.textContent = entry.shown.toLocaleString('en-GB');
+      if (p < 1) entry.frame = window.requestAnimationFrame(step);
+    };
+    entry.frame = window.requestAnimationFrame(step);
+  }
+
+  /**
+   * Marks the ship as stalled head to wind: the wind arrow on the dial turns
+   * amber and the speed reading says why she is not moving. Cleared when she
+   * is free. The toast still tells the visitor what to do about it.
+   */
+  setStalled(stalled: boolean): void {
+    if (this.disposed) return;
+    this.instruments.classList.toggle('is-stalled', stalled);
+    setText(this.logSub, stalled ? 'head to wind' : 'through water');
+  }
+
   /** Removes one score line, or every line when `label` is omitted. */
   clearScore(label?: string): void {
     if (this.disposed) return;
     for (const [key, entry] of this.scoreRows) {
       if (label !== undefined && key !== label) continue;
+      window.cancelAnimationFrame(entry.frame);
       entry.row.remove();
       this.scoreRows.delete(key);
     }
@@ -795,6 +846,7 @@ export class Hud {
     delete this.root.dataset.mode;
     this.hudEl.remove();
     this.modeButtons.clear();
+    for (const entry of this.scoreRows.values()) window.cancelAnimationFrame(entry.frame);
     this.scoreRows.clear();
   }
 
@@ -1006,8 +1058,12 @@ export class Hud {
     if (hasBearing) {
       const relative = Math.round(wrap180(objective.bearingDeg! - this.heading));
       if (relative !== this.writtenObjectiveArrow) {
+        // A wrapped angle jumping from 179 to -179 would spin the whole circle
+        // under the transition; step by the shortest difference instead.
+        if (Number.isNaN(this.writtenObjectiveArrow)) this.objectiveArrowTurn = relative;
+        else this.objectiveArrowTurn += wrap180(relative - this.writtenObjectiveArrow);
         this.writtenObjectiveArrow = relative;
-        this.objectiveArrow.style.transform = `rotate(${relative}deg)`;
+        this.objectiveArrow.style.transform = `rotate(${this.objectiveArrowTurn}deg)`;
       }
     }
 

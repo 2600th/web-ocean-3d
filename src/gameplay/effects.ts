@@ -46,6 +46,8 @@ export class ObjectiveBeacon {
   private readonly materials: THREE.Material[] = [];
   private readonly geometries: THREE.BufferGeometry[] = [];
   private time = 0;
+  /** 0..1 multiplier on everything the beacon draws: how far it has faded in. */
+  visibility = 1;
 
   constructor() {
     this.object.name = 'objective-beacon';
@@ -87,7 +89,10 @@ export class ObjectiveBeacon {
     ring.side = THREE.DoubleSide;
     ring.fog = false;
     ring.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(1.6) as any;
-    ring.opacityNode = float(1).sub(this.uRing).mul(this.uOpacity).mul(0.7) as any;
+    // Rises over the first tenth of the loop and falls to nothing at its end, so
+    // the ring is invisible at the wrap instead of snapping back to full.
+    const ringEnvelope = smoothstep(0, 0.1, this.uRing).mul(float(1).sub(this.uRing));
+    ring.opacityNode = ringEnvelope.mul(this.uOpacity).mul(0.9) as any;
     this.ring = new THREE.Mesh(ringGeometry, ring);
     this.ring.frustumCulled = false;
     this.ring.renderOrder = 7;
@@ -104,17 +109,19 @@ export class ObjectiveBeacon {
    * hundred metres; faded out close in, because at arm's length a shaft of light
    * is no longer a marker, it is a wall.
    */
-  update(dt: number, target: THREE.Vector3, viewer: THREE.Vector3): void {
+  update(dt: number, target: THREE.Vector3, viewer: THREE.Vector3, reducedMotion = false): void {
     this.time += dt;
     this.object.position.set(target.x, target.y + 0.2, target.z);
     const distance = Math.hypot(viewer.x - target.x, viewer.z - target.z);
     const widen = Math.min(6, Math.max(1, distance / 70));
     this.column.scale.set(widen, 1, widen);
-    const pulse = 0.82 + 0.18 * Math.sin(this.time * 2.6);
+    // Reduced motion: a steady column and a ring held still part-way through
+    // its spread, rather than a pulse and a ripple.
+    const pulse = reducedMotion ? 0.91 : 0.82 + 0.18 * Math.sin(this.time * 2.6);
     const near = Math.min(1, Math.max(0, (distance - 14) / 40));
-    this.uOpacity.value = pulse * (0.25 + 0.75 * near);
+    this.uOpacity.value = pulse * (0.25 + 0.75 * near) * this.visibility;
 
-    const phase = (this.time / 2.2) % 1;
+    const phase = reducedMotion ? 0.3 : (this.time / 2.2) % 1;
     this.uRing.value = phase;
     const radius = 1.5 + phase * 9;
     this.ring.scale.set(radius, 1, radius);
@@ -127,6 +134,67 @@ export class ObjectiveBeacon {
   dispose(): void {
     for (const m of this.materials) m.dispose();
     for (const g of this.geometries) g.dispose();
+  }
+}
+
+/**
+ * A glint on the cargo while it floats: a four-point star that blooms and
+ * fades every couple of seconds, so a cask in the swell catches the eye the
+ * way a wet barrel catches the sun. A camera-facing quad, widened with range
+ * like the beacon so it does not shrink away, and depth-tested so a wave in
+ * front of the cask hides it. Under reduced motion it holds steady and dim.
+ */
+export class CargoGlint {
+  readonly mesh: THREE.Mesh;
+
+  private readonly geometry = new THREE.PlaneGeometry(1, 1);
+  private readonly material = new THREE.MeshBasicNodeMaterial();
+  private readonly uAmount = uniform(0);
+  private time = 0;
+
+  constructor() {
+    const material = this.material;
+    material.transparent = true;
+    material.depthWrite = false;
+    material.blending = THREE.AdditiveBlending;
+    material.side = THREE.DoubleSide;
+    material.fog = false;
+    material.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(3.2) as any;
+    const p = uv().sub(vec2(0.5, 0.5));
+    const radius = p.length().mul(2);
+    const core = float(1).sub(radius).clamp(0, 1).pow(2.2);
+    // Two thin streaks, one across and one up, each tapering toward its tip.
+    const streakH = exp(p.y.abs().mul(-16)).mul(float(1).sub(p.x.abs().mul(2)).clamp(0, 1).pow(1.3));
+    const streakV = exp(p.x.abs().mul(-16)).mul(float(1).sub(p.y.abs().mul(2)).clamp(0, 1).pow(1.3));
+    material.opacityNode = core.add(streakH.add(streakV)).mul(this.uAmount).clamp(0, 1) as any;
+    this.mesh = new THREE.Mesh(this.geometry, material);
+    this.mesh.name = 'gameplay-cargo-glint';
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 7;
+    this.mesh.castShadow = false;
+    this.mesh.receiveShadow = false;
+  }
+
+  /** `reveal` is the cargo's own fade-in, 0..1. */
+  update(dt: number, at: THREE.Vector3, camera: THREE.Camera, reducedMotion: boolean, reveal: number): void {
+    this.time += dt;
+    this.mesh.position.set(at.x, at.y + 1.1, at.z);
+    this.mesh.quaternion.copy(camera.quaternion);
+    // Blooms for about a third of each 2.3 s, a faint core the rest of the time.
+    const twinkle = Math.pow(Math.max(0, Math.sin(this.time * 2.7)), 4);
+    const distance = camera.position.distanceTo(at);
+    const range = Math.min(5, Math.max(1, distance / 60));
+    const strength = reducedMotion ? 0.4 : 0.2 + 0.8 * twinkle;
+    // Too close and it is a lens flare on a barrel; fade out inside 6 m.
+    const near = Math.min(1, Math.max(0, (distance - 6) / 10));
+    this.uAmount.value = strength * near * reveal;
+    const size = (2.4 + 3 * (reducedMotion ? 0.3 : twinkle)) * range;
+    this.mesh.scale.set(size, size, size);
+  }
+
+  dispose(): void {
+    this.geometry.dispose();
+    this.material.dispose();
   }
 }
 
@@ -152,6 +220,8 @@ export class Burst {
   private readonly uTint = uniform(new THREE.Color(1, 0.75, 0.35));
   private age = BURST_LIFE;
   private seed = 1;
+  /** Opacity ceiling: the sand plume is thin, so its overlapping sprites do not sum to white. */
+  private peak = 1;
 
   private readonly matrix = new THREE.Matrix4();
   private readonly position = new THREE.Vector3();
@@ -190,12 +260,16 @@ export class Burst {
 
   /**
    * @param strength 0..1, scales launch speed and spark size.
-   * @param gold     Gold sparks (a reward) or white water (an anchor).
+   * @param gold     Gold sparks (a reward), white water (an anchor) or, for
+   *                 `'sand'`, a low, wide, slow plume of churned bottom.
    */
-  fire(at: THREE.Vector3, strength = 1, gold = true): void {
+  fire(at: THREE.Vector3, strength = 1, gold: boolean | 'sand' = true): void {
     this.origin.copy(at);
     this.age = 0;
-    this.uTint.value.setRGB(gold ? 1 : 0.85, gold ? 0.75 : 0.92, gold ? 0.35 : 1);
+    const sand = gold === 'sand';
+    this.peak = sand ? 0.35 : 1;
+    if (sand) this.uTint.value.setRGB(0.5, 0.4, 0.24);
+    else this.uTint.value.setRGB(gold ? 1 : 0.85, gold ? 0.75 : 0.92, gold ? 0.35 : 1);
     // A deterministic spread per burst, so two identical runs throw identical sparks.
     let h = (this.seed++ * 0x9e3779b1) >>> 0;
     const next = () => {
@@ -206,13 +280,14 @@ export class Burst {
     };
     for (let i = 0; i < BURST_COUNT; i++) {
       const angle = next() * Math.PI * 2;
-      const out = (1.5 + next() * 5) * strength;
+      // Sand rises a few metres and spreads, rather than fountaining.
+      const out = (sand ? 1.5 + next() * 4.5 : 1.5 + next() * 5) * strength;
       // High enough to clear the hull and sails from the chase camera: 4 to 13 m.
-      const up = (9 + next() * 7) * (0.55 + 0.45 * strength);
+      const up = (sand ? 4 + next() * 4 : 9 + next() * 7) * (0.55 + 0.45 * strength);
       this.velocity[i * 3] = Math.cos(angle) * out;
       this.velocity[i * 3 + 1] = up;
       this.velocity[i * 3 + 2] = Math.sin(angle) * out;
-      this.size[i] = (0.8 + 0.8 * next()) * (0.6 + 0.4 * strength);
+      this.size[i] = (0.8 + 0.8 * next()) * (0.6 + 0.4 * strength) * (sand ? 2.4 : 1);
     }
     this.mesh.visible = true;
   }
@@ -222,7 +297,7 @@ export class Burst {
     this.age += dt;
     const t = Math.min(this.age, BURST_LIFE);
     const life = t / BURST_LIFE;
-    this.uFade.value = Math.max(0, 1 - life * life);
+    this.uFade.value = this.peak * Math.max(0, 1 - life * life);
     const shrink = 1 - life * 0.7;
     for (let i = 0; i < BURST_COUNT; i++) {
       this.position.set(

@@ -2460,11 +2460,12 @@ class App {
         toast: (text, kind) => {
           this.hud.toast(text, kind);
           // The reward toast has its chime already; the others get a cue of their own.
-          if (kind === 'warning') this.audio.uiTick('warn');
+          if (kind === 'warning' || kind === 'danger') this.audio.uiTick('warn');
           else if (kind !== 'reward') this.audio.uiTick('info');
         },
         setObjective: (objective) => this.hud.setObjective(objective),
         setScore: (label, value) => this.hud.setScore(label, value),
+        setStalled: (stalled) => this.hud.setStalled(stalled),
         setShipTelemetry: (telemetry) => {
           if (telemetry === null) {
             this.hud.clearScore();
@@ -2494,6 +2495,10 @@ class App {
         ui,
         shake: this.director,
         splash: (x, y, z, options) => this.splash.fire(x, y, z, options),
+        shakeScale: () => this.state.shake,
+        hitStop: (ms) => {
+          if (!this.captureOwnsClock) this.loop.hitStop(ms);
+        },
       });
       this.gameplay.object.visible = false;
       loaded.push(this.gameplay.object);
@@ -3580,6 +3585,7 @@ class App {
       );
       if (strike) {
         this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+        this.gameplay?.reportThunder(strike.distance);
       }
       // Less of the flash as a grade lift now the strike lights the scene for
       // real (`lighting/LightningLight`); what is left is the eye's response to

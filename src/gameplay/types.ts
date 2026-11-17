@@ -13,7 +13,7 @@
  * *relative to the bow* is simply `bearingDeg - headingDeg`.
  */
 
-export type ToastKind = 'info' | 'reward' | 'warning';
+export type ToastKind = 'info' | 'reward' | 'warning' | 'danger';
 
 /** How much canvas is set. W raises it a step, S takes it in a step. */
 export type SailSetting = 'furled' | 'half' | 'full';
@@ -61,6 +61,8 @@ export interface GameUiSink {
   setScore(label: string, value: number): void;
   /** Ship instruments, or null to hide them (e.g. on leaving the helm). */
   setShipTelemetry(telemetry: ShipTelemetry | null): void;
+  /** True while she is stalled head to wind with canvas set; false once she is free. */
+  setStalled?(stalled: boolean): void;
 }
 
 /** The audio the gameplay layer asks for. `AudioSystem` satisfies it. */

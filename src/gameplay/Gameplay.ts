@@ -3,7 +3,7 @@ import { BuoyantBody, createRadialProbes } from '../physics/Buoyancy';
 import type { ShipController } from '../physics/ShipController';
 import type { OceanSampler } from '../ocean/Sampler';
 import { mulberry32 } from '../core/random';
-import { BowSpray, Burst, ObjectiveBeacon } from './effects';
+import { BowSpray, Burst, CargoGlint, ObjectiveBeacon } from './effects';
 import {
   IRONS_DEG,
   KNOTS_PER_MS,
@@ -150,6 +150,31 @@ const SHAKE_PITCH = THREE.MathUtils.degToRad(0.9);
 const SHAKE_YAW = THREE.MathUtils.degToRad(0.5);
 const SHAKE_ROLL = THREE.MathUtils.degToRad(1.3);
 const SHAKE_LIFT = 0.12;
+/**
+ * Thunder shakes the hull a little, by how close it is: the trauma at the
+ * nearest strike (`sky/Lightning` puts them 900 m to 6.5 km out) and the range
+ * past which it adds none. It lands when the sound does, not with the flash.
+ */
+/**
+ * A grounding dips the view as she stops: pitch in radians at full speed, how
+ * fast it eases back, and the metres of drop per radian of it.
+ */
+const GROUND_KICK = THREE.MathUtils.degToRad(1.6);
+const GROUND_KICK_RATE = 9;
+const GROUND_KICK_LIFT = 7;
+/** Seconds head to wind before the HUD marks it; the toast waits for two. */
+const STALL_CUE_SECONDS = 0.5;
+const THUNDER_TRAUMA = 0.3;
+const THUNDER_RANGE = 6500;
+const SPEED_OF_SOUND = 343;
+/**
+ * A single event this hard also holds the world for a moment: milliseconds of
+ * hit-stop as a base plus a share of the trauma, ignored below the threshold.
+ * Real time, not simulation time, so it is the same on a 60 and a 120 Hz screen.
+ */
+const HIT_STOP_TRAUMA = 0.45;
+const HIT_STOP_BASE_MS = 40;
+const HIT_STOP_PER_TRAUMA_MS = 70;
 
 /** Seconds between HUD pushes for the continuous readouts. */
 const UI_INTERVAL = 0.1;
@@ -178,6 +203,16 @@ const HAUL_LINES = [
   'Fished out and stowed',
   'Another for the hold',
 ] as const;
+
+/**
+ * Hauling a cask aboard: how long it takes to arc from the water to the rail,
+ * how high the arc rises (metres), the pause before the next cask appears, and
+ * the time that cask and its beacon take to fade in. Simulation time.
+ */
+const HAUL_SECONDS = 0.55;
+const HAUL_ARC = 4.5;
+const LOOT_BEAT = 0.8;
+const LOOT_FADE_IN = 1;
 
 export type AnchorState = 'up' | 'down' | 'weighing';
 
@@ -213,6 +248,10 @@ export interface GameplayOptions {
    * the old white burst.
    */
   splash?: ((x: number, y: number, z: number, options: { radius: number; speed: number; mass: number }) => void) | null;
+  /** The player's shake intensity, 0..1. Polled each use; 0 also turns hit-stop off. */
+  shakeScale?: () => number;
+  /** Holds the simulation nearly still for this many real milliseconds. */
+  hitStop?: (ms: number) => void;
 }
 
 export interface GameplaySnapshot {
@@ -272,7 +311,18 @@ export class Gameplay {
   private cargo = 0;
   private gold = 0;
   private readonly beacon = new ObjectiveBeacon();
+  private readonly glint = new CargoGlint();
+  /** The cask in flight: a copy of the loot, swung from where it floated to the rail. */
+  private readonly haulCask: THREE.Object3D;
+  /** Seconds into the flight; negative when none is under way. */
+  private haulTime = -1;
+  private readonly haulFrom = new THREE.Vector3();
+  /** Seconds before the next cask appears, then 0..1 as it and its beacon fade in. */
+  private lootWait = 0;
+  private lootReveal = 1;
   private readonly burst = new Burst();
+  /** Sand churned up where she grounds; its own burst so a pickup does not cut it short. */
+  private readonly sandPlume = new Burst();
   private readonly bowSpray = new BowSpray();
 
   // --- feel ---------------------------------------------------------------
@@ -280,6 +330,10 @@ export class Gameplay {
   /** Seconds until an impact may add trauma again; see `IMPACT_COOLDOWN`. */
   private impactCooldown = 0;
   private grounded = false;
+  /** Pitch kick from a grounding, radians; negative dips the camera, and it eases back. */
+  private kick = 0;
+  /** Thunder on its way: seconds until it is heard and the trauma it brings. */
+  private readonly thunder: { delay: number; amount: number }[] = [];
   private reducedMotion = false;
   private readonly motionQuery: MediaQueryList | null;
   private clock = 0;
@@ -287,6 +341,8 @@ export class Gameplay {
   // --- messages -----------------------------------------------------------
   private uiTimer = 0;
   private ironsTimer = 0;
+  /** Whether the HUD has been told she is stalled; see `STALL_CUE_SECONDS`. */
+  private stalled = false;
   private ironsCooldown = 0;
   private shoalCooldown = 0;
   private greeted = false;
@@ -317,7 +373,10 @@ export class Gameplay {
       probePoints: createRadialProbes(0.62),
       mass: 40 * 0.62 ** 3,
     });
-    this.object.add(this.loot, this.beacon.object, this.burst.mesh, this.bowSpray.mesh);
+    this.haulCask = this.loot.clone(true);
+    this.haulCask.name = 'gameplay-cargo-haul';
+    this.haulCask.visible = false;
+    this.object.add(this.loot, this.haulCask, this.glint.mesh, this.beacon.object, this.burst.mesh, this.sandPlume.mesh, this.bowSpray.mesh);
 
     this.motionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -374,17 +433,25 @@ export class Gameplay {
     this.gold = 0;
     this.trauma = 0;
     this.impactCooldown = 0;
+    this.thunder.length = 0;
     this.grounded = false;
     this.clock = 0;
     this.uiTimer = 0;
     this.ironsTimer = 0;
+    this.setStalled(false);
     this.ironsCooldown = 0;
     this.shoalCooldown = 0;
     this.random = mulberry32(this.seed);
     this.o.controller.setSailDrive(0);
     this.burst.clear();
+    this.sandPlume.clear();
+    this.kick = 0;
     this.bowSpray.clear();
     this.beacon.resetClock();
+    this.haulTime = -1;
+    this.haulCask.visible = false;
+    this.lootWait = 0;
+    this.lootReveal = 1;
     this.clearShake();
 
     const ship = this.o.body.object.position;
@@ -409,9 +476,12 @@ export class Gameplay {
       if (!this.object.visible) return;
       this.armed = true;
     }
-    this.loot.visible = active;
+    this.loot.visible = active && this.lootReveal > 0;
+    this.glint.mesh.visible = this.loot.visible;
+    if (!active) this.haulCask.visible = false;
     this.beacon.object.visible = active;
     this.burst.mesh.visible = active && this.burst.alive;
+    this.sandPlume.mesh.visible = active && this.sandPlume.alive;
     this.bowSpray.mesh.visible = active;
     if (!active) return;
 
@@ -444,6 +514,7 @@ export class Gameplay {
     this.updateMessages(dt);
 
     this.burst.update(dt, this.o.camera);
+    this.sandPlume.update(dt, this.o.camera);
     this.bowSpray.update(
       dt,
       body.object,
@@ -564,6 +635,8 @@ export class Gameplay {
     const x = p.x + this.forward.x * distance - this.forward.z * lateral;
     const z = p.z + this.forward.z * distance + this.forward.x * lateral;
     this.placeLoot(x, z);
+    this.lootWait = 0;
+    this.lootReveal = 1;
   }
 
   /** Sail state for the audio, written into `out`. Allocation-free; call every frame. */
@@ -627,6 +700,9 @@ export class Gameplay {
       placeTargetAhead: (distance?: number, lateral?: number) =>
         this.placeTargetAhead(distance, lateral),
       reset: () => this.reset(),
+      /** Test hooks: the events the sea and the bottom would raise. */
+      strikeBottom: (speed = 4) => this.onGrounded(speed),
+      thunder: (distanceM: number) => this.reportThunder(distanceM),
     };
   }
 
@@ -635,7 +711,9 @@ export class Gameplay {
     this.setActive(false);
     this.object.removeFromParent();
     this.beacon.dispose();
+    this.glint.dispose();
     this.burst.dispose();
+    this.sandPlume.dispose();
     this.bowSpray.dispose();
   }
 
@@ -647,6 +725,8 @@ export class Gameplay {
     controller.setThrottleKeysEnabled(!active);
     if (!active) {
       controller.setSailDrive(0);
+      this.kick = 0;
+      this.setStalled(false);
       this.clearShake();
       this.ui.setObjective(null);
       this.ui.setShipTelemetry(null);
@@ -777,7 +857,12 @@ export class Gameplay {
     this.lootBody.update(dt, this.o.sampler);
     const ship = this.o.body.object.position;
     const lp = this.loot.position;
-    this.beacon.update(dt, lp, this.o.camera.position);
+    this.updateHaul(dt);
+    this.beacon.visibility = this.lootReveal;
+    this.beacon.update(dt, lp, this.o.camera.position, this.reducedMotion);
+    this.glint.update(dt, lp, this.o.camera, this.reducedMotion, this.lootReveal);
+    // The next cask is not there to be taken until it has appeared.
+    if (this.lootWait > 0) return;
 
     // Distance to the hull's centreline, so a target alongside the quarter is
     // taken as readily as one dead ahead.
@@ -803,12 +888,58 @@ export class Gameplay {
     this.o.audio?.playSplash(0.7);
     this.o.audio?.playChime();
     this.addTrauma(0.18);
+    // The cask is hauled aboard rather than vanishing: a copy of it arcs from
+    // where it floated to the rail. The next cask is placed now, so the seeded
+    // sequence is unchanged, but stays hidden for a beat and then fades in.
+    if (!this.reducedMotion) {
+      this.haulFrom.copy(lp);
+      this.haulCask.position.copy(lp);
+      this.haulCask.quaternion.copy(this.loot.quaternion);
+      this.haulCask.scale.setScalar(1);
+      this.haulCask.visible = true;
+      this.haulTime = 0;
+      this.lootWait = LOOT_BEAT;
+      this.lootReveal = 0;
+      this.loot.visible = false;
+      this.glint.mesh.visible = false;
+    }
     const haul = HAUL_LINES[(this.cargo - 1) % HAUL_LINES.length];
     this.ui.toast(`${haul}: ${this.lootName} · +${this.lootValue} gold`, 'reward');
     this.ui.setScore('Cargo', this.cargo);
     this.ui.setScore('Gold', this.gold);
     this.spawnLoot(lp.x, lp.z);
     this.pushObjective();
+  }
+
+  /**
+   * Flies the hauled cask to the rail and brings the next one in. The arc is a
+   * smoothstep along the line to a point over the deck, which moves with the
+   * ship, plus a sine rise; the cask tumbles and shrinks as it goes over the
+   * rail.
+   */
+  private updateHaul(dt: number): void {
+    if (this.haulTime >= 0) {
+      this.haulTime += dt;
+      const u = Math.min(1, this.haulTime / HAUL_SECONDS);
+      const e = u * u * (3 - 2 * u);
+      const ship = this.o.body.object;
+      // Over the waist, just above the rail.
+      this.tmp.set(this.o.hullLength * 0.05, this.o.hullBeam * 0.4, 0).applyQuaternion(ship.quaternion).add(ship.position);
+      const cask = this.haulCask;
+      cask.position.lerpVectors(this.haulFrom, this.tmp, e);
+      cask.position.y += Math.sin(u * Math.PI) * HAUL_ARC;
+      cask.rotateZ(dt * 5);
+      cask.scale.setScalar(1 - 0.75 * smoothstep(0.7, 1, u));
+      if (u >= 1) {
+        this.haulTime = -1;
+        cask.visible = false;
+      }
+    }
+    if (this.lootWait > 0) {
+      this.lootWait = Math.max(0, this.lootWait - dt);
+    } else if (this.lootReveal < 1) {
+      this.lootReveal = Math.min(1, this.lootReveal + dt / LOOT_FADE_IN);
+    }
   }
 
   /** Picks the next cargo position from the seeded sequence, in navigable water. */
@@ -879,24 +1010,33 @@ export class Gameplay {
     const depth = -this.o.floorHeight(p.x, p.z);
     const speed = Math.hypot(body.velocity.x, body.velocity.z);
     const grounded = depth < GROUND_DEPTH && speed > 0.8;
-    if (grounded && !this.grounded) {
-      this.addTrauma(Math.min(0.7, 0.3 + speed * 0.08));
-      this.o.audio?.hullImpact?.(Math.min(1, 0.4 + speed * 0.1), true);
-    }
+    if (grounded && !this.grounded) this.onGrounded(speed);
     if (grounded) this.trauma = Math.max(this.trauma, Math.min(0.45, speed * 0.1));
     this.grounded = grounded;
     this.shoalCooldown = Math.max(0, this.shoalCooldown - dt);
     if (depth < GROUND_DEPTH + 3 && speed > 1 && this.shoalCooldown === 0) {
       this.shoalCooldown = 8;
-      this.ui.toast('Shallows! Turn her away', 'warning');
+      this.ui.toast('Shallows! Turn her away', 'danger');
     }
 
+    for (let i = this.thunder.length - 1; i >= 0; i--) {
+      const rumble = this.thunder[i];
+      rumble.delay -= dt;
+      if (rumble.delay > 0) continue;
+      this.thunder.splice(i, 1);
+      this.trauma = Math.min(1, this.trauma + rumble.amount);
+    }
     this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * dt);
     this.impactCooldown = Math.max(0, this.impactCooldown - dt);
     const shake = this.o.shake;
     if (!shake) return;
-    const amount = this.reducedMotion ? 0 : this.trauma * this.trauma;
-    if (amount <= 1e-5) {
+    const scale = this.reducedMotion ? 0 : this.shakeScale();
+    const amount = this.trauma * this.trauma * scale;
+    // The kick is a single dip of the view, not a shake: it eases back in about
+    // a third of a second and is not part of the trauma budget.
+    this.kick *= Math.exp(-dt * GROUND_KICK_RATE);
+    const kick = this.kick * scale;
+    if (amount <= 1e-5 && Math.abs(kick) <= 1e-5) {
       this.clearShake();
       return;
     }
@@ -905,8 +1045,8 @@ export class Gameplay {
     const n2 = Math.sin(t * 11.3 + 4.1) * 0.6 + Math.sin(t * 17.9 + 2.6) * 0.4;
     const n3 = Math.sin(t * 9.7 + 5.3) * 0.6 + Math.sin(t * 15.1 + 0.8) * 0.4;
     const n4 = Math.sin(t * 14.3 + 3.7) * 0.6 + Math.sin(t * 23.3 + 4.4) * 0.4;
-    this.shakeOffset.set(0, n4 * SHAKE_LIFT * amount, 0);
-    shake.setShake(this.shakeOffset, n1 * SHAKE_PITCH * amount, n2 * SHAKE_YAW * amount, n3 * SHAKE_ROLL * amount);
+    this.shakeOffset.set(0, n4 * SHAKE_LIFT * amount + kick * GROUND_KICK_LIFT, 0);
+    shake.setShake(this.shakeOffset, n1 * SHAKE_PITCH * amount + kick, n2 * SHAKE_YAW * amount, n3 * SHAKE_ROLL * amount);
   }
 
   private updateMessages(dt: number): void {
@@ -921,6 +1061,9 @@ export class Gameplay {
     } else {
       this.ironsTimer = 0;
     }
+    // The HUD hears of a stall well before the toast, so a tack that only
+    // brushes the wind does not flash it but a stall that is staying does.
+    this.setStalled(this.ironsTimer > STALL_CUE_SECONDS);
 
     this.uiTimer += dt;
     if (this.uiTimer >= UI_INTERVAL) {
@@ -928,6 +1071,12 @@ export class Gameplay {
       this.pushTelemetry();
       this.pushObjective();
     }
+  }
+
+  private setStalled(stalled: boolean): void {
+    if (stalled === this.stalled) return;
+    this.stalled = stalled;
+    this.ui.setStalled?.(stalled);
   }
 
   private pushAllUi(): void {
@@ -966,6 +1115,52 @@ export class Gameplay {
 
   private addTrauma(amount: number): void {
     this.trauma = Math.min(1, this.trauma + amount);
+    if (amount >= HIT_STOP_TRAUMA && !this.reducedMotion && this.shakeScale() > 0) {
+      this.o.hitStop?.(HIT_STOP_BASE_MS + HIT_STOP_PER_TRAUMA_MS * amount);
+    }
+  }
+
+  private shakeScale(): number {
+    return THREE.MathUtils.clamp(this.o.shakeScale?.() ?? 1, 0, 1);
+  }
+
+  /**
+   * Thunder from a strike `distanceM` away. The shake arrives with the sound
+   * (`distance / 343` s late) and fades with range; a strike out of range, or
+   * under reduced motion or a zero intensity, adds nothing. Ignored off the helm
+   * like every impact.
+   */
+  reportThunder(distanceM: number): void {
+    if (!this.active || this.reducedMotion) return;
+    const near = 1 - THREE.MathUtils.clamp(distanceM / THUNDER_RANGE, 0, 1);
+    const amount = THUNDER_TRAUMA * near * near;
+    if (amount < 0.01) return;
+    this.thunder.push({ delay: distanceM / SPEED_OF_SOUND, amount });
+  }
+
+  /** The keel has struck: the jolt, the thud, the plume and the news. */
+  private onGrounded(speed: number): void {
+    this.addTrauma(Math.min(0.7, 0.3 + speed * 0.08));
+    this.o.audio?.hullImpact?.(Math.min(1, 0.4 + speed * 0.1), true);
+    // The shoal warning has usually fired already; this says she has struck, and
+    // holds it back so the two do not stack.
+    this.shoalCooldown = 8;
+    this.raiseSandPlume(speed);
+    this.ui.toast("Aground! Turn her away and she'll slide free", 'danger');
+  }
+
+  /**
+   * Churned sand where the keel strikes: the plume rises from the water at the
+   * stem, with a splash on the surface. Sized by the speed she hit at, and
+   * given a short dip of the camera.
+   */
+  private raiseSandPlume(speed: number): void {
+    const strength = THREE.MathUtils.clamp(speed / 5, 0.35, 1);
+    this.bowPoint(this.bow);
+    const surface = this.o.sampler.ready ? this.o.sampler.height(this.bow.x, this.bow.z) : 0;
+    this.sandPlume.fire(this.tmp2.set(this.bow.x, surface + 0.2, this.bow.z), strength, 'sand');
+    this.o.splash?.(this.bow.x, surface, this.bow.z, { radius: 0.9, speed: 2 + speed * 0.6, mass: 400 });
+    if (!this.reducedMotion) this.kick = -GROUND_KICK * strength;
   }
 
   private clearShake(): void {

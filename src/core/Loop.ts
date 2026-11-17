@@ -69,9 +69,23 @@ export class Loop {
   /** Exponential moving average keeps the readout stable without lagging real drops. */
   private static readonly FPS_SMOOTHING = 0.1;
   private static readonly MAX_DELTA = 1 / 15;
+  /** What time runs at during a hit-stop: nearly still, not frozen. */
+  private static readonly HIT_STOP_SCALE = 0.05;
+  /** Wall-clock time (ms) a hit-stop lasts until. */
+  private hitStopUntil = 0;
 
   constructor(renderFn: RenderFn) {
     this.renderFn = renderFn;
+  }
+
+  /**
+   * Slows the simulation to a crawl for `ms` of real time: the beat that sells a
+   * hard impact. Measured on the wall clock so it is the same length at any
+   * refresh rate, and it touches only free-running frames: `step` takes a fixed
+   * `dt` and ignores it, so a deterministic capture can never see one.
+   */
+  hitStop(ms: number): void {
+    this.hitStopUntil = Math.max(this.hitStopUntil, performance.now() + ms);
   }
 
   /** Supplies the fence the pacer times GPU work with. Optional. */
@@ -265,7 +279,9 @@ export class Loop {
 
     const rawDelta = (now - this.last) / 1000;
     if (this.pacing) this.pacer.rendered(now, this.last);
-    const dt = Math.min(this.pacing ? this.pacer.delta(now, this.last) : rawDelta, Loop.MAX_DELTA);
+    const dt =
+      Math.min(this.pacing ? this.pacer.delta(now, this.last) : rawDelta, Loop.MAX_DELTA) *
+      (now < this.hitStopUntil ? Loop.HIT_STOP_SCALE : 1);
     this.last = now;
 
     this.inFlight = true;

@@ -39,6 +39,7 @@ type SliderKey =
   | 'fogDensity'
   | 'volume'
   | 'musicVolume'
+  | 'shake'
   | 'pixelRatio';
 type ToggleKey = 'buoyancyProbes' | 'wakeProbes';
 
@@ -76,6 +77,9 @@ const SEA_SKY_SLIDERS = [
 ] as const satisfies readonly SliderKey[];
 
 const CABIN_SLIDERS = ['volume', 'musicVolume', 'pixelRatio'] as const satisfies readonly SliderKey[];
+
+/** The helm's own comfort setting, placed after the cabin's. */
+const HELM_SLIDERS = ['shake'] as const satisfies readonly SliderKey[];
 
 const SLIDERS: readonly SliderSpec[] = [
   {
@@ -146,6 +150,15 @@ const SLIDERS: readonly SliderSpec[] = [
     max: 1,
     step: 0.01,
     format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
+  },
+  {
+    key: 'shake',
+    label: 'Camera shake',
+    tip: 'How hard the camera jolts when you strike a shoal, a wave slams or thunder rolls. Zero holds it steady',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (v) => (v === 0 ? 'Steady' : `${Math.round(v * 100)}%`),
   },
   {
     key: 'pixelRatio',
@@ -222,7 +235,7 @@ function sliderSpec(key: SliderKey): SliderSpec {
 
 /** Every declared slider must be placed exactly once. */
 function assertSlidersPlaced(): void {
-  const placed = [...SEA_SKY_SLIDERS, ...CABIN_SLIDERS] as readonly SliderKey[];
+  const placed = [...SEA_SKY_SLIDERS, ...CABIN_SLIDERS, ...HELM_SLIDERS] as readonly SliderKey[];
   for (const spec of SLIDERS) {
     const count = placed.filter((key) => key === spec.key).length;
     if (count !== 1) {
@@ -359,6 +372,9 @@ export class Panel {
     // ---- Cabin -------------------------------------------------------------
     const cabin = this.section(body, 'Sound & Screen');
     for (const key of CABIN_SLIDERS) {
+      this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
+    }
+    for (const key of HELM_SLIDERS) {
       this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
     }
 
