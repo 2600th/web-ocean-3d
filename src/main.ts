@@ -3866,7 +3866,7 @@ class App {
     // whole graph under water on the same continuous value the visuals use.
     const audio = this.audioParams;
     audio.windSpeed = this.state.windSpeed;
-    audio.waveHeight = this.state.peakWavelength * 0.045;
+    audio.waveHeight = significantWaveHeight(this.simulation.spectrumParams);
     audio.peakWavelength = this.state.peakWavelength;
     audio.rain = raining;
     audio.submersion = submersion;
