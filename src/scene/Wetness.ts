@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { float, materialColor, materialRoughness, mix, normalWorldGeometry } from 'three/tsl';
+import { float, materialColor, materialRoughness, max, mix, normalWorldGeometry, positionWorld, smoothstep, vec4 } from 'three/tsl';
 import { uniform } from '../core/uniform';
 
 /**
@@ -84,6 +84,36 @@ const DRY_TAU = 26;
 /** Channel for anything adopted without naming one. */
 const DEFAULT_CHANNEL = 'world';
 
+/**
+ * The hull's own water: a band at the waterline and spray where the sea hits.
+ *
+ * Rain wets from above; the sea wets from the side. Along the waterline the
+ * planking is soaked to wherever the last wave reached, and the mark creeps back
+ * down as it dries, so a hull working in a seaway carries a dark, glossy band
+ * that rises and falls with the swell around her rather than a painted stripe.
+ * And where a sea slaps the bow or a quarter, that stretch of the side and the
+ * deck above it goes dark at once and dries over the next several seconds.
+ *
+ * Both are tracked on the CPU at four stations along each side — the sea height
+ * from `OceanSampler` at eight points a frame — and reach the hull's shader as
+ * four vec4 uniforms and the ship's inverse world matrix. The shader
+ * interpolates along the hull and across the beam, so the cost is a matrix
+ * multiply and a handful of mixes per hull fragment, on the ship's materials
+ * only.
+ */
+const SHIP_CHANNEL = 'ship';
+/** Seconds for the high-water mark to creep back down to the sea. */
+const WATERLINE_DRY_TAU = 5;
+/** Height above the wet line still damp, and the feather above that, metres. */
+const WATERLINE_RUNUP = 0.12;
+const WATERLINE_FEATHER = 0.35;
+/** Seconds for a patch of spray to dry. Faster than a soaking: it is a film, not a soak. */
+const SPRAY_DRY_TAU = 9;
+/** Spray reaches the deck and the rail; past this far above the sea it thins out, metres. */
+const SPRAY_REACH = [2.5, 7] as const;
+/** Stations along the hull, as fractions of its length from the transom. */
+const STATIONS = 4;
+
 interface Tracked {
   material: THREE.MeshStandardMaterial;
   /** Set when the wetting graph was attached, so `dispose` can detach it. */
@@ -118,6 +148,34 @@ export class SurfaceWetness {
   );
   /** Materials are shared between clones; adopting one twice would double-apply. */
   private readonly seen = new Set<THREE.Material>();
+
+  // --- the hull's waterline and spray (see `SHIP_CHANNEL`) -------------------
+  private hull: {
+    object: THREE.Object3D;
+    length: number;
+    beam: number;
+    height: (x: number, z: number) => number;
+  } | null = null;
+  /** World to the ship's frame, taken at render time so the band never lags the hull. */
+  private readonly uShipInverse = uniform(new THREE.Matrix4()).onRenderUpdate((_, node) => {
+    const m = node.value as THREE.Matrix4;
+    if (this.hull) m.copy(this.hull.object.matrixWorld).invert();
+    return m;
+  });
+  /** Hull length and beam, metres. */
+  private readonly uHull = uniform(new THREE.Vector2(1, 1));
+  /** 0 until a hull is tracked, so an untracked ship stays as rain alone leaves it. */
+  private readonly uBandOn = uniform(0);
+  /** High-water mark at each station, ship-frame metres; port and starboard. */
+  private readonly uLinePort = uniform(new THREE.Vector4(-100, -100, -100, -100));
+  private readonly uLineStbd = uniform(new THREE.Vector4(-100, -100, -100, -100));
+  /** Spray wetness at each station, 0..1. */
+  private readonly uSprayPort = uniform(new THREE.Vector4());
+  private readonly uSprayStbd = uniform(new THREE.Vector4());
+  private readonly line = new Float32Array(STATIONS * 2);
+  private readonly sprayCells = new Float32Array(STATIONS * 2);
+  /** Set on a reset: the next update takes the sea as the mark, with no history. */
+  private lineFresh = true;
 
   constructor() {
     this.channel(DEFAULT_CHANNEL);
@@ -198,7 +256,9 @@ export class SurfaceWetness {
       float(1),
       normalWorldGeometry.y.mul(0.5).add(0.5).clamp(0, 1),
     );
-    const wet = this.uWetness.mul(exposure).clamp(0, 1);
+    const rainWet = this.uWetness.mul(exposure).clamp(0, 1);
+    // The ship's materials also take the sea's water: the waterline and spray.
+    const wet = entry.channel.name === SHIP_CHANNEL ? max(rainWet, this.hullWaterNode()) : rainWet;
 
     // `materialColor` and `materialRoughness` are three's own compositions of the
     // material's scalars with its maps, so wrapping them preserves the glTF's
@@ -216,6 +276,100 @@ export class SurfaceWetness {
   }
 
   /**
+   * The hull's waterline band and spray mask, 0..1, in the ship's frame. See
+   * `SHIP_CHANNEL`.
+   */
+  private hullWaterNode() {
+    const p = this.uShipInverse.mul(vec4(positionWorld, 1)).xyz;
+    // Station coordinate 0..3 from transom to stem; piecewise linear between them.
+    const t = p.x.div(this.uHull.x).add(0.5).mul(STATIONS - 1).clamp(0, STATIONS - 1);
+    const along = (v: typeof this.uLinePort) =>
+      mix(mix(mix(v.x, v.y, t.clamp(0, 1)), v.z, t.sub(1).clamp(0, 1)), v.w, t.sub(2).clamp(0, 1));
+    const side = smoothstep(this.uHull.y.mul(-0.3), this.uHull.y.mul(0.3), p.z);
+    const above = p.y.sub(mix(along(this.uLinePort), along(this.uLineStbd), side));
+    const band = float(1).sub(smoothstep(WATERLINE_RUNUP, WATERLINE_RUNUP + WATERLINE_FEATHER, above));
+    const spray = mix(along(this.uSprayPort), along(this.uSprayStbd), side).mul(
+      float(1).sub(smoothstep(SPRAY_REACH[0], SPRAY_REACH[1], above)),
+    );
+    return max(band, spray).mul(this.uBandOn).clamp(0, 1);
+  }
+
+  /**
+   * Starts tracking the hull's waterline: `height` is the sea surface at world
+   * (x, z), `length` and `beam` the hull's in metres, `object` the hull whose
+   * frame is +X forward, +Z starboard, y = 0 at the design waterline.
+   */
+  trackWaterline(object: THREE.Object3D, length: number, beam: number, height: (x: number, z: number) => number): void {
+    this.hull = { object, length, beam, height };
+    this.uHull.value.set(length, beam);
+    this.uBandOn.value = 1;
+    this.lineFresh = true;
+  }
+
+  /**
+   * Sea thrown against the hull at world `at`, `strength` 0..1: wets that
+   * stretch of side and the deck above it, which then dries over seconds.
+   */
+  spray(at: THREE.Vector3, strength: number): void {
+    const hull = this.hull;
+    if (!hull || !(strength > 0)) return;
+    hull.object.updateWorldMatrix(true, false);
+    const local = _local.copy(at).applyMatrix4(_inverse.copy(hull.object.matrixWorld).invert());
+    const t = THREE.MathUtils.clamp((local.x / hull.length + 0.5) * (STATIONS - 1), 0, STATIONS - 1);
+    const i0 = Math.min(STATIONS - 2, Math.floor(t));
+    const f = t - i0;
+    // Mostly the side it struck; a little over the deck to the other.
+    const s = THREE.MathUtils.clamp(local.z / (hull.beam * 0.5), -1, 1);
+    const amount = Math.min(1, strength * 0.9);
+    for (let side = 0; side < 2; side++) {
+      const share = side === 1 ? 0.5 + 0.5 * s : 0.5 - 0.5 * s;
+      for (const [i, w] of [[i0, 1 - f], [i0 + 1, f]] as const) {
+        const k = side * STATIONS + i;
+        const add = amount * share * w;
+        this.sprayCells[k] = Math.min(1, this.sprayCells[k] + add * (1 - this.sprayCells[k]));
+      }
+    }
+    this.writeHull();
+  }
+
+  /** Sea height around the hull into the high-water marks, and the spray drying. */
+  private updateHull(dt: number): void {
+    const hull = this.hull;
+    if (!hull) return;
+    const object = hull.object;
+    object.updateWorldMatrix(true, false);
+    _inverse.copy(object.matrixWorld).invert();
+    const down = this.lineFresh ? 1 : 1 - Math.exp(-dt / WATERLINE_DRY_TAU);
+    for (let side = 0; side < 2; side++) {
+      const z = (side === 0 ? -0.5 : 0.5) * hull.beam;
+      for (let i = 0; i < STATIONS; i++) {
+        // Stations a little inside the ends, where the hull still has sides.
+        const x = (i / (STATIONS - 1) - 0.5) * hull.length * 0.9;
+        const w = _local.set(x, 0, z).applyMatrix4(object.matrixWorld);
+        w.y = hull.height(w.x, w.z);
+        const sea = w.applyMatrix4(_inverse).y;
+        const k = side * STATIONS + i;
+        // Rises with the sea at once, falls back as it dries.
+        const prev = this.line[k];
+        this.line[k] = sea >= prev ? sea : prev + (sea - prev) * down;
+      }
+    }
+    this.lineFresh = false;
+    const dry = Math.exp(-dt / SPRAY_DRY_TAU);
+    for (let k = 0; k < this.sprayCells.length; k++) this.sprayCells[k] *= dry;
+    this.writeHull();
+  }
+
+  private writeHull(): void {
+    const l = this.line;
+    const c = this.sprayCells;
+    this.uLinePort.value.set(l[0], l[1], l[2], l[3]);
+    this.uLineStbd.value.set(l[4], l[5], l[6], l[7]);
+    this.uSprayPort.value.set(c[0], c[1], c[2], c[3]);
+    this.uSprayStbd.value.set(c[4], c[5], c[6], c[7]);
+  }
+
+  /**
    * @param rain Rain rate, 0..1, from the weather system. Drives every channel.
    */
   update(dt: number, rain: number): void {
@@ -227,6 +381,7 @@ export class SurfaceWetness {
       channel.level += (target - channel.level) * (1 - Math.exp(-dt / tau));
     }
     this.write();
+    this.updateHull(dt);
   }
 
   /**
@@ -248,6 +403,10 @@ export class SurfaceWetness {
     const v = Math.max(0, Math.min(1, value));
     for (const channel of this.channels.values()) channel.level = v;
     this.write();
+    // The hull's spray dries and its waterline forgets the last sea.
+    this.sprayCells.fill(0);
+    this.lineFresh = true;
+    this.writeHull();
   }
 
   /** The wettest channel, 0..1. */
@@ -320,5 +479,10 @@ export class SurfaceWetness {
     }
     this.tracked.length = 0;
     this.seen.clear();
+    this.hull = null;
+    this.uBandOn.value = 0;
   }
 }
+
+const _local = /*@__PURE__*/ new THREE.Vector3();
+const _inverse = /*@__PURE__*/ new THREE.Matrix4();
