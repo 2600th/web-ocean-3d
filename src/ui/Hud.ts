@@ -283,6 +283,8 @@ export class Hud {
   private shipKnots: number | null = null;
   private objective: Objective | null = null;
   private writtenObjectiveArrow = Number.NaN;
+  /** The needle's unwrapped angle, so the transition turns the short way across 180. */
+  private objectiveArrowTurn = 0;
   private lastObjectiveWrite = 0;
   private shipHeading: number | null = null;
 
@@ -1006,8 +1008,12 @@ export class Hud {
     if (hasBearing) {
       const relative = Math.round(wrap180(objective.bearingDeg! - this.heading));
       if (relative !== this.writtenObjectiveArrow) {
+        // A wrapped angle jumping from 179 to -179 would spin the whole circle
+        // under the transition; step by the shortest difference instead.
+        if (Number.isNaN(this.writtenObjectiveArrow)) this.objectiveArrowTurn = relative;
+        else this.objectiveArrowTurn += wrap180(relative - this.writtenObjectiveArrow);
         this.writtenObjectiveArrow = relative;
-        this.objectiveArrow.style.transform = `rotate(${relative}deg)`;
+        this.objectiveArrow.style.transform = `rotate(${this.objectiveArrowTurn}deg)`;
       }
     }
 
