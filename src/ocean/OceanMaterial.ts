@@ -4000,13 +4000,23 @@ export class OceanMaterial {
           // The trail's response is steep on purpose: the band's core holds
           // 0.8 and up, the quarter waves' and arms' trails 0.2–0.6, and drawn
           // on a gentle ramp both read as the same white.
-          // Its strands run along the ship's track, not the wind: a wake is
-          // drawn out astern by the hull that made it.
+          // On the sea's own axis, not the hull's heading. The lace reads its
+          // pattern in world xz rotated onto its axis, about the world origin,
+          // and the ship sails a kilometre from it: with the heading as the
+          // axis, a turn of one degree moved every point of the trail's
+          // pattern about 17 m, so the whole wake's texture swept sideways
+          // through the water while the trail itself stood still — a texture
+          // scrolling on a plane. A per-texel track direction would need a
+          // seventeenth sampled texture in this stage (16 is the limit), and
+          // one taken from the trail's gradient cannot tell its two ends
+          // apart. The track still reads along the trail: that is the amount
+          // `Wake` deposits (the streaked band, the core and the arms), laid
+          // down once and left where it fell.
           const hullLace = foamLace(
             foamXZ,
             hullCover.mul(hullCover).max(hullFresh),
             viewDistance,
-            this.uHullForward,
+            undefined,
             foamFootprint,
           );
           const hullMask = hullLace
