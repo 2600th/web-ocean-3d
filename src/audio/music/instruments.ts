@@ -11,17 +11,23 @@
  * every case, what the *pitch or the level does over the note*, not the
  * waveform:
  *
- *  - **Fiddle.** A band-limited sawtooth (a bowed string's Helmholtz motion is
- *    one) under a body EQ. The bow is the envelope: a soft attack, a dip as the
- *    bow settles, and a swell on long notes. Vibrato arrives late, after the
- *    note is established, the way a player adds it. Cuts — a flick to the note
- *    above for 30 ms — and slides from below are the idiom's ornaments.
+ *  - **Fiddle.** Two band-limited sawtooths a few cents apart (a bowed
+ *    string's Helmholtz motion is one; two is a section rather than a synth)
+ *    under a body EQ, with a breath of bow noise on the attack. The bow is the
+ *    envelope: a soft attack, a dip as the bow settles, and a swell on long
+ *    notes. Vibrato arrives late, after the note is established, the way a
+ *    player adds it. Cuts — a flick to the note above for 30 ms — and slides
+ *    from below are the idiom's ornaments.
  *  - **Concertina / accordion.** A free reed is a pulse-like wave with a strong
- *    odd series; the bellows make the attack slow and the release short.
+ *    odd series; the bellows make the attack slow and the release short. A
+ *    chord stab is several reeds under one envelope.
  *  - **Plucked strings.** Karplus–Strong: a burst of noise in a tuned, lossy
  *    delay loop. Rendered once per pitch class into a buffer and replayed.
  *  - **Bodhrán.** A frame drum is a membrane whose pitch *falls* as the head
- *    relaxes after the stick lands, plus the stick's own click.
+ *    relaxes after the stick lands, with its first overtone ringing above the
+ *    thud and the stick's own click.
+ *  - **Bass.** A sawtooth through a resonant low-pass that snaps open on the
+ *    attack and closes within a fifth of a second: it speaks, then sits.
  *  - **Glass and bells.** Inharmonic partials (2.76, 5.4 — a struck bar's
  *    modes) with long tails, for the underwater and attract arrangements.
  */
@@ -50,9 +56,15 @@ const FIDDLE_VIBRATO_DEPTH = 0.0055;
 /** Notes shorter than this get no vibrato oscillator at all: it would never be heard. */
 const FIDDLE_VIBRATO_MIN = 0.32;
 
+/** Cents between the two bows; enough to thicken, not enough to beat audibly. */
+const FIDDLE_SPREAD = 7;
+/** Level of the second bow against the first. */
+const FIDDLE_SECOND = 0.7;
+
 export function playFiddle(
   host: NoteHost,
   dest: AudioNode,
+  white: AudioBuffer,
   t: number,
   midi: number,
   dur: number,
@@ -63,17 +75,27 @@ export function playFiddle(
   const ctx = host.ctx;
   const f = midiToHz(midi);
 
+  // Two bows a few cents apart: a player's double-stop unison, or two fiddles
+  // in a band. One sawtooth is a synthesiser; two is a section.
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
-  if (ornament.cut !== null) {
-    osc.frequency.setValueAtTime(midiToHz(ornament.cut), t);
-    osc.frequency.setValueAtTime(f, t + 0.032);
-  } else if (ornament.slide) {
-    osc.frequency.setValueAtTime(f * 0.97, t);
-    osc.frequency.exponentialRampToValueAtTime(f, t + 0.07);
-  } else {
-    osc.frequency.setValueAtTime(f, t);
+  const twin = ctx.createOscillator();
+  twin.type = 'sawtooth';
+  osc.detune.value = -FIDDLE_SPREAD * 0.5;
+  twin.detune.value = FIDDLE_SPREAD * 0.5;
+  for (const o of [osc, twin]) {
+    if (ornament.cut !== null) {
+      o.frequency.setValueAtTime(midiToHz(ornament.cut), t);
+      o.frequency.setValueAtTime(f, t + 0.032);
+    } else if (ornament.slide) {
+      o.frequency.setValueAtTime(f * 0.97, t);
+      o.frequency.exponentialRampToValueAtTime(f, t + 0.07);
+    } else {
+      o.frequency.setValueAtTime(f, t);
+    }
   }
+  const twinLevel = ctx.createGain();
+  twinLevel.gain.value = FIDDLE_SECOND;
 
   const env = ctx.createGain();
   const g = env.gain;
@@ -91,12 +113,37 @@ export function playFiddle(
   g.setTargetAtTime(0, release, FIDDLE_RELEASE_TAU);
 
   osc.connect(env);
+  twin.connect(twinLevel);
+  twinLevel.connect(env);
   env.connect(dest);
   const end = release + FIDDLE_RELEASE_TAU * 7;
   osc.start(t);
   osc.stop(end);
+  twin.start(t);
+  twin.stop(end);
 
+  // The bow biting the string: a breath of high noise as the stroke starts,
+  // gone before the note has settled.
+  const scrape = ctx.createBufferSource();
+  scrape.buffer = white;
+  const scrapeBand = ctx.createBiquadFilter();
+  scrapeBand.type = 'bandpass';
+  scrapeBand.frequency.value = 3200;
+  scrapeBand.Q.value = 1.2;
+  const scrapeEnv = ctx.createGain();
+  const scrapeLevel = vel * 0.55;
+  scrapeEnv.gain.setValueAtTime(0, t);
+  scrapeEnv.gain.linearRampToValueAtTime(scrapeLevel, t + 0.006);
+  scrapeEnv.gain.exponentialRampToValueAtTime(scrapeLevel * 1e-3, t + 0.06);
+  scrape.connect(scrapeBand);
+  scrapeBand.connect(scrapeEnv);
+  scrapeEnv.connect(dest);
+  scrape.start(t, random() * (white.duration - 0.5));
+  scrape.stop(t + 0.07);
+
+  const nodes: AudioNode[] = [twin, twinLevel, env, scrape, scrapeBand, scrapeEnv];
   if (dur >= FIDDLE_VIBRATO_MIN) {
+    // One vibrato for both bows: the same hand is on both strings.
     const lfo = ctx.createOscillator();
     lfo.frequency.value = 5.2 + random() * 0.7;
     const depth = ctx.createGain();
@@ -105,12 +152,12 @@ export function playFiddle(
     depth.gain.linearRampToValueAtTime(f * FIDDLE_VIBRATO_DEPTH, t + FIDDLE_VIBRATO_DELAY + 0.3);
     lfo.connect(depth);
     depth.connect(osc.frequency);
+    depth.connect(twin.frequency);
     lfo.start(t);
     lfo.stop(end);
-    host.track(osc, [env, lfo, depth]);
-  } else {
-    host.track(osc, [env]);
+    nodes.push(lfo, depth);
   }
+  host.track(osc, nodes);
 }
 
 // --- reeds -------------------------------------------------------------------
@@ -161,6 +208,55 @@ export function playReed(
   osc.start(t);
   osc.stop(off + release * 2.5);
   host.track(osc, [env]);
+}
+
+/** Most reeds one chord sounds. */
+const MAX_CHORD = 4;
+
+/**
+ * A chord on the reeds through one envelope: a squeezebox's button chord, all
+ * its reeds opened by the same bellows push. Up to `MAX_CHORD` notes of
+ * `midis`, each at `vel`, counted as one voice.
+ */
+export function playReedChord(
+  host: NoteHost,
+  dest: AudioNode,
+  wave: PeriodicWave,
+  t: number,
+  midis: readonly number[],
+  dur: number,
+  vel: number,
+  attack: number,
+  release: number,
+  detuneCents: number,
+): void {
+  const count = Math.min(MAX_CHORD, midis.length);
+  if (count === 0) return;
+  const ctx = host.ctx;
+  const env = ctx.createGain();
+  const g = env.gain;
+  const off = t + Math.max(attack + 0.02, dur);
+  g.setValueAtTime(0, t);
+  g.linearRampToValueAtTime(vel, t + attack);
+  g.setValueAtTime(vel, off);
+  g.setTargetAtTime(0, off, release / 3);
+  env.connect(dest);
+  const stop = off + release * 2.5;
+  const nodes: AudioNode[] = [env];
+  let first: OscillatorNode | null = null;
+  for (let i = 0; i < count; i++) {
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(wave);
+    osc.frequency.value = midiToHz(midis[i]);
+    // The reeds of one chord are never quite in tune with each other.
+    osc.detune.value = detuneCents + (i - 1) * 2.5;
+    osc.connect(env);
+    osc.start(t);
+    osc.stop(stop);
+    if (first === null) first = osc;
+    else nodes.push(osc);
+  }
+  if (first !== null) host.track(first, nodes);
 }
 
 // --- plucked strings -----------------------------------------------------------
@@ -252,7 +348,8 @@ export function playPluck(
   src.connect(env);
   env.connect(dest);
   src.start(t);
-  src.stop(Math.min(t + buffer.duration / rate, off + 0.4));
+  // Five time constants of the choke is -43 dB: gone, and the voice freed.
+  src.stop(Math.min(t + buffer.duration / rate, off + 0.3));
   host.track(src, [env]);
 }
 
@@ -268,15 +365,21 @@ interface DrumSpec {
   click: number;
   clickHz: number;
   clickDecay: number;
+  /** Level of the head's first off-centre mode, at 1.59 times the fundamental. */
+  mode: number;
 }
 
+/** The (1,1) mode of a circular membrane, against the (0,1). */
+const DRUM_MODE_RATIO = 1.59;
+
 const DRUM: Record<DrumStroke, DrumSpec> = {
-  // The downstroke: the full head, a fall from about 120 to 60 Hz.
-  down: { from: 124, to: 60, sweep: 0.07, decay: 0.24, click: 0.35, clickHz: 1100, clickDecay: 0.028 },
+  // The downstroke: the full head, struck hard enough that the pitch falls
+  // from about 165 to 62 Hz in the first 45 ms — that fall is the punch.
+  down: { from: 165, to: 62, sweep: 0.045, decay: 0.3, click: 0.5, clickHz: 950, clickDecay: 0.03, mode: 0.35 },
   // The upstroke is lighter and catches the head higher.
-  up: { from: 150, to: 82, sweep: 0.05, decay: 0.12, click: 0.45, clickHz: 1500, clickDecay: 0.02 },
+  up: { from: 190, to: 92, sweep: 0.035, decay: 0.13, click: 0.5, clickHz: 1600, clickDecay: 0.018, mode: 0.25 },
   // A big low tom for the storm.
-  tom: { from: 92, to: 44, sweep: 0.14, decay: 0.55, click: 0.25, clickHz: 520, clickDecay: 0.06 },
+  tom: { from: 110, to: 46, sweep: 0.12, decay: 0.6, click: 0.3, clickHz: 600, clickDecay: 0.05, mode: 0.3 },
 };
 
 export function playDrum(
@@ -300,6 +403,16 @@ export function playDrum(
   body.gain.linearRampToValueAtTime(vel, t + 0.002);
   body.gain.exponentialRampToValueAtTime(vel * 1e-3, t + spec.decay);
 
+  // The skin's ring above the thud, falling with it and dying sooner.
+  const ring = ctx.createOscillator();
+  ring.frequency.setValueAtTime(spec.from * tune * DRUM_MODE_RATIO, t);
+  ring.frequency.exponentialRampToValueAtTime(spec.to * tune * DRUM_MODE_RATIO, t + spec.sweep);
+  const ringLevel = ctx.createGain();
+  const ringPeak = Math.max(1e-4, vel * spec.mode);
+  ringLevel.gain.setValueAtTime(0, t);
+  ringLevel.gain.linearRampToValueAtTime(ringPeak, t + 0.002);
+  ringLevel.gain.exponentialRampToValueAtTime(ringPeak * 1e-3, t + spec.decay * 0.45);
+
   const noise = ctx.createBufferSource();
   noise.buffer = white;
   noise.loop = true;
@@ -315,6 +428,8 @@ export function playDrum(
 
   osc.connect(body);
   body.connect(dest);
+  ring.connect(ringLevel);
+  ringLevel.connect(dest);
   noise.connect(band);
   band.connect(click);
   click.connect(dest);
@@ -322,12 +437,18 @@ export function playDrum(
   const end = t + spec.decay + 0.02;
   osc.start(t);
   osc.stop(end);
+  ring.start(t);
+  ring.stop(t + spec.decay * 0.45 + 0.02);
   noise.start(t, random() * (white.duration - 0.5));
   noise.stop(t + spec.clickDecay + 0.02);
-  host.track(osc, [body, noise, band, click]);
+  host.track(osc, [body, ring, ringLevel, noise, band, click]);
 }
 
 // --- bass ----------------------------------------------------------------------
+
+/** The bass's per-note low-pass, Hz: open on the attack, closed under the band. */
+const BASS_OPEN = 1700;
+const BASS_CLOSED = 340;
 
 export function playBass(
   host: NoteHost,
@@ -341,18 +462,27 @@ export function playBass(
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
   osc.frequency.value = midiToHz(midi);
+  // The bite: a resonant low-pass that opens on the attack and closes over
+  // the next fifth of a second, the way a heavy string's brightness dies —
+  // the note speaks, then sits under the band.
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.Q.value = 2.2;
+  tone.frequency.setValueAtTime(BASS_OPEN, t);
+  tone.frequency.setTargetAtTime(BASS_CLOSED, t + 0.01, 0.07);
   const env = ctx.createGain();
   const off = t + Math.max(0.08, dur);
   env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(vel, t + 0.03);
-  env.gain.linearRampToValueAtTime(vel * 0.7, t + 0.12);
-  env.gain.setValueAtTime(vel * 0.7, off);
+  env.gain.linearRampToValueAtTime(vel, t + 0.006);
+  env.gain.setTargetAtTime(vel * 0.6, t + 0.02, 0.09);
+  env.gain.setValueAtTime(vel * 0.6, off);
   env.gain.setTargetAtTime(0, off, 0.05);
-  osc.connect(env);
+  osc.connect(tone);
+  tone.connect(env);
   env.connect(dest);
   osc.start(t);
-  osc.stop(off + 0.35);
-  host.track(osc, [env]);
+  osc.stop(off + 0.3);
+  host.track(osc, [tone, env]);
 }
 
 // --- glass ---------------------------------------------------------------------

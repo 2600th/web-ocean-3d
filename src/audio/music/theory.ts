@@ -69,16 +69,34 @@ export function voicing(chord: Chord, low: number, high: number, out: number[]):
 }
 
 /**
- * The nearest chord tone at least `minGap` semitones below `midi`.
+ * The harmony line's note under `midi`: a third below, or a sixth below where
+ * the third would leave the chord. That is the folk second part — parallel
+ * thirds, turning to sixths on the root — and it is why the line sounds sung
+ * rather than computed.
  *
- * The harmony line under the tune. Taken from the chord rather than as a fixed
- * diatonic third, so it can never land on a note the bar's harmony rejects —
- * the tune has both C and C sharp in it, and a scale-based third would have to
- * guess which one the bar means.
+ * A chord tone wins at either distance. A melody note outside the chord (a
+ * passing note, an appoggiatura) takes the third that lies in `scale`, so the
+ * pair moves together; the chord's own tones override the scale, because the
+ * tunes have both C and C sharp in them and only the bar knows which it means.
  */
-export function chordToneBelow(chord: Chord, midi: number, minGap = 3): number {
-  for (let m = midi - minGap; m > midi - 13; m--) {
+export function harmonyBelow(chord: Chord, scale: readonly number[], midi: number): number {
+  for (const m of [midi - 3, midi - 4, midi - 8, midi - 9]) {
     if (chord.tones.includes(pitchClass(m))) return m;
   }
-  return midi - 12;
+  return inKey(chord, scale, midi - 3) ? midi - 3 : midi - 4;
+}
+
+/**
+ * `midi` belongs over this chord in this key: a chord tone, or a scale note
+ * the chord has not altered. A scale note a semitone from a chord tone the
+ * scale lacks is the one the chord replaced — C under an A major chord.
+ */
+export function inKey(chord: Chord, scale: readonly number[], midi: number): boolean {
+  const pc = pitchClass(midi);
+  if (chord.tones.includes(pc)) return true;
+  for (const tone of chord.tones) {
+    const gap = (tone - pc + 12) % 12;
+    if (!scale.includes(tone) && (gap === 1 || gap === 11)) return false;
+  }
+  return scale.includes(pc);
 }
