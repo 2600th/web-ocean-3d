@@ -10,7 +10,8 @@
  * presses 3 before dragging the camera is never told to press 3.
  *
  * Lessons are phrased for the hands in use. A coarse pointer gets the gesture
- * and the on-screen button by name; a keyboard gets the key.
+ * and the on-screen button by name; a keyboard gets the key; a gamepad, once
+ * it is used, gets its buttons.
  *
  * What has been learned is remembered in localStorage, so a returning visitor
  * is not re-taught. Storage can throw (private windows, locked-down embeds);
@@ -23,7 +24,15 @@
 
 import type { CameraMode } from './types.ts';
 
-export type LessonId = 'look' | 'helm' | 'sail' | 'steer' | 'cargo' | 'anchor';
+/**
+ * `nogo` is never shown in the ribbon: it is the compass's no-go arc, which
+ * fades once the player has sailed her out of the zone. It is kept here so it
+ * is remembered with the rest.
+ */
+export type LessonId = 'look' | 'helm' | 'sail' | 'steer' | 'trim' | 'cargo' | 'anchor' | 'nogo';
+
+/** The hands in use: lessons and key hints are phrased for them. */
+export type InputKind = 'keyboard' | 'touch' | 'pad';
 
 export interface Lesson {
   readonly id: LessonId;
@@ -38,6 +47,8 @@ interface LessonSpec {
   readonly modes: readonly CameraMode[];
   readonly keyboard: Omit<Lesson, 'id'>;
   readonly touch: Omit<Lesson, 'id'>;
+  /** Omitted: a pad player is shown the keyboard line (the mode keys, the mouse). */
+  readonly pad?: Omit<Lesson, 'id'>;
 }
 
 const LESSONS: readonly LessonSpec[] = [
@@ -59,12 +70,21 @@ const LESSONS: readonly LessonSpec[] = [
     modes: ['boat'],
     keyboard: { key: 'W', text: 'Set sail' },
     touch: { key: 'More', text: 'Set sail' },
+    pad: { key: 'RT', text: 'Set sail' },
   },
   {
     id: 'steer',
     modes: ['boat'],
     keyboard: { key: 'A D', text: 'Steer her round' },
     touch: { text: 'Push the stick left or right to steer' },
+    pad: { key: 'Left stick', text: 'Steer her round' },
+  },
+  {
+    id: 'trim',
+    modes: ['boat'],
+    keyboard: { key: 'Q E', text: 'Trim the sails: in toward the wind, out away from it' },
+    touch: { text: 'Push the stick up to haul the sails in, down to ease them out' },
+    pad: { key: 'LB RB', text: 'Trim the sails: in toward the wind, out away from it' },
   },
   {
     id: 'cargo',
@@ -77,6 +97,14 @@ const LESSONS: readonly LessonSpec[] = [
     modes: ['boat'],
     keyboard: { key: 'R', text: 'Drop anchor to stop' },
     touch: { key: 'Anchor', text: 'Drop anchor to stop' },
+    pad: { key: 'A', text: 'Drop anchor to stop' },
+  },
+  {
+    id: 'nogo',
+    // Never in the ribbon: the compass's red arc is this lesson.
+    modes: [],
+    keyboard: { text: 'Keep her bow out of the red arc' },
+    touch: { text: 'Keep her bow out of the red arc' },
   },
 ];
 
@@ -105,11 +133,22 @@ function writeLearned(learned: ReadonlySet<LessonId>): void {
 
 export class Coach {
   private readonly learned: Set<LessonId>;
-  private readonly touch: boolean;
+  private input: InputKind;
 
-  constructor(touch: boolean) {
-    this.touch = touch;
+  constructor(input: InputKind) {
+    this.input = input;
     this.learned = readLearned();
+  }
+
+  /** Rephrases the lessons for other hands. Returns true when that changed anything. */
+  setInput(input: InputKind): boolean {
+    if (input === this.input) return false;
+    this.input = input;
+    return true;
+  }
+
+  get inputKind(): InputKind {
+    return this.input;
   }
 
   /** True when every lesson has been learned, now or on an earlier visit. */
@@ -142,7 +181,11 @@ export class Coach {
     for (const spec of LESSONS) {
       if (this.learned.has(spec.id)) continue;
       if (!spec.modes.includes(mode)) continue;
-      return { id: spec.id, ...(this.touch ? spec.touch : spec.keyboard) };
+      const phrase =
+        this.input === 'touch' ? spec.touch
+          : this.input === 'pad' ? (spec.pad ?? spec.keyboard)
+            : spec.keyboard;
+      return { id: spec.id, ...phrase };
     }
     return null;
   }

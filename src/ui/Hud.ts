@@ -19,7 +19,7 @@
  * opt back into hit-testing, so nothing here can swallow a camera drag.
  */
 
-import { Coach, type LessonId } from './Coach.ts';
+import { Coach, type InputKind, type LessonId } from './Coach.ts';
 import { compassRose, icon, type IconName } from './icons.ts';
 import {
   CAMERA_MODES,
@@ -83,6 +83,7 @@ const HINTS: Record<CameraMode, readonly Hint[]> = {
   boat: [
     { action: 'More or less sail', key: 'W S' },
     { action: 'Steer', key: 'A D' },
+    { action: 'Trim sails', key: 'Q E' },
     { action: 'Anchor', key: 'R' },
     { action: 'Look', key: 'Drag' },
   ],
@@ -93,6 +94,21 @@ const HINTS: Record<CameraMode, readonly Hint[]> = {
     { action: 'Fly free', key: '2' },
   ],
 };
+
+/** The helm's hints once a gamepad is in use (standard mapping, Xbox names). */
+const PAD_BOAT_HINTS: readonly Hint[] = [
+  { action: 'More or less sail', key: 'RT LT' },
+  { action: 'Steer', key: 'Left stick' },
+  { action: 'Trim sails', key: 'LB RB' },
+  { action: 'Anchor', key: 'A' },
+  { action: 'Look', key: 'Right stick' },
+];
+
+/**
+ * Half-width of the compass's no-go arc, degrees either side of the wind:
+ * `IRONS_DEG` in `gameplay/sailing.ts`, repeated because `src/ui` stands alone.
+ */
+const NO_GO_DEG = 35;
 
 /** Keyboard digits, in mode order. */
 const MODE_DIGITS_ORDER: readonly string[] = CAMERA_MODES.map((mode) => MODE_DIGITS[mode]);
@@ -292,6 +308,16 @@ export class Hud {
   private shownLesson: LessonId | null = null;
   /** Ship's head when the steering lesson went up; a real turn from it is the lesson done. */
   private steerFrom: number | null = null;
+  /** Hands to go back to when the gamepad is put down. */
+  private readonly baseInput: InputKind;
+  /** The compass's no-go arc either side of the wind, and how it is placed. */
+  private readonly noGoArc: HTMLElement;
+  private windFrom = 0;
+  /** True once her bow has been inside the no-go zone; leaving it under way is the lesson. */
+  private wasInNoGo = false;
+  /** Seconds-ish of sailing at way, for learning the arc without ever stalling. */
+  private sailedTime = 0;
+  private lastNavAt = 0;
 
   constructor(root: HTMLElement, initial: CameraMode, callbacks: UiCallbacks) {
     this.root = root;
@@ -327,7 +353,13 @@ export class Hud {
     objectiveMark.hidden = true;
     const shipMark = el('span', 'hud-compass__mark hud-compass__mark--ship');
     shipMark.hidden = true;
-    compassWindow.append(tape, objectiveMark, shipMark);
+    // The no-go zone: a red band on the tape either side of where the wind
+    // comes from. Shown at the helm until the player has sailed out of it.
+    const noGoArc = el('span', 'hud-compass__mark hud-compass__nogo');
+    noGoArc.style.width = `${NO_GO_DEG * 2 * TAPE_PX_PER_DEG}px`;
+    noGoArc.style.marginLeft = `${-NO_GO_DEG * TAPE_PX_PER_DEG}px`;
+    noGoArc.hidden = true;
+    compassWindow.append(tape, noGoArc, objectiveMark, shipMark);
 
     const lubber = el('span', 'hud-compass__lubber');
     lubber.setAttribute('aria-hidden', 'true');
@@ -457,6 +489,7 @@ export class Hud {
     this.headingPoint = headingPoint;
     this.objectiveMark = objectiveMark;
     this.shipMark = shipMark;
+    this.noGoArc = noGoArc;
     this.instruments = instruments;
     this.dialCard = dialCard;
     this.windArrow = windArrow;
@@ -476,9 +509,11 @@ export class Hud {
 
     this.objectiveMore = objectiveMore;
     // Lessons are phrased for the hands in use: a phone has no W key.
-    this.coach = new Coach(
-      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches,
-    );
+    this.baseInput =
+      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+        ? 'touch'
+        : 'keyboard';
+    this.coach = new Coach(this.baseInput);
     this.renderHints(this.mode);
     this.root.append(hud);
     this.measureCompass();
@@ -615,6 +650,8 @@ export class Hud {
     this.shipKnots = nav.shipKnots;
 
     if (this.objective !== null) this.placeObjective(false);
+    this.windFrom = wrap360(nav.windFromDeg);
+    this.placeNoGo();
 
     const now = performance.now();
     if (now - this.lastNavWrite >= NAV_WRITE_INTERVAL) {
@@ -623,6 +660,24 @@ export class Hud {
       setText(this.headingPoint, pointName(heading));
       if (this.shipKnots !== null) setText(this.logKnotsText, Math.abs(this.shipKnots).toFixed(1));
     }
+  }
+
+  /**
+   * A gamepad was used: lessons and the key list switch to its buttons until
+   * a key or a pointer is used again.
+   */
+  setPadInUse(): void {
+    if (this.disposed || !this.coach.setInput('pad')) return;
+    this.renderHints(this.mode);
+  }
+
+  /**
+   * An order given by hands the HUD cannot see (the touch stick's sheets, a
+   * gamepad), reported so its lesson counts as done.
+   */
+  noteLesson(id: LessonId): void {
+    if (this.disposed) return;
+    this.learn(id);
   }
 
   // ======================================================================
@@ -803,6 +858,7 @@ export class Hud {
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
+    this.leavePad();
 
     // The helm's orders, as lessons done. Pressing the key is knowing it; the
     // gameplay layer carries out the order itself.
@@ -811,7 +867,8 @@ export class Hud {
         event.code === 'KeyW' ? 'sail'
           : event.code === 'KeyA' || event.code === 'KeyD' ? 'steer'
             : event.code === 'KeyR' ? 'anchor'
-              : null;
+              : event.code === 'KeyQ' || event.code === 'KeyE' ? 'trim'
+                : null;
       if (lesson !== null) this.learn(lesson);
     }
 
@@ -852,6 +909,7 @@ export class Hud {
   /** A press on the canvas becomes a camera drag once it travels a few pixels. */
   private readonly onPointerDown = (event: PointerEvent): void => {
     this.noteInput();
+    this.leavePad();
     if (!(event.target instanceof HTMLCanvasElement)) return;
     this.dragStart = { x: event.clientX, y: event.clientY };
     window.addEventListener('pointermove', this.onDragMove, {
@@ -885,6 +943,44 @@ export class Hud {
       // A lesson stays up until it is done; only the key list times out.
       if (this.shownLesson === null) this.hudEl.classList.remove('hud--hints');
     }, HINT_MS);
+  }
+
+  /** Keys or a pointer again: back to their phrasing. */
+  private leavePad(): void {
+    if (this.coach.inputKind === 'pad' && this.coach.setInput(this.baseInput)) {
+      this.renderHints(this.mode);
+    }
+  }
+
+  /**
+   * Places the no-go arc on the tape, centred on where the wind comes from,
+   * and learns it: once her bow has been in the zone and she has sailed out
+   * of it with way on, or after two minutes of sailing that never went near
+   * it, the arc fades and stays gone.
+   */
+  private placeNoGo(): void {
+    const now = performance.now();
+    const elapsed = this.lastNavAt > 0 ? Math.min(0.5, (now - this.lastNavAt) / 1000) : 0;
+    this.lastNavAt = now;
+
+    const ship = this.shipHeading;
+    if (ship === null) {
+      this.noGoArc.hidden = true;
+      return;
+    }
+    const off = Math.abs(wrap180(ship - this.windFrom));
+    const knots = Math.abs(this.shipKnots ?? 0);
+    if (!this.coach.has('nogo')) {
+      if (off < NO_GO_DEG) this.wasInNoGo = true;
+      if (knots > 2) this.sailedTime += elapsed;
+      if ((this.wasInNoGo && off > NO_GO_DEG + 10 && knots > 2) || this.sailedTime > 120) {
+        this.learn('nogo');
+      }
+    }
+    const learned = this.coach.has('nogo');
+    this.noGoArc.classList.toggle('is-learned', learned);
+    this.noGoArc.classList.toggle('is-inside', off < NO_GO_DEG);
+    this.placeMark(this.noGoArc, this.windFrom);
   }
 
   /** Marks a lesson done and moves the ribbon on to the next one. */
@@ -955,7 +1051,8 @@ export class Hud {
       this.hudEl.classList.add('hud--hints');
       return;
     }
-    for (const hint of HINTS[mode]) {
+    const hints = mode === 'boat' && this.coach.inputKind === 'pad' ? PAD_BOAT_HINTS : HINTS[mode];
+    for (const hint of hints) {
       const row = el('li', 'hud-hints__item');
       row.append(el('kbd', 'keycap', hint.key), el('span', 'hud-hints__action', hint.action));
       this.hintList.append(row);
