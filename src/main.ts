@@ -4073,6 +4073,7 @@ class App {
       this.previousShipPosition.copy(position);
 
       this.wake.emit(position.x, position.z, ship.heading, speed, ship.hullBeam);
+      this.particles.trackHull(dt, position.x, position.y, position.z, ship.heading, speed, ship.hullBeam, ship.hullLength);
       this.water.setHull({
         x: position.x,
         z: position.z,
