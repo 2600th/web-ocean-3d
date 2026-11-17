@@ -5,6 +5,7 @@ import { LocalLights } from './LocalLights';
 import { SunShadows } from './SunShadows';
 
 export { SunShadows } from './SunShadows';
+export { BatchedLighting } from './BatchedLighting';
 export { LocalLights, SHIP_LANTERN_LOCAL } from './LocalLights';
 export { LightningLight } from './LightningLight';
 export { applySpecularAA, applySpecularAATo } from './SpecularAA';
@@ -14,9 +15,9 @@ export { applyThinTransmission, applyThinTransmissionTo, SAIL_TRANSMITTANCE } fr
 /**
  * Everything the lighting pass added, behind one object so `main` wires it in a
  * handful of lines: the sun's cascades, the local lights, and the lightning's
- * light. All of it is created at boot — the set of lights in the scene is part
- * of every lit material's shader — and driven afterwards by uniforms and
- * intensities only.
+ * light. All of it is created at boot and driven afterwards by uniforms,
+ * intensities and visibility; the lights are batched (`BatchedLighting`), so
+ * none of that recompiles anything.
  */
 export class LightingRig {
   readonly shadows: SunShadows;

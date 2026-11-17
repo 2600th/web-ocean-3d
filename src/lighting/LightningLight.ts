@@ -17,9 +17,9 @@ import * as THREE from 'three/webgpu';
  *   overhead: a hemisphere light, cool above and near-black below.
  *
  * Neither casts a shadow (a second shadow-casting directional light is another
- * full set of cascades for a tenth of a second). Both exist from boot at zero
- * intensity, because a light's existence is part of every lit material's shader
- * and its intensity is not — see `LocalLights`.
+ * full set of cascades for a tenth of a second). Both are hidden while they are
+ * at zero, which takes them out of the batched light loops between strikes;
+ * hiding a light is a uniform write, not a recompile — see `BatchedLighting`.
  *
  * Intensities are in the sun's units (3.4 at noon). At the peak return stroke
  * of a strike a kilometre and a half away the channel is about three noon suns
@@ -49,6 +49,8 @@ export class LightningLight {
     this.channel.castShadow = false;
     this.deck = new THREE.HemisphereLight(DECK_COLOR, GROUND_COLOR, 0);
     this.deck.name = 'lightning-deck';
+    this.channel.visible = false;
+    this.deck.visible = false;
   }
 
   /**
@@ -60,8 +62,12 @@ export class LightningLight {
     if (!(flash > 0) || !Number.isFinite(strike.distance)) {
       this.channel.intensity = 0;
       this.deck.intensity = 0;
+      this.channel.visible = false;
+      this.deck.visible = false;
       return;
     }
+    this.channel.visible = true;
+    this.deck.visible = true;
     const falloff = Math.min(1, Math.max(0.3, Math.pow(NEAR / Math.max(1, strike.distance), 1.2)));
     this.channel.intensity = CHANNEL_PEAK * flash * falloff;
     this.deck.intensity = DECK_PEAK * flash * falloff;

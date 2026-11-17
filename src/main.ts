@@ -77,7 +77,7 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
-import { LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
+import { BatchedLighting, LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
 import { DEFAULT_VOLUMETRIC_FOG_PARAMS, VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
@@ -678,6 +678,8 @@ class App {
     this.renderer.shadowMap.enabled = true;
 
     this.scene = new THREE.Scene();
+    // Before anything is built against the scene's lights. See `BatchedLighting`.
+    this.renderer.lighting = new BatchedLighting(this.scene);
     /**
      * Near 0.5, not 0.1, and the far plane is why.
      *
