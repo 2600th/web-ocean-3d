@@ -1,11 +1,11 @@
 /**
- * On-screen throttle and rudder for touch devices.
+ * On-screen helm for touch devices.
  *
- * Boat mode is driven with W/S and A/D, which a phone does not have. This is the
- * same two axes as a thumbstick: push forward for ahead, pull back for astern,
- * left and right for rudder. It writes into `ShipController.setInput`, the same
- * entry point the keyboard resolves to, so there is one place where throttle and
- * rudder become forces and no second control path to keep in step.
+ * Boat mode is steered with A/D, which a phone does not have. The stick's
+ * left and right are the rudder, written to `ShipController.setRudderInput`.
+ * It used to be a throttle as well, and that opened an engine the ship only has
+ * for the tour and the tests: at the helm the sails drive her, and they are
+ * set with the buttons beside the stick.
  *
  * Shown only when there is a coarse pointer *and* Boat mode is selected. A mouse
  * user already has better controls and a stick over the frame would only be in
@@ -31,8 +31,8 @@ const KNOB_TRAVEL = 0.62;
 const DEAD_ZONE = 0.12;
 
 export interface TouchControlsCallbacks {
-  /** Throttle and rudder, each -1..1. Called only when a value changes. */
-  onInput(throttle: number, rudder: number): void;
+  /** Rudder, -1..1. Called only when the value changes. */
+  onSteer(rudder: number): void;
   /** Sail trim one step up (1) or down (-1). Omitted: no sail buttons. */
   onSail?(direction: 1 | -1): void;
   /** Drop or weigh the anchor. Omitted: no anchor button. */
@@ -49,7 +49,6 @@ export class TouchControls {
   private readonly controller = new AbortController();
 
   private activePointer: number | null = null;
-  private throttle = 0;
   private rudder = 0;
   private visible = false;
   private disposed = false;
@@ -62,7 +61,7 @@ export class TouchControls {
     const pad = document.createElement('div');
     pad.className = 'touchpad';
     pad.setAttribute('role', 'group');
-    pad.setAttribute('aria-label', 'Steering stick: up for ahead, down for astern, left and right to steer');
+    pad.setAttribute('aria-label', 'Steering stick: left and right to steer');
     pad.hidden = true;
 
     const ring = document.createElement('div');
@@ -71,15 +70,8 @@ export class TouchControls {
     const knob = document.createElement('div');
     knob.className = 'touchpad__knob';
 
-    const ahead = document.createElement('span');
-    ahead.className = 'touchpad__label touchpad__label--ahead';
-    ahead.textContent = 'AHEAD';
-    const astern = document.createElement('span');
-    astern.className = 'touchpad__label touchpad__label--astern';
-    astern.textContent = 'ASTERN';
-
     ring.append(knob);
-    pad.append(ring, ahead, astern);
+    pad.append(ring);
 
     pad.addEventListener('pointerdown', this.onPointerDown, { signal });
     pad.addEventListener('pointermove', this.onPointerMove, { signal });
@@ -93,7 +85,7 @@ export class TouchControls {
     this.knob = knob;
     this.root.append(pad);
 
-    // The stick is rudder and engine; the sails and the anchor are discrete
+    // The stick is the rudder; the sails and the anchor are discrete
     // orders, so they are buttons — the same three a keyboard player reaches
     // with W, S and R.
     let actions: HTMLElement | null = null;
@@ -205,7 +197,7 @@ export class TouchControls {
   private release(): void {
     this.activePointer = null;
     this.knob.style.transform = 'translate(-50%, -50%)';
-    this.emit(0, 0);
+    this.emit(0);
   }
 
   private applyFromEvent(event: PointerEvent): void {
@@ -228,15 +220,13 @@ export class TouchControls {
       `translate(calc(-50% + ${(nx * KNOB_TRAVEL * radius).toFixed(1)}px), ` +
       `calc(-50% + ${(ny * KNOB_TRAVEL * radius).toFixed(1)}px))`;
 
-    // Screen y grows downward; pushing the stick up is ahead.
-    this.emit(deadZone(-ny), deadZone(nx));
+    this.emit(deadZone(nx));
   }
 
-  private emit(throttle: number, rudder: number): void {
-    if (throttle === this.throttle && rudder === this.rudder) return;
-    this.throttle = throttle;
+  private emit(rudder: number): void {
+    if (rudder === this.rudder) return;
     this.rudder = rudder;
-    this.callbacks.onInput(throttle, rudder);
+    this.callbacks.onSteer(rudder);
   }
 }
 
@@ -244,7 +234,7 @@ export class TouchControls {
  * Rescales past the dead zone rather than clipping to it.
  *
  * Clipping leaves a step: the first input past the threshold jumps straight to
- * 0.12 of full throttle. Rescaling means the usable range still starts at zero.
+ * 0.12 of full rudder. Rescaling means the usable range still starts at zero.
  */
 function deadZone(value: number): number {
   const magnitude = Math.abs(value);

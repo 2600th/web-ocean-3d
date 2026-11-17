@@ -649,8 +649,10 @@ test.describe('interaction', () => {
         await page.evaluate(() => window.__ocean.step(1 / 60, 20));
         const held = await page.evaluate(() => window.__ocean.shipState());
         expect(held, 'no ship controller').not.toBeNull();
-        expect(held!.throttle, 'dragging the pad forward did not open the throttle')
-          .toBeGreaterThan(0.2);
+        // At the helm the sails drive her: pushing the stick forward must not
+        // open the engine the tour and the tests use.
+        expect(Math.abs(held!.throttle), 'dragging the pad forward opened the engine at the helm')
+          .toBeLessThan(0.01);
         expect(held!.rudder, 'dragging the pad right did not put the rudder over')
           .toBeGreaterThan(0.2);
 

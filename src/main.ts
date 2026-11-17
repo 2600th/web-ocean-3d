@@ -2690,7 +2690,7 @@ class App {
     // viewer to discover by accident.
     if (TouchControls.isTouchDevice()) {
       this.touchControls = new TouchControls(this.uiRoot, {
-        onInput: (throttle, rudder) => this.shipControls?.setInput(throttle, rudder),
+        onSteer: (rudder) => this.shipControls?.setRudderInput(rudder),
         onSail: (direction) => this.gameplay?.stepSail(direction),
         onAnchor: () => this.gameplay?.toggleAnchor(),
       });

@@ -239,6 +239,15 @@ export class ShipController {
   }
 
   /**
+   * The rudder alone, for a viewer's stick or pad at the helm. The engine order
+   * is left as it is: at the helm the sails drive the ship, and a stick that
+   * also opened the throttle drove her with an engine she does not have.
+   */
+  setRudderInput(rudder: number): void {
+    this.rudderInput = clamp(rudder, -1, 1);
+  }
+
+  /**
    * Returns the engine to a full stop, orders *and* spool.
    *
    * `setInput(0, 0)` is not enough and the difference is the whole point of this
