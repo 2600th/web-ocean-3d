@@ -402,6 +402,43 @@ const JETTY_DECK_Y = 2.1;
 /** Deck surface in the pier model's own units, for seating things on it. */
 const PIER_DECK_LOCAL = 2.67;
 
+/**
+ * The pier kit's loose deck panel (`modular_wooden_pier_planks`), dropped as a
+ * collapsed span instead of left where the kit lays it out.
+ *
+ * The kit places its modules side by side, and that panel sits at deck height
+ * between `section_01` (which ends at z = 0.43) and the mooring poles (from
+ * z = 3.97), with nothing under it: in the cove it hung in mid-air over the
+ * jetty's ruined end. Hinged at its landward edge and pitched down 43 degrees,
+ * its seaward end goes just under the water (local y 1.27 at this jetty's
+ * height and scale), which is what a span that lost its posts does. A little
+ * roll so it does not land square.
+ */
+const LOOSE_PLANKS = 'modular_wooden_pier_planks';
+const PLANKS_HINGE = new THREE.Vector3(0, 2.55, 1.09);
+const PLANKS_PITCH = 0.75;
+const PLANKS_ROLL = 0.12;
+
+function collapseLoosePlanks(source: THREE.Object3D | null): void {
+  const planks = source?.getObjectByName(LOOSE_PLANKS);
+  if (!planks || planks.userData.collapsed) return;
+  planks.userData.collapsed = true;
+  const root = source!;
+  root.updateMatrixWorld(true);
+  // The hinge is in the model's own frame (the frame the kit's bounds are
+  // measured in), so the fall is composed there and handed back to whatever
+  // frame the panel's parent has.
+  const hinge = new THREE.Matrix4().makeTranslation(PLANKS_HINGE.x, PLANKS_HINGE.y, PLANKS_HINGE.z);
+  const fall = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(PLANKS_PITCH, 0, PLANKS_ROLL));
+  const back = new THREE.Matrix4().makeTranslation(-PLANKS_HINGE.x, -PLANKS_HINGE.y, -PLANKS_HINGE.z);
+  const inModel = root.matrixWorld.clone().invert().multiply(planks.matrixWorld);
+  inModel.premultiply(back).premultiply(fall).premultiply(hinge);
+  const world = root.matrixWorld.clone().multiply(inModel);
+  const local = planks.parent!.matrixWorld.clone().invert().multiply(world);
+  local.decompose(planks.position, planks.quaternion, planks.scale);
+  root.updateMatrixWorld(true);
+}
+
 const PINNACE_OFFSHORE = -7;
 const PINNACE_ALONGSHORE = -30;
 const PINNACE_SCALE = 0.55;
@@ -2035,6 +2072,7 @@ export class Props {
     const shore = shorelineRadius(COVE_BEARING);
     const point = new THREE.Vector3();
 
+    for (const source of [dressing.pier.base, ...dressing.pier.lods]) collapseLoosePlanks(source);
     const pier = this.buildStaticFrom(dressing.pier, 'cove-jetty-deck');
     let jetty: THREE.Group | null = null;
     if (pier) {

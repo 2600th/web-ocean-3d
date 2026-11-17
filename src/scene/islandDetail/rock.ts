@@ -255,6 +255,15 @@ export function buildSkullRock(seed: number, height: number): THREE.BufferGeomet
 /**
  * A sea arch: a fat, rough tube bent over a span, standing on two feet. Built
  * as a swept ring rather than a displaced sphere because the hole is the point.
+ *
+ * Each ring is `radial` vertices with the last quad wrapping to the first, not
+ * `radial + 1` with a duplicate at the seam: every vertex is jittered by its
+ * own random draw, so a duplicated seam vertex landed up to 15 cm from its twin
+ * and opened a slit the length of the tube, which showed as bright lines of sky.
+ * Triangles wind so their front faces look out of the tube (the ring runs from
+ * `up` toward `side`, and `side x ahead = up`); wound the other way the arch
+ * drew its inside and lit as if inside out. The feet are capped, since they
+ * stand in water and can be seen from below.
  */
 export function buildArch(seed: number, span: number, height: number, thickness: number): THREE.BufferGeometry {
   const rng = mulberry32(seed);
@@ -277,7 +286,7 @@ export function buildArch(seed: number, span: number, height: number, thickness:
     const up = new THREE.Vector3().crossVectors(side, ahead).normalize();
     // Thicker at the feet, thinnest at the crown.
     const r = thickness * (0.62 + 0.55 * Math.pow(Math.abs(t - 0.5) * 2, 1.6));
-    for (let j = 0; j <= radial; j++) {
+    for (let j = 0; j < radial; j++) {
       const a = (j / radial) * Math.PI * 2;
       p.copy(c)
         .addScaledVector(up, Math.cos(a) * r)
@@ -292,9 +301,33 @@ export function buildArch(seed: number, span: number, height: number, thickness:
   }
   for (let i = 0; i < segs; i++) {
     for (let j = 0; j < radial; j++) {
-      const a = i * (radial + 1) + j;
-      const b = a + radial + 1;
-      idx.push(a, b, a + 1, a + 1, b, b + 1);
+      const j1 = (j + 1) % radial;
+      const a = i * radial + j;
+      const a1 = i * radial + j1;
+      const b = a + radial;
+      const b1 = a1 + radial;
+      idx.push(a, a1, b, a1, b1, b);
+    }
+  }
+  // Foot caps: a fan from each end ring's centroid, facing out of the tube's
+  // ends (back along the arc at the first foot, forward along it at the last).
+  for (const [ring, outward] of [[0, -1], [segs, 1]] as const) {
+    const first = ring * radial;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let j = 0; j < radial; j++) {
+      cx += pos[(first + j) * 3];
+      cy += pos[(first + j) * 3 + 1];
+      cz += pos[(first + j) * 3 + 2];
+    }
+    const centre = pos.length / 3;
+    pos.push(cx / radial, cy / radial, cz / radial);
+    for (let j = 0; j < radial; j++) {
+      const v = first + j;
+      const v1 = first + ((j + 1) % radial);
+      if (outward > 0) idx.push(centre, v, v1);
+      else idx.push(centre, v1, v);
     }
   }
   const g = new THREE.BufferGeometry();
