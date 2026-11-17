@@ -268,6 +268,35 @@ const DETAIL_ROTATION = 1.1071487; // atan(2)
 const DETAIL_MIP_BIAS = 2;
 
 /**
+ * Gusts (see `OceanMaterial.gust`). A gust darkens the water it crosses
+ * because it raises the shortest waves first: the rougher patch mirrors less
+ * of the bright low sky and more of the darker sky overhead, the cat's paw.
+ *
+ * Scale and stretch: patches about a hundred metres across, half again as
+ * long along the wind. Drift: carried at 0.6 of the wind speed, as gust
+ * fronts are. Edges: the smoothstep that turns the noise into patches with
+ * lulls between them. Gain: the shortest band's slope in a lull and in a
+ * gust, which averages a little under 1 over the field. Mean: the field's
+ * value when `uGustStrength` is 0.
+ */
+const GUST_SCALE = 55;
+const GUST_STRETCH = 1.5;
+const GUST_DRIFT = 0.6;
+const GUST_EDGE: readonly [number, number] = [0.36, 0.7];
+const GUST_GAIN: readonly [number, number] = [0.3, 1.8];
+const GUST_MEAN = 0.5;
+
+/**
+ * The near-ripple read of the detail band: stretched 2.3 times (so 1 cm to
+ * 29 cm at High), turned by atan(1/3) so it never registers with the other
+ * two reads, at 0.6 of their slope, and drawn inside 6 m to gone by 45 m.
+ */
+const NEAR_RIPPLE_SCALE = 2.3;
+const NEAR_RIPPLE_ROTATION = 0.3217506; // atan(1/3)
+const NEAR_RIPPLE_GAIN = 0.6;
+const NEAR_RIPPLE_REACH: readonly [number, number] = [6, 45];
+
+/**
  * Gain on the sky's reflection (the environment lookup, not the planar
  * mirror's objects).
  *
@@ -1019,6 +1048,10 @@ export class OceanMaterial {
   private readonly uWhitePoint = uniform(1 / 0.42);
   /** Wind gain on the detail band's slope; see `shortWaveGain`. */
   private readonly uShortWaveGain = uniform(1);
+  /** Wind speed, m/s, for the gusts' drift. See `gust`. */
+  private readonly uWindSpeed = uniform(7);
+  /** How much of the gust field reaches the surface, 0..1. See `gust`. */
+  private readonly uGustStrength = uniform(1);
   /**
    * How lit the scene is, 0..1, independent of the key light's colour.
    *
@@ -1253,6 +1286,7 @@ export class OceanMaterial {
     // nothing but. The floor keeps a glassy preset from dividing by nearly zero.
     this.uWaveScale.value = Math.max(0.35, 0.0246 * Math.max(0, speed) ** 2);
     this.uShortWaveGain.value = shortWaveGain(speed);
+    this.uWindSpeed.value = Math.max(0, speed);
     // The foam pattern's streaks lie along the same axis; it is shared with the
     // island's ground, which draws the swash foam, so it lives in `FoamPattern`.
     setFoamWind(bearingRadians);
@@ -1472,6 +1506,30 @@ export class OceanMaterial {
    */
   setVertexSpacing(spacingPerMetre: number): void {
     this.uVertexSpacing.value = Math.max(0, spacingPerMetre);
+  }
+
+  /**
+   * The gust field: how hard the wind is blowing at a world point, 0 in a
+   * lull to 1 in a gust. Its gain on the shortest waves (`GUST_GAIN`) draws
+   * the dark "cat's paws" that cross a sea under a gusty wind.
+   *
+   * The one source of gusts on the surface, so a global wind field can replace
+   * it by returning its own value here. Today it is two octaves of value noise
+   * a hundred metres across, stretched along the wind and carried down it at
+   * GUST_DRIFT of the wind speed on the simulation clock (`uRainTime`, see
+   * `setRain`), so a deterministic rewind puts every patch back. Its uniforms
+   * are `uWindAxis`, `uWindSpeed` and `uGustStrength`.
+   */
+  private gust(worldXZ: any): any {
+    const along = vec2(this.uWindAxis.x, this.uWindAxis.y);
+    const across = vec2(this.uWindAxis.y.negate(), this.uWindAxis.x);
+    const travel = this.uWindSpeed.mul(GUST_DRIFT).mul(this.uRainTime);
+    const p = vec2(
+      worldXZ.dot(along).sub(travel).div(GUST_SCALE * GUST_STRETCH),
+      worldXZ.dot(across).div(GUST_SCALE),
+    ).toVar();
+    const n = valueNoise(p).mul(0.65).add(valueNoise(p.mul(2.13).add(vec2(5.2, 1.3))).mul(0.35));
+    return mix(float(GUST_MEAN), n.smoothstep(GUST_EDGE[0], GUST_EDGE[1]), this.uGustStrength);
   }
 
   private build(inputs: OceanMaterialInputs): void {
@@ -1707,6 +1765,9 @@ export class OceanMaterial {
       const lostSlopeVariance = float(0).toVar();
       /** Cascade 0's share of the slope: the swell, which the surf replaces. */
       const swellSlope = vec2(0).toVar();
+      // Gusts: how hard the wind is blowing on this patch of water, as a gain
+      // on the shortest waves' slope. See `gust`.
+      const gustGain = mix(float(GUST_GAIN[0]), float(GUST_GAIN[1]), this.gust(fieldXZ)).toVar();
       for (let i = 0; i < cascadeCount; i++) {
         const d = this.derivativeNodes[i].sample(fieldXZ.div(this.uTileSizes[i])).toVar();
         // Weight folds into the fade, so a cascade the tier does not use
@@ -1714,7 +1775,10 @@ export class OceanMaterial {
         const fade = cascadeShadingFade(viewDistance, i, cascadeCount).mul(
           this.uCascadeWeights[i],
         );
-        slope.addAssign(vec2(d.x, d.y).mul(fade));
+        // The ripple cascade answers the gusts in its slope and variance, not
+        // in its fold: whitecap coverage stays the spectrum's.
+        const gustOn = i === MAX_CASCADES - 1 ? gustGain : float(1);
+        slope.addAssign(vec2(d.x, d.y).mul(fade).mul(gustOn));
         if (i === 0) swellSlope.assign(slope);
         // The *total* Jacobian, to first order: J - 1 = Σ (J_i - 1). See the
         // breaking-crest term in `Wake`, which uses the same sum, and why.
@@ -1726,7 +1790,7 @@ export class OceanMaterial {
         // land a few ulps negative when the variance is genuinely nil. Squared
         // fade because variance scales with the square of a linear weight.
         lostSlopeVariance.addAssign(
-          d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
+          d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade).mul(gustOn).mul(gustOn),
         );
       }
 
@@ -1748,7 +1812,7 @@ export class OceanMaterial {
       const cosR = Math.cos(DETAIL_ROTATION);
       const sinR = Math.sin(DETAIL_ROTATION);
       for (let i = 0; i < MAX_DETAIL; i++) {
-        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(Math.SQRT1_2);
+        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(gustGain).mul(Math.SQRT1_2);
         const uvA = fieldXZ.div(this.uDetailTiles[i]);
         // Two levels coarser than the footprint: see DETAIL_MIP_BIAS.
         const a = this.detailNodes[i].sample(uvA).bias(float(DETAIL_MIP_BIAS)).toVar();
@@ -1769,9 +1833,38 @@ export class OceanMaterial {
           .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
           .mul(this.uDetailWeights[i])
           .mul(this.uShortWaveGain.mul(this.uShortWaveGain))
+          .mul(gustGain.mul(gustGain))
           .mul(0.5)
           .toVar();
         lostDetailVariance.addAssign(detailLost);
+
+        // Ripples near the eye: a third read of the same band, stretched by
+        // NEAR_RIPPLE_SCALE and turned by a second irrational angle, so the
+        // decimetre ripples between this band and the ripple cascade's
+        // shortest waves are drawn where they are resolved instead of the
+        // near water reading as gel. Shading only, the same texture (no new
+        // binding; the stage is at 16), and gone past NEAR_RIPPLE_REACH,
+        // where the bias has already turned it into variance. The k^-4 tail
+        // has the same slope in every octave, so the stretched read keeps
+        // the band's slope statistics.
+        const near = smoothstepDownClamped(viewDistance, NEAR_RIPPLE_REACH[0], NEAR_RIPPLE_REACH[1])
+          .mul(this.uDetailWeights[i])
+          .toVar();
+        const cosC = Math.cos(NEAR_RIPPLE_ROTATION);
+        const sinC = Math.sin(NEAR_RIPPLE_ROTATION);
+        const uvC = vec2(
+          fieldXZ.x.mul(cosC).add(fieldXZ.y.mul(sinC)),
+          fieldXZ.y.mul(cosC).sub(fieldXZ.x.mul(sinC)),
+        )
+          .div(this.uDetailTiles[i].mul(NEAR_RIPPLE_SCALE))
+          .add(vec2(0.13, 0.59));
+        const c = this.detailNodes[i].sample(uvC).bias(float(DETAIL_MIP_BIAS)).toVar();
+        const cSlope = vec2(c.x.mul(cosC).sub(c.y.mul(sinC)), c.x.mul(sinC).add(c.y.mul(cosC)));
+        const nearWeight = this.uShortWaveGain.mul(gustGain).mul(near).mul(NEAR_RIPPLE_GAIN).toVar();
+        slope.addAssign(cSlope.mul(nearWeight));
+        lostDetailVariance.addAssign(
+          c.w.sub(c.x.mul(c.x).add(c.y.mul(c.y))).max(0).mul(nearWeight).mul(nearWeight),
+        );
       }
 
       // Rain impacts, added to the wave slope before the normal is built so they
@@ -2040,9 +2133,14 @@ export class OceanMaterial {
       const windU = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
       const shareU = this.uSlopeAnisotropy.div(this.uSlopeAnisotropy.add(1)).toVar();
       const roughScale = this.uRoughness.div(0.075).pow(2).toVar();
+      // The capillaries under the finest band are what a gust raises first,
+      // and past a few hundred metres they are all a cat's paw is: a patch of
+      // rougher sheen. Linear in the gain, not squared, so the far sea's mean
+      // sheen barely moves.
       const unresolved = float(0.0024)
         .mul(roughScale)
         .add(viewDistance.smoothstep(30, 500).mul(0.0035))
+        .mul(gustGain)
         .toVar();
       const varU = unresolved.add(lostSlopeVariance.mul(shareU)).add(lostDetailVariance.mul(0.5)).toVar();
       const varC = unresolved
