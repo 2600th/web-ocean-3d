@@ -12,6 +12,7 @@ import { uniform } from './core/uniform';
 import { createRenderer, clampPixelRatio, WebGPUUnavailableError, type Backend } from './core/Renderer';
 import {
   installInstanceCopySync,
+  installShadowCasterSharing,
   installSubmissionFixes,
 } from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
@@ -76,7 +77,7 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
-import { LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
+import { BatchedLighting, LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
 import { DEFAULT_VOLUMETRIC_FOG_PARAMS, VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
 import { ColorGrade } from './post/ColorGrade';
@@ -664,6 +665,7 @@ class App {
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
     installInstanceCopySync(this.renderer);
+    installShadowCasterSharing(this.renderer);
     // `?batch=0`: submit every render call on its own, as three does. For A/B
     // measurements of `installSubmitBatching`.
     installSubmissionFixes(this.renderer, {
@@ -676,6 +678,8 @@ class App {
     this.renderer.shadowMap.enabled = true;
 
     this.scene = new THREE.Scene();
+    // Before anything is built against the scene's lights. See `BatchedLighting`.
+    this.renderer.lighting = new BatchedLighting(this.scene);
     /**
      * Near 0.5, not 0.1, and the far plane is why.
      *

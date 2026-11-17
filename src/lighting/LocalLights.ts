@@ -11,20 +11,19 @@ import { uniform } from '../core/uniform';
  *
  * ### The rules a scene like this lives by
  *
- * - **The set of lights never changes after boot.** A light's existence is part
- *   of every lit material's shader in three (it is in the lights node's cache
- *   key); adding one, removing one or flipping `visible` recompiles everything
- *   that is lit. So all of them are created up front, parented to a group that
- *   is always visible, and switched by *intensity*, which is a uniform. That
- *   includes the ship's lantern: the ship arrives seconds after boot and is
- *   hidden until compiled, and a light parented to it would join the list the
- *   moment it was revealed. It follows the hull by copying the lantern's world
- *   position each frame instead.
+ * - **Lights cost what they light, not what exists.** The scene's lights are
+ *   batched (`BatchedLighting`): every point light is one iteration of a loop
+ *   over uniform arrays, and joining or leaving the scene is a uniform write,
+ *   not a recompile. So all of them are created at boot on every tier, and a
+ *   light at zero is hidden, which takes it out of the loop: by day the loop
+ *   runs no iterations. That includes the ship's lantern, which follows the hull
+ *   by copying the lantern's world position each frame rather than being
+ *   parented to a ship that arrives seconds after boot.
  * - **Culled by distance.** Each light fades out over the last 30% of a reach
  *   from the eye. Past that it is zero, and a light whose lit area is under a
  *   pixel from where the viewer is gives nothing for its cost.
- * - **Tier-gated.** Low creates none (`QualitySettings.localLights`); a later
- *   downgrade to Low zeroes them.
+ * - **Tier-gated.** Low lights none (`QualitySettings.localLights`); a tier
+ *   change only moves the count.
  * - **Only when it is dark enough.** Full strength from deep dusk on and under a
  *   storm deck, nothing at noon — a fire at noon lights nothing you can see.
  * - **No shadows.** A point light's shadow is six more passes of the scene, and
@@ -92,6 +91,8 @@ export class LocalLights {
       light.castShadow = false;
       // Parked far below the world until an anchor arrives; zero intensity anyway.
       light.position.set(0, -10000, 0);
+      light.visible = false;
+      this.group.add(light);
       return { light, peak, reach, flicker, seed, placed: false };
     };
     // In order of how much they matter: the fire lights the camp, the ship's
@@ -175,24 +176,19 @@ export class LocalLights {
   }
 
   /**
-   * How many of the lights the tier pays for, most important first.
-   *
-   * Lights in the scene are part of every lit material's build, so adding one
-   * recompiles them all. An upgrade adds what the new tier lights — once, on a
-   * device that asked for more. A downgrade only darkens the extras and leaves
-   * them in place: the device stepping down is the one that can least afford
-   * a full recompile (measured on the old WebGL path: ~80 s), and a light at zero
-   * intensity is cheap. Anchors are kept either way, so a session that boots
-   * on Low still gets its lights on an upgrade.
+   * How many of the lights the tier pays for, most important first. Only the
+   * count moves: the lights beyond it go dark on the next update and stay in the
+   * group, so a tier change compiles nothing (see `BatchedLighting`).
    */
   setCount(count: number): void {
-    const n = Math.max(0, Math.min(this.sources.length, Math.round(count)));
-    this.count = n;
-    for (let i = 0; i < this.sources.length; i++) {
-      const s = this.sources[i];
-      if (i < n && s.light.parent !== this.group) this.group.add(s.light);
-      if (i >= n) s.light.intensity = 0;
-    }
+    this.count = Math.max(0, Math.min(this.sources.length, Math.round(count)));
+    for (let i = this.count; i < this.sources.length; i++) this.setLevel(this.sources[i], 0);
+  }
+
+  /** A light at zero is hidden, which drops it from the batched loop. */
+  private setLevel(s: Source, intensity: number): void {
+    s.light.intensity = intensity;
+    s.light.visible = intensity > 0;
   }
 
   /**
@@ -224,7 +220,7 @@ export class LocalLights {
     for (let i = 0; i < this.count; i++) {
       const s = this.sources[i];
       if (!s.placed || night <= 0) {
-        s.light.intensity = 0;
+        this.setLevel(s, 0);
         continue;
       }
       const d = s.light.position.distanceTo(eye);
@@ -234,7 +230,7 @@ export class LocalLights {
       // pick out, and a lantern's is the same shape at a fraction of the depth.
       const wobble = 0.13 * Math.sin(t * 11.3) + 0.08 * Math.sin(t * 23.9 + 1.7) + 0.06 * Math.sin(t * 5.3 + 0.4);
       const flicker = 1 + wobble * s.flicker;
-      s.light.intensity = s.peak * night * cull * flicker;
+      this.setLevel(s, s.peak * night * cull * flicker);
       if (s === this.fire) this.fireLevel = night * flicker;
     }
   }

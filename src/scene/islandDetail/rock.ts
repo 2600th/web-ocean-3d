@@ -10,12 +10,14 @@ import {
   normalViewGeometry,
   normalWorldGeometry,
   positionView,
+  objectGroup,
   positionWorld,
   vec3,
   vec4,
   vertexColor,
 } from 'three/tsl';
 import { mulberry32 } from '../../core/random';
+import { uniform } from '../../core/uniform';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;
@@ -534,7 +536,10 @@ export function createBeachrockMaterial(keyLight: Node): THREE.MeshStandardNodeM
  * and dark through the swash, a pale crust of barnacles just above the still
  * water, green weed below it. Wraps the material's own colour (map and all),
  * so call it before `SurfaceWetness.adopt`, which wraps whatever it finds.
- * `tint` multiplies the albedo, for scans whose colour fights the island's.
+ * `tint` multiplies the albedo, for scans whose colour fights the island's. It
+ * is a per-material uniform rather than a constant, so a tinted scan compiles
+ * to the same shader (and pipeline) as an untinted one with the same maps. It
+ * differs between materials, so it lives in the per-object group.
  */
 export function applyTideline(material: THREE.Material, tint: [number, number, number] = [1, 1, 1]): void {
   const node = material as THREE.MeshStandardNodeMaterial;
@@ -544,8 +549,9 @@ export function applyTideline(material: THREE.Material, tint: [number, number, n
   const vec3n = vec3 as unknown as (x: unknown, y?: unknown, z?: unknown) => Node;
   const own: Node = (node as unknown as { colorNode: Node }).colorNode ?? materialColor;
   const ownRoughness: Node = (node as unknown as { roughnessNode: Node }).roughnessNode ?? materialRoughness;
+  const albedoTint: Node = uniform(new THREE.Vector3(...tint)).setGroup(objectGroup);
   node.colorNode = Fn(() => {
-    const base: Node = vec4(own.xyz.mul(vec3n(...tint)), own.w);
+    const base: Node = vec4(own.xyz.mul(albedoTint), own.w);
     const wp = positionWorld.toVar();
     const crust = mx_noise_float(wp.mul(0.9)).add(mx_noise_float(wp.mul(3.3)).mul(0.5)).toVar();
     const y = wp.y;

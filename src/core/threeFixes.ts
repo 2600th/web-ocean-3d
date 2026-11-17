@@ -58,6 +58,60 @@ function syncInstanceCopies(mesh: THREE.InstancedMesh, attributes: readonly any[
 }
 
 /**
+ * Shadow casters compiled their whole colour graph to throw it away (WebGPU).
+ *
+ * A shadow pass draws every caster with one override material, and
+ * `Renderer._getShadowNodes` hands it `vec4(0, 0, 0, colorNode.a)` whenever the
+ * source material has a `colorNode` or a `map`. The alpha is only there for
+ * `alphaTest` and the mask nodes to discard by. Most of this scene's materials
+ * are opaque procedural ones (the props, the island detail, the dressing
+ * rocks), so each caster's shadow shader carried that material's noise and
+ * palette, and nothing read the result. The map is depth-only: PCF compares
+ * against the depth texture, and the colour target is sampled only with
+ * `shadowMap.transmitted`. That made one shadow pipeline per material, 26 at
+ * High, with the colour graph's attributes and varyings in the vertex stage too.
+ *
+ * Where nothing can read the alpha, the caster gets no colour node. Its shadow
+ * shader is then the one any untextured opaque caster with the same vertex path
+ * gets, and three shares the module and the pipeline. Depth is written exactly
+ * as before, so the shadows do not change. `depthNode` and the position nodes
+ * are kept, so displaced casters (the leaves, the swaying flora) still cast
+ * where they are drawn.
+ *
+ * three caches the nodes per material version, and the `alphaTest` setter
+ * bumps the version when it crosses zero, so a material that starts testing
+ * alpha gets its colour node back on its next shadow draw.
+ */
+export function installShadowCasterSharing(renderer: THREE.WebGPURenderer): void {
+  if (!VERIFIED_PERF_REVISIONS.has(THREE.REVISION)) return;
+  const r = renderer as any;
+  if (typeof r._getShadowNodes !== 'function' || r.__shadowCasterSharing) return;
+  r.__shadowCasterSharing = true;
+
+  const stripped = new WeakMap<object, object>();
+  const getShadowNodes = r._getShadowNodes.bind(r);
+  r._getShadowNodes = (material: any): any => {
+    const nodes = getShadowNodes(material);
+    if (nodes.colorNode === null) return nodes;
+    const alphaRead =
+      material.alphaTest > 0 ||
+      material.maskNode?.isNode === true ||
+      material.maskShadowNode?.isNode === true ||
+      material.castShadowNode?.isNode === true ||
+      r.shadowMap.transmitted === true ||
+      r.shadowMap.type === THREE.VSMShadowMap;
+    if (alphaRead) return nodes;
+    let opaque = stripped.get(nodes);
+    if (opaque === undefined) {
+      const fresh: object = { ...nodes, colorNode: null };
+      stripped.set(nodes, fresh);
+      opaque = fresh;
+    }
+    return opaque;
+  };
+}
+
+/**
  * Per-draw submission costs that three pays without needing to. Measured on a live High frame, 1920x1080:
  *
  * - **Shadow passes re-validated every caster's render object.** A shadow pass
