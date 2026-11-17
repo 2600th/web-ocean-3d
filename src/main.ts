@@ -4044,6 +4044,9 @@ class App {
     // Safe before the sampler's first readback resolves: it reports height 0 and
     // bodies simply settle to flat water rather than producing NaN.
     this.buoyancy.update(dt, this.sampler);
+    // The bow spray, and the slam spray below, read this frame's solved pose.
+    this.ship?.object.updateWorldMatrix(true, false);
+    this.gameplay?.updateBowSpray(dt);
 
     const ship = this.ship;
     if (ship) {

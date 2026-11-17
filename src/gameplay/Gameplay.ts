@@ -444,6 +444,20 @@ export class Gameplay {
     this.updateMessages(dt);
 
     this.burst.update(dt, this.o.camera);
+    this.burst.mesh.visible = this.burst.alive;
+  }
+
+  /**
+   * The bow's running spray and sheet. Call after the buoyancy solve, with the
+   * hull's world matrix refreshed: from `update`, which runs before the solve,
+   * they sat on the previous frame's pose and lagged the stem by a frame.
+   */
+  updateBowSpray(dt: number): void {
+    if (!(dt > 0) || !this.armed || !this.active) return;
+    const body = this.o.body;
+    this.forward.set(1, 0, 0).applyQuaternion(body.object.quaternion).setY(0);
+    if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
+    this.forward.normalize();
     this.bowSpray.update(
       dt,
       body.object,
@@ -454,7 +468,6 @@ export class Gameplay {
       this.o.camera,
       (x, z) => this.o.sampler.height(x, z),
     );
-    this.burst.mesh.visible = this.burst.alive;
   }
 
   /* ------------------------------------------------------------- commands */
