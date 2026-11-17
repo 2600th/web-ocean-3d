@@ -618,6 +618,12 @@ const THUNDER_ROLL_HZ = 110;
  * number a caller wants when it triggers the sound off a lightning flash.
  */
 export const SPEED_OF_SOUND_KM_S = 0.343;
+/** A delayed strike's nodes are built this long before it is heard, seconds. */
+const THUNDER_LEAD = 0.25;
+/** Strikes waiting to be heard; past this the farthest is dropped. */
+const THUNDER_QUEUE = 6;
+/** Thunder's own voices, outside the tier's one-shot cap. Two strikes can overlap. */
+const THUNDER_VOICES = 2;
 
 /** Envelope curve resolution. 256 points over a roll is ~30 ms per point. */
 const CURVE_POINTS = 256;
@@ -1110,6 +1116,10 @@ export class AudioSystem {
 
   /** Live one-shot sources, so a reset or a dispose can silence them. */
   private readonly voices: AudioScheduledSourceNode[] = [];
+  /** Thunder among `voices`; it has its own `THUNDER_VOICES`. */
+  private thunderLive = 0;
+  /** Strikes seen and not yet heard. See `playThunder`. */
+  private readonly thunderQueue: { at: number; km: number }[] = [];
 
   constructor(options: AudioSystemOptions = {}) {
     this.volume = clamp01(finite(options.volume, this.volume));
@@ -1269,6 +1279,7 @@ export class AudioSystem {
       void this.realtime?.suspend().catch(() => {});
     }
     for (let i = 0; i < this.beds.length; i++) this.beds[i].tick(now);
+    if (this.thunderQueue.length > 0) this.serviceThunder(now);
 
     const live = this.enabled && !this.muted && this.running();
 
@@ -1667,14 +1678,48 @@ export class AudioSystem {
    *                     caller stays in control of its own timing; a caller
    *                     triggering off a lightning flash wants
    *                     `distanceKm / SPEED_OF_SOUND_KM_S`, which is ~2.9 s per km.
+   *
+   * A delayed strike is held as a time and a distance, not as a voice: its
+   * nodes are built `THUNDER_LEAD` before it arrives. Building them at the
+   * flash held a voice for up to 37 s of silence, which on Low (six voices)
+   * left a storm unable to slap or creak. Thunder also has its own two voices
+   * (`THUNDER_VOICES`), so a busy deck cannot refuse a strike, nor a strike a
+   * splash.
    */
   playThunder(distanceKm = 3, delaySeconds = 0): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
-    if (!this.acquireVoice()) return;
-
     const distance = clampNumber(finite(distanceKm, 3), 0.05, 40);
-    const now = ctx.currentTime + Math.max(0, finite(delaySeconds, 0));
+    const at = ctx.currentTime + Math.max(0, finite(delaySeconds, 0));
+    if (at - ctx.currentTime <= THUNDER_LEAD) {
+      this.strikeThunder(distance, at);
+      return;
+    }
+    // Full: the farthest waiting strike, the quietest, gives way.
+    const queue = this.thunderQueue;
+    if (queue.length >= THUNDER_QUEUE) {
+      let far = 0;
+      for (let i = 1; i < queue.length; i++) if (queue[i].km > queue[far].km) far = i;
+      if (queue[far].km <= distance) return;
+      queue.splice(far, 1);
+    }
+    queue.push({ at, km: distance });
+  }
+
+  /** Builds the strikes that arrive within `THUNDER_LEAD`. Runs from `update`. */
+  private serviceThunder(now: number): void {
+    const queue = this.thunderQueue;
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const strike = queue[i];
+      if (strike.at - now > THUNDER_LEAD) continue;
+      queue.splice(i, 1);
+      if (this.canPlay()) this.strikeThunder(strike.km, Math.max(now, strike.at));
+    }
+  }
+
+  private strikeThunder(distance: number, now: number): void {
+    const ctx = this.ctx;
+    if (ctx === null || this.thunderLive >= THUNDER_VOICES) return;
 
     // Everything above a kilohertz is absorbed out of a distant strike, so the
     // crack fades exponentially while the roll only spreads.
@@ -1759,6 +1804,16 @@ export class AudioSystem {
       rollEnv,
       rollLevel,
     );
+    // Counted against thunder's own voices, not the deck's.
+    this.thunderLive++;
+    const release = source.onended;
+    let ended = false;
+    source.onended = (event) => {
+      if (ended) return;
+      ended = true;
+      this.thunderLive--;
+      release?.call(source, event);
+    };
   }
 
   /**
@@ -2098,6 +2153,7 @@ export class AudioSystem {
     this.gullTimer = GULL_FIRST_DELAY;
     this.wasUnder = false;
     this.plungeCooldown = 0;
+    this.thunderQueue.length = 0;
     this.stopVoices();
     this.shipSfx?.reset();
     this.music?.reset();
@@ -2372,7 +2428,7 @@ export class AudioSystem {
     const host: SfxHost = {
       ctx,
       acquire: () => this.acquireVoice(),
-      acquireAmbient: () => this.voices.length + SHIP_VOICE_RESERVE < this.settings.voices,
+      acquireAmbient: () => this.busyVoices() + SHIP_VOICE_RESERVE < this.settings.voices,
       track: (source, ...nodes) => this.trackVoice(source, ...nodes),
     };
     this.shipSfx = new ShipSfx(host, this.white, this.shipBus);
@@ -2453,13 +2509,18 @@ export class AudioSystem {
     return this.ctx !== null && (this.offline || this.ctx.state === 'running');
   }
 
+  /** One-shot voices in use, not counting thunder, which has its own. */
+  private busyVoices(): number {
+    return this.voices.length - this.thunderLive;
+  }
+
   private acquireVoice(): boolean {
-    return this.voices.length < this.settings.voices;
+    return this.busyVoices() < this.settings.voices;
   }
 
   /** The same cap, held short so ambience cannot starve an event. See `GULL_VOICE_RESERVE`. */
   private acquireGullVoice(): boolean {
-    return this.voices.length + GULL_VOICE_RESERVE < this.settings.voices;
+    return this.busyVoices() + GULL_VOICE_RESERVE < this.settings.voices;
   }
 
   /**
