@@ -13,7 +13,7 @@
  * *relative to the bow* is simply `bearingDeg - headingDeg`.
  */
 
-export type ToastKind = 'info' | 'reward' | 'warning';
+export type ToastKind = 'info' | 'reward' | 'warning' | 'danger';
 
 /** How much canvas is set. W raises it a step, S takes it in a step. */
 export type SailSetting = 'furled' | 'half' | 'full';
