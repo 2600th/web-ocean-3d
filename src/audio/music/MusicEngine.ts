@@ -264,6 +264,9 @@ const LOOKAHEAD = 0.35;
 const RESYNC_BEHIND = 0.12;
 /** Stem crossfade time constant, seconds. */
 const STEM_TAU = 1.4;
+/** A room swap's crossfade, and how long the old room rings before it is unhooked, seconds. */
+const REVERB_SWAP_FADE = 0.08;
+const REVERB_RETIRE = 3;
 /** Seconds a requested state must persist before the band follows it. */
 const STATE_HOLD = 2.0;
 /** …except going under or coming up, which the band follows almost at once. */
@@ -381,6 +384,10 @@ export class MusicEngine implements NoteHost {
   private readonly wetSend: GainNode;
   private readonly filter: BiquadFilterNode;
   private wetPath: AudioNode[] = [];
+  /** The current room's own input, so a swap can fade it rather than cut it. */
+  private wetIn: GainNode | null = null;
+  /** Rooms swapped out and still ringing; see `setReverb`. */
+  private readonly retiring: { input: GainNode; nodes: AudioNode[]; at: number }[] = [];
   private reverbMode: MusicReverb | null = null;
 
   private readonly inputs: Record<Exclude<StemId, 'drone'>, GainNode>;
@@ -626,18 +633,40 @@ export class MusicEngine implements NoteHost {
     this.voiceCap = Math.max(4, Math.floor(voices));
   }
 
-  /** Swaps the room. The convolver on capable tiers, a feedback delay on Low. */
+  /**
+   * Swaps the room. The convolver on capable tiers, a feedback delay on Low.
+   *
+   * The old room is not cut: its input fades over `REVERB_SWAP_FADE` while the
+   * new one fades in, and it is unhooked only once its tail has rung out
+   * (`retireRooms`). Disconnecting it at once stopped a ringing tail dead,
+   * which is a click on every adaptive tier change.
+   */
   setReverb(mode: MusicReverb): void {
     if (mode === this.reverbMode) return;
+    const first = this.reverbMode === null;
     this.reverbMode = mode;
-    this.wetSend.disconnect();
-    for (const node of this.wetPath) node.disconnect();
-    this.wetPath = [];
     const ctx = this.ctx;
+    const now = ctx.currentTime;
+    if (this.wetIn !== null) {
+      const g = this.wetIn.gain;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(0, now + REVERB_SWAP_FADE);
+      this.retiring.push({ input: this.wetIn, nodes: this.wetPath, at: now + REVERB_RETIRE });
+    }
+    const input = ctx.createGain();
+    if (first) {
+      input.gain.value = 1;
+    } else {
+      input.gain.setValueAtTime(0, now);
+      input.gain.linearRampToValueAtTime(1, now + REVERB_SWAP_FADE);
+    }
+    this.wetSend.connect(input);
+    this.wetIn = input;
     if (mode === 'convolver') {
       const conv = ctx.createConvolver();
       conv.buffer = buildImpulse(ctx, 2.3, mulberry32(0x2e7e2b));
-      this.wetSend.connect(conv);
+      input.connect(conv);
       conv.connect(this.filter);
       this.wetPath = [conv];
     } else {
@@ -648,12 +677,22 @@ export class MusicEngine implements NoteHost {
       const damp = ctx.createBiquadFilter();
       damp.type = 'lowpass';
       damp.frequency.value = 2200;
-      this.wetSend.connect(delay);
+      input.connect(delay);
       delay.connect(damp);
       damp.connect(feedback);
       feedback.connect(delay);
       damp.connect(this.filter);
       this.wetPath = [delay, feedback, damp];
+    }
+  }
+
+  /** Unhooks rooms swapped out by `setReverb` once their tails are gone. */
+  private retireRooms(now: number): void {
+    while (this.retiring.length > 0 && now >= this.retiring[0].at) {
+      const room = this.retiring.shift()!;
+      this.wetSend.disconnect(room.input);
+      room.input.disconnect();
+      for (const node of room.nodes) node.disconnect();
     }
   }
 
@@ -729,6 +768,7 @@ export class MusicEngine implements NoteHost {
    */
   update(dt: number, now: number, live: boolean): void {
     const step = Number.isFinite(dt) ? Math.min(Math.max(dt, 0), 0.25) : 0;
+    if (this.retiring.length > 0) this.retireRooms(now);
 
     // --- state and energy (the model runs whether or not anything is heard) ---
     if (this.requested !== this.state) {
@@ -831,6 +871,8 @@ export class MusicEngine implements NoteHost {
     }
     for (const node of this.chain) node.disconnect();
     for (const node of this.wetPath) node.disconnect();
+    this.retireRooms(Number.POSITIVE_INFINITY);
+    this.wetIn?.disconnect();
     this.wetSend.disconnect();
     this.stemsBus.disconnect();
     this.duckGain.disconnect();
@@ -1079,8 +1121,9 @@ export class MusicEngine implements NoteHost {
       if (beat || e > 0.6) {
         const level = VEL.buzz * p.buzz * (beat ? 1 : 0.45) * (0.6 + 0.4 * e);
         const g = this.buzzGate.gain;
-        g.setValueAtTime(0, t);
-        g.linearRampToValueAtTime(level, t + 0.012);
+        // Struck from wherever the last stroke's decay has got to. Setting it to
+        // zero first was a step on every stroke under way, which is a click.
+        g.setTargetAtTime(level, t, 0.004);
         g.setTargetAtTime(0, t + 0.035, 0.05);
       }
     }

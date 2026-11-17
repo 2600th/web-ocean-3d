@@ -27,6 +27,11 @@ import { ParamTarget } from './ParamTarget';
  * `DEACTIVATE_SECONDS` so the gain ramp finishes first; a disconnect mid-ramp is
  * a click, and a tier change is meant to be inaudible.
  *
+ * The same goes for a bed asked for silence by the scene rather than the tier:
+ * rain in a dry sky, the hull rush at anchor. Held at zero for ten of its own
+ * gain time constants, it unhooks itself (`PARK_LEVEL`), and the next level
+ * above zero hooks it back up from exactly zero.
+ *
  * The source is started once and never stopped, because an `AudioBufferSourceNode`
  * cannot be restarted — a stopped one is dead and would have to be replaced, which
  * is an allocation on a path that can be hit by the adaptive quality manager.
@@ -43,6 +48,15 @@ import { ParamTarget } from './ParamTarget';
 
 /** Delay between a layer's gain reaching zero and its chain being unhooked. */
 const DEACTIVATE_SECONDS = 0.4;
+/**
+ * A level at or under this is silence, and a bed held there this many of its
+ * own gain time constants (at least `PARK_MIN_SECONDS`) is unhooked until it is
+ * asked for a level again: rain in a dry sky, the hull rush at anchor and the
+ * rumble above water were ten beds rendering into gains of zero.
+ */
+const PARK_LEVEL = 1e-4;
+const PARK_TAUS = 10;
+const PARK_MIN_SECONDS = 1;
 
 export interface NoiseBedOptions {
   /** Shared looping noise. Not owned — several beds read the same buffer. */
@@ -95,6 +109,13 @@ export class NoiseBed {
   private started = false;
   private disconnectAt: number | null = null;
   private disposed = false;
+  /** Whether the tail is hooked to the bus, whatever the reason. */
+  private connected = true;
+  /** Unhooked for sitting at zero level (not by the tier). */
+  private parked = false;
+  /** When the level was last asked to be silence, or null while it is not. */
+  private quietSince: number | null = null;
+  private readonly parkAfter: number;
 
   constructor(ctx: BaseAudioContext, options: NoiseBedOptions) {
     // Ceiling on any filter corner: nine tenths of Nyquist, not Nyquist. A
@@ -142,6 +163,7 @@ export class NoiseBed {
 
     const gainTau = options.gainTau ?? 0.15;
     const filterTau = options.filterTau ?? 0.25;
+    this.parkAfter = Math.max(PARK_MIN_SECONDS, PARK_TAUS * gainTau);
 
     this.level = new ParamTarget(this.gainNode.gain, 0, gainTau, 0.002, 0, 4);
     this.frequency = new ParamTarget(
@@ -189,7 +211,47 @@ export class NoiseBed {
    * than trusting the caller to stop asking for a level.
    */
   setLevel(value: number, now: number, live: boolean): void {
-    this.level.set(this.active ? value : 0, now, live);
+    const wanted = this.active ? value : 0;
+    // Parking only moves on a running clock; a frozen one never reaches a deadline.
+    if (this.active && live && this.started) {
+      if (wanted > PARK_LEVEL) {
+        this.quietSince = null;
+        if (this.parked) {
+          // Back from silence: rehooked at exactly zero, then ramped up.
+          this.parked = false;
+          this.level.silence(now);
+          this.hook();
+        }
+      } else if (!this.parked) {
+        if (this.quietSince === null) {
+          this.quietSince = now;
+        } else if (now - this.quietSince >= this.parkAfter) {
+          // Ten time constants down, the gain is already under -80 dB of where
+          // it was; zeroing it and unhooking is inaudible.
+          this.parked = true;
+          this.level.silence(now);
+          this.unhook();
+        }
+      }
+    }
+    this.level.set(wanted, now, live);
+  }
+
+  /** Whether this bed is hooked up and therefore being rendered. */
+  get rendering(): boolean {
+    return this.connected;
+  }
+
+  private hook(): void {
+    if (this.connected || this.disposed) return;
+    this.tail.connect(this.destination);
+    this.connected = true;
+  }
+
+  private unhook(): void {
+    if (!this.connected) return;
+    this.tail.disconnect();
+    this.connected = false;
   }
 
   setBand(frequency: number, q: number, now: number, live: boolean): void {
@@ -214,20 +276,22 @@ export class NoiseBed {
       // A pending disconnect means the chain is still hooked up and only the
       // timer needs cancelling.
       if (this.disconnectAt !== null) this.disconnectAt = null;
-      else this.tail.connect(this.destination);
+      else this.hook();
+      this.parked = false;
+      this.quietSince = null;
       this.level.silence(now);
       return;
     }
 
     if (live) {
       this.level.set(0, now, true);
-      this.disconnectAt = now + DEACTIVATE_SECONDS;
+      this.disconnectAt = this.connected ? now + DEACTIVATE_SECONDS : null;
     } else {
       // Nothing is audible, so there is no ramp to protect and no clock to wait
       // on — a suspended context would never reach the deadline anyway.
       this.level.silence(now);
       this.disconnectAt = null;
-      this.tail.disconnect();
+      this.unhook();
     }
   }
 
@@ -235,7 +299,7 @@ export class NoiseBed {
   tick(now: number): void {
     if (this.disconnectAt === null || now < this.disconnectAt) return;
     this.disconnectAt = null;
-    this.tail.disconnect();
+    this.unhook();
   }
 
   flush(now: number): void {
@@ -245,6 +309,7 @@ export class NoiseBed {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.connected = false;
     if (this.started) {
       try {
         this.source.stop();

@@ -1,0 +1,234 @@
+{
+  "date": "2026-11-17T19:21:30.926Z",
+  "args": {
+    "states": [
+      "calm",
+      "sailing",
+      "storm",
+      "underwater",
+      "tour",
+      "nightCalm",
+      "nearCliffs",
+      "tierChange"
+    ],
+    "seconds": 60,
+    "tier": "high",
+    "volume": 1,
+    "music": 0.5,
+    "saveBaseline": true,
+    "wav": true
+  },
+  "clickRatio": 10,
+  "clickFloor": 0.004,
+  "selfTest": {
+    "sine": 0,
+    "cut": 1,
+    "noise": 0
+  },
+  "results": {
+    "calm": {
+      "integratedLufs": -27.603837265590442,
+      "shortTermMaxLufs": -22.62668496772923,
+      "samplePeakDb": -7.284997678117393,
+      "truePeakDb": -7.284997678117393,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 4,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 18,
+      "peakLiveNodes": 193,
+      "peakNodesPerSecond": 180,
+      "nodesCreated": 1614,
+      "bedsRendering": 10,
+      "bedsAtZero": 6,
+      "repeatMeasured": null,
+      "repeatProjected": 110.76923076923077,
+      "file": "test-results/audio/calm-before.wav"
+    },
+    "sailing": {
+      "integratedLufs": -22.74362430727139,
+      "shortTermMaxLufs": -19.374867566597665,
+      "samplePeakDb": -5.472742038034236,
+      "truePeakDb": -5.458740408099616,
+      "clicks": 2,
+      "clickTimes": [
+        {
+          "t": 41.785,
+          "ratio": 10.6,
+          "size": 0.0813
+        },
+        {
+          "t": 57.189,
+          "ratio": 11.5,
+          "size": 0.1223
+        }
+      ],
+      "peakFxVoices": 5,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 20,
+      "peakLiveNodes": 251,
+      "peakNodesPerSecond": 264,
+      "nodesCreated": 5011,
+      "bedsRendering": 10,
+      "bedsAtZero": 3,
+      "repeatMeasured": null,
+      "repeatProjected": 60.65200909780136,
+      "file": "test-results/audio/sailing-before.wav"
+    },
+    "storm": {
+      "integratedLufs": -16.174607418112203,
+      "shortTermMaxLufs": -15.042069797694504,
+      "samplePeakDb": -2.297708740746231,
+      "truePeakDb": -2.2710858939314598,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 8,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 24,
+      "peakLiveNodes": 298,
+      "peakNodesPerSecond": 287,
+      "nodesCreated": 7993,
+      "bedsRendering": 10,
+      "bedsAtZero": 0,
+      "repeatMeasured": 46.784,
+      "repeatProjected": 47.244094488188985,
+      "file": "test-results/audio/storm-before.wav"
+    },
+    "underwater": {
+      "integratedLufs": -23.519062128396822,
+      "shortTermMaxLufs": -21.868180662171955,
+      "samplePeakDb": -8.102013784135957,
+      "truePeakDb": -8.101777982109668,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 11,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 8,
+      "peakLiveNodes": 169,
+      "peakNodesPerSecond": 153,
+      "nodesCreated": 626,
+      "bedsRendering": 10,
+      "bedsAtZero": 5,
+      "repeatMeasured": null,
+      "repeatProjected": 106.66666666666667,
+      "file": "test-results/audio/underwater-before.wav"
+    },
+    "tour": {
+      "integratedLufs": -24.523585635363624,
+      "shortTermMaxLufs": -21.242716467665215,
+      "samplePeakDb": -7.354564261800153,
+      "truePeakDb": -7.334333340320925,
+      "clicks": 1,
+      "clickTimes": [
+        {
+          "t": 53.99,
+          "ratio": 10.1,
+          "size": 0.0519
+        }
+      ],
+      "peakFxVoices": 4,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 25,
+      "peakLiveNodes": 230,
+      "peakNodesPerSecond": 207,
+      "nodesCreated": 3406,
+      "bedsRendering": 10,
+      "bedsAtZero": 3,
+      "repeatMeasured": 55.104,
+      "repeatProjected": 55.652173913043484,
+      "file": "test-results/audio/tour-before.wav"
+    },
+    "nightCalm": {
+      "integratedLufs": -27.176087775047925,
+      "shortTermMaxLufs": -22.512595937279766,
+      "samplePeakDb": -7.261272737393426,
+      "truePeakDb": -7.261272737393426,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 5,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 18,
+      "peakLiveNodes": 195,
+      "peakNodesPerSecond": 180,
+      "nodesCreated": 1620,
+      "bedsRendering": 10,
+      "bedsAtZero": 6,
+      "repeatMeasured": null,
+      "repeatProjected": 110.76923076923077,
+      "file": "test-results/audio/nightCalm-before.wav"
+    },
+    "nearCliffs": {
+      "integratedLufs": -24.018397399500326,
+      "shortTermMaxLufs": -21.22601074179538,
+      "samplePeakDb": -6.697553024136493,
+      "truePeakDb": -6.69525366226992,
+      "clicks": 2,
+      "clickTimes": [
+        {
+          "t": 42.354,
+          "ratio": 10.5,
+          "size": 0.069
+        },
+        {
+          "t": 48.542,
+          "ratio": 12.9,
+          "size": 0.109
+        }
+      ],
+      "peakFxVoices": 4,
+      "fxVoiceCap": 12,
+      "refused": 0,
+      "peakMusicNotes": 19,
+      "peakLiveNodes": 220,
+      "peakNodesPerSecond": 234,
+      "nodesCreated": 4782,
+      "bedsRendering": 10,
+      "bedsAtZero": 4,
+      "repeatMeasured": null,
+      "repeatProjected": 62.50000000000001,
+      "file": "test-results/audio/nearCliffs-before.wav"
+    },
+    "tierChange": {
+      "integratedLufs": -23.130943494496268,
+      "shortTermMaxLufs": -21.23642169686991,
+      "samplePeakDb": -7.650588563773192,
+      "truePeakDb": -7.6423464480357906,
+      "clicks": 3,
+      "clickTimes": [
+        {
+          "t": 42.543,
+          "ratio": 11.5,
+          "size": 0.0976
+        },
+        {
+          "t": 42.946,
+          "ratio": 10.7,
+          "size": 0.1152
+        },
+        {
+          "t": 43.991,
+          "ratio": 10.8,
+          "size": 0.0993
+        }
+      ],
+      "peakFxVoices": 5,
+      "fxVoiceCap": 12,
+      "refused": 1,
+      "peakMusicNotes": 19,
+      "peakLiveNodes": 215,
+      "peakNodesPerSecond": 264,
+      "nodesCreated": 4443,
+      "bedsRendering": 10,
+      "bedsAtZero": 3,
+      "repeatMeasured": null,
+      "repeatProjected": 60.65200909780136,
+      "file": "test-results/audio/tierChange-before.wav"
+    }
+  }
+}

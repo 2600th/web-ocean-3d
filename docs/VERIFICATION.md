@@ -551,3 +551,42 @@ total about 6.3 MB.
    before concluding anything.
 5. If the change is intended, regenerate the baseline. If it is not, fix the
    renderer. Do not raise the threshold.
+
+## The audio bench
+
+Sound is checked by measurement, not by ear, with `scripts/audio-bench.mjs`. It
+bundles `src/audio` in memory with Vite, loads it into headless Chromium (no
+dev server, no port), and renders each state offline on an
+`OfflineAudioContext` through the `context` option of `AudioSystem`. The
+render is suspended every 32 ms and the game's `update` is called at each stop,
+so the score's look-ahead scheduling is deterministic; every random stream in
+the audio code is seeded, so a rerun of the same code renders the same samples.
+
+```sh
+node scripts/audio-bench.mjs                    # all states, 60 s each, about 30 s in all
+node scripts/audio-bench.mjs --states calm,storm --seconds 20
+node scripts/audio-bench.mjs --tier low         # the delay room and the reduced beds
+node scripts/audio-bench.mjs --save-baseline    # store this run as the "before" column
+```
+
+States: calm, sailing, storm (with thunder at six distances), underwater (the
+plunge at 1.5 s), tour, a night calm with the moonlit look's weather, sailing
+past a rock face (the cliff room), and a tier change (sailing, dropping to Low
+at 20 s and back at 40 s). Per state it reports integrated loudness (BS.1770-4,
+both gates), the loudest 3 s, true peak (4x oversampled), clicks, peak voices,
+sounds refused for want of a voice and music notes, peak live audio nodes and
+nodes created per second, noise beds still rendering at zero level, and when
+the score repeats. `--src <dir>` renders another revision's `src/audio` (from
+`git archive <rev> src/audio src/core`), which is how the before column is
+recorded. The table goes to `docs/AUDIO_BENCH.md` with the stored
+baseline (`docs/AUDIO_BENCH.baseline.json`) beside it; the renders go to
+`test-results/audio/<state>.wav` for listening.
+
+What it cannot do: say whether anything sounds good. A small step buried under
+the noise beds is below the click detector. `BENCH_DIAG=music` (or a stem name
+such as `drone`) renders the score alone; there a bare sawtooth itself reads as
+clicks at about 9x, so use it to compare before with after, not as a count.
+`BENCH_DIAG=wet` renders the shared room's return alone (every dry path and
+the score cut; interface sounds stay), to show how wet the world is.
+`BENCH_PARAMS` and `BENCH_EVENTS` override scene values or add events, as JSON.
+Diagnostic and partial runs leave `docs/AUDIO_BENCH.md` alone.

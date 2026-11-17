@@ -3,6 +3,7 @@ import { mulberry32 } from '../core/random';
 import { NoiseBed, type NoiseBedOptions } from './NoiseBed';
 import { NOISE_SECONDS, createNoiseBuffer } from './noise';
 import { ParamTarget } from './ParamTarget';
+import { Room } from './Room';
 import { MusicEngine, type MusicState, type MusicSting } from './music/MusicEngine';
 import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
 
@@ -66,6 +67,24 @@ import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
  *  - `uiTick(cue, value?)` — interface cues (`UiCue`); `src/ui/sounds.ts` maps
  *    DOM events to them so the UI never imports this.
  *  - `setGullLocator(fn)` — places cries on real birds (`Birds.positionOf`).
+ *
+ * **Buses.** Four levels the viewer owns, each with a mute (`AudioBus`,
+ * `setBusVolume`, `setBusMuted`, `applyMix`): music, ambience (beds, thunder,
+ * gulls, what is heard under water), effects (the ship bus and the one-shots)
+ * and interface. The application saves them; this class only applies them.
+ *
+ * **Room.** Nothing in the world is dry: every effect and ambience sends to
+ * one shared reverb (`Room`) with its own amount (`*_SEND`), through a feed
+ * that follows its bus's level and mute. The deck's short, sparse room is
+ * always there; a rock face near the listener (`setReflectors`, `listenerX/Z`)
+ * adds its echo; under water the water's own room takes over. The interface
+ * stays dry, because it is not in the world.
+ *
+ * **Lifecycle.** A hidden tab fades the master and suspends the context; a
+ * visible one resumes it and re-seats the score. A context the platform stops
+ * by itself, or an unlock that is refused, waits for the next gesture rather
+ * than staying silent. The score's scheduling pump is timed by the audio clock
+ * (`armTick`), not by a timer the browser slows down.
  *
  * **Mix.** Beds, ship and one-shots sum on the air bus (muffled under water);
  * the score joins them before a gentle 4:1 compressor; UI bypasses both. After
@@ -144,6 +163,23 @@ export interface AudioSceneParams {
   sailFill?: number;
   /** How hard the canvas is luffing (head to wind, or being set or taken in), 0..1. */
   sailLuff?: number;
+  /**
+   * The listener's world position on the water plane, metres: the camera.
+   * With `setReflectors`, how close it is to a rock face sets how much of the
+   * cliff room is heard. Optional; without it there are no cliffs.
+   */
+  listenerX?: number;
+  listenerZ?: number;
+}
+
+/** A rock face for the cliff room: where it stands, how far it reaches, how high. */
+export interface AudioReflector {
+  x: number;
+  z: number;
+  /** Horizontal radius, metres. */
+  reach: number;
+  /** Height of its top above the sea, metres. */
+  top: number;
 }
 
 export const DEFAULT_AUDIO_SCENE_PARAMS: AudioSceneParams = {
@@ -187,6 +223,36 @@ export type UiCue =
   | 'warn';
 
 export type { MusicState, MusicSting };
+
+/**
+ * The four things a viewer can turn up, down or off separately.
+ *
+ *  - `music`: the score (and its stings).
+ *  - `ambience`: the world around the ship: sea, wind, rain, thunder, gulls,
+ *    and what is heard under water.
+ *  - `effects`: the ship and what happens to things: hull, rigging, canvas,
+ *    slaps, slams, splashes, the anchor chain.
+ *  - `interface`: clicks, ticks and the reward chime.
+ */
+export type AudioBus = 'music' | 'ambience' | 'effects' | 'interface';
+
+export const AUDIO_BUSES: readonly AudioBus[] = ['music', 'ambience', 'effects', 'interface'];
+
+/**
+ * Every level the viewer controls, in the shape the UI state already has, so
+ * the application can hand its state straight to `applyMix`.
+ */
+export interface AudioMix {
+  volume: number;
+  musicVolume: number;
+  ambienceVolume: number;
+  effectsVolume: number;
+  interfaceVolume: number;
+  musicMuted: boolean;
+  ambienceMuted: boolean;
+  effectsMuted: boolean;
+  interfaceMuted: boolean;
+}
 
 export interface AudioQualitySettings {
   /** A second, opposite-panned surf bed. Without it the sea is mono. */
@@ -263,6 +329,8 @@ export interface AudioSystemOptions {
   quality?: QualityTier;
   /** Music volume, 0..1, under the master volume. Defaults to 0.5. */
   musicVolume?: number;
+  /** Every level at once, as `applyMix`; overrides `volume` and `musicVolume`. */
+  mix?: Readonly<AudioMix>;
   /**
    * Render into this context instead of creating a realtime one — an
    * `OfflineAudioContext`, for verification. The system then behaves as though
@@ -325,8 +393,38 @@ const MUTE_RAMP = 0.02;
 const ENABLE_RAMP = 0.2;
 /** Fade-in on the first resume. A sea that cuts in at full level reads as a bug. */
 const RESUME_RAMP = 0.6;
+/** Fade before a hidden tab's context is suspended, seconds. */
+const HIDE_FADE = 0.08;
+/** Time constant of a bus slider or mute, seconds. */
+const BUS_TAU = 0.03;
+
+// --- room ------------------------------------------------------------------
+//
+// How wet each sound is in the shared room (`Room`). The open sea is nearly
+// dry, so the beds barely send at all; what happens on the ship sends more,
+// because the deck and the rails are right there; thunder and gulls are far
+// off and most of what reaches the ear of them has bounced.
+
+const BED_SEND = 0.1;
+const SHIP_SEND = 0.5;
+const SPLASH_SEND = 0.4;
+const THUNDER_SEND = 0.4;
+const CHAIN_SEND = 0.4;
+const GULL_SEND = 0.3;
+/**
+ * Bubbles into the underwater room. Not the rumble: a dark room on brown
+ * noise only makes more of the bottom octave.
+ */
+const UNDER_SEND = 0.7;
+/** Rock faces: closer than `NEAR` is the full cliff room, past `FAR` none of it. Metres. */
+const CLIFF_NEAR = 20;
+const CLIFF_FAR = 160;
+/** Height, metres, at which a rock face reflects fully; a low reef rock barely does. */
+const CLIFF_FULL_HEIGHT = 12;
 /** Grace between a disable fading out and the context being suspended. */
 const SUSPEND_DELAY = 0.35;
+/** How long an unlock attempt may hang before the next gesture tries again, ms. */
+const RETRY_UNLOCK_MS = 1000;
 
 // --- swell -----------------------------------------------------------------
 
@@ -616,6 +714,12 @@ const THUNDER_ROLL_HZ = 110;
  * number a caller wants when it triggers the sound off a lightning flash.
  */
 export const SPEED_OF_SOUND_KM_S = 0.343;
+/** A delayed strike's nodes are built this long before it is heard, seconds. */
+const THUNDER_LEAD = 0.25;
+/** Strikes waiting to be heard; past this the farthest is dropped. */
+const THUNDER_QUEUE = 6;
+/** Thunder's own voices, outside the tier's one-shot cap. Two strikes can overlap. */
+const THUNDER_VOICES = 2;
 
 /** Envelope curve resolution. 256 points over a roll is ~30 ms per point. */
 const CURVE_POINTS = 256;
@@ -736,8 +840,9 @@ const UI_CUE_GAP: Readonly<Record<UiCue, number>> = {
 const UI_TICK_LEVEL = 0.05;
 
 /**
- * Period of the score's scheduling timer, ms. The look-ahead is 350 ms, so the
- * band keeps playing through a stalled render loop with room to spare.
+ * Period of the score's scheduling pump, ms. The look-ahead is 350 ms, so the
+ * band keeps playing through a stalled render loop with room to spare. The pump
+ * is timed by the audio clock (see `armTick`), not by `setInterval`.
  */
 const MUSIC_PUMP_MS = 100;
 const UI_HOVER_LEVEL = 0.022;
@@ -1030,6 +1135,34 @@ export class AudioSystem {
   private uiBus!: GainNode;
   /** The ambience beds, so thunder can duck them without ducking itself. */
   private bedBus!: GainNode;
+  /** The viewer's ambience level: beds, thunder, gulls above water... */
+  private ambienceBus!: GainNode;
+  /** ...and the same level on what is heard under water. */
+  private ambienceUnder!: GainNode;
+  /** The viewer's effects level: the ship and the one-shots. */
+  private effectsBus!: GainNode;
+  /** The shared room, and each bus's feed into it (following that bus's level). */
+  private room!: Room;
+  private ambienceWet!: GainNode;
+  private effectsWet!: GainNode;
+  private underWet!: GainNode;
+  /** Bubbles and what else is in the water with the lens; into the under bus. */
+  private underFx!: GainNode;
+  private bedSend!: GainNode;
+  private shipSend!: GainNode;
+  private underSend!: GainNode;
+  /** Rock faces near enough to echo: x, z, reach, height, four per face. */
+  private reflectors = new Float64Array(0);
+  private readonly busVolume: Record<AudioBus, number> = { music: 0.5, ambience: 1, effects: 1, interface: 1 };
+  private readonly busMuted: Record<AudioBus, boolean> = { music: false, ambience: false, effects: false, interface: false };
+  /** The tab is hidden and the context was suspended for it. */
+  private hidden = false;
+  private gestureTarget: EventTarget | undefined = undefined;
+  private gestureRemove: (() => void) | null = null;
+  /** The audio-clock pump is running; see `armTick`. */
+  private ticking = false;
+  private tickSink: GainNode | null = null;
+  private visibilityDoc: Document | null = null;
   /** Everything the ship makes: gained by distance, panned by bearing. */
   private shipBus!: GainNode;
   private shipPanner: StereoPannerNode | null = null;
@@ -1038,7 +1171,6 @@ export class AudioSystem {
 
   private music!: MusicEngine;
   private shipSfx!: ShipSfx;
-  private musicVolume = 0.5;
   private gullLocator: ((out: GullFix) => boolean) | null = null;
   private readonly gullFix: GullFix = { distance: GULL_REFERENCE_METRES, pan: 0 };
   private readonly shipMotion: ShipMotion = {
@@ -1050,7 +1182,7 @@ export class AudioSystem {
   };
   private wasUnder = false;
   private plungeCooldown = 0;
-  /** The score's scheduling timer; see `MusicEngine.pump`. */
+  /** Fallback scheduling timer, only where there is no `ConstantSourceNode`. */
   private pumpTimer: ReturnType<typeof setInterval> | null = null;
 
   private airGain!: ParamTarget;
@@ -1108,10 +1240,15 @@ export class AudioSystem {
 
   /** Live one-shot sources, so a reset or a dispose can silence them. */
   private readonly voices: AudioScheduledSourceNode[] = [];
+  /** Thunder among `voices`; it has its own `THUNDER_VOICES`. */
+  private thunderLive = 0;
+  /** Strikes seen and not yet heard. See `playThunder`. */
+  private readonly thunderQueue: { at: number; km: number }[] = [];
 
   constructor(options: AudioSystemOptions = {}) {
     this.volume = clamp01(finite(options.volume, this.volume));
-    this.musicVolume = clamp01(finite(options.musicVolume, this.musicVolume));
+    this.busVolume.music = clamp01(finite(options.musicVolume, this.busVolume.music));
+    if (options.mix !== undefined) this.readMix(options.mix);
     this.muted = options.muted ?? false;
     this.tier = options.quality ?? 'high';
     this.settings = AUDIO_QUALITY_TIERS[this.tier] ?? AUDIO_QUALITY_TIERS.high;
@@ -1154,6 +1291,63 @@ export class AudioSystem {
     // been interacted with, or one with an autoplay exemption. Left alone, that
     // starts the sea before the application has said it may.
     if (this.realtime.state === 'running') void this.realtime.suspend().catch(() => {});
+
+    // Lifecycle: a hidden tab suspends the context and a visible one resumes
+    // it; a context the platform stops on its own (an interruption, a device
+    // change) waits for the next gesture to come back.
+    if (typeof document !== 'undefined') {
+      this.visibilityDoc = document;
+      document.addEventListener('visibilitychange', this.onVisibility);
+    }
+    this.realtime.addEventListener('statechange', this.onStateChange);
+  }
+
+  private readonly onVisibility = (): void => {
+    const doc = this.visibilityDoc;
+    const rt = this.realtime;
+    if (doc === null || rt === null || this.disposed) return;
+    if (doc.hidden) {
+      if (this.hidden || rt.state !== 'running') return;
+      this.hidden = true;
+      this.music.pause();
+      this.applyMasterGain(HIDE_FADE);
+      // Timers are slowed in a hidden tab, so this may land late; the master is
+      // already at zero by then.
+      setTimeout(() => {
+        if (this.hidden && !this.disposed) void rt.suspend().catch(() => {});
+      }, HIDE_FADE * 1000 + 20);
+      return;
+    }
+    if (!this.hidden) return;
+    this.hidden = false;
+    if (!this.gestured || !this.enabled) {
+      this.applyMasterGain(0);
+      return;
+    }
+    // Allowed without a fresh gesture: the page already has the user's
+    // activation. Refused anyway, it falls back to the next gesture.
+    void rt
+      .resume()
+      .then(() => {
+        if (this.disposed || this.ctx === null || this.hidden) return;
+        this.flushAll(this.ctx.currentTime);
+        this.applyMasterGain(RESUME_RAMP);
+        this.startTicker();
+      })
+      .catch(() => this.armGesture());
+  };
+
+  private readonly onStateChange = (): void => {
+    const rt = this.realtime;
+    if (rt === null || this.disposed || rt.state === 'running' || rt.state === 'closed') return;
+    // Ours: before the first gesture, while disabled, while hidden.
+    if (!this.gestured || !this.enabled || this.hidden || this.suspendAt !== null) return;
+    this.armGesture();
+  };
+
+  /** Listens for the next gesture to resume on, unless already listening. */
+  private armGesture(): void {
+    if (this.gestureRemove === null && !this.disposed) this.resumeOnGesture(this.gestureTarget);
   }
 
   /** `'unavailable'` when there is no Web Audio at all. */
@@ -1193,15 +1387,66 @@ export class AudioSystem {
     this.startBeds(now);
     this.flushAll(now);
     this.applyMasterGain(this.offline ? 0 : RESUME_RAMP);
-    if (!this.offline && this.pumpTimer === null && typeof setInterval === 'function') {
-      this.pumpTimer = setInterval(() => {
-        const c = this.ctx;
-        // dt 0: the model does not advance off the timer, but the band can go
-        // live and keep scheduling while the render loop is stalled.
-        if (c !== null && this.enabled && !this.muted && this.running()) this.music.update(0, c.currentTime, true);
-      }, MUSIC_PUMP_MS);
-    }
+    this.startTicker();
     return this.running();
+  }
+
+  /**
+   * Keeps the score scheduling while the render loop is stalled (a shader
+   * compile, a heavy scene), timed by the audio clock rather than a timer.
+   *
+   * Each tick is a silent `ConstantSourceNode` lasting `MUSIC_PUMP_MS`, and
+   * its `ended` event pumps the band and starts the next. A `setInterval` did
+   * this before, and browsers slow timers down; the audio clock is the one the
+   * notes are scheduled on anyway. The chain stops by itself when the context
+   * stops running (nothing ends on a suspended context) and `resume` restarts
+   * it. Offline, `update` drives everything and there is no chain.
+   */
+  private startTicker(): void {
+    const ctx = this.ctx;
+    if (ctx === null || this.offline || this.disposed || this.ticking) return;
+    if (typeof (ctx as Partial<BaseAudioContext>).createConstantSource !== 'function') {
+      if (this.pumpTimer === null && typeof setInterval === 'function') {
+        this.pumpTimer = setInterval(() => this.pumpMusic(), MUSIC_PUMP_MS);
+      }
+      return;
+    }
+    if (this.tickSink === null) {
+      this.tickSink = ctx.createGain();
+      this.tickSink.gain.value = 0;
+      this.tickSink.connect(ctx.destination);
+    }
+    this.ticking = true;
+    this.armTick();
+  }
+
+  private armTick(): void {
+    const ctx = this.ctx;
+    const sink = this.tickSink;
+    if (ctx === null || sink === null || this.disposed || !this.running()) {
+      this.ticking = false;
+      return;
+    }
+    const tick = ctx.createConstantSource();
+    tick.offset.value = 0;
+    tick.connect(sink);
+    const now = ctx.currentTime;
+    tick.start(now);
+    tick.stop(now + MUSIC_PUMP_MS / 1000);
+    tick.onended = () => {
+      tick.disconnect();
+      this.pumpMusic();
+      this.armTick();
+    };
+  }
+
+  /** dt 0: the model does not advance off the pump, only the scheduling does. */
+  private pumpMusic(): void {
+    const c = this.ctx;
+    if (c !== null && this.enabled && !this.muted && !this.hidden && this.running()) {
+      if (this.thunderQueue.length > 0) this.serviceThunder(c.currentTime);
+      this.music.update(0, c.currentTime, true);
+    }
   }
 
   /**
@@ -1216,16 +1461,38 @@ export class AudioSystem {
     // the `available` guard below could stop it.
     const listener = target ?? (typeof window === 'undefined' ? null : window);
     if (this.ctx === null || listener === null) return () => {};
+    // Remembered, so an interrupted context can listen on the same target again.
+    this.gestureTarget = target;
+    this.gestureRemove?.();
 
-    const events = ['pointerdown', 'keydown', 'touchstart'] as const;
-    const handler = (): void => {
-      void this.resume();
+    // The release events as well as the presses: on a touch screen Chrome grants
+    // user activation on the lift (`pointerup`, `touchend`), not the touch, so a
+    // resume from `touchstart` alone is refused.
+    const events = ['pointerdown', 'pointerup', 'keydown', 'touchstart', 'touchend', 'click'] as const;
+    const remove = (): void => {
       for (const name of events) listener.removeEventListener(name, handler);
+      if (this.gestureRemove === remove) this.gestureRemove = null;
+    };
+    this.gestureRemove = remove;
+    let pending = false;
+    const handler = (): void => {
+      if (pending) return;
+      pending = true;
+      // A refused `resume()` can stay pending rather than reject; the next
+      // gesture must still get its try.
+      const release = setTimeout(() => (pending = false), RETRY_UNLOCK_MS);
+      void this.resume().then((running) => {
+        clearTimeout(release);
+        pending = false;
+        // Only once audio is actually running. A refused resume (no activation
+        // yet, an audio device that is busy or gone) leaves the listeners in
+        // place, so the next gesture tries again instead of audio staying
+        // silent for the rest of the visit.
+        if (running || this.disposed) remove();
+      });
     };
     for (const name of events) listener.addEventListener(name, handler, { passive: true });
-    return () => {
-      for (const name of events) listener.removeEventListener(name, handler);
-    };
+    return remove;
   }
 
   /**
@@ -1250,8 +1517,9 @@ export class AudioSystem {
       void this.realtime?.suspend().catch(() => {});
     }
     for (let i = 0; i < this.beds.length; i++) this.beds[i].tick(now);
+    if (this.thunderQueue.length > 0) this.serviceThunder(now);
 
-    const live = this.enabled && !this.muted && this.running();
+    const live = this.enabled && !this.muted && !this.hidden && this.running();
 
     const wind = clampNumber(finite(params.windSpeed, 0), 0, 40);
     const waveHeight = clampNumber(finite(params.waveHeight, 0), 0, 20);
@@ -1412,8 +1680,23 @@ export class AudioSystem {
     // at once instead of closing over the lens.
     this.muffle.set(AIR_OPEN_HZ * Math.pow(AIR_CLOSED_HZ / AIR_OPEN_HZ, submersion), now, live);
     this.underGain.set(Math.pow(submersion, UNDER_EXPONENT), now, live);
+    // --- room ---------------------------------------------------------------
+    // The deck is always there and a rock face adds its echo; both return into
+    // the air, so going under muffles and ducks them with everything else.
+    // The water's own room takes over by submersion, fed by what is in it.
+    this.room.tick(now);
+    const lx = params.listenerX;
+    const lz = params.listenerZ;
+    const cliffs =
+      this.reflectors.length > 0 && lx !== undefined && lz !== undefined && Number.isFinite(lx) && Number.isFinite(lz)
+        ? this.cliffAt(lx, lz)
+        : 0;
+    this.room.setMix(1, submersion, cliffs, now, live);
+
+    // Gated off when dry (the bus is at zero then anyway), so the bed parks
+    // instead of rendering into silence the whole time the lens is in air.
     this.rumble.setLevel(
-      RUMBLE_LEVEL * (RUMBLE_CALM + RUMBLE_PER_WIND * windDrive) * swellNear,
+      RUMBLE_LEVEL * (RUMBLE_CALM + RUMBLE_PER_WIND * windDrive) * swellNear * Math.min(1, submersion / 0.01),
       now,
       live,
     );
@@ -1429,7 +1712,7 @@ export class AudioSystem {
       while (this.bubbleTimer <= 0) {
         this.spawnBubble(
           now + offset,
-          this.underBus,
+          this.underFx,
           BUBBLE_LEVEL * (0.55 + 0.45 * this.bubbleRandom()),
         );
         offset += BUBBLE_MIN_GAP;
@@ -1484,6 +1767,113 @@ export class AudioSystem {
   }
 
   /**
+   * The rock faces that echo, set once the geology is placed. Those whose top
+   * is under the sea are left out: a reef does not throw back a creak.
+   */
+  setReflectors(faces: readonly Readonly<AudioReflector>[]): void {
+    const above = faces.filter((f) => Number.isFinite(f.x) && Number.isFinite(f.z) && f.top > 1);
+    const out = new Float64Array(above.length * 4);
+    above.forEach((f, i) => {
+      out[i * 4] = f.x;
+      out[i * 4 + 1] = f.z;
+      out[i * 4 + 2] = Math.max(0, f.reach);
+      out[i * 4 + 3] = f.top;
+    });
+    this.reflectors = out;
+  }
+
+  /** 0..1: how much of the cliff room the listener at (x, z) hears. Allocates nothing. */
+  private cliffAt(x: number, z: number): number {
+    const r = this.reflectors;
+    let best = 0;
+    for (let i = 0; i < r.length; i += 4) {
+      const gap = Math.max(0, Math.hypot(r[i] - x, r[i + 1] - z) - r[i + 2]);
+      const near = 1 - smoothstepNumber(gap, CLIFF_NEAR, CLIFF_FAR);
+      const weight = near * Math.min(1, r[i + 3] / CLIFF_FULL_HEIGHT);
+      if (weight > best) best = weight;
+    }
+    return best;
+  }
+
+  /** One bus's level, 0..1, under the master volume. See `AudioBus`. */
+  setBusVolume(bus: AudioBus, value: number): void {
+    if (this.busVolume[bus] === undefined) return;
+    this.busVolume[bus] = clamp01(finite(value, this.busVolume[bus]));
+    this.applyBus(bus);
+  }
+
+  getBusVolume(bus: AudioBus): number {
+    return this.busVolume[bus];
+  }
+
+  /** Silences one bus without losing its level. */
+  setBusMuted(bus: AudioBus, muted: boolean): void {
+    if (this.busMuted[bus] === undefined) return;
+    this.busMuted[bus] = muted;
+    this.applyBus(bus);
+  }
+
+  isBusMuted(bus: AudioBus): boolean {
+    return this.busMuted[bus];
+  }
+
+  /**
+   * Every level the viewer controls at once. `UiState` has this shape, so the
+   * application passes its state as it is.
+   */
+  applyMix(mix: Readonly<AudioMix>): void {
+    this.readMix(mix);
+    this.applyMasterGain(VOLUME_RAMP);
+    for (const bus of AUDIO_BUSES) this.applyBus(bus);
+  }
+
+  private readMix(mix: Readonly<AudioMix>): void {
+    this.volume = clamp01(finite(mix.volume, this.volume));
+    const v = this.busVolume;
+    v.music = clamp01(finite(mix.musicVolume, v.music));
+    v.ambience = clamp01(finite(mix.ambienceVolume, v.ambience));
+    v.effects = clamp01(finite(mix.effectsVolume, v.effects));
+    v.interface = clamp01(finite(mix.interfaceVolume, v.interface));
+    const m = this.busMuted;
+    m.music = mix.musicMuted === true;
+    m.ambience = mix.ambienceMuted === true;
+    m.effects = mix.effectsMuted === true;
+    m.interface = mix.interfaceMuted === true;
+  }
+
+  private busLevel(bus: AudioBus): number {
+    return this.busMuted[bus] ? 0 : this.busVolume[bus];
+  }
+
+  private applyBus(bus: AudioBus): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    const level = this.busLevel(bus);
+    // The music's own volume, because 0 there also stops it scheduling notes.
+    if (bus === 'music') {
+      this.music.setVolume(level);
+      return;
+    }
+    const now = ctx.currentTime;
+    const ramp = (param: AudioParam): void => {
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(param.value, now);
+      param.setTargetAtTime(level, now, BUS_TAU);
+    };
+    if (bus === 'ambience') {
+      ramp(this.ambienceBus.gain);
+      ramp(this.ambienceUnder.gain);
+      ramp(this.ambienceWet.gain);
+      ramp(this.underWet.gain);
+    } else if (bus === 'effects') {
+      ramp(this.effectsBus.gain);
+      ramp(this.effectsWet.gain);
+    } else {
+      ramp(this.uiBus.gain);
+    }
+  }
+
+  /**
    * Hard silence, without changing anything else.
    *
    * While muted no parameter is written at all — the model keeps running so
@@ -1528,7 +1918,7 @@ export class AudioSystem {
     }
 
     this.suspendAt = null;
-    if (!this.gestured) return;
+    if (!this.gestured || this.hidden) return;
     void (this.realtime?.resume() ?? Promise.resolve())
       .then(() => {
         if (this.disposed || this.ctx === null) return;
@@ -1536,8 +1926,9 @@ export class AudioSystem {
         this.startBeds(now);
         this.flushAll(now);
         this.applyMasterGain(ENABLE_RAMP);
+        this.startTicker();
       })
-      .catch(() => {});
+      .catch(() => this.armGesture());
   }
 
   isEnabled(): boolean {
@@ -1565,8 +1956,10 @@ export class AudioSystem {
    *
    * @param intensity 0..1. Scales the level, how far the band sweeps, how long the
    *                  cavity takes to collapse, and how much air is entrained.
+   * @param pan       -1 (left) .. 1 (right) from the listener's view; 0, the
+   *                  default, is unpanned (the lens itself going under).
    */
-  playSplash(intensity = 1): void {
+  playSplash(intensity = 1, pan = 0): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
     const amount = clamp01(finite(intensity, 0));
@@ -1577,6 +1970,16 @@ export class AudioSystem {
     const now = ctx.currentTime;
     const decay = SPLASH_DECAY_MIN + SPLASH_DECAY_SPAN * amount;
     const level = SPLASH_LEVEL * Math.pow(amount, 0.8);
+
+    // A barrel or a buoy coming down somewhere off to one side.
+    const side = clampNumber(finite(pan, 0), -1, 1);
+    const panner = side !== 0 ? createStereoPanner(ctx) : null;
+    let out: AudioNode = this.effectsBus;
+    if (panner !== null) {
+      panner.pan.value = side;
+      panner.connect(this.effectsBus);
+      out = panner;
+    }
 
     const source = ctx.createBufferSource();
     source.buffer = this.white;
@@ -1603,25 +2006,30 @@ export class AudioSystem {
 
     source.connect(band);
     band.connect(crown);
-    crown.connect(this.airBus);
+    crown.connect(out);
     source.connect(body);
     body.connect(thump);
-    thump.connect(this.airBus);
+    thump.connect(out);
+    const wet = this.sendFrom(crown, SPLASH_SEND, this.effectsWet);
+    thump.connect(wet);
 
     const tail = decay * 1.6 + 0.05;
     source.start(now, random() * this.white.duration);
-    source.stop(now + tail);
-    this.trackVoice(source, band, crown, body, thump);
+    if (panner === null) this.trackVoice(source, band, crown, body, thump, wet);
+    else this.trackVoice(source, band, crown, body, thump, wet, panner);
 
     // Entrained air, surfacing behind the impact.
     const count = Math.round(1 + SPLASH_BUBBLES * amount);
+    let lastBubble = now;
     for (let i = 0; i < count; i++) {
-      this.spawnBubble(
-        now + 0.02 + random() * SPLASH_BUBBLE_WINDOW * (0.5 + amount),
-        this.airBus,
-        BUBBLE_LEVEL * (0.4 + 0.6 * amount),
-      );
+      const at = now + 0.02 + random() * SPLASH_BUBBLE_WINDOW * (0.5 + amount);
+      this.spawnBubble(at, out, BUBBLE_LEVEL * (0.4 + 0.6 * amount));
+      lastBubble = Math.max(lastBubble, at);
     }
+    // The panner is unhooked with the source, so the source has to outlast the
+    // bubbles routed through it.
+    const bubbleEnd = lastBubble + BUBBLE_DECAY_MIN + BUBBLE_DECAY_SPAN + 0.03 - now;
+    source.stop(now + (panner === null ? tail : Math.max(tail, bubbleEnd)));
   }
 
   /**
@@ -1633,14 +2041,48 @@ export class AudioSystem {
    *                     caller stays in control of its own timing; a caller
    *                     triggering off a lightning flash wants
    *                     `distanceKm / SPEED_OF_SOUND_KM_S`, which is ~2.9 s per km.
+   *
+   * A delayed strike is held as a time and a distance, not as a voice: its
+   * nodes are built `THUNDER_LEAD` before it arrives. Building them at the
+   * flash held a voice for up to 37 s of silence, which on Low (six voices)
+   * left a storm unable to slap or creak. Thunder also has its own two voices
+   * (`THUNDER_VOICES`), so a busy deck cannot refuse a strike, nor a strike a
+   * splash.
    */
   playThunder(distanceKm = 3, delaySeconds = 0): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
-    if (!this.acquireVoice()) return;
-
     const distance = clampNumber(finite(distanceKm, 3), 0.05, 40);
-    const now = ctx.currentTime + Math.max(0, finite(delaySeconds, 0));
+    const at = ctx.currentTime + Math.max(0, finite(delaySeconds, 0));
+    if (at - ctx.currentTime <= THUNDER_LEAD) {
+      this.strikeThunder(distance, at);
+      return;
+    }
+    // Full: the farthest waiting strike, the quietest, gives way.
+    const queue = this.thunderQueue;
+    if (queue.length >= THUNDER_QUEUE) {
+      let far = 0;
+      for (let i = 1; i < queue.length; i++) if (queue[i].km > queue[far].km) far = i;
+      if (queue[far].km <= distance) return;
+      queue.splice(far, 1);
+    }
+    queue.push({ at, km: distance });
+  }
+
+  /** Builds the strikes that arrive within `THUNDER_LEAD`. Runs from `update`. */
+  private serviceThunder(now: number): void {
+    const queue = this.thunderQueue;
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const strike = queue[i];
+      if (strike.at - now > THUNDER_LEAD) continue;
+      queue.splice(i, 1);
+      if (this.canPlay()) this.strikeThunder(strike.km, Math.max(now, strike.at));
+    }
+  }
+
+  private strikeThunder(distance: number, now: number): void {
+    const ctx = this.ctx;
+    if (ctx === null || this.thunderLive >= THUNDER_VOICES) return;
 
     // Everything above a kilohertz is absorbed out of a distant strike, so the
     // crack fades exponentially while the roll only spreads.
@@ -1697,12 +2139,14 @@ export class AudioSystem {
     crackHigh.connect(crackLow);
     crackLow.connect(crackEnv);
     crackEnv.connect(crackLevel);
-    crackLevel.connect(this.airBus);
+    crackLevel.connect(this.ambienceBus);
 
     source.connect(rollLow);
     rollLow.connect(rollEnv);
     rollEnv.connect(rollLevel);
-    rollLevel.connect(this.airBus);
+    rollLevel.connect(this.ambienceBus);
+    const wet = this.sendFrom(crackLevel, THUNDER_SEND, this.ambienceWet);
+    rollLevel.connect(wet);
 
     // Sidechain, by hand: the score and the sea beds make room for the strike,
     // in proportion to how loud it arrives, at the moment it arrives.
@@ -1724,7 +2168,18 @@ export class AudioSystem {
       rollLow,
       rollEnv,
       rollLevel,
+      wet,
     );
+    // Counted against thunder's own voices, not the deck's.
+    this.thunderLive++;
+    const release = source.onended;
+    let ended = false;
+    source.onended = (event) => {
+      if (ended) return;
+      ended = true;
+      this.thunderLive--;
+      release?.call(source, event);
+    };
   }
 
   /**
@@ -1857,12 +2312,11 @@ export class AudioSystem {
 
   /** Music volume, 0..1, under the master volume. 0 stops the score scheduling anything. */
   setMusicVolume(value: number): void {
-    this.musicVolume = clamp01(finite(value, this.musicVolume));
-    if (this.ctx !== null) this.music.setVolume(this.musicVolume);
+    this.setBusVolume('music', value);
   }
 
   getMusicVolume(): number {
-    return this.musicVolume;
+    return this.busVolume.music;
   }
 
   /** A musical flourish over the score, which ducks under it. `playChime` plays the cargo one. */
@@ -2033,10 +2487,11 @@ export class AudioSystem {
 
     source.connect(band);
     band.connect(gate);
-    gate.connect(this.airBus);
+    gate.connect(this.effectsBus);
+    const wet = this.sendFrom(gate, CHAIN_SEND, this.effectsWet);
     source.start(now, random() * this.white.duration);
     source.stop(now + duration + 0.05);
-    this.trackVoice(source, band, gate);
+    this.trackVoice(source, band, gate, wet);
   }
 
   /**
@@ -2064,6 +2519,7 @@ export class AudioSystem {
     this.gullTimer = GULL_FIRST_DELAY;
     this.wasUnder = false;
     this.plungeCooldown = 0;
+    this.thunderQueue.length = 0;
     this.stopVoices();
     this.shipSfx?.reset();
     this.music?.reset();
@@ -2079,6 +2535,22 @@ export class AudioSystem {
 
     if (this.pumpTimer !== null) clearInterval(this.pumpTimer);
     this.pumpTimer = null;
+    this.visibilityDoc?.removeEventListener('visibilitychange', this.onVisibility);
+    this.visibilityDoc = null;
+    this.realtime?.removeEventListener('statechange', this.onStateChange);
+    this.gestureRemove?.();
+    this.tickSink?.disconnect();
+    this.ambienceBus.disconnect();
+    this.ambienceUnder.disconnect();
+    this.effectsBus.disconnect();
+    this.bedSend.disconnect();
+    this.shipSend.disconnect();
+    this.underSend.disconnect();
+    this.underWet.disconnect();
+    this.underFx.disconnect();
+    this.ambienceWet.disconnect();
+    this.effectsWet.disconnect();
+    this.room.dispose();
     this.stopVoices();
     for (const bed of this.beds) bed.dispose();
     this.beds.length = 0;
@@ -2151,6 +2623,7 @@ export class AudioSystem {
     // be the same every time it is heard, and routing it through the world bus
     // would have a thunderclap duck it.
     this.uiBus = ctx.createGain();
+    this.uiBus.gain.value = this.busLevel('interface');
     this.uiBus.connect(this.master);
 
     this.airMuffle = ctx.createBiquadFilter();
@@ -2163,12 +2636,25 @@ export class AudioSystem {
     this.airBus.gain.value = 1;
     this.airBus.connect(this.airMuffle);
 
+    // The viewer's buses: ambience and effects above the waterline feed the
+    // air bus (and so the muffle); what is heard under water has the ambience
+    // level too. Music and interface levels are set where those already live.
+    this.ambienceBus = ctx.createGain();
+    this.ambienceBus.gain.value = this.busLevel('ambience');
+    this.ambienceBus.connect(this.airBus);
+    this.ambienceUnder = ctx.createGain();
+    this.ambienceUnder.gain.value = this.busLevel('ambience');
+    this.ambienceUnder.connect(this.mix);
+    this.effectsBus = ctx.createGain();
+    this.effectsBus.gain.value = this.busLevel('effects');
+    this.effectsBus.connect(this.airBus);
+
     this.underBus = ctx.createGain();
     this.underBus.gain.value = 0;
-    this.underBus.connect(this.mix);
+    this.underBus.connect(this.ambienceUnder);
 
     this.bedBus = ctx.createGain();
-    this.bedBus.connect(this.airBus);
+    this.bedBus.connect(this.ambienceBus);
 
     // Ship: distance gain, then bearing pan, then into the world with the rest.
     this.shipBus = ctx.createGain();
@@ -2177,10 +2663,10 @@ export class AudioSystem {
     this.shipPanner = createStereoPanner(ctx);
     if (this.shipPanner !== null) {
       this.shipBus.connect(this.shipPanner);
-      this.shipPanner.connect(this.airBus);
+      this.shipPanner.connect(this.effectsBus);
       this.shipPan = new ParamTarget(this.shipPanner.pan, 0, 0.2, 0.01, -1, 1);
     } else {
-      this.shipBus.connect(this.airBus);
+      this.shipBus.connect(this.effectsBus);
     }
 
     const nyquist = ctx.sampleRate * 0.45;
@@ -2329,21 +2815,51 @@ export class AudioSystem {
     });
 
     const settings = this.settings;
+
+    // The room: one shared send. Each bus's wet feed follows that bus's level,
+    // so muting the ship mutes its reverb too. Deck and cliffs return into the
+    // air (muffled under water with the rest); the underwater room past it.
+    this.room = new Room(ctx, this.airBus, this.mix, settings.musicReverb);
+    this.ambienceWet = ctx.createGain();
+    this.ambienceWet.gain.value = this.busLevel('ambience');
+    this.ambienceWet.connect(this.room.input);
+    this.effectsWet = ctx.createGain();
+    this.effectsWet.gain.value = this.busLevel('effects');
+    this.effectsWet.connect(this.room.input);
+    // Bus-wide sends: the beds, the whole ship, and what is under water.
+    this.bedSend = this.sendFrom(this.bedBus, BED_SEND, this.ambienceWet);
+    this.shipSend = this.sendFrom(this.shipPanner ?? this.shipBus, SHIP_SEND, this.effectsWet);
+    this.underWet = ctx.createGain();
+    this.underWet.gain.value = this.busLevel('ambience');
+    this.underWet.connect(this.room.underInput);
+    this.underFx = ctx.createGain();
+    this.underFx.connect(this.underBus);
+    this.underSend = this.sendFrom(this.underFx, UNDER_SEND, this.underWet);
+
     this.music = new MusicEngine(ctx, this.mix, this.white, {
       voices: settings.musicVoices,
       reverb: settings.musicReverb,
-      volume: this.musicVolume,
+      volume: this.busLevel('music'),
     });
 
     const host: SfxHost = {
       ctx,
       acquire: () => this.acquireVoice(),
-      acquireAmbient: () => this.voices.length + SHIP_VOICE_RESERVE < this.settings.voices,
+      acquireAmbient: () => this.busyVoices() + SHIP_VOICE_RESERVE < this.settings.voices,
       track: (source, ...nodes) => this.trackVoice(source, ...nodes),
     };
     this.shipSfx = new ShipSfx(host, this.white, this.shipBus);
 
     this.applyQuality();
+  }
+
+  /** A send of `amount` from `node` into a wet feed. The caller disconnects it. */
+  private sendFrom(node: AudioNode, amount: number, wet: AudioNode): GainNode {
+    const send = (this.ctx as BaseAudioContext).createGain();
+    send.gain.value = amount;
+    node.connect(send);
+    send.connect(wet);
+    return send;
   }
 
   private addBed(ctx: BaseAudioContext, options: NoiseBedOptions): NoiseBed {
@@ -2357,7 +2873,7 @@ export class AudioSystem {
     const ctx = this.ctx;
     if (ctx === null) return;
     const now = ctx.currentTime;
-    const live = this.enabled && !this.muted && this.running();
+    const live = this.enabled && !this.muted && !this.hidden && this.running();
     const settings = this.settings;
 
     this.surfFar.setActive(settings.stereoSurf, now, live);
@@ -2368,6 +2884,7 @@ export class AudioSystem {
     this.rainHiss.setActive(settings.rainHiss, now, live);
     this.music.setVoices(settings.musicVoices);
     this.music.setReverb(settings.musicReverb);
+    this.room.setMode(settings.musicReverb);
   }
 
   private swellAt(depth: number, period: number, groupPeriod: number, phase: number): number {
@@ -2382,7 +2899,7 @@ export class AudioSystem {
     const now = ctx.currentTime;
     // `gestured` is in the target, not just in `resume`: until the viewer has
     // asked for audio, nothing this class can be told to do makes a sound.
-    const target = this.enabled && !this.muted && this.gestured ? this.volume : 0;
+    const target = this.enabled && !this.muted && this.gestured && !this.hidden ? this.volume : 0;
     const param = this.master.gain;
     param.cancelScheduledValues(now);
     param.setValueAtTime(param.value, now);
@@ -2392,6 +2909,7 @@ export class AudioSystem {
 
   private flushAll(now: number): void {
     for (const target of this.targets) target.flush(now);
+    this.room.flush(now);
   }
 
   /**
@@ -2410,7 +2928,7 @@ export class AudioSystem {
   private canPlay(): boolean {
     const ctx = this.ctx;
     return (
-      !this.disposed && ctx !== null && this.enabled && !this.muted && this.running()
+      !this.disposed && ctx !== null && this.enabled && !this.muted && !this.hidden && this.running()
     );
   }
 
@@ -2419,13 +2937,18 @@ export class AudioSystem {
     return this.ctx !== null && (this.offline || this.ctx.state === 'running');
   }
 
+  /** One-shot voices in use, not counting thunder, which has its own. */
+  private busyVoices(): number {
+    return this.voices.length - this.thunderLive;
+  }
+
   private acquireVoice(): boolean {
-    return this.voices.length < this.settings.voices;
+    return this.busyVoices() < this.settings.voices;
   }
 
   /** The same cap, held short so ambience cannot starve an event. See `GULL_VOICE_RESERVE`. */
   private acquireGullVoice(): boolean {
-    return this.voices.length + GULL_VOICE_RESERVE < this.settings.voices;
+    return this.busyVoices() + GULL_VOICE_RESERVE < this.settings.voices;
   }
 
   /**
@@ -2470,7 +2993,7 @@ export class AudioSystem {
       // The air the lens drags down with it, heard from below.
       for (let i = 0; i < PLUNGE_BUBBLES; i++) {
         const at = now + 0.04 + i * 0.035 + this.bubbleRandom() * 0.03;
-        this.spawnBubble(at, this.underBus, BUBBLE_LEVEL * 1.5);
+        this.spawnBubble(at, this.underFx, BUBBLE_LEVEL * 1.5);
       }
     } else {
       this.playSplash(0.3);
@@ -2678,19 +3201,21 @@ export class AudioSystem {
     // bearing hardly moves while a near one's sweeps.
     const panner = createStereoPanner(ctx);
     if (panner === null) {
-      gain.connect(this.airBus);
+      gain.connect(this.ambienceBus);
     } else {
       const drift = GULL_PAN_DRIFT * (GULL_REFERENCE_METRES / distanceMetres) * (random() * 2 - 1);
       panner.pan.setValueAtTime(pan, when);
       panner.pan.linearRampToValueAtTime(clampNumber(pan + drift, -1, 1), end);
       gain.connect(panner);
-      panner.connect(this.airBus);
+      panner.connect(this.ambienceBus);
     }
+
+    const wet = this.sendFrom(panner ?? gain, GULL_SEND, this.ambienceWet);
 
     osc.start(when);
     osc.stop(end);
-    if (panner === null) this.trackVoice(osc, formant, tone, gain);
-    else this.trackVoice(osc, formant, tone, gain, panner);
+    if (panner === null) this.trackVoice(osc, formant, tone, gain, wet);
+    else this.trackVoice(osc, formant, tone, gain, panner, wet);
   }
 }
 

@@ -668,6 +668,54 @@ body {
   white-space: nowrap;
 }
 
+/* A sound slider's mute: a speaker beside the reading, struck through when muted. */
+.field__row:has(.field__mute) .field__value {
+  margin-left: auto;
+}
+
+.field__mute {
+  flex: none;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px -6px -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.field__mute .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.field__mute:hover {
+  color: var(--ink);
+}
+
+.field__mute:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.field__mute .icon-sound__off,
+.field__mute[aria-pressed='true'] .icon-sound__waves {
+  display: none;
+}
+
+.field__mute[aria-pressed='true'] .icon-sound__off {
+  display: inline;
+}
+
+.field.is-muted .range {
+  opacity: 0.45;
+}
+
 /*
  * Range: a brass rail. An engraved groove cut into the paper, filled with
  * brass to the reading, and a round brass knob. The thumb sits in a 22px box

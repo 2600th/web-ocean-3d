@@ -104,6 +104,7 @@ import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
 import { GamepadInput } from './input/Gamepad';
 import { DEFAULT_UI_STATE, type UiState } from './ui/types';
+import { loadSoundPrefs, saveSoundPrefs } from './ui/soundPrefs';
 import { openStartGate, showWebGPURequired, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
@@ -659,6 +660,7 @@ class App {
     this.adapter = options.adapter;
     this.state = {
       ...DEFAULT_UI_STATE,
+      ...loadSoundPrefs(),
       quality: options.quality,
     };
   }
@@ -978,6 +980,7 @@ class App {
     this.audio = new AudioSystem({
       volume: this.state.volume,
       musicVolume: this.state.musicVolume,
+      mix: this.state,
       quality: this.state.quality,
     });
     this.audio.resumeOnGesture();
@@ -1023,6 +1026,7 @@ class App {
     // The geology first: the reef grows on its outcrops, and the sand reads
     // its map. Same ground treatment as the reef.
     this.rocks = new Rocks(quality.reefRocks, { shading: seabedShading });
+    this.audio.setReflectors(this.rocks.outcropCentres());
     this.scene.add(this.rocks.object);
     this.seafloor.setRockInfluence(this.rocks.influence);
     this.reefLife = new ReefLife(quality.reefLife, { shading: seabedShading, gardens: this.rocks.gardens });
@@ -1741,27 +1745,30 @@ class App {
         speed: 0.75 + 3.6 * s,
         mass: 500 * (4 / 3) * Math.PI * r * r * r,
       });
+      // And heard: sized by the body, quieter with distance, placed by bearing.
+      this.camera.getWorldDirection(_impactForward);
+      _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
+      _impactOffset.copy(p).sub(this.camera.position);
+      const far = Math.max(1, _impactOffset.length());
+      const loud = 0.6 * s * Math.min(1, r / 0.5) * Math.min(1, 20 / far);
+      if (loud > 0.03) this.audio.playSplash(loud, _impactOffset.dot(_impactRight) / far);
       return;
     }
 
     this.gameplay?.reportImpact(impact.kind, s);
 
-    // Stereo position of the impact relative to the listener's view, -1..1.
-    this.camera.getWorldDirection(_impactForward);
-    _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
-    _impactOffset.copy(p).sub(this.camera.position);
-    const distance = Math.max(1, _impactOffset.length());
-    const pan = Math.max(-1, Math.min(1, _impactOffset.dot(_impactRight) / distance));
-    // Heard less the further away it is, not at all past a few hundred metres.
-    const audible = s * Math.min(1, 30 / distance);
+    // A side slap is heard from the hull probes in `updateShipAudio`, which sit
+    // beside these spray probes and fire on the same crest; playing both made
+    // every beam sea slap twice. Slams and green water go in at their own
+    // strength: the ship bus already gains by distance and pans by bearing.
     const audio = this.audio as unknown as ImpactAudio | undefined;
-    if (audible > 0.02) {
-      if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
-      else audio?.hullImpact?.(audible);
-    }
+    if (impact.kind !== 'slap' && s > 0.02) audio?.hullImpact?.(s);
     // A slam or green water close to the eye throws water onto the lens: all of
     // it inside 8 m, none past 22 m.
-    if (impact.kind !== 'slap') this.lensRain.douse(s * THREE.MathUtils.clamp((22 - distance) / 14, 0, 1));
+    if (impact.kind !== 'slap') {
+      const distance = p.distanceTo(this.camera.position);
+      this.lensRain.douse(s * THREE.MathUtils.clamp((22 - distance) / 14, 0, 1));
+    }
 
     // White water where it hit, and water on the deck when it came aboard.
     const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
@@ -2848,10 +2855,16 @@ class App {
         break;
       }
       case 'volume':
-        this.audio.setVolume(this.state.volume);
-        break;
       case 'musicVolume':
-        this.audio.setMusicVolume(this.state.musicVolume);
+      case 'ambienceVolume':
+      case 'effectsVolume':
+      case 'interfaceVolume':
+      case 'musicMuted':
+      case 'ambienceMuted':
+      case 'effectsMuted':
+      case 'interfaceMuted':
+        this.audio.applyMix(this.state);
+        saveSoundPrefs(this.state);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
@@ -3932,7 +3945,7 @@ class App {
     // whole graph under water on the same continuous value the visuals use.
     const audio = this.audioParams;
     audio.windSpeed = this.state.windSpeed;
-    audio.waveHeight = this.state.peakWavelength * 0.045;
+    audio.waveHeight = significantWaveHeight(this.simulation.spectrumParams);
     audio.peakWavelength = this.state.peakWavelength;
     audio.rain = raining;
     audio.submersion = submersion;
@@ -3941,6 +3954,8 @@ class App {
     // so a sky with no birds in it stays silent instead of the audio inventing
     // some. Low draws none, and hears none.
     audio.birdCount = this.birds.getCount();
+    audio.listenerX = this.camera.position.x;
+    audio.listenerZ = this.camera.position.z;
     this.updateShipAudio(dt, audio);
     this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);
