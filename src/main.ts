@@ -815,6 +815,10 @@ class App {
     this.ssr = new ScreenSpaceReflection();
     this.ssr.setCamera(this.camera);
 
+    // Before the water: its reflection is built on the atmosphere's environment
+    // cube (`OceanMaterial.envNode`).
+    this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
+
     boot.set(0.5, 'Teaching the water to catch the light…');
     this.water = this.buildWaterMaterial();
     this.oceanMesh = new OceanMesh(this.water.material, {
@@ -827,7 +831,6 @@ class App {
     this.scene.add(this.oceanMesh.mesh);
 
     boot.set(0.7, 'Hanging the sky…');
-    this.atmosphere = new Atmosphere(this.renderer, quality.environmentResolution);
     this.scene.add(this.atmosphere.mesh, this.atmosphere.sunLight, this.atmosphere.ambientLight);
     this.atmosphere.mesh.layers.set(SKY_LAYER);
     this.camera.layers.enable(SKY_LAYER);
@@ -2803,6 +2806,7 @@ class App {
         resolution: this.wake.resolution,
       },
       reflectionNode: this.reflections?.node ?? null,
+      environment: this.atmosphere.environment,
       // Same field the cloud march samples, so the shade lands under the cloud
       // that casts it rather than merely correlating with it.
       //

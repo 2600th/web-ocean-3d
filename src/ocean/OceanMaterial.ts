@@ -148,6 +148,12 @@ export interface CascadeFields {
 
 export interface OceanMaterialInputs extends CascadeFields {
   /**
+   * The sky the water reflects: the atmosphere's environment cube
+   * (`Atmosphere.environment`). Bound when the graph is built, not swapped in
+   * later; see `envNode`.
+   */
+  environment: THREE.Texture;
+  /**
    * Optional: a node returning the seafloor's depth below y=0 at a world
    * position. Supplying it switches the transmission term from a view-angle
    * approximation to a real water-column thickness, which is what produces the
@@ -930,14 +936,18 @@ export class OceanMaterial {
   private readonly uDetailTiles: any[] = [];
   private readonly uDetailWeights: any[] = [];
   /**
-   * The sky environment, prefiltered (PMREM). See `setEnvironment`.
+   * The sky environment, prefiltered (PMREM), built on the atmosphere's cube.
    *
-   * Built on a placeholder: the atmosphere creates its cube after this graph,
-   * and a PMREM node re-points by `.value` without recompiling.
+   * It used to be built on a 4x4 placeholder cube and re-pointed by `.value`
+   * once the atmosphere existed. Under three r187 the compiled surface kept the
+   * placeholder: the swapped node prefiltered the real sky, but the shader went
+   * on sampling the placeholder's black PMREM, so the sea reflected no sky at
+   * all (every canonical shot darker by 6-10 mean dE94, the sunset sea nearly
+   * black). The cube object never changes, only its faces and PMREM version, so
+   * binding it at build time leaves nothing to re-point.
    */
   private envNode: any = null;
-  private envPlaceholder: THREE.Texture | null = null;
-  /** 0 until a real environment is bound; the analytic gradient stands in. */
+  /** 0 until the cube has been captured once; the analytic gradient stands in. */
   private readonly uEnvReady = uniform(0);
   /**
    * Metres of vertex spacing per metre of ground distance, from the mesh.
@@ -1299,19 +1309,17 @@ export class OceanMaterial {
   }
 
   /**
-   * The sky the water reflects: the atmosphere's environment cube, which
-   * `Atmosphere.updateEnvironment` assigns to `scene.environment`.
+   * Switches the reflection from the analytic gradient to the environment cube
+   * once `Atmosphere.updateEnvironment` has captured it (and assigned it to
+   * `scene.environment`). Until then the cube's faces are empty.
    *
-   * Call whenever that may have changed; it is a no-op for the same texture.
    * The cube is prefiltered by three's PMREM chain (shared with every PBR
    * material through PMREMNode's per-texture cache), so a rough patch of sea
    * reflects a blurred sky and a calm one a sharp sky, as web-ocean's
    * roughness-filtered `envCube` mips do.
    */
   setEnvironment(environment: THREE.Texture | null): void {
-    if (environment === null || this.envNode === null) return;
-    if (this.envNode.value === environment) return;
-    this.envNode.value = environment;
+    if (environment === null) return;
     this.uEnvReady.value = 1;
   }
 
@@ -1466,10 +1474,6 @@ export class OceanMaterial {
       this.uDetailTiles.push(uniform(has ? detailTiles[i] : 1));
       this.uDetailWeights.push(uniform(has ? 1 : 0));
     }
-    // A cube that PMREMNode accepts at compile time (six faces present), so the
-    // graph compiles with the render-target sampling convention the real
-    // environment, also a cube render target, will have. See `setEnvironment`.
-    this.envPlaceholder = new THREE.CubeRenderTarget(4).texture;
 
     // ------------------------------------------------------------- vertex stage
     this.material.positionNode = Fn(() => {
@@ -2567,7 +2571,7 @@ export class OceanMaterial {
         vec3(rRaw.x, rRaw.y.abs().mul(0.4).add(rRaw.y.max(0).mul(0.6)), rRaw.z),
       ).toVar();
       const envRoughness = sig.mul(1.4142).clamp(0.0, 1).sqrt().toVar();
-      this.envNode = pmremTexture(this.envPlaceholder!, reflectDir, envRoughness) as any;
+      this.envNode = pmremTexture(inputs.environment, reflectDir, envRoughness) as any;
       const skyBlend = reflectDir.y.clamp(0, 1).sqrt().toVar();
       const analyticSky = mix(this.uHorizonColor, this.uSkyColor, skyBlend);
       // Lifted toward the sky the frame shows: see SKY_REFLECTION_GAIN.

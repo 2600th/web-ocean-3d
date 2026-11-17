@@ -988,6 +988,15 @@ export class Atmosphere {
     scene.environment = this.envTarget.texture;
   }
 
+  /**
+   * The environment cube. One object for the atmosphere's life: a resize keeps
+   * it (`setEnvironmentResolution`) and a re-capture only rewrites its faces and
+   * bumps its PMREM version, so a node graph can be built on it once.
+   */
+  get environment(): THREE.Texture {
+    return this.envTarget.texture;
+  }
+
   update(dt: number): void {
     this.elapsed += dt;
     // Star twinkle is driven from a CPU-integrated clock rather than the global
