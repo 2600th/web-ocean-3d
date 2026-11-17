@@ -1737,9 +1737,11 @@ class App {
     // Heard less the further away it is, not at all past a few hundred metres.
     const audible = s * Math.min(1, 30 / distance);
     const audio = this.audio as unknown as ImpactAudio | undefined;
-    if (audible > 0.02) {
-      if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
-      else audio?.hullImpact?.(audible);
+    if (impact.kind === 'slap') {
+      if (audible > 0.02) audio?.waveSlap?.(audible, pan);
+    } else if (s > 0.02) {
+      // At its own strength: the ship bus already gains by distance and pans by bearing.
+      audio?.hullImpact?.(s);
     }
 
     // White water where it hit, and water on the deck when it came aboard.
