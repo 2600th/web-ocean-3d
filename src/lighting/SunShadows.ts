@@ -114,6 +114,8 @@ export interface ShadowVolumeSource {
   depthTexture(): THREE.DepthTexture | null;
   readonly matrix: THREE.Matrix4;
   bias(): number;
+  /** Receiver offset along the normal, metres (one and a half texels). */
+  normalBias(): number;
 }
 
 /** Refractive index of sea water. */
@@ -260,11 +262,26 @@ export class SunShadows {
    * only resizes it.
    */
   volumeSource(): ShadowVolumeSource {
-    const shadow = this.node.lights[this.volumeCascade].shadow!;
+    return this.cascadeSource(this.volumeCascade);
+  }
+
+  /**
+   * The near cascades, nearest first, for the contact shadows' "is this pixel
+   * in the sun at all" test (`ContactShadows`). Two at most: past the second
+   * split a contact shadow is under a pixel anyway.
+   */
+  nearSources(): ShadowVolumeSource[] {
+    const count = Math.min(2, this.node.lights.length);
+    return Array.from({ length: count }, (_, i) => this.cascadeSource(i));
+  }
+
+  private cascadeSource(index: number): ShadowVolumeSource {
+    const shadow = this.node.lights[index].shadow!;
     return {
       depthTexture: () => (shadow.map?.depthTexture as THREE.DepthTexture | null | undefined) ?? null,
       matrix: shadow.matrix,
       bias: () => shadow.bias,
+      normalBias: () => shadow.normalBias,
     };
   }
 

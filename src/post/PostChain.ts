@@ -17,9 +17,13 @@ import {
 import { uniform } from '../core/uniform';
 import TRAANode, { traa } from 'three/addons/tsl/display/TRAANode.js';
 import type { QualityTier } from '../core/QualityManager';
+import type { ShadowVolumeSource } from '../lighting/SunShadows';
 import { AmbientOcclusion } from './AmbientOcclusion';
 import { AutoExposure } from './AutoExposure';
+import { ContactShadows, type ContactShadowSettings } from './ContactShadows';
+import { GlobalIllumination, SSGI_REQUESTED, type GiSettings } from './GlobalIllumination';
 import { PostResolve } from './PostResolve';
+import { DeterministicTAAU } from './TemporalUpscale';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -33,11 +37,28 @@ import { PostResolve } from './PostResolve';
 export interface PostTierSettings {
   /**
    * Scene-pass resolution as a fraction of the drawing buffer. Below 1 the
-   * temporal resolve (TRAA) upsamples to the drawing buffer; at 1 it is a plain
-   * temporal AA. The rest of the chain always runs at the drawing buffer.
+   * temporal resolve brings it back to the drawing buffer (TAAU, or TRAA in a
+   * session that booted at native; see `PostChain.buildResolve`); at 1 it is
+   * a plain temporal AA. The rest of the chain always runs at the drawing
+   * buffer.
    */
   renderScale: number;
+  /**
+   * `renderScale` when the drawing buffer is dense — a pixel ratio above
+   * `HI_DPI_RATIO`, a Retina panel or a 4K monitor at 150-200% — where a
+   * native-resolution scene pass shades two to four times the pixels the eye
+   * can separate. See `PostChain.effectiveRenderScale`.
+   */
+  hiDpiRenderScale: number;
   ao: { enabled: boolean; resolutionScale: number; samples: number };
+  /** Sun contact shadows; resolution follows the scene pass. */
+  contactShadows: Omit<ContactShadowSettings, 'resolutionScale'>;
+  /**
+   * SSGI; replaces GTAO where enabled. `resolutionScale` is of the scene pass.
+   * Only in a session booted with `?gi=1` (see `SSGI_REQUESTED`); elsewhere
+   * these settings have nothing to drive and GTAO keeps the tier's AO.
+   */
+  gi: GiSettings;
   /** Motion-blur taps; 0 is off. */
   motionBlurSamples: number;
   /** RCAS lobe scale, 0..1. */
@@ -56,7 +77,10 @@ export interface PostTierSettings {
 export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
   low: {
     renderScale: 0.67,
+    hiDpiRenderScale: 0.67,
     ao: { enabled: false, resolutionScale: 0.5, samples: 8 },
+    contactShadows: { enabled: false, maxDistance: 0.35, quality: 0.4 },
+    gi: { enabled: false, slices: 1, steps: 8, resolutionScale: 0.5 },
     motionBlurSamples: 0,
     sharpen: 0.5,
     grain: 0,
@@ -65,7 +89,10 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
   },
   medium: {
     renderScale: 0.77,
+    hiDpiRenderScale: 0.77,
     ao: { enabled: true, resolutionScale: 0.5, samples: 8 },
+    contactShadows: { enabled: false, maxDistance: 0.35, quality: 0.4 },
+    gi: { enabled: false, slices: 1, steps: 8, resolutionScale: 0.5 },
     motionBlurSamples: 8,
     sharpen: 0.4,
     grain: 0,
@@ -74,7 +101,10 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
   },
   high: {
     renderScale: 1,
+    hiDpiRenderScale: 0.75,
     ao: { enabled: true, resolutionScale: 0.5, samples: 12 },
+    contactShadows: { enabled: true, maxDistance: 0.35, quality: 0.5 },
+    gi: { enabled: false, slices: 1, steps: 12, resolutionScale: 0.5 },
     motionBlurSamples: 10,
     sharpen: 0.3,
     grain: 0,
@@ -83,7 +113,10 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
   },
   ultra: {
     renderScale: 1,
+    hiDpiRenderScale: 1,
     ao: { enabled: true, resolutionScale: 0.75, samples: 16 },
+    contactShadows: { enabled: true, maxDistance: 0.4, quality: 0.5 },
+    gi: { enabled: true, slices: 2, steps: 8, resolutionScale: 1 },
     motionBlurSamples: 12,
     sharpen: 0.3,
     grain: 0,
@@ -92,7 +125,10 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
   },
   max: {
     renderScale: 1,
+    hiDpiRenderScale: 1,
     ao: { enabled: true, resolutionScale: 1, samples: 16 },
+    contactShadows: { enabled: true, maxDistance: 0.5, quality: 0.6 },
+    gi: { enabled: true, slices: 3, steps: 12, resolutionScale: 1 },
     motionBlurSamples: 14,
     sharpen: 0.3,
     grain: 0,
@@ -104,8 +140,20 @@ export const POST_TIERS: Record<QualityTier, PostTierSettings> = {
 /** Shutter angle, degrees. 180° is the film convention: half the frame interval. */
 const SHUTTER_ANGLE = 180;
 
-const _drawingBuffer = new THREE.Vector2();
+/** Pixel ratio above which a tier's `hiDpiRenderScale` replaces its `renderScale`. */
+const HI_DPI_RATIO = 1.5;
 
+/**
+ * `?aa=taau` / `?aa=traa` force the temporal resolve, for A/B; otherwise it
+ * follows the boot tier's render scale (see `PostChain.buildResolve`).
+ */
+const FORCED_TEMPORAL: 'taau' | 'traa' | null = (() => {
+  if (typeof window === 'undefined') return null;
+  const aa = new URLSearchParams(window.location.search).get('aa');
+  return aa === 'taau' || aa === 'traa' ? aa : null;
+})();
+
+const _drawingBuffer = new THREE.Vector2();
 /**
  * TRAA that keeps its disocclusion test working below native resolution.
  *
@@ -229,6 +277,12 @@ export interface PostChainOptions {
   depth: any;
   /** Temporal resolve available (WebGPU with the velocity MRT). */
   temporal: boolean;
+  /** The tier the session boots at; picks the temporal resolve. */
+  bootTier: QualityTier;
+  /** The key light (sun or moon), the fill, and the near shadow cascades, for the contact shadows. */
+  sun: THREE.DirectionalLight;
+  ambient: THREE.HemisphereLight;
+  sunCascades: ShadowVolumeSource[];
 }
 
 /**
@@ -238,9 +292,10 @@ export interface PostChainOptions {
  * depth of field, bloom, flare, grade, lens rain, output — and calls in here at
  * four seams:
  *
- * 1. `buildResolve` replaces the bare TRAA call: GTAO is composited into the
- *    scene colour, the temporal resolve runs (TRAA, which also upsamples when the
- *    tier renders below native), and the resolved image gets sharpening,
+ * 1. `buildResolve` replaces the bare TRAA call: sun contact shadows, SSGI
+ *    (bounce and its AO) or GTAO are composited into the scene colour, the
+ *    temporal resolve runs (TAAU or TRAA, either of which also brings a scene
+ *    pass rendered below native back up), and the resolved image gets sharpening,
  *    motion blur and lateral CA in one pass.
  * 2. `buildExposure` meters the fogged, underwater-composited scene and
  *    `applyExposure` applies the adapted gain ahead of the bloom.
@@ -255,6 +310,8 @@ export interface PostChainOptions {
 export class PostChain {
   readonly resolve = new PostResolve();
   ao: AmbientOcclusion | null = null;
+  contactShadows: ContactShadows | null = null;
+  gi: GlobalIllumination | null = null;
   exposure: AutoExposure | null = null;
 
   private readonly options: PostChainOptions;
@@ -275,7 +332,11 @@ export class PostChain {
     aberration: boolean | null;
     autoExposure: boolean | null;
     renderScale: number | null;
+    contactShadows: boolean | null;
+    gi: boolean | null;
   } = {
+    contactShadows: null,
+    gi: null,
     ao: null,
     motionBlur: null,
     sharpen: null,
@@ -296,8 +357,11 @@ export class PostChain {
 
   /** This frame's TRAA jitter as a UV offset (screen space, y down). */
   private readonly jitterUv = uniform(new THREE.Vector2());
-  private readonly unjitter =
+  /** `?unjitter=0`: the TRAA path reads its input where it landed, for A/B. */
+  private readonly unjitterAllowed =
     typeof window === 'undefined' || new URLSearchParams(window.location.search).get('unjitter') !== '0';
+  /** Which resolve this session built; see `buildResolve`. */
+  private temporalMode: 'taau' | 'traa' = 'traa';
 
   private readonly uGrain = uniform(0);
   private readonly uGrainSeed = uniform(0);
@@ -341,32 +405,81 @@ export class PostChain {
 
     const color = scenePass.getTextureNode('output');
     const velocity = scenePass.getTextureNode('velocity');
+    const normal = scenePass.getTextureNode('normal');
 
-    this.ao = new AmbientOcclusion(depth, camera, scenePass.getTextureNode('normal'));
+    // The temporal resolve, chosen once: one or the other is in the graph,
+    // never both, because each drives the camera's jitter and they disagree
+    // on its units. TAAU where the boot tier renders below native, TRAA where
+    // it renders at native — each is the better of the two there; see the
+    // comparison at the end of this function. A live tier change across
+    // native keeps the session's choice, and both work at any scale.
+    this.tierId = this.options.bootTier;
+    this.tier = POST_TIERS[this.tierId];
+    this.temporalMode = FORCED_TEMPORAL ?? (this.effectiveRenderScale() < 1 ? 'taau' : 'traa');
+    const unjitter = this.temporalMode === 'traa' && this.unjitterAllowed;
+
+    this.ao = new AmbientOcclusion(depth, camera, normal);
+    const { sun, ambient, sunCascades } = this.options;
+    this.contactShadows = new ContactShadows(depth, camera, sun, ambient, sunCascades);
+    const contact = this.contactShadows;
+    // SSGI only when the session asked for it at boot; see `SSGI_REQUESTED`.
+    let gi: GlobalIllumination | null = null;
+    let albedo: any = null;
+    if (SSGI_REQUESTED) {
+      // RGBA8, so the four targets fit in 32 bytes a sample; see `sceneMrt`.
+      scenePass.getTexture('albedo').type = THREE.UnsignedByteType;
+      albedo = scenePass.getTextureNode('albedo');
+      gi = this.gi = new GlobalIllumination(color, depth, normal, camera);
+    }
+    // Built at boot, at every tier with the temporal path, and switched by
+    // uniform and by skipping their passes; see the header.
+    const lighting = (p: any, rgb: any, mask: { solid: any; field: any }): any => {
+      // The contact shadow takes only the sun's share; see `ContactShadows`.
+      const shadowed = rgb.mul(mix(float(1), contact.factor(p, normal), mask.solid));
+      if (gi === null) return shadowed;
+      // `colour·AO + albedo·GI`, three's composite for the node.
+      const occlusion = mix(float(1), gi.ao.sample(p).r, gi.uAoStrength.mul(mask.field));
+      const bounce = albedo.sample(p).rgb.mul(gi.gi.sample(p).rgb).mul(gi.uGiStrength.mul(mask.field));
+      return shadowed.mul(occlusion).add(bounce);
+    };
     // Resolved to a texture explicitly rather than by the resolve's own
     // `convertToTexture`, because its resolution has to follow the scene pass
     // when the tier renders below native — TAAU sizes its input from this
     // target, and an RTT left at the drawing buffer would tell it there was
     // nothing to upscale.
-    // Read at the unjittered position, so TRAA's input stops carrying the
-    // jitter; see `ScaledTRAA.setViewOffset`. `?unjitter=0` keeps the stock
-    // behaviour, for A/B.
-    this.aoComposite = rtt(this.ao.build(color, velocity, this.unjitter ? this.jitterUv : null));
+    // On the TRAA path it is read at the unjittered position, so TRAA's input
+    // stops carrying the jitter; see `ScaledTRAA.setViewOffset`. `?unjitter=0`
+    // keeps the stock behaviour, for A/B.
+    this.aoComposite = rtt(this.ao.build(color, velocity, unjitter ? this.jitterUv : null, lighting));
 
-    // TRAA at every render scale, including the ones below native.
+    // Measured on aaa-pass at 1280x720 against the TRAA path (mean |Laplacian|
+    // of luma on fixed crops, deterministic captures, contact shadows off):
     //
-    // r185 ships `TAAUNode` for exactly the below-native case and it was tried
-    // first. On this scene it lost on every frame compared: at 0.67 it was
-    // visibly softer than TRAA (the rigging dissolved), and its thin-feature
-    // lock left dark specks through the island canopy's alpha-tested edges,
-    // which TRAA does not. TRAA resolves into a drawing-buffer-sized history
-    // and samples its input by UV, so a scene pass rendered smaller is
-    // upsampled by the same accumulation that anti-aliases it — the jitter is
-    // half an *output* pixel, which still lands every frame's samples at a new
-    // sub-pixel offset of the smaller grid. `docs/AAA_PLAN.md` section N has
-    // the comparison frames.
-    this.temporalNode = new ScaledTRAA(this.aoComposite, depth, velocity, camera);
-    if (this.unjitter) this.temporalNode.jitterUv = this.jitterUv;
+    // - **Below native, TAAU.** At Medium's 0.77, TAAU with the Catmull-Rom
+    //   reconstruction (`DeterministicTAAU`) kept the shrouds as continuous
+    //   lines where TRAA's bilinear upsample broke them up, and was sharper
+    //   on the ship-and-island (+8%), beach (+40%) and canopy (+53%) crops;
+    //   the deck gratings came out 12% under. The dark specks r185's TAAU
+    //   left through the canopy's alpha-tested edges did not appear; r187
+    //   gates its thin-feature lock on a two-sided depth test, the likely fix.
+    // - **At native, TRAA.** TAAU was 18-34% under on the deck and ship crops
+    //   with either filter (7% over on the beach). The likely reason: TRAA's
+    //   input is a Catmull-Rom resample onto the unjittered grid
+    //   (`ScaledTRAA.setViewOffset`) and its history clip is built on that,
+    //   where TAAU clips to the raw jittered 3x3, and the one-pixel highlights
+    //   along the deck gratings came out dulled.
+    if (this.temporalMode === 'taau') {
+      // No unjittered read of the input here, unlike TRAA: TAAU weighs each
+      // tap by its distance from the output pixel *including* the jitter, so
+      // a jittered sample already counts where it was rendered. Moving the
+      // input back onto the grid first would apply the offset twice.
+      this.temporalNode = new DeterministicTAAU(this.aoComposite, depth, velocity, camera);
+    } else {
+      // TRAA resolves into a history sized to its input and samples it by UV,
+      // so below native the chain upsamples the resolved image from there.
+      this.temporalNode = new ScaledTRAA(this.aoComposite, depth, velocity, camera);
+      if (unjitter) this.temporalNode.jitterUv = this.jitterUv;
+    }
 
     return rtt(this.resolve.build(this.temporalNode.getTextureNode(), velocity));
   }
@@ -456,7 +569,7 @@ export class PostChain {
     const o = this.overrides;
     const pick = (override: boolean | null, tierOn: boolean) => (override === null ? tierOn : override);
 
-    const scale = this.canUpscale ? (o.renderScale ?? t.renderScale) : 1;
+    const scale = this.canUpscale ? (o.renderScale ?? this.effectiveRenderScale()) : 1;
     this.options.scenePass.setResolutionScale?.(scale);
     this.aoComposite?.setResolutionScale?.(scale);
     // Resize both now rather than at their next `updateBefore`. They resize at
@@ -470,10 +583,18 @@ export class PostChain {
       this.aoComposite?.setSize?.(_drawingBuffer.x, _drawingBuffer.y);
     }
 
+    // SSGI carries its own AO, so GTAO stands down wherever it runs.
+    const giOn = this.gi !== null && pick(o.gi, t.gi.enabled);
+    this.gi?.apply({ ...t.gi, enabled: giOn, resolutionScale: t.gi.resolutionScale * scale });
     if (this.ao) {
-      const on = pick(o.ao, t.ao.enabled);
+      const on = pick(o.ao, t.ao.enabled) && !giOn;
       this.ao.apply({ enabled: on, resolutionScale: t.ao.resolutionScale * scale, samples: t.ao.samples });
     }
+    this.contactShadows?.apply({
+      ...t.contactShadows,
+      enabled: pick(o.contactShadows, t.contactShadows.enabled),
+      resolutionScale: scale,
+    });
 
     const sharpenOn = pick(o.sharpen, t.sharpen > 0);
     this.resolve.uSharpen.value = sharpenOn ? (t.sharpen > 0 ? t.sharpen : 0.3) : 0;
@@ -498,6 +619,22 @@ export class PostChain {
 
   private blurOn = false;
 
+  /**
+   * The tier's scene-pass scale for this display.
+   *
+   * High drops to 0.75 above a pixel ratio of 1.5. At a ratio of 2 that is
+   * still 1.5 shaded samples per CSS pixel along each axis — more than a 1x
+   * display gets at native — and TAAU (which a session booting below native
+   * resolves with) reconstructs the 2x grid from the jittered samples, while
+   * the scene pass and everything sized from it shade 56% of the pixels.
+   * Ultra and Max keep native: they are opted into, and the headroom is
+   * theirs to spend.
+   */
+  effectiveRenderScale(): number {
+    const t = this.tier;
+    return this.options.renderer.getPixelRatio() > HI_DPI_RATIO ? t.hiDpiRenderScale : t.renderScale;
+  }
+
   private updateShutter(): void {
     if (!this.blurOn) {
       this.resolve.uShutter.value = 0;
@@ -513,6 +650,7 @@ export class PostChain {
   update(dt: number): void {
     this.lastDt = dt > 0 ? dt : this.lastDt;
     this.exposure?.setDeltaTime(dt);
+    this.contactShadows?.update();
     if (this.blurOn) this.updateShutter();
     const animate = !this.deterministic && !this.reducedMotion;
     if (animate) {
@@ -552,9 +690,9 @@ export class PostChain {
    * Restart every temporal accumulator: the resolve's jitter and history, the
    * AO's rotation phase, and the exposure (one snap).
    *
-   * Reaches into two fields TRAA carries and does not document
+   * Reaches into two fields TRAA and TAAU both carry and do not document
    * (`_jitterIndex`, `_historyRenderTarget`); shrinking the history target is
-   * what its own `updateBefore` reads as "restart".
+   * what either's `updateBefore` reads as "restart".
    */
   resetTemporal(): void {
     const node = this.temporalNode as unknown as {
@@ -566,6 +704,8 @@ export class PostChain {
       node._historyRenderTarget.setSize(1, 1);
     }
     this.ao?.resetSequence();
+    this.contactShadows?.resetSequence();
+    this.gi?.resetSequence();
     this.exposure?.snapOnce();
   }
 
@@ -579,9 +719,11 @@ export class PostChain {
   describe(): Record<string, unknown> {
     return {
       tier: this.tierId,
-      temporal: this.temporalNode ? 'traa' : 'none',
+      temporal: this.temporalNode ? (this.legacy ? 'traa' : this.temporalMode) : 'none',
       renderScale: this.options.scenePass.getResolutionScale?.() ?? 1,
       ao: this.ao?.enabled ?? false,
+      contactShadows: this.contactShadows?.enabled ?? false,
+      gi: this.gi?.enabled ?? false,
       motionBlur: this.resolve.uShutter.value > 0,
       sharpen: this.resolve.uSharpen.value,
       aberration: this.resolve.uAberration.value,
@@ -595,6 +737,8 @@ export class PostChain {
   dispose(): void {
     this.reducedMotionQuery?.removeEventListener?.('change', this.onMotionPreference);
     this.ao?.dispose();
+    this.contactShadows?.dispose();
+    this.gi?.dispose();
     this.exposure?.dispose();
     this.temporalNode?.dispose();
     this.aoComposite?.dispose?.();

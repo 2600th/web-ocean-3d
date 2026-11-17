@@ -90,6 +90,7 @@ import {
 } from './post/OutputTransform';
 import { SpatialAA } from './post/SpatialAA';
 import { PostChain } from './post/PostChain';
+import { SSGI_REQUESTED } from './post/GlobalIllumination';
 import { CameraDirector } from './cameras/CameraDirector';
 import { CINEMATIC_BEATS, nominalShipXZ } from './cameras/Cinematic';
 import { getPreset } from './presets';
@@ -1094,7 +1095,8 @@ class App {
       // Motion vectors and normals blended by each material's coverage, so a
       // transparent sprite no longer overwrites the sea's under its whole quad
       // (see `sceneMrt`).
-      scenePass.setMRT(sceneMrt());
+      // Albedo only for SSGI, which only a `?gi=1` session builds.
+      scenePass.setMRT(sceneMrt({ albedo: SSGI_REQUESTED }));
       this.clouds.setPreviousViewProjection(this.prevViewProjection, this.currViewProjection);
       // Sway-aware motion vectors and shaded normals for the leaves; see `LeafField`.
       this.kelp.setVelocity(this.prevViewProjection, this.currViewProjection);
@@ -1142,6 +1144,10 @@ class App {
       scenePass,
       depth: sceneDepth,
       temporal: this.taaEnabled,
+      bootTier: this.state.quality,
+      sun: this.atmosphere.sunLight,
+      ambient: this.atmosphere.ambientLight,
+      sunCascades: this.lighting.shadows.nearSources(),
     });
     const sceneBeauty: any = this.postChain.buildResolve();
 
@@ -4119,6 +4125,9 @@ class App {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+    // The render scale depends on the pixel ratio (`hiDpiRenderScale`), which
+    // moves with the window between displays and with the pixel-ratio setting.
+    this.postChain?.applyTier();
   };
 
   /** Deterministic control surface for the Playwright verification loop. */

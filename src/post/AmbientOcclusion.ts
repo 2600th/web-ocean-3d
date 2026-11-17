@@ -130,6 +130,14 @@ export interface AoSettings {
  * itself in every wave trough — a darkening the water shader already models
  * physically and would get twice.
  */
+/**
+ * Screen-space lighting composited alongside the AO, ahead of it. `solid` is
+ * 1 on opaque scene surfaces and 0 on water and sky; `field` is that times the
+ * AO's own near-field, facing and silhouette fades, for terms that share the
+ * AO's failure modes (a horizon search on a terraced depth buffer).
+ */
+export type SurfaceLighting = (p: any, rgb: any, mask: { solid: any; field: any }) => any;
+
 /** [underwater-look-3] GTAO with the eye under water; see `setSubmerged`. */
 const UW_AO = { radius: 1.8, thickness: 3, strength: 1 };
 
@@ -187,9 +195,11 @@ export class AmbientOcclusion {
    * @param velocity The MRT velocity texture; its `.z` is the water flag.
    * @param unjitter UV offset of this frame's TRAA jitter; the colour is read
    *   back at the unjittered position. See `PostChain`'s `jitterUv`.
+   * @param lighting Further screen-space lighting applied ahead of the AO
+   *   (contact shadows, SSGI; see `PostChain`), given this pixel's masks.
    * @returns The occluded colour as a composited node (the resolve converts it).
    */
-  build(color: any, velocity: any, unjitter: any = null): any {
+  build(color: any, velocity: any, unjitter: any = null, lighting: SurfaceLighting | null = null): any {
     const aoTexture = this.node.getTextureNode() as any;
     const depth = this.depth;
     const near = reference('near', 'float', this.camera);
@@ -223,8 +233,12 @@ export class AmbientOcclusion {
       const dMax = max(max(dx0, dx1), max(dy0, dy1)).max(distance);
       const silhouette = dMax.sub(dMin).div(dMin.max(0.1)).smoothstep(UW_EDGE_RATIO[0], UW_EDGE_RATIO[1]);
       const relief = float(1).sub(silhouette.mul(this.uEdgeRelief));
-      const k: any = this.uStrength.mul(float(1).sub(water)).mul(fade).mul(facing).mul(relief);
-      return vec4(c.rgb.mul(mix(float(1), a, k)), c.a);
+      const surface = float(1).sub(water);
+      const k: any = this.uStrength.mul(surface).mul(fade).mul(facing).mul(relief);
+      // Sky has no depth: nothing screen-space lands on it.
+      const solid = surface.mul(depth.sample(p).r.lessThan(1).select(float(1), float(0)));
+      const lit: any = lighting === null ? c.rgb : lighting(p, c.rgb, { solid, field: solid.mul(fade).mul(facing).mul(relief) });
+      return vec4(lit.mul(mix(float(1), a, k)), c.a);
     })();
   }
 
