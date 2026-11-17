@@ -704,7 +704,9 @@ async function main() {
         const started = Date.now();
         // BENCH_EVENTS='[{"t":5,"type":"splash","strength":0.4,"pan":0.5}]' adds events to every state.
         const extra = process.env.BENCH_EVENTS ? JSON.parse(process.env.BENCH_EVENTS) : [];
-        const state = { ...st, events: [...st.events, ...extra], submersion: st.submersion ? st.submersion.toString() : null };
+        // BENCH_PARAMS='{"birdCount":0}' overrides scene values in every state (diagnosis).
+        const over = process.env.BENCH_PARAMS ? JSON.parse(process.env.BENCH_PARAMS) : {};
+        const state = { ...st, params: { ...st.params, ...over }, events: [...st.events, ...extra], submersion: st.submersion ? st.submersion.toString() : null };
         const r = await page.evaluate(
           async ({ src, cfg }) => {
             const fn = new Function(`return (${src})`)();
@@ -753,7 +755,7 @@ async function main() {
   writeFileSync(join(OUT_DIR, 'bench.json'), JSON.stringify(current, null, 2));
   if (args.saveBaseline) writeFileSync(BASELINE, JSON.stringify(current, null, 2) + '\n');
   const full =
-    args.seconds === 60 && args.tier === 'high' && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS &&
+    args.seconds === 60 && args.tier === 'high' && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS && !process.env.BENCH_PARAMS &&
     DEFAULT_STATES.every((s) => args.states.includes(s));
   if (full) {
     const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : null;
