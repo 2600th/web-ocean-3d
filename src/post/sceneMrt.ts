@@ -4,8 +4,17 @@ import { Fn, diffuseColor, float, mrt, normalView, output, vec3, vec4, velocity 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * The scene pass's MRT — colour, motion vector, view normal — with the two data
- * targets blended by each material's own coverage.
+ * The scene pass's MRT — colour, motion vector, view normal, and albedo when
+ * asked for — with the data targets blended by each material's own coverage.
+ *
+ * Albedo is for the screen-space GI (`GlobalIllumination`): bounce light is
+ * irradiance, and what a surface reflects of it is its albedo times that, not
+ * its lit colour times it. Eight bits a channel (`PostChain.buildResolve` sets
+ * the type), which keeps the four targets inside WebGPU's 32 bytes a sample:
+ * three half-float RGBA targets and one RGBA8. Only with `albedo` (a session
+ * booted with SSGI): the MRT is part of every material's pipeline, so it is
+ * fixed for the session, and without SSGI it would be a 4-byte write a
+ * fragment that nothing reads.
  *
  * ### The bug this closes
  *
@@ -43,7 +52,7 @@ import { Fn, diffuseColor, float, mrt, normalView, output, vec3, vec4, velocity 
  * pipeline's blend state comes from the renderer's MRT — this node — so the
  * blend modes below hold for every draw into the scene pass.
  */
-export function sceneMrt(): any {
+export function sceneMrt({ albedo = false }: { albedo?: boolean } = {}): any {
   const coverage = Fn((builder: any) => {
     const material = builder.material as THREE.Material | null;
     if (!material) return float(1);
@@ -75,9 +84,11 @@ export function sceneMrt(): any {
     // `.z = 0`: not water, for the AO mask (`AmbientOcclusion`).
     velocity: weighted(vec3((velocity as any).xy, 0)),
     normal: weighted(normalView),
+    ...(albedo ? { albedo: weighted((diffuseColor as any).rgb) } : {}),
   });
   const data = new THREE.BlendMode(THREE.MaterialBlending);
   node.setBlendMode('velocity', data);
   node.setBlendMode('normal', data);
+  if (albedo) node.setBlendMode('albedo', data);
   return node;
 }
