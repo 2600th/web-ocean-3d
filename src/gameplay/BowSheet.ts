@@ -61,6 +61,17 @@ import { SPRAY_ALPHA_FLOOR, sharedSceneDepth, sheetRadiance, sprayAtlas } from '
  * knots is about 1.5 m, and it scales with `U²`. The sheet's crest height is a
  * fraction of that, scaled by `intensity`.
  *
+ * ### Rooted on the hull, flown level
+ *
+ * The root rides the planking: each station's point on the hull side, at the
+ * waterline under the stem's centreline plus the crest. The flight does not.
+ * Water leaving the hull falls under world gravity and lands on the sea, so the
+ * trajectories are laid out in a frame that keeps only the ship's heading
+ * (`levelQuaternion`). The whole sheet used to go through the hull's matrix,
+ * so in a turn, when the ship heels, it heeled with it: the high side's free
+ * edge, six or seven metres out, ended a metre above the water as a pale card,
+ * and the low side cut under the sea. Upright, the two are the same surface.
+ *
  * ### Intensity follows the bow
  *
  * `BowSpray` drives `intensity` from the ship's speed and the stem's immersion
@@ -91,11 +102,22 @@ const GRAVITY = 9.81;
  * Noblesse's ~1.5 m bow wave, since the sheet leaves from its crest.
  */
 const CREST_HEIGHT = 1.3;
-/** Launch speeds at full intensity, m/s: base plus the part that scales with intensity. */
-const UP_BASE = 1.2;
-const UP_GAIN = 3.6;
-const OUT_BASE = 2.6;
-const OUT_GAIN = 4.2;
+/**
+ * Launch speeds at full intensity, m/s: base plus the part that scales with
+ * intensity.
+ *
+ * Roughly halved from 1.2 + 3.6 up and 2.6 + 4.2 out. At those speeds the sheet
+ * flew about seven metres out from the planking and peaked two and a half
+ * metres above the sea, and a turn, which buries the bow and drives the
+ * intensity up, put that whole translucent curtain in front of the chase
+ * camera: it read as a foam-textured card floating beside the bow. A bluff bow
+ * at these speeds curls its crest over and drops it back within a few metres
+ * of the hull, which is the shape these give.
+ */
+const UP_BASE = 0.7;
+const UP_GAIN = 2.0;
+const OUT_BASE = 1.4;
+const OUT_GAIN = 2.3;
 /** How far outside the waterline half-breadth the root sits, metres: the bow's flare above the water. */
 const ROOT_OFFSET = 0.12;
 /**
@@ -183,6 +205,59 @@ export function sheetPoint(
   velocity.set(-station.aft, station.up - GRAVITY * t, side * station.out * (1 + 0.5 * tau));
 }
 
+const _forward = new THREE.Vector3();
+const _levelBasis = new THREE.Matrix4();
+const _up = new THREE.Vector3(0, 1, 0);
+const _side = new THREE.Vector3();
+const _hullQuat = new THREE.Quaternion();
+const _sideWaterline = new THREE.Vector3();
+const _centreWaterline = new THREE.Vector3();
+
+/**
+ * The hull's heading with its heel and pitch taken out: hull-local +x (the bow)
+ * laid flat, world up, and +z (starboard) completing the frame. The frame the
+ * sheet's trajectories fly in; see "Rooted on the hull, flown level".
+ */
+export function levelQuaternion(hull: THREE.Matrix4, out: THREE.Quaternion): THREE.Quaternion {
+  hull.decompose(_centreWaterline, _hullQuat, _sideWaterline);
+  _forward.set(1, 0, 0).applyQuaternion(_hullQuat);
+  _forward.y = 0;
+  if (_forward.lengthSq() < 1e-8) _forward.set(1, 0, 0);
+  _forward.normalize();
+  _side.crossVectors(_forward, _up);
+  _levelBasis.makeBasis(_forward, _up, _side);
+  return out.setFromRotationMatrix(_levelBasis);
+}
+
+/**
+ * World position and velocity at (s, tau) on the sheet: `sheetPoint`'s flight,
+ * flown level from the root on the hull. Mirrors the vertex stage. Returns the
+ * height of the water the sheet lands on there (the centreline waterline under
+ * the station), for the drops it sheds.
+ */
+export function sheetPointWorld(
+  station: SheetStation,
+  side: number,
+  tau: number,
+  hull: THREE.Matrix4,
+  level: THREE.Quaternion,
+  position: THREE.Vector3,
+  velocity: THREE.Vector3,
+): number {
+  sheetPoint(station, side, tau, position, velocity);
+  position.x -= station.x;
+  position.y -= station.y;
+  position.z -= station.z;
+  position.applyQuaternion(level);
+  velocity.applyQuaternion(level);
+  _sideWaterline.set(station.x, 0, station.z).applyMatrix4(hull);
+  const water = _centreWaterline.set(station.x, 0, 0).applyMatrix4(hull).y;
+  position.x += _sideWaterline.x;
+  position.y += water + station.y;
+  position.z += _sideWaterline.z;
+  return water;
+}
+
 const vSheet = /*@__PURE__*/ varyingProperty('vec4', 'bowSheetUv');
 const vSheetMisc = /*@__PURE__*/ varyingProperty('vec4', 'bowSheetMisc');
 
@@ -195,6 +270,9 @@ export class BowSheet {
   private readonly uBeam = uniform(4);
   private readonly uClock = uniform(0);
   private readonly uHull = uniform(new THREE.Matrix4());
+  /** The hull's heading alone; see `levelQuaternion`. */
+  private readonly uLevel = uniform(new THREE.Matrix4());
+  private readonly level = new THREE.Quaternion();
 
   private readonly geometry: THREE.InstancedBufferGeometry;
   private readonly material: THREE.MeshBasicNodeMaterial;
@@ -253,6 +331,7 @@ export class BowSheet {
     this.uHalfLength.value = halfLength;
     this.uBeam.value = beam;
     (this.uHull.value as THREE.Matrix4).copy(hull.matrixWorld);
+    (this.uLevel.value as THREE.Matrix4).makeRotationFromQuaternion(levelQuaternion(hull.matrixWorld, this.level));
     this.mesh.visible = intensity > 0.01;
     this.mesh.userData.intensity = intensity;
   }
@@ -299,12 +378,17 @@ export class BowSheet {
       .toVar('bowSheetFlight');
     const t: any = tau.mul(flight);
     const roll: any = tau.mul(0.25).add(1);
-    const local: any = vec3(
-      x0.sub(aft.mul(t)),
-      y0.add(up.mul(t)).sub(t.mul(t).mul(0.5 * GRAVITY)),
-      z0.add(side.mul(outward).mul(t).mul(roll)),
+    const flown: any = vec3(
+      aft.mul(t).negate(),
+      up.mul(t).sub(t.mul(t).mul(0.5 * GRAVITY)),
+      side.mul(outward).mul(t).mul(roll),
     );
-    const world: any = this.uHull.mul(vec4(local, 1)).xyz.toVar('bowSheetWorld');
+    // Rooted on the hull side at the true waterline plus the crest, flown level:
+    // see "Rooted on the hull, flown level" in the header.
+    const sideWaterline: any = this.uHull.mul(vec4(x0, 0, z0, 1)).xyz;
+    const centreWaterline: any = this.uHull.mul(vec4(x0, 0, 0, 1)).y;
+    const root: any = vec3(sideWaterline.x, centreWaterline.add(y0), sideWaterline.z);
+    const world: any = root.add(this.uLevel.mul(vec4(flown, 0)).xyz).toVar('bowSheetWorld');
     const viewZ: any = cameraViewMatrix.mul(vec4(world, 1)).z;
     // Root arc length in metres, for the breakup's scale across the flow.
     const rootMetres: any = s.mul(this.uHalfLength).mul(ROOT_LENGTH);

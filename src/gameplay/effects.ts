@@ -10,7 +10,7 @@ import {
   sprayMaterial,
   sprayUniforms,
 } from '../physics/sprayLook';
-import { BowSheet, sheetPoint, sheetStation, type SheetStation } from './BowSheet';
+import { BowSheet, levelQuaternion, sheetPoint, sheetPointWorld, sheetStation, type SheetStation } from './BowSheet';
 
 /**
  * The two pieces of gameplay feedback that have to be visible at any range:
@@ -354,6 +354,9 @@ export class BowSpray {
   private readonly bow = new THREE.Vector3();
   private readonly point = new THREE.Vector3();
   private readonly pointVelocity = new THREE.Vector3();
+  private readonly scatter = new THREE.Vector3();
+  /** The hull's heading alone, the frame the sheet flies in; see `levelQuaternion`. */
+  private readonly level = new THREE.Quaternion();
   private readonly station: SheetStation = { x: 0, y: 0, z: 0, up: 0, out: 0, aft: 0, flight: 0 };
   private readonly sheet = new BowSheet();
   /** The sheet's and the spray's strength, 0..~1.3, following speed, immersion and plunge. */
@@ -525,17 +528,19 @@ export class BowSpray {
     // Drops leave the tearing edge while it is still in the air, flung on
     // past it; mist rises off the whole sheet more slowly.
     const tau = isMist ? 0.2 + 0.5 * r2 : 0.15 + 0.5 * r2;
+    // Scatter is added in the sheet's own (level) frame, so it is applied to
+    // the hull-frame velocity before `sheetPointWorld` rotates it.
     sheetPoint(station, sideSign, tau, this.point, this.pointVelocity);
     const scatter = isMist ? 0.5 : 1;
-    this.pointVelocity.set(
-      this.pointVelocity.x * scatter + 0.6 * (r4 - 0.5),
-      this.pointVelocity.y * scatter + (isMist ? 0.8 : 1.5 + 2.5 * r3),
-      this.pointVelocity.z * scatter + sideSign * (isMist ? 0.4 : 0.8 + 1.2 * r4),
+    this.scatter.set(
+      this.pointVelocity.x * (scatter - 1) + 0.6 * (r4 - 0.5),
+      this.pointVelocity.y * (scatter - 1) + (isMist ? 0.8 : 1.5 + 2.5 * r3),
+      this.pointVelocity.z * (scatter - 1) + sideSign * (isMist ? 0.4 : 0.8 + 1.2 * r4),
     );
-    const localHeight = this.point.y;
-    this.point.applyMatrix4(hull.matrixWorld);
-    this.pointVelocity.applyQuaternion(hull.quaternion);
-    this.water.setX(i, this.point.y - localHeight - 0.1);
+    levelQuaternion(hull.matrixWorld, this.level);
+    const water = sheetPointWorld(station, sideSign, tau, hull.matrixWorld, this.level, this.point, this.pointVelocity);
+    this.pointVelocity.add(this.scatter.applyQuaternion(this.level));
+    this.water.setX(i, water - 0.1);
     void hullBeam;
     this.origin.setXYZW(i, this.point.x, this.point.y, this.point.z, this.time);
     this.launch.setXYZW(
