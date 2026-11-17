@@ -352,7 +352,7 @@ export class Gameplay {
 
   /** True while the bow sheet is drawn at a strength worth counting. */
   get bowSheetUp(): boolean {
-    return this.active && this.bowSpray.sheetIntensity > 0.15;
+    return this.bowSpray.sheetIntensity > 0.15;
   }
 
   /**
@@ -412,7 +412,6 @@ export class Gameplay {
     this.loot.visible = active;
     this.beacon.object.visible = active;
     this.burst.mesh.visible = active && this.burst.alive;
-    this.bowSpray.mesh.visible = active;
     if (!active) return;
 
     this.clock += dt;
@@ -451,9 +450,13 @@ export class Gameplay {
    * The bow's running spray and sheet. Call after the buoyancy solve, with the
    * hull's world matrix refreshed: from `update`, which runs before the solve,
    * they sat on the previous frame's pose and lagged the stem by a frame.
+   *
+   * In every mode, not only at the helm: a ship making way throws water off
+   * her stem whoever is watching, the Tour included. Hidden while she is hove
+   * to and nothing she threw is still in the air.
    */
   updateBowSpray(dt: number): void {
-    if (!(dt > 0) || !this.armed || !this.active) return;
+    if (!(dt > 0) || !this.armed) return;
     const body = this.o.body;
     this.forward.set(1, 0, 0).applyQuaternion(body.object.quaternion).setY(0);
     if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
@@ -468,6 +471,7 @@ export class Gameplay {
       this.o.camera,
       (x, z) => this.o.sampler.height(x, z),
     );
+    this.bowSpray.mesh.visible = !this.bowSpray.idle;
   }
 
   /* ------------------------------------------------------------- commands */

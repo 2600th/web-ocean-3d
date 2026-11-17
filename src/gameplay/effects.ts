@@ -362,6 +362,8 @@ export class BowSpray {
   /** The sheet's and the spray's strength, 0..~1.3, following speed, immersion and plunge. */
   private intensity = 0;
   private speed = 0;
+  /** Clock of the last particle thrown; see `idle`. */
+  private lastEmit = -1000;
 
   constructor() {
     this.geometry = new THREE.InstancedBufferGeometry();
@@ -480,6 +482,11 @@ export class BowSpray {
     return this.intensity;
   }
 
+  /** Nothing to draw: no sheet, and the last particle thrown has come down. */
+  get idle(): boolean {
+    return this.intensity < 0.005 && this.time - this.lastEmit > 2;
+  }
+
   clear(): void {
     (this.origin.array as Float32Array).fill(0);
     (this.launch.array as Float32Array).fill(0);
@@ -495,6 +502,7 @@ export class BowSpray {
     this.dirty = false;
     this.bowPrimed = false;
     this.intensity = 0;
+    this.lastEmit = -1000;
   }
 
   dispose(): void {
@@ -514,6 +522,7 @@ export class BowSpray {
     const i = this.cursor;
     this.cursor = (this.cursor + 1) % SPRAY_COUNT;
     const n = this.serial++;
+    this.lastEmit = this.time;
     const r1 = hash(n, 1);
     const r2 = hash(n, 2);
     const r3 = hash(n, 3);
