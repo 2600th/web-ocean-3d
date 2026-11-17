@@ -24,7 +24,7 @@ import { HERO_ANISOTROPY, type AssetLoader } from './AssetLoader';
  * Built by `scripts/optimize-assets.mjs` from Poly Haven's 2k glTF: KTX2 at 1k
  * and Meshopt geometry, 7 MB against the 27 MB of JPEGs it replaces.
  */
-const SHIP_URL = '/models/hero/dutch_ship_medium.glb';
+export const SHIP_URL = '/models/hero/dutch_ship_medium.glb';
 
 /** Stem-to-transom length of the hull mesh, in metres, after normalisation. */
 const TARGET_HULL_LENGTH = 27;

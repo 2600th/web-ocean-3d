@@ -12,7 +12,7 @@ import type { Page } from '@playwright/test';
  */
 export interface StackFingerprint {
   /** Which renderer backend the app actually chose, not which one was asked for. */
-  backend: 'webgpu' | 'webgl';
+  backend: 'webgpu';
   /** WebGL's unmasked renderer string. The most specific GPU identity available. */
   gpu: string;
   /** WebGPU adapter identity, or `none` when there is no adapter. */

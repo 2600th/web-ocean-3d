@@ -85,8 +85,8 @@ const NORMAL_BIAS_TEXELS = 1.5;
  * Without this, `CSMShadowNode.setup` runs once per material and builds the
  * graph afresh each time. Each copy reads the split distances through a new
  * `reference('_cascades')`, which is a new uniform-array node with a new id.
- * The GLSL builder names that block `NodeBuffer_<id>`, so on the WebGL2
- * fallback every lit material compiled a program that differed from its
+ * The GLSL builder named that block `NodeBuffer_<id>`, so on the since-retired
+ * WebGL2 fallback every lit material compiled a program that differed from its
  * neighbours by that name alone and could not share one with them.
  *
  * Sharing is how three treats every other shadow already. `AnalyticLightNode`

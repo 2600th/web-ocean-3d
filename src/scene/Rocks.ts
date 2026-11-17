@@ -34,7 +34,7 @@ import {
  * That is abyssal-garden's terrain recipe (`W_DENS` in `shaders.js`: segment
  * columns with overhang and waist terms, smooth unions, relief and strata)
  * scaled down to one outcrop per grid and moved to the CPU so the WebGL2
- * fallback gets it too. Each sculpt carries a six-metre skirt below its base,
+ * fallback of the time got it too. Each sculpt carries a six-metre skirt below its base,
  * so a placement can be seated on the lowest floor under its footprint and the
  * uphill side simply buries more of it — nothing floats on a slope.
  *

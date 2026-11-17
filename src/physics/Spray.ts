@@ -72,8 +72,8 @@ import { CLASS_CLUSTER, CLASS_DROP, CLASS_MIST, CLASS_SHEET, particleVertex, spr
  * table and the closed-form trajectories below are unchanged in kind.
  *
  * **No compute, no storage, no per-frame upload of positions.** The CPU writes
- * a few events a second into four small uniform arrays. This compiles on the
- * WebGL2 fallback unchanged.
+ * a few events a second into four small uniform arrays. Written when a WebGL2
+ * fallback had to compile it too; that constraint no longer applies.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -81,9 +81,9 @@ import { CLASS_CLUSTER, CLASS_DROP, CLASS_MIST, CLASS_SHEET, particleVertex, spr
 /**
  * How many impacts are in flight at once. A ring; the oldest is overwritten.
  *
- * Four vec4 arrays of this length are the vertex-stage uniform budget, which
- * WebGL2 guarantees at 256 vectors — 160 leaves room for the camera and the
- * lighting.
+ * Four vec4 arrays of this length are the vertex-stage uniform budget. Sized
+ * for the 256 vectors the retired WebGL2 fallback guaranteed — 160 left room
+ * for the camera and the lighting; WebGPU's limit is far higher.
  */
 const EVENTS = 40;
 

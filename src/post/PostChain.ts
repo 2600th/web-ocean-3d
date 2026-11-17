@@ -248,9 +248,9 @@ export interface PostChainOptions {
  * 4. `setTier` / `update` / `resetTemporal` / `setDeterministic` from the
  *    corresponding places in the app.
  *
- * Every effect has an A/B toggle on `__ocean.post.chain`; the WebGL2 fallback
- * gets auto-exposure and grain only, because everything else hangs off the
- * velocity MRT that path does not have.
+ * Every effect has an A/B toggle on `__ocean.post.chain`; with temporal AA off
+ * (`?taa=0`) the chain gets auto-exposure and grain only, because everything
+ * else hangs off the velocity MRT that only the temporal scene pass carries.
  */
 export class PostChain {
   readonly resolve = new PostResolve();

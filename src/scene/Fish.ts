@@ -147,10 +147,10 @@ const MAX_FISH = 600;
  * Medium with exactly the empty reef this change is about.
  *
  * Ten is still a compile-time constant, so the per-school uniforms are chosen
- * with a `select` chain rather than a dynamically indexed array — legal on both
- * backends, but the kind of thing WebGL2 drivers have historically been bad at,
- * and the chain costs a few ternaries on a population whose entire vertex count
- * is under eleven thousand.
+ * with a `select` chain rather than a dynamically indexed array. Chosen when a
+ * WebGL2 fallback existed and its drivers were bad at that indexing; WebGPU
+ * would take the array, but the chain costs a few ternaries on a population
+ * whose entire vertex count is under eleven thousand.
  */
 type SchoolKind = 'open' | 'reef' | 'island' | 'patrol' | 'chromis';
 
@@ -1925,7 +1925,7 @@ function instancesForSpecies(species: Species): Int32Array {
 }
 
 /** Where the reef species lives, and which way it was authored. */
-const REEF_FISH_URL = '/models/dressing/emperor_angelfish.glb';
+export const REEF_FISH_URL = '/models/dressing/emperor_angelfish.glb';
 
 /**
  * Re-pigments the emperor angelfish texture as a French angelfish
@@ -2165,8 +2165,8 @@ function identityInstanceMatrix(matrices: THREE.InstancedBufferAttribute, count:
  *
  * A `select` chain rather than an indexed uniform array: the count is a
  * compile-time constant, the condition is uniform across every vertex of an
- * instance, and this lowers to a handful of ternaries on both backends with no
- * dependence on how a given WebGL2 driver handles dynamic array indexing.
+ * instance, and this lowers to a handful of ternaries. (Chosen when the retired
+ * WebGL2 fallback's drivers handled dynamic array indexing unreliably.)
  */
 function pickPerSchool(values: readonly Node[], index: Node): Node {
   let node = values[values.length - 1];

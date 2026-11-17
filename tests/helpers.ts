@@ -1,7 +1,7 @@
 import type { Page, ConsoleMessage } from '@playwright/test';
 
 export interface OceanHandle {
-  backend: 'webgpu' | 'webgl';
+  backend: 'webgpu';
 }
 
 /**

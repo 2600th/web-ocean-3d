@@ -2000,7 +2000,8 @@ export class UnderwaterPass {
 
   /**
    * Inputs for lighting submerged surfaces in the composite: the scene pass's
-   * view-space normals (null on the WebGL2 path, which has no MRT) and the
+   * view-space normals (null with temporal AA off, whose scene pass writes no
+   * normal MRT) and the
    * dispersed caustics field. Must be called before `build`.
    */
   setSurfaceInputs(normal: unknown, chromaticCaustics: ((worldPosition: unknown) => unknown) | null): void {

@@ -108,7 +108,6 @@ const PRESET = 'skyPro';
  */
 const BUDGETS = {
   webgpu: { frameMs: 16.7, fps: 60 },
-  webgl: { frameMs: 33.3, fps: 30 },
 };
 
 /**
@@ -137,23 +136,23 @@ const LOW_BOOT_BUDGET = {
 const MIN_SAMPLES = 200;
 
 const MATRIX = [
-  { id: 'webgpu-low', backend: 'webgpu', tier: 'low', gate: false },
+  // Low carries the boot budget now that WebGPU is the only backend: it is
+  // the tier integrated GPUs and phones are advised onto.
+  { id: 'webgpu-low', backend: 'webgpu', tier: 'low', gate: true, bootBudget: LOW_BOOT_BUDGET },
+  {
+    id: 'webgpu-low-cpu',
+    backend: 'webgpu',
+    tier: 'low',
+    gate: false,
+    dpr: 1,
+    cpuThrottlingRate: 4,
+    bootBudget: LOW_BOOT_BUDGET,
+  },
   { id: 'webgpu-medium', backend: 'webgpu', tier: 'medium', gate: false },
   { id: 'webgpu-high', backend: 'webgpu', tier: 'high', gate: true },
   { id: 'webgpu-high-underwater', backend: 'webgpu', tier: 'high', gate: false, camera: UNDERWATER_CAMERA },
   { id: 'webgpu-ultra', backend: 'webgpu', tier: 'ultra', gate: false },
   { id: 'webgpu-max', backend: 'webgpu', tier: 'max', gate: false },
-  { id: 'webgl-low', backend: 'webgl', tier: 'low', gate: true, bootBudget: LOW_BOOT_BUDGET },
-  {
-    id: 'webgl-low-cpu',
-    backend: 'webgl',
-    tier: 'low',
-    gate: true,
-    dpr: 1,
-    cpuThrottlingRate: 4,
-    bootBudget: LOW_BOOT_BUDGET,
-  },
-  { id: 'webgl-high', backend: 'webgl', tier: 'high', gate: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -858,7 +857,6 @@ async function runConfiguration(browser, baseUrl, config, options) {
     // the app's frame pacer to divide; it would pace against whatever cadence
     // the GPU gave it, and "delivered" would measure the pacer, not the renderer.
     launchUrl.searchParams.set('pacing', '0');
-    if (config.backend === 'webgl') launchUrl.searchParams.set('webgl', '1');
     const url = launchUrl.toString();
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.bringToFront();

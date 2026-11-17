@@ -58,11 +58,12 @@ import { seafloorHeight, SEAFLOOR_EXTENT, SEAFLOOR_SEGMENTS } from './Seafloor';
  * camera-facing lens in the same draw, writing depth like every leaf.
  *
  * **Cells are meshes.** WebGPU in three r185 has no first-instance offset on an
- * instanced draw and the WebGL2 fallback has no compute, so a GPU compaction is
- * not on the table. Each 24 m cell owns its slice of the instance data as its
- * own attributes, shared by one mesh per level of detail, and the CPU attaches
- * only the mesh each visible cell needs — the scene graph holds a few dozen
- * meshes, never the thousands that exist. three's frustum test then runs per
+ * instanced draw and the WebGL2 fallback of the time had no compute, so a GPU
+ * compaction was not on the table; the fallback is gone, so that half of the
+ * reason no longer applies. Each 24 m cell owns its slice of the instance data
+ * as its own attributes, shared by one mesh per level of detail, and the CPU
+ * attaches only the mesh each visible cell needs — the scene graph holds a few
+ * dozen meshes, never the thousands that exist. three's frustum test then runs per
  * cell against a bound that covers the sway.
  */
 

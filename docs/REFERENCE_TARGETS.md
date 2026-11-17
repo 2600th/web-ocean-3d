@@ -96,6 +96,7 @@ Sources, and what each one gave:
 |---|---|---|---|---|---|
 | Ours (High, full scene), 2026-11-16 | 50.4 (steady half rate) | 21.7 ms | 0-3 | 36.9 MB | 23.5 s to playable |
 | Ours (High, full scene), 2026-11-17 | **98.5 (full rate)** | **10.6 ms** | 0-1 | 36.9 MB | 22.9 s to playable (warm; was 24.4 the same session) |
+| Ours (High, full scene), r187 WebGPU-only, 2026-11-17, **120 Hz display** | **111-113** (full rate, ~5% doubled frames; one run of three settled at 76) | 17.1-18.4 ms | ~65 | **32.4 MB** | **17.3-19.7 s** to playable. Same display and session, r185: 60 (steady half rate), 23-24 s |
 | web-ocean | 101 | 10.5 ms | 0 | ~0 (procedural) | 0.4 s |
 | Three.js Water Pro | 101 | 10.5 ms | 0 | 19.4 MB | ~4 s |
 | NeuralSpecOcean | 101 | 10.5 ms | 0 | 0.6 MB | ~1 s |

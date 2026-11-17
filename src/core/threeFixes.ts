@@ -1,112 +1,33 @@
 import * as THREE from 'three/webgpu';
 
 /**
- * Shared uniform groups, one copy per render context (three r185).
+ * Patches to three's internals that upstream does not have, and the revision
+ * whose source each hook was checked against. On any other revision they stay
+ * off rather than patch code they were not written for: re-check, then add it.
  *
- * The camera block and the other per-render uniforms live in a *shared* bind
- * group: every material with the same set of them binds one buffer, written
- * once per render. r185 picks that group when a material's nodes are built,
- * scoped by `renderer._currentRenderContext` at that moment, and keeps it in a
- * node build that any render context can reuse. Two things break the scoping:
- *
- * - Builds here are asynchronous (`installAsyncPipelines`), so a build started
- *   inside the planar reflection's render can finish after it, when the current
- *   context is the main pass again.
- * - A build is cached by material, not by context, so one made for one render
- *   is handed to another.
- *
- * Either way a reflection object and a main-pass object end up binding one
- * buffer. The reflection renders *inside* the main pass, so its write (the
- * mirrored camera) lands after the main pass's and before the main pass's
- * commands run: everything in the main pass on that buffer draws from under
- * the sea. In practice the camp smoke in the mirror took the cloud deck and
- * the rain with it (same uniform layout), and the storm sky went bare.
- *
- * Resolving the group when it is *bound* rather than built fixes both: each
- * render object swaps every shared group for its context's own copy, made on
- * first use and shared by everything else in that context, so sharing within
- * a render is kept and sharing across renders is gone. The copy is made the
- * way upstream clones a group, with fresh CPU-side buffers, so its first update
- * writes everything.
- *
- * r185 only: upstream moved the shared cache into `Bindings` with a context
- * argument (mrdoob/three.js#34707). Re-check, and likely delete, on upgrade.
+ * Two earlier patches are gone because r187 fixed the same bugs upstream: one
+ * shared uniform group per render context (#34707), and one shader build per
+ * instanced material rather than per mesh (#34872, #35007). A third, instance
+ * matrices as attributes, existed only for the retired WebGL2 fallback.
  */
-export function installThreeFixes(renderer: THREE.WebGPURenderer): void {
-  if (THREE.REVISION !== '185') return;
-  const objects = (renderer as any)._objects;
-  if (!objects || objects.__perContextSharedGroups) return;
-  objects.__perContextSharedGroups = true;
-
-  const createRenderObject = objects.createRenderObject.bind(objects);
-  let patched = false;
-  objects.createRenderObject = (...args: unknown[]): unknown => {
-    const renderObject = createRenderObject(...args);
-    if (!patched) {
-      patched = true;
-      patchGetBindings(Object.getPrototypeOf(renderObject));
-    }
-    return renderObject;
-  };
-}
+const VERIFIED_PERF_REVISIONS = new Set(['187']);
 
 /**
- * Instance matrices as vertex attributes on the WebGL2 fallback (three r185).
+ * Instance matrices a frame late on the attribute path.
  *
- * r185 puts an `InstancedMesh`'s matrices in a uniform block whenever they fit
- * — `mat4 buffer[count]` — so the instance **count** is part of the shader
- * source. Two meshes sharing one material but placing 20 and 36 instances
- * compile two programs, identical except for that number. The reef alone is
- * dozens of meshes on two materials, and on ANGLE's D3D11 path every program
- * costs FXC about 1.2 s to link: 66 copies of the reef-life shader were 80 s
- * of the 90 s the fallback spent compiling at boot, which is what put its time
- * to first frame at 65 s against main's 7.
- *
- * Above the block-size limit r185 already uses four instanced `vec4`
- * attributes, the way `WebGLRenderer` always did. That shader does not mention
- * the count, so meshes on one material share a program again, and the matrices
- * upload when they change rather than with every draw. Reporting no uniform
- * block space sends every instanced mesh down that path. The limit is read in
- * three places (`Instance.js` twice, `RangeNode.js`), all choosing between the
- * same two layouts.
- *
- * WebGL only, because the attribute path does not keep the *previous* frame's
- * matrices current — it copies them on the CPU but never bumps the
- * attribute's version — and this fallback has no velocity MRT to need them
- * (see `PostChain`). WebGPU keeps the uniform layout.
- *
- * The attribute path also has a frame of lag, fixed below. It draws from
- * copies (an interleaved buffer for the matrices, an instanced attribute for
- * the colours) that share the mesh's arrays, and their versions are synced from
- * the mesh's in an `OnFrameUpdate`. That runs in `Nodes.updateForRender`, which
- * `Renderer._renderObjectDirect` calls *after* `Geometries.updateForRender` has
- * already decided what to upload, and the upload is checked once per render
- * call. So a mesh drawn in one pass a frame showed its new matrices a frame
- * late, and a burst that reused a slot flashed the previous one for a frame.
- * The uniform layout re-uploaded every draw and never had this. The sync
- * three does afterwards is done here first, and three's then finds nothing to
- * change.
- */
-export function installWebGLFixes(renderer: THREE.WebGPURenderer): void {
-  if (THREE.REVISION !== '185') return;
-  const capabilities = (renderer as any).backend?.capabilities;
-  if (!capabilities || typeof capabilities.getUniformBufferLimit !== 'function') return;
-  capabilities.getUniformBufferLimit = () => 0;
-  installInstanceCopySync(renderer);
-}
-
-/**
- * The frame-of-lag fix above, on its own, for every backend.
- *
- * WebGPU takes the attribute path too, for any mesh whose matrices do not fit
- * a uniform block (64 KiB: 1024 instances). The reef and rock fields are far
- * past that, and since they stopped re-uploading every draw (`DealtMatrices`
- * in `reef/InstanceField`) they upload on the version, so they had the same
- * lag: a deal's new counts and fades drawn with the previous deal's matrices
- * for a frame.
+ * Any `InstancedMesh` whose matrices do not fit a uniform block (64 KiB: 1024
+ * instances) draws them from instanced attributes — copies that share the
+ * mesh's arrays, with versions synced from the mesh's in an `OnFrameUpdate`.
+ * That runs in `Nodes.updateForRender`, which `Renderer._renderObjectDirect`
+ * calls *after* `Geometries.updateForRender` has already decided what to
+ * upload. The reef and rock fields are far past the limit, and since they
+ * stopped re-uploading every draw (`DealtMatrices` in `reef/InstanceField`)
+ * they upload on the version: a deal's new counts and fades were drawn with the
+ * previous deal's matrices for a frame. The sync three does afterwards is done
+ * here first, and three's then finds nothing to change.
  */
 export function installInstanceCopySync(renderer: THREE.WebGPURenderer): void {
-  if (THREE.REVISION !== '185') return;
+  if (!VERIFIED_PERF_REVISIONS.has(THREE.REVISION)) return;
   const geometries = (renderer as any)._geometries;
   if (!geometries || typeof geometries.updateForRender !== 'function') return;
   if (geometries.__instanceCopySync) return;
@@ -120,49 +41,6 @@ export function installInstanceCopySync(renderer: THREE.WebGPURenderer): void {
   };
 }
 
-/**
- * Buffer names that do not change the shader from one mesh to the next
- * (WebGPU, three r185).
- *
- * r185 names a buffer binding after its node's global id: `NodeBuffer_76015`.
- * An `InstancedMesh` has a node build of its own (its uuid is in the material
- * cache key), and its own matrix buffer node, so two meshes on one material
- * produced WGSL identical but for that number. three keeps one shader module
- * per distinct source and one pipeline per distinct pair of modules, so each
- * mesh cost a pipeline of its own: at High, 36 copies of the seabed rock's
- * vertex shader, 32 of the reef's, and a few more for the flora, 67 modules of
- * 451 at boot. A pipeline is an FXC compile in Chrome's GPU process, and the
- * boot was bound by those: 15 compile threads at full load for the length of
- * the content compile.
- *
- * Named by first use within the build instead, the copies come out identical
- * and share a module and a pipeline. Only the name changes: the binding
- * layout, the group and the buffer each mesh binds are what they were. A name
- * a caller chose is left alone.
- */
-export function installStableBufferNames(): void {
-  if (THREE.REVISION !== '185') return;
-  const proto = (THREE as any).WGSLNodeBuilder?.prototype;
-  if (!proto || typeof proto.getUniformFromNode !== 'function' || proto.__stableBufferNames) return;
-  proto.__stableBufferNames = true;
-  const getUniformFromNode = proto.getUniformFromNode;
-  const local = new WeakMap<object, Map<object, number>>();
-  proto.getUniformFromNode = function (this: any, node: any, type: string, ...rest: unknown[]): any {
-    const uniform = getUniformFromNode.call(this, node, type, ...rest);
-    // The auto name is assigned once, when the uniform is first made for a
-    // stage; the same node in the other stage gets the same local name.
-    if (uniform?.name === 'NodeBuffer_' + node.id) {
-      let names = local.get(this);
-      if (names === undefined) local.set(this, (names = new Map()));
-      let index = names.get(node);
-      if (index === undefined) names.set(node, (index = names.size));
-      uniform.name = 'NodeBuffer_L' + index;
-    }
-    return uniform;
-  };
-}
-
-/** As `Instance.js`'s `OnFrameUpdate`, for the copies that share the mesh's arrays. */
 function syncInstanceCopies(mesh: THREE.InstancedMesh, attributes: readonly any[]): void {
   const matrices = mesh.instanceMatrix;
   const colors = mesh.instanceColor;
@@ -180,8 +58,7 @@ function syncInstanceCopies(mesh: THREE.InstancedMesh, attributes: readonly any[
 }
 
 /**
- * Per-draw submission costs that three r185 pays without needing to (both
- * backends unless noted). Measured on a live High frame, 1920x1080:
+ * Per-draw submission costs that three pays without needing to. Measured on a live High frame, 1920x1080:
  *
  * - **Shadow passes re-validated every caster's render object.** A shadow pass
  *   draws every caster with one shared override material and copies each
@@ -205,7 +82,7 @@ function syncInstanceCopies(mesh: THREE.InstancedMesh, attributes: readonly any[
  *   buffers are small (a few hundred bytes), so the gaps cost nothing.
  */
 export function installSubmissionFixes(renderer: THREE.WebGPURenderer, options: { batchSubmits?: boolean } = {}): void {
-  if (THREE.REVISION !== '185') return;
+  if (!VERIFIED_PERF_REVISIONS.has(THREE.REVISION)) return;
   const r = renderer as any;
   if (r.__submissionFixes) return;
   r.__submissionFixes = true;
@@ -599,43 +476,4 @@ function installSubmitBatching(device: any): void {
   patch(g.GPUBuffer?.prototype, 'destroy', () => flush());
   patch(g.GPUTexture?.prototype, 'destroy', () => flush());
   patch(g.GPUQuerySet?.prototype, 'destroy', () => flush());
-}
-
-/** Per render context: original shared group -> that context's copy. */
-const contextCopies = new WeakMap<object, WeakMap<object, any>>();
-
-function patchGetBindings(proto: any): void {
-  const getBindings = proto.getBindings;
-  proto.getBindings = function (this: any): any[] {
-    const bindings = getBindings.call(this);
-    if (this.__sharedGroupsResolved === bindings) return bindings;
-    this.__sharedGroupsResolved = bindings;
-
-    let copies = contextCopies.get(this.context);
-    if (copies === undefined) contextCopies.set(this.context, (copies = new WeakMap()));
-    for (let i = 0; i < bindings.length; i++) {
-      const group = bindings[i];
-      if (group.bindings[0]?.groupNode?.shared !== true) continue;
-      let copy = copies.get(group);
-      if (copy === undefined) {
-        copy = new group.constructor(group.name, group.bindings.map(cloneBinding));
-        copies.set(group, copy);
-      }
-      bindings[i] = copy;
-    }
-    return bindings;
-  };
-}
-
-/** As upstream's `UniformsGroup.clone`: shallow, with fresh CPU-side state. */
-function cloneBinding(binding: any): any {
-  const clone = binding.clone();
-  if (binding.isUniformsGroup) {
-    clone._buffer = null;
-    clone._values = null;
-    clone._updateRanges = [];
-    clone._updateRangeCache = new Map();
-    clone._addedIndices = new Set();
-  }
-  return clone;
 }

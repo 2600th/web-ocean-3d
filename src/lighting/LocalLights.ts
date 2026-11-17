@@ -181,7 +181,7 @@ export class LocalLights {
    * recompiles them all. An upgrade adds what the new tier lights — once, on a
    * device that asked for more. A downgrade only darkens the extras and leaves
    * them in place: the device stepping down is the one that can least afford
-   * a full recompile (measured on the WebGL path: ~80 s), and a light at zero
+   * a full recompile (measured on the old WebGL path: ~80 s), and a light at zero
    * intensity is cheap. Anchors are kept either way, so a session that boots
    * on Low still gets its lights on an upgrade.
    */

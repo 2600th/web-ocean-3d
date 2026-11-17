@@ -5,11 +5,11 @@ import { uniform } from '../core/uniform';
 /**
  * Cooley–Tukey radix-2 IFFT executed as ping-ponged fullscreen passes.
  *
- * Deliberately fragment-based rather than compute-based: Three's WebGL2 backend
- * has no compute shaders and no storage textures, so a compute implementation
- * would need an entirely separate fallback path. Fragment passes compile to both
- * backends from one TSL source. At the sizes we run (<= 512^2, ~9 passes per
- * direction) the cost difference is not the bottleneck — the surface shading is.
+ * Fragment-based rather than compute-based because it was written when a WebGL2
+ * fallback, with no compute shaders or storage textures, had to run it too;
+ * WebGPU could now do this in compute. At the sizes we run (<= 512^2, ~9 passes
+ * per direction) the cost difference is not the bottleneck — the surface
+ * shading is.
  *
  * Each texel carries TWO independent complex values (rg and ba), so one pass
  * transforms two spectra at once. Four spectra per cascade therefore need two

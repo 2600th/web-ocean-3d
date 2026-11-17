@@ -1,16 +1,11 @@
 import { icon } from './icons.ts';
 import { startLoadingTips } from './LoadingTips.ts';
 import { MenuSea } from './MenuSea.ts';
-import {
-  QUALITY_TIERS,
-  type QualityTier,
-  type RendererBackend,
-} from './types.ts';
+import { QUALITY_TIERS, type QualityTier } from './types.ts';
 
 const STORAGE_KEY = 'web-ocean:start-selection:v1';
 
 interface StoredSelection {
-  backend: RendererBackend;
   quality: QualityTier;
 }
 
@@ -24,18 +19,13 @@ interface DeviceProbe {
 
 export interface StartSelection {
   quality: QualityTier;
-  backend: RendererBackend;
-  forceWebGL: boolean;
   /**
    * The adapter metadata probe result. No device is created by the gate.
-   *
-   * Three-valued on purpose, and `Renderer` reads all three: an adapter means
-   * "use this one", `null` means "probed, and there is none — take WebGL2", and
-   * `undefined` means "not probed, decide for yourself". The tooling bypass
-   * returns `undefined` because it skips the probe; returning `null` there
-   * silently forced every bypassed launch onto WebGL2.
+   * `undefined` means "not probed" (the tooling bypass), and `Renderer` probes
+   * for itself. The gate never resolves without an adapter: a browser with no
+   * WebGPU is told what it needs instead.
    */
-  adapter: GPUAdapter | null | undefined;
+  adapter: GPUAdapter | undefined;
 }
 
 const QUALITY_LABELS: Record<QualityTier, string> = {
@@ -68,18 +58,14 @@ function isQualityTier(value: string | null): value is QualityTier {
   return value !== null && QUALITY_TIERS.includes(value as QualityTier);
 }
 
-function isBackend(value: unknown): value is RendererBackend {
-  return value === 'webgpu' || value === 'webgl';
-}
-
 function readStoredSelection(): StoredSelection | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredSelection>;
     const quality = parsed.quality ?? null;
-    if (!isBackend(parsed.backend) || !isQualityTier(quality)) return null;
-    return { backend: parsed.backend, quality };
+    if (!isQualityTier(quality)) return null;
+    return { quality };
   } catch {
     return null;
   }
@@ -123,14 +109,12 @@ function isIntegratedVendor(vendor: string): boolean {
 }
 
 function defaultSelection(probe: DeviceProbe): StoredSelection {
-  if (!probe.adapter) return { backend: 'webgl', quality: 'low' };
-
   const constrained = (probe.deviceMemory !== null && probe.deviceMemory <= 4)
     || (probe.hardwareConcurrency > 0 && probe.hardwareConcurrency <= 4);
-  if (constrained) return { backend: 'webgpu', quality: 'low' };
-  if (probe.coarsePointer) return { backend: 'webgpu', quality: 'medium' };
-  if (isIntegratedVendor(probe.vendor)) return { backend: 'webgpu', quality: 'medium' };
-  return { backend: 'webgpu', quality: 'high' };
+  if (constrained) return { quality: 'low' };
+  if (probe.coarsePointer) return { quality: 'medium' };
+  if (isIntegratedVendor(probe.vendor)) return { quality: 'medium' };
+  return { quality: 'high' };
 }
 
 /**
@@ -146,7 +130,6 @@ function describeProbe(probe: DeviceProbe): string {
   const cores = probe.hardwareConcurrency > 0
     ? String(probe.hardwareConcurrency) + ' CPU threads'
     : 'CPU not reported';
-  if (!probe.adapter) return 'No WebGPU · WebGL2 ready · ' + cores + ' · ' + memory;
   const vendor = probe.vendor ? probe.vendor + ' graphics' : 'graphics not named';
   return 'WebGPU on ' + vendor + ' · ' + cores + ' · ' + memory;
 }
@@ -222,6 +205,44 @@ function dressBoot(root: HTMLElement): void {
   retry?.addEventListener('click', () => window.location.reload(), { once: true });
 }
 
+/**
+ * The page for a browser without WebGPU: what it needs, and no way forward that
+ * would end on a dead canvas. Exported for the boot, which shows the same page
+ * when an adapter was found but the device would not open.
+ */
+export function showWebGPURequired(root: HTMLElement, detail = ''): void {
+  const gate = root.querySelector<HTMLElement>('#boot-gate');
+  const progress = root.querySelector<HTMLElement>('#boot-progress');
+  const status = root.querySelector<HTMLElement>('#boot-status');
+  root.classList.remove('boot--loading');
+  if (progress) progress.hidden = true;
+  if (status) status.textContent = 'WebGPU required';
+  if (!gate) return;
+  gate.hidden = false;
+  const notice = document.createElement('p');
+  notice.className = 'boot__notice';
+  notice.id = 'boot-notice';
+  notice.setAttribute('role', 'alert');
+  notice.append(
+    icon('warning', 'boot__notice-icon'),
+    document.createTextNode(
+      'This sea is drawn with WebGPU, which this browser does not offer'
+        + (detail ? ' (' + detail + ')' : '')
+        + '. Open it in a current Chrome or Edge, Safari 26 or later, or Firefox 141 or later on Windows, '
+        + 'with hardware acceleration switched on.',
+    ),
+  );
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'cta boot__start';
+  const label = document.createElement('span');
+  label.className = 'cta__label';
+  label.textContent = 'Try again';
+  retry.append(icon('anchor', 'cta__icon'), label);
+  retry.addEventListener('click', () => window.location.reload(), { once: true });
+  gate.replaceChildren(notice, retry);
+}
+
 function renderGate(
   root: HTMLElement,
   probe: DeviceProbe,
@@ -239,58 +260,11 @@ function renderGate(
   if (status) status.textContent = 'Choose your settings';
   if (bar) bar.style.transform = 'scaleX(0)';
 
-  let selectedBackend = initial.backend;
   let selectedQuality = initial.quality;
 
   const intro = document.createElement('p');
   intro.className = 'boot__gate-intro';
-  intro.textContent = 'Choose how hard this device should work. The wax tag marks what suits it, and either can be changed later from the ledger.';
-
-  const backendLabel = document.createElement('div');
-  backendLabel.className = 'boot__gate-label';
-  backendLabel.textContent = 'Graphics';
-  const backendGroup = document.createElement('div');
-  backendGroup.className = 'boot__choices boot__choices--backend';
-  backendGroup.setAttribute('role', 'group');
-  backendGroup.setAttribute('aria-label', 'Renderer backend');
-  // Without an adapter WebGPU is not a choice, and saying so plainly is the
-  // gate's error state: the plaque is struck through and a note says what the
-  // fallback costs, rather than letting the visitor pick a backend that would
-  // silently become WebGL2 anyway.
-  const webgpuAvailable = probe.adapter !== null;
-  if (!webgpuAvailable) selectedBackend = 'webgl';
-  const backendButtons = [
-    choiceButton('WebGPU', webgpuAvailable ? 'every effect' : 'not in this browser', selectedBackend === 'webgpu', () => {
-      selectedBackend = 'webgpu';
-      markSelected(backendButtons, 'WebGPU');
-    }, advised.backend === 'webgpu', webgpuAvailable
-      ? 'The modern graphics path: reflections, the view into the water and rain on the lens'
-      : 'This browser does not offer WebGPU'),
-    choiceButton('WebGL2', 'runs anywhere', selectedBackend === 'webgl', () => {
-      selectedBackend = 'webgl';
-      markSelected(backendButtons, 'WebGL2');
-    }, advised.backend === 'webgl', 'The older graphics path: the same waves, with fewer effects'),
-  ];
-  backendGroup.append(...backendButtons);
-  const webgpuButton = backendButtons[0];
-  let notice: HTMLElement | null = null;
-  if (!webgpuAvailable && webgpuButton) {
-    webgpuButton.disabled = true;
-    webgpuButton.classList.add('is-unavailable');
-    webgpuButton.setAttribute('aria-describedby', 'boot-notice');
-    notice = document.createElement('p');
-    notice.className = 'boot__notice';
-    notice.id = 'boot-notice';
-    notice.setAttribute('role', 'note');
-    notice.append(
-      icon('warning', 'boot__notice-icon'),
-      document.createTextNode(
-        'This browser does not offer WebGPU, so the sea will be drawn with WebGL2: '
-          + 'the same waves, without mirror reflections, the view into the water or rain on the lens. '
-          + 'For the full sea, open this in a current Chrome, Edge or Safari.',
-      ),
-    );
-  }
+  intro.textContent = 'Choose how hard this device should work. The wax tag marks what suits it, and it can be changed later from the ledger.';
 
   const qualityLabel = document.createElement('div');
   qualityLabel.className = 'boot__gate-label';
@@ -321,9 +295,6 @@ function renderGate(
 
   gate.replaceChildren(
     intro,
-    backendLabel,
-    backendGroup,
-    ...(notice ? [notice] : []),
     qualityLabel,
     qualityGroup,
     probeReadout,
@@ -333,17 +304,10 @@ function renderGate(
   return new Promise((resolve) => {
     start.addEventListener('click', () => {
       start.disabled = true;
-      const selection = {
-        backend: selectedBackend,
-        quality: selectedQuality,
-      } satisfies StoredSelection;
+      const selection = { quality: selectedQuality } satisfies StoredSelection;
       writeStoredSelection(selection);
       showProgress(root);
-      resolve({
-        ...selection,
-        forceWebGL: selection.backend === 'webgl',
-        adapter: probe.adapter,
-      });
+      resolve({ ...selection, adapter: probe.adapter ?? undefined });
     }, { once: true });
   });
 }
@@ -360,28 +324,23 @@ export async function openStartGate(root: HTMLElement): Promise<StartSelection> 
     : null;
 
   if (params.get('gate') === '0') {
-    const backend: RendererBackend = params.get('webgl') === '1' ? 'webgl' : 'webgpu';
-    // Tooling already declares the backend and tier. Do not pay the adapter
-    // metadata round trip before a bypassed boot; Renderer will perform its
-    // normal backend probe, while a visible gate still gets the cheap probe
-    // below before presenting the device recommendation.
-    //
-    // `undefined`, emphatically not `null`. Renderer reads null as "already
-    // probed, and there is no adapter" and takes the WebGL2 fallback on the
-    // strength of it. Returning null here therefore forced every `gate=0`
-    // launch onto WebGL2 — including every benchmark and profile run nominally
-    // measuring WebGPU.
+    // Tooling already declares the tier. Do not pay the adapter metadata round
+    // trip before a bypassed boot; Renderer probes for itself.
     const quality = requestedQuality ?? stored?.quality ?? 'high';
     dressBoot(root);
     showProgress(root);
-    return { quality, backend, forceWebGL: backend === 'webgl', adapter: undefined };
+    return { quality, adapter: undefined };
   }
 
   dressBoot(root);
   const probe = await probeDevice();
+  if (!probe.adapter) {
+    showWebGPURequired(root);
+    // Nothing to start: the page stays on the notice.
+    return new Promise<StartSelection>(() => undefined);
+  }
   const defaults = defaultSelection(probe);
   const initial: StoredSelection = {
-    backend: params.get('webgl') === '1' ? 'webgl' : stored?.backend ?? defaults.backend,
     quality: requestedQuality ?? stored?.quality ?? defaults.quality,
   };
   return renderGate(root, probe, initial, defaults);

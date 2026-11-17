@@ -20,8 +20,8 @@ import { SEEDS, fillRandom } from '../core/random';
  * Camera-following precipitation.
  *
  * Both effects are instanced camera-facing quads driven by `SpriteNodeMaterial`,
- * which gives real world-space particle size on WebGPU (point primitives are
- * clamped to one pixel there) and on WebGL2 alike.
+ * which gives real world-space particle size on WebGPU, where point primitives
+ * are clamped to one pixel.
  *
  * Particle motion is computed entirely in the vertex stage from a per-instance
  * seed and a uniform clock, with a modulo wrap — the CPU never touches particle

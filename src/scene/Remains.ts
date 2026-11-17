@@ -20,8 +20,8 @@ import { seafloorHeight } from './Seafloor';
  * it can afford 3,430 triangles on detail that only pays off when the camera is
  * a metre away — orbits, a tooth row, ribs that thin as they curve.
  *
- * No compute and no storage textures: the same node graph has to compile on the
- * WebGL2 fallback.
+ * No compute and no storage textures: written when the same node graph had to
+ * compile on a WebGL2 fallback, a constraint that no longer applies.
  *
  * This file used to hold a procedural coconut palm as well, and the grove that
  * scattered it. Both are gone. The palm was a good piece of engineering and a

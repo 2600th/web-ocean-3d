@@ -1721,14 +1721,6 @@ body {
   color: var(--brass-hi);
 }
 
-/* On the WebGL2 fallback the scene is genuinely reduced (no planar
-   reflection, refraction or lens misting): the badge says so in colour. */
-.hud-corner__backend.is-fallback {
-  border-color: var(--warn);
-  background: var(--warn);
-  color: #1d1003;
-}
-
 /* ---- The tour is a film: the instruments step back. ----------------------- */
 
 .hud[data-mode='cinematic'] .hud-compass,
@@ -2070,11 +2062,6 @@ body {
   gap: 12px;
 }
 
-.boot__choices--backend {
-  grid-template-columns: repeat(2, minmax(0, 210px));
-  justify-content: center;
-}
-
 .boot__choices--quality {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
@@ -2407,22 +2394,10 @@ body {
   color: var(--wax);
 }
 
-.boot__choice.is-unavailable,
 .boot__choice:disabled {
   cursor: not-allowed;
   filter: grayscale(0.85) brightness(0.8);
   box-shadow: 0 0 0 1px var(--brass-edge), 0 2px 0 var(--brass-edge);
-}
-
-.boot__choice.is-unavailable .boot__choice-name {
-  text-decoration: line-through;
-  text-decoration-thickness: 2px;
-}
-
-.boot__choice.is-unavailable:hover,
-.boot__choice.is-unavailable:active {
-  filter: grayscale(0.85) brightness(0.8);
-  transform: none;
 }
 
 /* ==========================================================================

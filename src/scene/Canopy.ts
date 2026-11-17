@@ -63,8 +63,8 @@ import { TILES, getLeafAtlas, tileUv } from './flora/leafAtlas';
  * computed on the CPU from `seafloorHeight`, so the vertex stage does no
  * heightfield taps at all, and the cloud deck's shade is one lookup in a small
  * map rather than a march per vertex. Measured with GPU timestamps at 1600x900
- * against the cards: WebGPU High within 0.8 ms in every view, and WebGL2 Low
- * cheaper in most.
+ * against the cards: WebGPU High within 0.8 ms in every view, and the since-
+ * retired WebGL2 Low cheaper in most.
  *
  * Nothing accumulates: every visible quantity is a function of the seed, the
  * camera position and one phase uniform, so `resetClock(t)` reproduces a frame

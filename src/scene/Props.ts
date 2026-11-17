@@ -1361,7 +1361,11 @@ export class Props {
           kind.count,
           `${kind.name}-lod${i + 1}`,
         );
-        if (level) levels.push(level);
+        if (!level) continue;
+        // LOD files carry no textures (`scripts/strip-lod-textures.mjs`): every
+        // level draws with its LOD0's maps, as the other LOD paths do.
+        this.shareLodMaterials(meshes, level);
+        levels.push(level);
       }
       const hasLod = levels.length > 1;
       const matrices = hasLod ? new Float32Array(kind.count * 16) : null;
@@ -2963,7 +2967,33 @@ interface DressingManifest {
   models: Record<string, DressingManifestModel>;
 }
 
-async function loadDressingManifest(): Promise<DressingManifest> {
+/**
+ * Every model file the dressing loads at boot, every LOD level included, for
+ * `prefetch`. Reads the same (shared) manifest request `Props.load` does.
+ */
+export async function dressingUrls(): Promise<string[]> {
+  const manifest = await loadDressingManifest().catch(() => null);
+  const urls: string[] = [];
+  for (const url of Object.values(DRESSING_URLS)) {
+    const model = manifest?.models[modelSlug(url)];
+    if (model) for (const lod of model.lods) urls.push(lod.url);
+    else urls.push(url);
+  }
+  return urls;
+}
+
+let manifestRequest: Promise<DressingManifest> | null = null;
+
+/** One request for the session; a failure is not cached, so a retry refetches. */
+function loadDressingManifest(): Promise<DressingManifest> {
+  manifestRequest ??= fetchDressingManifest().catch((error: unknown) => {
+    manifestRequest = null;
+    throw error;
+  });
+  return manifestRequest;
+}
+
+async function fetchDressingManifest(): Promise<DressingManifest> {
   // Deadlined: the boot awaits this, and a manifest request that never
   // settles is a boot that never finishes. See fetchWithDeadline.
   const response = await fetchWithDeadline('/models/dressing/dressing-manifest.json');

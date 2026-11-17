@@ -85,7 +85,8 @@ import { SHELTER_DEPTH_FULL, SHELTER_DEPTH_NONE } from '../ocean/FoamPattern';
  * budget is set by.
  *
  * Runs as two fullscreen fragment passes per frame. No compute, no storage
- * textures — this has to work on the WebGL2 backend unchanged.
+ * textures — written when a WebGL2 fallback had to run it too; WebGPU could now
+ * do it in compute.
  */
 
 /** Emissions coalesced into one pass. One hull plus a few props is plenty. */

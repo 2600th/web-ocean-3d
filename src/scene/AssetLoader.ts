@@ -69,6 +69,38 @@ export async function fetchWithDeadline(
   }
 }
 
+/**
+ * Model bytes requested before the renderer exists.
+ *
+ * The boot used to issue its model requests about 8.5 s in, once the renderer,
+ * the scene and the first prewarm were under way, because parsing needs the
+ * renderer (`KTX2Loader.detectSupport`). Downloading does not. On a real
+ * connection 37 MB is ten seconds or more, and starting it at page load — while
+ * the visitor is still on the menu — takes it off the path to a playable scene.
+ * `AssetLoader` parses what is here and fetches anything that is not, so a
+ * failed or missing prefetch costs only the head start.
+ */
+const prefetched = new Map<string, Promise<ArrayBuffer>>();
+
+export function prefetch(urls: readonly string[]): void {
+  for (const url of urls) {
+    if (prefetched.has(url)) continue;
+    const bytes = fetch(url).then((response) => {
+      if (!response.ok) throw new Error(`Prefetch failed: ${response.status} ${url}`);
+      return response.arrayBuffer();
+    });
+    // Consumed or not, a failure here is not an error: the loader refetches.
+    bytes.catch(() => undefined);
+    prefetched.set(url, bytes);
+  }
+}
+
+function takePrefetched(url: string): Promise<ArrayBuffer> | undefined {
+  const bytes = prefetched.get(url);
+  if (bytes) prefetched.delete(url);
+  return bytes;
+}
+
 /** Rejects if `work` has not settled within `timeoutMs`. */
 export async function withDeadline<T>(
   work: Promise<T>,
@@ -236,9 +268,8 @@ export class AssetLoader {
 
   /**
    * Supplies the initialised renderer used by KTX2Loader to select a GPU format.
-   * Call this after `renderer.init()` and before the first KTX2 asset load. The
-   * app's `WebGPURenderer` also owns the forced-WebGL2 backend, and Three's
-   * feature bridge handles both paths here.
+   * Call this after `renderer.init()` and before the first KTX2 asset load;
+   * `detectSupport` reads the compressed formats the WebGPU device offers.
    */
   setRenderer(renderer: THREE.WebGPURenderer): void {
     if (this.disposed) throw new Error('AssetLoader disposed; cannot set renderer');
@@ -346,7 +377,24 @@ export class AssetLoader {
     signal.addEventListener('abort', abortRequest, { once: true });
     let loaded: Awaited<ReturnType<GLTFLoader['loadAsync']>>;
     try {
-      loaded = await gltf.loadAsync(url);
+      // Bytes fetched at page load (`prefetch`), if they arrived; otherwise the
+      // ordinary request. Counted as one item either way for the boot bar.
+      const early = takePrefetched(url);
+      let bytes: ArrayBuffer | null = null;
+      if (early) {
+        manager.itemStart(url);
+        try {
+          bytes = await withDeadline(early, url);
+        } catch {
+          bytes = null;
+        } finally {
+          manager.itemEnd(url);
+        }
+        throwIfAborted(signal);
+      }
+      loaded = bytes
+        ? await gltf.parseAsync(bytes, THREE.LoaderUtils.extractUrlBase(url))
+        : await gltf.loadAsync(url);
     } finally {
       signal.removeEventListener('abort', abortRequest);
     }

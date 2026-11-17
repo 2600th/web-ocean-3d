@@ -1645,7 +1645,7 @@ const MOON_GROUND_COLOR = /*@__PURE__*/ new THREE.Color(0.08, 0.13, 0.22);
 const _skyTint = /*@__PURE__*/ new THREE.Color();
 const _overcastFill = /*@__PURE__*/ new THREE.Color();
 
-/** Cheap hash of a lattice cell to [0,1). Deterministic across both backends. */
+/** Cheap hash of a lattice cell to [0,1). Deterministic. */
 function hash13(p: any): any {
   const q = p.mul(vec3(127.1, 311.7, 74.7));
   return fract(sin(q.x.add(q.y).add(q.z)).mul(43758.5453123));

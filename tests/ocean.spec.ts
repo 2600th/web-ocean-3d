@@ -20,29 +20,12 @@ test.describe('boot and rendering', () => {
 
     expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([]);
 
-    // Whether WebGPU is actually reachable depends on the machine and, notably,
-    // on the browser build: Playwright's bundled Chromium commonly exposes no
-    // WebGPU adapter at all. Asserting "backend === webgpu" unconditionally would
-    // therefore fail on a correctly-behaving fallback. Instead, ask the page what
-    // is available and require the renderer to have made the right choice.
-    const { backend, adapterAvailable } = await page.evaluate(async () => {
-      let adapter = false;
-      try {
-        adapter = navigator.gpu ? (await navigator.gpu.requestAdapter()) !== null : false;
-      } catch {
-        adapter = false;
-      }
-      return {
-        backend: (window as unknown as { __ocean: { backend: string } }).__ocean.backend,
-        adapterAvailable: adapter,
-      };
-    });
-
-    if (adapterAvailable) {
-      expect(backend, 'a WebGPU adapter exists but the renderer did not use it').toBe('webgpu');
-    } else {
-      expect(backend, 'no WebGPU adapter, so the renderer must fall back').toBe('webgl');
-    }
+    // WebGPU is the only backend: the page either draws with it or shows the
+    // requirements notice (tested below).
+    const backend = await page.evaluate(
+      () => (window as unknown as { __ocean: { backend: string } }).__ocean.backend,
+    );
+    expect(backend).toBe('webgpu');
 
     // The canvas must contain a rendered scene, not a cleared buffer.
     //
@@ -63,42 +46,19 @@ test.describe('boot and rendering', () => {
     ).toBeGreaterThan(120_000);
   });
 
-  test('falls back to WebGL2 and still renders', async ({ page }) => {
-    const errors = collectConsoleErrors(page);
-    await page.goto('/?gate=0&quality=high&webgl=1');
-    await waitForOcean(page);
-
-    expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([]);
-
-    const backend = await page.evaluate(
-      () => (window as unknown as { __ocean: { backend: string } }).__ocean.backend,
-    );
-    expect(backend).toBe('webgl');
-
-    // "still renders" has to mean a frame was rendered.
-    //
-    // This asserted the backend string and an empty console and stopped there,
-    // which is satisfied by an app that boots cleanly onto WebGL2 and then draws
-    // a flat blue rectangle — or nothing at all. Read the frame and require
-    // structure in it.
-    const frame = await capture(page);
-    let min = 255;
-    let max = 0;
-    let sum = 0;
-    for (let i = 0; i < frame.data.length; i += 4) {
-      const luma =
-        0.2126 * frame.data[i] + 0.7152 * frame.data[i + 1] + 0.0722 * frame.data[i + 2];
-      if (luma < min) min = luma;
-      if (luma > max) max = luma;
-      sum += luma;
-    }
-    const mean = sum / (frame.data.length / 4);
-    expect(mean, 'the WebGL2 frame is black').toBeGreaterThan(4);
-    expect(
-      max - min,
-      `the WebGL2 frame spans only ${(max - min).toFixed(1)} levels of luminance, ` +
-        'which is a cleared buffer rather than a rendered scene',
-    ).toBeGreaterThan(40);
+  test('a browser without WebGPU is told what it needs, not given a dead canvas', async ({ page }) => {
+    // Hide WebGPU before any script runs, as a browser without it would.
+    await page.addInitScript(() => {
+      Object.defineProperty(Navigator.prototype, 'gpu', { get: () => undefined, configurable: true });
+    });
+    await page.goto('/');
+    const notice = page.locator('#boot-notice');
+    await expect(notice).toBeVisible({ timeout: 30_000 });
+    await expect(notice).toContainText('WebGPU');
+    // No way to start the renderer from here: the only control reloads.
+    await expect(page.getByRole('button', { name: /set sail/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /try again/i })).toBeVisible();
+    expect(await page.evaluate(() => '__ocean' in window)).toBe(false);
   });
 });
 
@@ -404,12 +364,6 @@ test.describe('interaction', () => {
     test.skip(
       !(await hasGpuAdapter(page)),
       'no GPU adapter: the software path cannot render these frames in time',
-    );
-
-    const backend = await page.evaluate(() => window.__ocean.backend);
-    test.skip(
-      backend !== 'webgpu',
-      'planar reflection is a WebGPU-only path; WebGL2 keeps the analytic sky by design',
     );
 
     await setState(page, { preset: 'seaOfThieves', quality: 'high' });
@@ -1757,18 +1711,6 @@ test.describe('performance', () => {
     budget(16.7)(sample);
     if (!sample.rafThrottled) {
       expect(sample.fps, `median FPS was ${sample.fps.toFixed(1)}`).toBeGreaterThan(55);
-    }
-  });
-
-  test('stays within the fallback frame budget at Low on WebGL', async ({ page }) => {
-    await page.goto('/?gate=0&quality=high&webgl=1');
-    await waitForOcean(page);
-    await setState(page, { quality: 'low' });
-
-    const sample = await measureFrameRate(page, 4);
-    budget(33.3)(sample);
-    if (!sample.rafThrottled) {
-      expect(sample.fps, `median FPS was ${sample.fps.toFixed(1)}`).toBeGreaterThan(30);
     }
   });
 

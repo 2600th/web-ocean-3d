@@ -33,8 +33,8 @@ import { SEEDS, fillRandom, mulberry32 } from '../core/random';
  *                 into a small number of columns.
  *
  * Both are instanced camera-facing quads on `SpriteNodeMaterial`, which gives
- * real world-space sizes on the WebGPU backend (point primitives are clamped to
- * a single pixel there) and behaves identically on WebGL2.
+ * real world-space sizes on WebGPU, where point primitives are clamped to a
+ * single pixel.
  *
  * Motion is entirely in the vertex stage, from per-instance seed attributes and
  * one clock uniform. The CPU never writes a particle position — `update` only

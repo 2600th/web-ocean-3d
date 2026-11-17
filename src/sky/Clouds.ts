@@ -944,8 +944,8 @@ export class Clouds {
   /** Resolve targets replaced by a resize, disposed on the next render. */
   private readonly retiredTargets: THREE.RenderTarget[] = [];
   private ping = 0;
-  private readonly quad = new THREE.QuadMesh();
   private readonly marchMaterial = new THREE.NodeMaterial();
+  private readonly quad = new THREE.QuadMesh(this.marchMaterial);
   private readonly resolveMaterial = new THREE.NodeMaterial();
   /** Texture nodes whose `value` follows the ping-pong. */
   private readonly historyNode: any;
@@ -995,7 +995,7 @@ export class Clouds {
     // whole opaque queue, which would put the clouds on top of the ocean and the
     // ship. `CustomBlending` keeps the mesh in the opaque queue — where
     // renderOrder still orders it right behind the sky — while still alpha
-    // blending. Both the WebGPU and the WebGL2 backend honour this.
+    // blending.
     this.material.transparent = false;
     this.material.blending = THREE.CustomBlending;
     this.material.blendEquation = THREE.AddEquation;
@@ -2374,7 +2374,7 @@ const _size = /*@__PURE__*/ new THREE.Vector2();
  * sample in the dome's graph. The same arrangement as three's reflector: a
  * node whose `updateBefore` renders into a target the material then samples.
  */
-class CloudPassNode extends THREE.TempNode {
+class CloudPassNode extends THREE.Node {
   static get type(): string {
     return 'CloudPassNode';
   }

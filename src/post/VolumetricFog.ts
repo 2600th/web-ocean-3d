@@ -94,8 +94,8 @@ import { uniform } from '../core/uniform';
  * The whole graph is built once. Every tunable is a uniform, including the march
  * step count (a dynamic `Loop` bound, as the tier changes it), so nothing here
  * ever recompiles. The march is procedural throughout — no 3D noise texture, so
- * nothing to allocate, upload or keep resident, and nothing that would need a
- * storage or compute path on WebGL2.
+ * nothing to allocate, upload or keep resident. (It also needed no storage or
+ * compute path, which mattered while a WebGL2 fallback existed.)
  *
  * Backend note: a post-processing pass is drawn with an internal fullscreen quad
  * and its own orthographic camera, so the built-in `cameraNear` / `cameraFar` /
@@ -420,8 +420,7 @@ export class VolumetricFog {
         // --- the view ray, in world space ------------------------------------
         // NDC from the screen uv. **y is flipped, and that is not cosmetic.**
         //
-        // Screen uv runs top-down on the WebGPU backend and is explicitly flipped
-        // to run top-down on the WebGL one, while NDC y runs bottom-up on both —
+        // Screen uv runs top-down on WebGPU, while NDC y runs bottom-up —
         // the same asymmetry `clipToScreenUV` in `ScreenSpaceReflection` exists to
         // absorb. Taking `suv.y * 2 - 1` therefore builds a ray pointing *down*
         // wherever the pixel looks up.

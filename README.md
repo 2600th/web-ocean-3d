@@ -11,7 +11,7 @@ beyond it. Every image in this README is regenerated from the current renderer b
 none of them is hand-captured.</em></p>
 
 <p align="center">
-  <img alt="Three.js r185" src="https://img.shields.io/badge/three.js-r185-000000?style=flat-square&logo=three.js&logoColor=white">
+  <img alt="Three.js r187" src="https://img.shields.io/badge/three.js-r187-000000?style=flat-square&logo=three.js&logoColor=white">
   <img alt="WebGPU" src="https://img.shields.io/badge/WebGPU-TSL-005a9c?style=flat-square">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white">
   <img alt="Vite" src="https://img.shields.io/badge/Vite-6-646CFF?style=flat-square&logo=vite&logoColor=white">
@@ -72,11 +72,11 @@ the live hull and held clear of the crests, the terrain and the ship. It carries
 and weather, so one lap runs a full day and a squall. `prefers-reduced-motion` drops the
 handheld, the whips and the zooms.
 
-**Requirements.** A browser with WebGPU gives the full sea: current Chrome or Edge (113+), or
-Safari 18+. Anywhere else it falls back to WebGL2 automatically — the same waves, without the
-mirror reflections, the view into the water or the rain on the lens — and says so in the corner
-of the screen. The menu suggests a quality for your device; the sea also steps itself down a
-tier if frames keep dropping.
+**Requirements.** WebGPU: current Chrome or Edge (113+), Safari 26+, or Firefox 141+ on
+Windows, with hardware acceleration on. There is no WebGL fallback: the look rests on the scene
+MRT under TRAA, the planar mirror, refraction and the underwater pass, and a browser without
+WebGPU is told what it needs rather than given a lesser sea. The menu suggests a quality for
+your device; the sea also steps itself down a tier if frames keep dropping.
 
 ---
 
@@ -194,8 +194,7 @@ node scripts/modelkit/shells.mjs  public/models/dressing   # can this be placed 
 node scripts/modelkit/plates.mjs  public/models/dressing   # is a scan's ground slab still attached?
 ```
 
-**Requirements** — Node 20+. The ledger's *Draw with WebGL2* switch (under *Shipwright's
-tools*) exercises the fallback path deliberately.
+**Requirements** — Node 20+, and a WebGPU browser for the test suites.
 
 ---
 
@@ -303,18 +302,20 @@ src/
 
 ### Design decisions worth explaining
 
-**One shader source, two backends.** Three's `WebGPURenderer` compiles the same TSL node
-graph to WGSL or GLSL, so the WebGL2 fallback is a configuration flag rather than a parallel
-codebase.
+**WebGPU only.** Three's `WebGPURenderer` can compile the same TSL graph to GLSL, and this
+project shipped a WebGL2 fallback until the r187 upgrade. It was retired because it was a
+different, lesser game: no scene MRT (so no TRAA), no planar mirror, refraction or lens rain,
+and its own compile path to maintain. `createRenderer` clears three's automatic fallback, so a
+device that will not open is reported rather than silently downgraded.
 
 **FFT waves, not a Gerstner sum.** A Gerstner sum needs hundreds of waves before it stops
 looking periodic. An FFT gives a full directional spectrum at fixed cost and — more usefully
 — yields the *Jacobian* of the displacement map, which is physically where whitecaps form.
 Foam is therefore derived, not painted.
 
-**The IFFT runs as fragment passes, not compute.** Three's WebGL2 backend has neither compute
-shaders nor storage textures, so a compute implementation would need a separate fallback
-path. At our sizes the transform is not the bottleneck; surface shading is.
+**The IFFT runs as fragment passes, not compute.** Written when a WebGL2 fallback without
+compute had to run it too. At our sizes the transform is not the bottleneck; surface shading
+is, so it has not been moved.
 
 **Geometry LOD and shading LOD are separate curves.** Vertex spacing on the radial ocean grid
 grows with radius, so a cascade must stop *displacing* geometry well before it stops
@@ -400,8 +401,9 @@ Bugs found by measuring rather than looking, none of them visible to typecheck:
 ## Performance
 
 Frame work measures **0.86 / 8.26 / 13.72 ms** GPU p50 at Low / High / Max on WebGPU at
-1600 × 900 DPR 1, against a 16.7 ms budget. WebGL2 Low measures **7.36 ms** against 33.3 ms.
-All seven benchmarked configurations pass, with no console errors during the sample.
+1600 × 900 DPR 1, against a 16.7 ms budget. All benchmarked configurations pass, with no
+console errors during the sample. Live at High, 1920 × 1080 on a 120 Hz display, the r187 build
+draws about 112 fps (r185: a steady 60) and is ready to play in 17–20 s (r185: 23–24 s).
 
 Those numbers are two to three times what they were, and the trade is written down in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md): the sky is a cloud layer wrapped on a sphere
@@ -415,7 +417,7 @@ back under budget by re-cutting four numbers.
 **Read that with care.** Automated Chromium throttles `requestAnimationFrame` independently
 of load — this project measured 1.1 "FPS" while spending 0.8 ms per frame, and the same
 ~1 fps appears with every effect disabled. The test suite therefore gates on per-frame *work*
-(16.7 ms WebGPU, 33.3 ms WebGL) and only asserts frame rate when the browser is demonstrably
+(16.7 ms) and only asserts frame rate when the browser is demonstrably
 not throttling. `frameMs` is also wall-clock around the render call, and WebGPU submits work
 asynchronously, so it **undercounts true GPU time**.
 

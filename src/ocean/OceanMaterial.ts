@@ -588,10 +588,11 @@ const SNELL_EDGE_RELAX = 0.97;
  *    3-degree view of a hull 75 m off;
  *  - SSR traces the true ray, but on the crest face, tilted toward the eye,
  *    the ray climbs steeply and finds the sails and rigging, not the hull;
- *  - WebGL2 has neither, so its glitter reached the keel unmasked.
- * The box needs no texture (the fragment stage is at its 16) and runs on
- * both backends. Length and beam are the hull's own, as `Ship` measures them,
- * scaled to the hull above the water (no bowsprit, the sides' tumblehome).
+ *  - the retired WebGL2 fallback had neither, so its glitter reached the keel
+ *    unmasked.
+ * The box needs no texture (the fragment stage is at its 16). Length and beam
+ * are the hull's own, as `Ship` measures them, scaled to the hull above the
+ * water (no bowsprit, the sides' tumblehome).
  */
 const HULL_MIRROR_LENGTH = 0.95;
 
@@ -1011,7 +1012,7 @@ export class OceanMaterial {
   /**
    * How much of the transmitted colour comes from the real scene behind the
    * surface, as opposed to the analytic body colour. 0 restores the pre-refraction
-   * look exactly, which is what the WebGL2 fallback and Low tier use.
+   * look exactly, which is what the Low tier uses.
    */
   private readonly uRefractionAmount = uniform(1);
   /**
@@ -1019,8 +1020,8 @@ export class OceanMaterial {
    *
    * `linearDepth` normalises to the 0..1 range the camera spans, so a depth
    * difference has to be scaled by that span to become a thickness. Pushed as a
-   * uniform rather than read from a camera node because this material is also
-   * built for a WebGL2 path where the two must agree exactly.
+   * uniform rather than read from a camera node because this material was also
+   * built for a since-retired WebGL2 path where the two had to agree exactly.
    */
   private readonly uDepthRange = uniform(40000);
   /**
@@ -1250,8 +1251,8 @@ export class OceanMaterial {
    * recompiling anything. Note what that does and does not buy: the backdrop and
    * depth reads are still executed — they are unconditional in the graph — and
    * only their *contribution* is mixed out. So this is a visual policy, not a
-   * cost one, and the WebGL2 path takes it to get a coherent simpler image
-   * rather than to avoid the reads.
+   * cost one, and the Low tier takes it to get a coherent simpler image rather
+   * than to avoid the reads.
    */
   setRefraction(amount: number, strength = 0.22): void {
     this.uRefractionAmount.value = Math.max(0, Math.min(1, amount));
@@ -2069,7 +2070,7 @@ export class OceanMaterial {
       // whatever is under it, so a hull a metre down stays legible while the
       // seafloor thirty metres down does not — and a drop-off reads as an edge
       // because it genuinely is one. The seafloor heightfield remains the fallback
-      // for the WebGL2 path and for anything the depth buffer cannot answer for.
+      // for anything the depth buffer cannot answer for.
 
       // **Where the transmitted ray lands, and how much water it crossed.**
       // Ported from NeuralSpecOcean (MIT, `Offshore.js`, the beach optics): the
@@ -2908,8 +2909,8 @@ export class OceanMaterial {
       specular.mulAssign(objectCover.oneMinus());
       // [water-reflect round 9] And where the traced hull takes the reflected
       // ray, or stands between this facet and the sun (its shadow on the water),
-      // which the mirror's coverage misses under a hull on a swell and does not
-      // exist on WebGL2 at all; see HULL_MIRROR_LENGTH.
+      // which the mirror's coverage misses under a hull on a swell; see
+      // HULL_MIRROR_LENGTH.
       specular.mulAssign(hullHit.max(hullShade).oneMinus());
 
       // --- combine ---------------------------------------------------------------

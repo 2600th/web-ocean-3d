@@ -195,8 +195,8 @@ export interface QualitySettings {
   /**
    * Master scale on hull spray. 0 draws none.
    *
-   * Zero at Low for the same reason  is: that tier is the
-   * WebGL2 floor and everything optional comes off it. The system still
+   * Zero at Low because that tier is the lightest and everything optional
+   * comes off it. The system still
    * builds and still compiles there — only its strength is zero — so
    * raising the tier cannot compile a shader mid-session.
    */
@@ -239,11 +239,11 @@ export interface QualitySettings {
    * 0 leaves the analytic sky gradient alone.
    *
    * Note what this does *not* do: whether the reflection is rendered at all is a
-   * build-time property of the surface's node graph, decided once from the
-   * backend, so a WebGPU tier with `reflection: 0` still pays for the mirrored
-   * view and simply does not show it. Measured at 0.26 ms on the reference GPU —
-   * accepted because the genuine low-end path is WebGL2, which has no reflector
-   * in its graph at all.
+   * build-time property of the surface's node graph, and the graph always has
+   * the reflector, so a tier with `reflection: 0` — Low included — still pays
+   * for the mirrored view and simply does not show it. Measured at 0.26 ms on
+   * the reference GPU, and accepted when the genuine low-end path was a WebGL2
+   * fallback with no reflector in its graph at all.
    */
   reflection: number;
   /**
@@ -431,7 +431,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     underwaterParticles: 400,
     birds: 0,
     fish: 0,
-    // No backdrop or depth-buffer read at all. This is the WebGL2 floor, where
+    // No backdrop or depth-buffer contribution. This is the lightest tier, where
     // the analytic body colour has to carry the water on its own.
     refraction: 0,
     reflection: 0,

@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
-    "three": "^0.185.1"
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.4.2",
@@ -23,7 +23,7 @@
     "@gltf-transform/functions": "^4.4.2",
     "@playwright/test": "^1.50.0",
     "@types/node": "^26.1.2",
-    "@types/three": "^0.185.0",
+    "@types/three": "^0.187.0",
     "@webgpu/types": "^0.1.71",
     "babylonpress-ktx2-encoder": "^0.6.0",
     "meshoptimizer": "^1.2.0",

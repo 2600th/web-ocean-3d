@@ -29,9 +29,10 @@ import { mulberry32 } from '../../core/random';
  * abyssal-garden, MIT, (c) 2026 Maksymilian Dendura (`source/src/math.js`,
  * `world.js` `meshChunk`, `shaders.js` `W_SOLID`); see THIRD_PARTY_NOTICES.md.
  * What differs is where it runs: abyssal-garden sculpts a 512 x 80 x 512 grid
- * in a compute shader, which the WebGL2 fallback here cannot do, so this
- * sculpts small per-outcrop grids on the CPU instead and keeps the noise cheap
- * enough that the whole shelf costs about a tenth of a second at boot.
+ * in a compute shader, which the WebGL2 fallback of the time could not do, so
+ * this sculpts small per-outcrop grids on the CPU instead and keeps the noise
+ * cheap enough that the whole shelf costs about a tenth of a second at boot.
+ * That constraint no longer applies.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

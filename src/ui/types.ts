@@ -54,7 +54,6 @@ export interface UiState {
   musicVolume: number;
   buoyancyProbes: boolean;
   wakeProbes: boolean;
-  forceWebGL: boolean;
   /** Device pixel ratio multiplier, 0.5..2. */
   pixelRatio: number;
   cameraMode: CameraMode;
@@ -65,7 +64,7 @@ export interface UiCallbacks {
 }
 
 /** Renderer backend reported back to the HUD badge. */
-export type RendererBackend = 'webgpu' | 'webgl';
+export type RendererBackend = 'webgpu';
 
 /**
  * Navigation readings for the HUD's compass, wind dial and log.
@@ -130,7 +129,6 @@ export const DEFAULT_UI_STATE: UiState = {
   musicVolume: 0.5,
   buoyancyProbes: false,
   wakeProbes: false,
-  forceWebGL: false,
   pixelRatio: 1,
   cameraMode: 'orbit',
 };

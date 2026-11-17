@@ -40,7 +40,7 @@ type SliderKey =
   | 'volume'
   | 'musicVolume'
   | 'pixelRatio';
-type ToggleKey = 'buoyancyProbes' | 'wakeProbes' | 'forceWebGL';
+type ToggleKey = 'buoyancyProbes' | 'wakeProbes';
 
 interface SliderSpec {
   readonly key: SliderKey;
@@ -161,7 +161,6 @@ const SLIDERS: readonly SliderSpec[] = [
 const TOGGLES: readonly { key: ToggleKey; label: string }[] = [
   { key: 'buoyancyProbes', label: 'Show where the hull floats' },
   { key: 'wakeProbes', label: 'Show where the wake is sampled' },
-  { key: 'forceWebGL', label: 'Draw with WebGL2' },
 ];
 
 /**
@@ -177,7 +176,7 @@ const ABOUT_TECH: readonly string[] = [
     + 'forces are solved each step.',
   'Edges are smoothed over several frames (temporal anti-aliasing, TRAA), which is what keeps '
     + 'the sun glitter from sparkling.',
-  'One set of shaders runs on WebGPU, and on WebGL2 where WebGPU is not available.',
+  'Drawn with WebGPU, the modern graphics interface, on three.js node shaders.',
 ];
 
 const QUALITY_LABELS: Record<QualityTier, string> = {

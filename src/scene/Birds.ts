@@ -56,8 +56,9 @@ import { ISLAND } from './Seafloor';
  * the ship's motion and `dt`, both of which the deterministic harness already
  * controls; `resetClock` puts every one of them back on its perch.
  *
- * No compute, no storage textures, nothing WebGPU-only: the same node graph has
- * to compile on the WebGL2 fallback.
+ * No compute, no storage textures, nothing WebGPU-only: written when the same
+ * node graph had to compile on a WebGL2 fallback, a constraint that no longer
+ * applies.
  */
 
 /**

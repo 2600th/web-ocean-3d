@@ -69,7 +69,7 @@ const LOG_MAX = 10;
 const LUMA_709 = vec3(0.2126, 0.7152, 0.0722);
 
 /** One small node that runs the reduction and the adaptation once per frame. */
-class ExposureAdaptNode extends THREE.TempNode {
+class ExposureAdaptNode extends THREE.Node {
   static get type(): string {
     return 'ExposureAdaptNode';
   }
@@ -77,7 +77,7 @@ class ExposureAdaptNode extends THREE.TempNode {
   readonly current: THREE.RenderTarget;
   private readonly previous: THREE.RenderTarget;
   private readonly material = new THREE.NodeMaterial();
-  private readonly quad = new THREE.QuadMesh();
+  private readonly quad = new THREE.QuadMesh(this.material);
   private readonly textureNode: any;
   private rendererState: any = undefined;
   private initialised = false;

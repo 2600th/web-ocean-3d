@@ -532,21 +532,13 @@ export class Hud {
   }
 
   /**
-   * The backend badge. On the WebGL2 fallback there is no planar reflection,
-   * no refraction and no lens misting, so the badge says "fallback" outright
-   * and changes colour: it is the one place colour asserts something.
+   * The backend badge. WebGPU is the only backend; the badge stays as a
+   * readout beside the frame rate.
    */
   setBackend(backend: RendererBackend): void {
     if (this.disposed) return;
-    const fallback = backend === 'webgl';
-    this.backendBadge.textContent = fallback ? 'WebGL2 fallback' : 'WebGPU';
-    this.backendBadge.classList.toggle('is-fallback', fallback);
-    this.backendBadge.setAttribute(
-      'aria-label',
-      fallback
-        ? 'Drawn with WebGL2, because WebGPU is not available: no mirror reflections, no view into the water, no rain on the lens'
-        : 'Drawn with WebGPU: every effect on',
-    );
+    this.backendBadge.textContent = 'WebGPU';
+    this.backendBadge.setAttribute('aria-label', backend === 'webgpu' ? 'Drawn with WebGPU' : '');
   }
 
   // ======================================================================

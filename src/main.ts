@@ -9,15 +9,16 @@ import {
   velocity,
 } from 'three/tsl';
 import { uniform } from './core/uniform';
-import { createRenderer, clampPixelRatio, type Backend } from './core/Renderer';
+import { createRenderer, clampPixelRatio, WebGPUUnavailableError, type Backend } from './core/Renderer';
 import {
   installInstanceCopySync,
-  installStableBufferNames,
   installSubmissionFixes,
-  installThreeFixes,
-  installWebGLFixes,
 } from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
+import { prefetch } from './scene/AssetLoader';
+import { SHIP_URL } from './scene/Ship';
+import { REEF_FISH_URL } from './scene/Fish';
+import { dressingUrls } from './scene/Props';
 import {
   AssetLoader,
   Birds,
@@ -97,7 +98,7 @@ import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
 import { DEFAULT_UI_STATE, type UiState } from './ui/types';
-import { openStartGate, type StartSelection } from './ui/StartGate';
+import { openStartGate, showWebGPURequired, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
 // Vercel Web Analytics, and only where Vercel is actually serving it.
@@ -412,9 +413,9 @@ class App {
    */
   private waveHeightNode!: (worldXZ: any) => any;
   private water!: OceanMaterial;
-  /** Planar reflection. Null on the WebGL2 path, which keeps the analytic sky. */
+  /** Planar reflection. Built at boot, before the water material. */
   private reflections: Reflections | null = null;
-  /** Screen-space reflection, layered over the planar one. WebGPU only. */
+  /** Screen-space reflection, layered over the planar one. */
   private ssr: ScreenSpaceReflection | null = null;
   private oceanMesh!: OceanMesh;
   private sampler!: OceanSampler;
@@ -643,7 +644,6 @@ class App {
     this.state = {
       ...DEFAULT_UI_STATE,
       quality: options.quality,
-      forceWebGL: options.forceWebGL,
     };
   }
 
@@ -651,28 +651,19 @@ class App {
     boot.set(0.05, 'Waking the graphics card…');
     const rendererOptions: Parameters<typeof createRenderer>[0] = {
       canvas: this.canvas,
-      forceWebGL: this.state.forceWebGL,
       pixelRatio: window.devicePixelRatio * this.state.pixelRatio,
       // The tier decides the framebuffer before it is allocated, rather than
       // after: antialiasing and a DPR-2 buffer are four times the pixels, and
       // committing to them before anyone knows what machine this is was how a
       // low-end device paid a high-end cost it could never use.
       quality: this.state.quality,
-      // The gate has already resolved this. `undefined` would mean "probe",
-      // `null` means "probed, and there is no adapter" — the distinction
-      // decides whether the WebGL2 fallback is taken, so it is passed through
-      // rather than collapsed.
+      // The gate has already probed it; `undefined` (the tooling bypass) means
+      // the renderer probes for itself.
       adapter: this.adapter,
     };
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
-    if (bootstrap.backend === 'webgpu') {
-      installThreeFixes(this.renderer);
-      installInstanceCopySync(this.renderer);
-      installStableBufferNames();
-    } else {
-      installWebGLFixes(this.renderer);
-    }
+    installInstanceCopySync(this.renderer);
     // `?batch=0`: submit every render call on its own, as three does. For A/B
     // measurements of `installSubmitBatching`.
     installSubmissionFixes(this.renderer, {
@@ -720,10 +711,11 @@ class App {
      * lever is `reversedDepthBuffer`, which r185 supports and which would give
      * 0.16 mm at the island against the 1.17 m above — every depth consumer here
      * goes through `perspectiveDepthToViewZ` or `linearDepth` and both branch on
-     * it, so it is genuinely a one-flag change. What stops it being taken here is
-     * that the WebGL2 backend silently reverts without `EXT_clip_control`, which
-     * would leave the two backends resolving depth differently, and that is a
-     * commitment to make deliberately rather than at the end of a batch.
+     * it, so it is genuinely a one-flag change. What stopped it being taken was
+     * that the since-retired WebGL2 fallback silently reverted without
+     * `EXT_clip_control`, which would have left two backends resolving depth
+     * differently. That no longer applies, but it is still a change to make
+     * deliberately rather than at the end of a batch.
      */
     this.camera = new THREE.PerspectiveCamera(
       55,
@@ -815,17 +807,13 @@ class App {
     );
     this.scene.add(this.wake.debugObject);
 
-    // Planar reflection, on WebGPU only. Whether it exists is baked into the
-    // surface's node graph, so it is decided here, once, from the backend — and
-    // the WebGL2 path keeps the analytic sky reflection it always had, which is
-    // a coherent simpler image rather than a broken richer one.
-    if (this.backend === 'webgpu') {
-      this.reflections = new Reflections(QUALITY_TIERS[this.state.quality].reflectionScale);
-      this.scene.add(this.reflections.plane);
-      this.reflections.excludeLayer(this.camera, CLOUD_LAYER);
-      this.ssr = new ScreenSpaceReflection();
-      this.ssr.setCamera(this.camera);
-    }
+    // Planar reflection. Whether it exists is baked into the surface's node
+    // graph, so it is built before the water material.
+    this.reflections = new Reflections(QUALITY_TIERS[this.state.quality].reflectionScale);
+    this.scene.add(this.reflections.plane);
+    this.reflections.excludeLayer(this.camera, CLOUD_LAYER);
+    this.ssr = new ScreenSpaceReflection();
+    this.ssr.setCamera(this.camera);
 
     boot.set(0.5, 'Teaching the water to catch the light…');
     this.water = this.buildWaterMaterial();
@@ -1094,8 +1082,7 @@ class App {
     // recover; the shader comments say so in as many words. TRAA integrates it
     // over frames instead. It also replaces 4x MSAA on the scene pass, which is
     // a bandwidth saving that pays for most of the resolve.
-    this.taaEnabled =
-      this.backend === 'webgpu' && new URLSearchParams(window.location.search).get('taa') !== '0';
+    this.taaEnabled = new URLSearchParams(window.location.search).get('taa') !== '0';
     const scenePass = this.taaEnabled
       ? pass(this.scene, this.camera, { samples: 0 })
       : pass(this.scene, this.camera);
@@ -1378,8 +1365,8 @@ class App {
     // and those are reached through closures. What moving the load ahead of
     // `loop.start()` accidentally also moved was this line, which put the whole
     // of a sixty-model parse and compile in front of the hook being installed at
-    // all. On WebGPU that is absorbed; on the WebGL2 fallback it ran past the
-    // 60 s the harness waits for `__ocean` to appear, so the fallback path
+    // all. On WebGPU that is absorbed; on the since-retired WebGL2 fallback it
+    // ran past the 60 s the harness waits for `__ocean` to appear, so that path
     // failed to boot as far as every test was concerned.
     //
     // Nothing is weakened by publishing early: `isReady()` gates on
@@ -1397,7 +1384,8 @@ class App {
     await this.prewarm();
     this.loop.start();
     boot.set(0.84, 'Bringing the ship and island in…');
-    void this.firstViewComplete().then(() => window.setTimeout(() => boot.hide(), 350));
+    // WebGPU compiles for the scene pass itself, so the first frame is whole.
+    window.setTimeout(() => boot.hide(), 350);
 
     boot.set(0.86, 'Bringing the ship and island in…');
     this.contentReady = this.loadSceneContent();
@@ -1418,57 +1406,20 @@ class App {
   }
 
   /**
-   * Advances the world by `steps` increments of `dt`, awaiting a fresh wave-field
-   * readback before each one.
-   *
-   * The interactive path fires the sampler readback and does not wait for it, so
-   * buoyancy runs on data that is a frame or two old and *how* old depends on the
-   * machine. That is invisible in motion and fatal to reproducibility: the hull
-   * ends up somewhere slightly different every run, and so does its wake. Here we
-   * pay the stall, once per step, and get the same hull position every time.
+   * A fence for the frame pacer: resolves when the GPU has finished what has
+   * been submitted.
    */
+  private createGpuFence(): GpuFence | null {
+    const queue = (this.renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device
+      ?.queue;
+    return queue ? () => queue.onSubmittedWorkDone() : null;
+  }
+
   /**
    * One pipeline render, bracketed by the view-projections the ocean's velocity
    * needs. Both are read *outside* the render, where TRAA has not yet applied
    * (or has already cleared) its jitter.
    */
-  /**
-   * A fence for the frame pacer: resolves when the GPU has finished what has
-   * been submitted. WebGPU has one on the queue. WebGL2 has a sync object,
-   * which cannot be awaited and is polled instead; a millisecond poll is well
-   * inside the precision the pacer needs, which is a fraction of a refresh.
-   */
-  private createGpuFence(): GpuFence | null {
-    const backend = (this.renderer as unknown as {
-      backend?: { device?: GPUDevice; gl?: WebGL2RenderingContext };
-    }).backend;
-    const queue = backend?.device?.queue;
-    if (queue) return () => queue.onSubmittedWorkDone();
-    const gl = backend?.gl;
-    if (!gl || typeof gl.fenceSync !== 'function') return null;
-    return () =>
-      new Promise<void>((resolve, reject) => {
-        const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-        if (!sync) {
-          reject(new Error('fenceSync failed'));
-          return;
-        }
-        gl.flush();
-        const poll = (): void => {
-          if (gl.isContextLost()) {
-            gl.deleteSync(sync);
-            reject(new Error('context lost'));
-          } else if (gl.getSyncParameter(sync, gl.SYNC_STATUS) === gl.SIGNALED) {
-            gl.deleteSync(sync);
-            resolve();
-          } else {
-            setTimeout(poll, 1);
-          }
-        };
-        poll();
-      });
-  }
-
   private async renderFrame(live = false): Promise<void> {
     this.camera.updateMatrixWorld();
     this.currViewProjection.value.multiplyMatrices(
@@ -1480,7 +1431,9 @@ class App {
     this.clouds.setView(this.currViewProjection.value, _cloudEye.setFromMatrixPosition(this.camera.matrixWorld));
     this.liveFrame = live;
     try {
-      await this.post.renderAsync();
+      // `renderAsync` is deprecated (r181) and only awaited `init()`, which
+      // resolved at boot.
+      this.post.render();
     } finally {
       this.liveFrame = false;
     }
@@ -1507,17 +1460,17 @@ class App {
    * slow enough to time out the prewarm ever takes.
    */
   private installOrphanedCompileGuard(): void {
-    if (this.backend !== 'webgpu') return;
     const nodes = (this.renderer as unknown as {
       _nodes: {
         getForRender(renderObject: unknown): unknown;
-        getForRenderAsync(renderObject: unknown): Promise<unknown>;
+        getForRenderAsync(renderObject: unknown, yieldFn?: unknown): Promise<unknown>;
       };
     })._nodes;
     const getForRenderAsync = nodes.getForRenderAsync.bind(nodes);
-    nodes.getForRenderAsync = (renderObject) => {
+    // r187 passes `compileAsync`'s yield callback as the second argument.
+    nodes.getForRenderAsync = (renderObject, yieldFn) => {
       const hold = this.orphanedCompiles.get((renderObject as { context: object }).context);
-      if (hold === undefined) return getForRenderAsync(renderObject);
+      if (hold === undefined) return getForRenderAsync(renderObject, yieldFn);
       const restore = hold();
       try {
         return Promise.resolve(nodes.getForRender(renderObject));
@@ -1550,28 +1503,30 @@ class App {
    * chain that moves them deeper or shallower changes nothing here.
    */
   private installStableContexts(): void {
-    if (this.backend !== 'webgpu') return;
     const contexts = (this.renderer as unknown as {
-      _renderContexts: { get(target: unknown, mrt?: unknown, depth?: number): unknown };
+      _renderContexts: {
+        get(target: unknown, mrt?: unknown, depth?: number, camera?: unknown): unknown;
+      };
     })._renderContexts;
     const get = contexts.get.bind(contexts);
-    contexts.get = (target, mrtArg, depth) => {
+    // r187 added `camera` to the key; it is forwarded untouched.
+    contexts.get = (target, mrtArg, depth, camera) => {
       // Depth -1 is `Renderer.clear()` asking for a context of its own, apart
       // from any render in progress on the same target. Pinning it would hand
       // a clear the reflection's live context (the reflector clears instead of
       // rendering with the eye under water).
       if (depth !== -1 && target !== null && target !== undefined) {
         if (target === this.scenePass?.renderTarget) {
-          return get(target, mrtArg, PINNED_DEPTH.scene);
+          return get(target, mrtArg, PINNED_DEPTH.scene, camera);
         }
         if (this.reflections?.ownsTarget(target)) {
-          return get(target, mrtArg, PINNED_DEPTH.reflection);
+          return get(target, mrtArg, PINNED_DEPTH.reflection, camera);
         }
         if (this.lighting?.shadows.ownsTarget(target) || target === this.atmosphere?.sunLight.shadow.map) {
-          return get(target, mrtArg, PINNED_DEPTH.shadow);
+          return get(target, mrtArg, PINNED_DEPTH.shadow, camera);
         }
       }
-      return get(target, mrtArg, depth);
+      return get(target, mrtArg, depth, camera);
     };
   }
 
@@ -1602,17 +1557,13 @@ class App {
    * synchronous build, and `isReady` waits for the asynchronous builds to
    * drain, so a harness that waits for it never captures a frame with a hole.
    *
-   * The WebGL2 fallback takes the same path and gains the same two things. Its
-   * backend links a program asynchronously when handed a promise list and
-   * `KHR_parallel_shader_compile` is present, polling for completion once a
-   * frame, and marks the pipeline ready the same way, so `isReady` holds there
-   * too. Without the extension it links synchronously and pushes no promise,
-   * which the counting below already treats as built. Measured at Low on
-   * ANGLE's FXC path: the prewarm from ~12.5 s to ~1.5 s, because ANGLE links
-   * on a worker pool and `compileAsync` had been waiting for each program in
-   * turn; and the first live frame no longer links, one after another, the
-   * six seconds of programs the prewarm does not cover (the ocean as the scene
-   * pass draws it, the fog, the lens rain).
+   * The since-retired WebGL2 fallback took the same path and gained the same
+   * two things: its backend linked programs asynchronously when handed a
+   * promise list and `KHR_parallel_shader_compile` was present. Measured at Low
+   * on ANGLE's FXC path: the prewarm went from ~12.5 s to ~1.5 s, and the first
+   * live frame stopped linking, one after another, the six seconds of programs
+   * the prewarm does not cover (the ocean as the scene pass draws it, the fog,
+   * the lens rain).
    */
   private installAsyncPipelines(): void {
     const internals = this.renderer as unknown as {
@@ -1688,36 +1639,6 @@ class App {
       });
       promises[promises.length - 1] = Promise.resolve();
     };
-  }
-
-  /**
-   * Resolves when the opening view can be shown whole, so the boot overlay
-   * lifts on a finished picture rather than one still filling in.
-   *
-   * WebGL2 only. The fallback's prewarm compiles for the frame buffer rather
-   * than the scene pass (see `compileForFrame`), so its first live frame asks
-   * for a handful of programs the prewarm did not build, and leaves those
-   * objects out until they link (`installAsyncPipelines`) — on the measured
-   * Low boot, the ocean itself among them, for about a second. This waits for
-   * the first frame and then for every counted build, the content compile's
-   * included: that compile holds the loop, so lifting the overlay during it
-   * would show a frozen frame with holes in it, and on WebGL it lands within
-   * about a second of the first frame (fully ready 7.1 s at Low). Capped at
-   * `timeoutMs`, because a late overlay is worse than a brief hole, and
-   * because the backend polls each link once per animation frame, so a hidden
-   * tab drains nothing until it is shown again.
-   *
-   * WebGPU compiles for the scene pass itself, so its first frame is already
-   * whole and the overlay lifts as it always did.
-   */
-  private async firstViewComplete(timeoutMs = 10_000): Promise<void> {
-    if (this.backend === 'webgpu') return;
-    const deadline = performance.now() + timeoutMs;
-    const nextFrame = (): Promise<void> =>
-      new Promise((resolve) => requestAnimationFrame(() => resolve()));
-    const waiting = (): boolean => !this.disposed && performance.now() < deadline;
-    while (this.loop.stats.frameMs === 0 && waiting()) await nextFrame();
-    while (this.pendingPipelines > 0 && waiting()) await nextFrame();
   }
 
   /**
@@ -1837,6 +1758,16 @@ class App {
     }
   }
 
+  /**
+   * Advances the world by `steps` increments of `dt`, awaiting a fresh wave-field
+   * readback before each one.
+   *
+   * The interactive path fires the sampler readback and does not wait for it, so
+   * buoyancy runs on data that is a frame or two old and *how* old depends on the
+   * machine. That is invisible in motion and fatal to reproducibility: the hull
+   * ends up somewhere slightly different every run, and so does its wake. Here we
+   * pay the stall, once per step, and get the same hull position every time.
+   */
   private async stepDeterministic(dt: number, steps = 1): Promise<void> {
     this.deterministic = true;
     try {
@@ -1941,7 +1872,7 @@ class App {
    * otherwise.** `OutputTransform` encodes to sRGB in the shader — it hands
    * `renderOutput` an explicit colour space, so the encode happens whatever the
    * target. A target tagged `SRGBColorSpace` is allocated as `rgba8unorm-srgb`
-   * (`WebGPUTextureUtils.getFormat`; `SRGB8_ALPHA8` on WebGL2), and the hardware
+   * (`WebGPUTextureUtils.getFormat`), and the hardware
    * encodes *again* on write. Every capture was sRGB-encode(screen): measured on
    * a paused frame, decoding the capture once reproduced the canvas to within one
    * level, while the capture itself averaged 58 levels brighter. That is a washed,
@@ -2058,10 +1989,7 @@ class App {
     // too; see `installAsyncPipelines`.
     this.compilesInFlight++;
     const run = async (): Promise<void> => {
-      // WebGL keeps the plain compile: it has no MRT, and compiling into the
-      // scene pass's multisampled target there sets off an invalid
-      // depth-stencil blit.
-      if (!scenePass || this.backend !== 'webgpu') {
+      if (!scenePass) {
         await this.renderer.compileAsync(this.scene, this.camera);
         // Started, not built: see `installAsyncPipelines`. Same wait as below.
         if (!(await this.pipelinesSettled(PIPELINE_SETTLE_MS))) {
@@ -2854,12 +2782,6 @@ class App {
       case 'wakeProbes':
         this.wake?.setDebugVisible(this.state.wakeProbes);
         break;
-      case 'forceWebGL':
-        // Switching backend means tearing down every GPU resource and rebuilding
-        // against a new device; a reload is both simpler and more reliable than
-        // trying to migrate a live scene graph between backends.
-        this.restartWithBackend(this.state.forceWebGL);
-        break;
       default:
         break;
     }
@@ -2886,10 +2808,10 @@ class App {
       //
       // Two samples and three octaves, which is the cheapest setting that still
       // fixes the low-sun case. The sea is most of the frame at every tier and
-      // *all* of it on WebGL2 Low, where the cloud layer is not drawn at all —
+      // *all* of it on Low, where the cloud layer is not drawn at all —
       // so this one call site is worth more than the rest put together. Measured:
-      // the full four-octave three-sample form costs WebGL2 Low about four
-      // milliseconds, on a shadow cast by clouds that tier never renders.
+      // the full four-octave three-sample form cost the since-retired WebGL2 Low
+      // about four milliseconds, on a shadow cast by clouds that tier never renders.
       cloudShadowNode: this.clouds.shadowNode({ samples: 2, octaves: 3 }),
       ssrNode: this.ssr
         ? (worldPosition, worldNormal, fallback) =>
@@ -2991,35 +2913,26 @@ class App {
     this.canopy.setCount(quality.canopy);
     this.audio.setQuality(tier);
 
-    // WebGL2 gets the analytic path regardless of tier. The backdrop and depth
-    // reads are the least portable part of the surface, and a fallback that
-    // renders a coherent simpler image beats one that renders a broken richer
-    // one — which is the whole point of having a declared fallback policy.
-    this.water.setRefraction(this.backend === 'webgl' ? 0 : quality.refraction);
+    // Low takes the analytic path (`refraction: 0`): a coherent simpler image
+    // rather than a richer one. See `OceanMaterial.setRefraction`.
+    this.water.setRefraction(quality.refraction);
     this.water.setDepthRange(this.camera.far - this.camera.near);
     this.water.setReflection(quality.reflection);
     this.reflections?.setQuality(quality.reflectionScale);
     this.ssr?.setQuality(DEFAULT_SSR_STEPS[tier]);
     this.ssr?.setStrength(quality.reflection);
     this.fog.setSteps(quality.fogSteps);
-    // WebGL2 gets the two-lattice floor whatever the tier, matching the rest of
-    // the fallback policy.
-    this.lensRain.setQuality(this.backend === 'webgl' ? 1 : quality.lensRainQuality);
-    // Bloom keeps its tier on both backends, and that is a decision rather than
-    // an omission. The pyramid is ordinary texture sampling into ordinary render
-    // targets — there is no depth read, no backdrop read and no compute in it —
-    // so it is one of the few effects here with nothing backend-specific to go
-    // wrong. The stages that *do* read depth are gated below.
+    // Low gets the two-lattice floor (`lensRainQuality: 1`).
+    this.lensRain.setQuality(quality.lensRainQuality);
+    // Bloom follows its tier. The pyramid is ordinary texture sampling into
+    // ordinary render targets — there is no depth read, no backdrop read and no
+    // compute in it.
     this.bloom.setEnabled(quality.bloom === 1);
-    // WebGL2 gets no depth of field, and this is the fallback policy rather than
-    // an oversight. The gather takes a depth read per tap — up to 32 of them —
-    // and the depth-texture path is the least portable part of this renderer;
-    // the same reasoning already keeps refraction off that backend. A coherent
-    // sharp image beats a richer one with the silhouettes wrong.
-    this.dof.setSamples(this.backend === 'webgl' ? 0 : quality.dofSamples);
-    // Kept on WebGL2: the occlusion disc is eight depth taps, which is the same
-    // read the volumetric fog already performs there, so nothing new is being
-    // asked of the backend.
+    // Depth of field follows the tier's sample count, off at Low. The gather
+    // takes a depth read per tap — up to 32 of them.
+    this.dof.setSamples(quality.dofSamples);
+    // The flare's occlusion disc is eight depth taps, the same read the
+    // volumetric fog already performs.
     this.lensFlare.setEnabled(quality.lensFlare === 1);
     this.postChain.setTier(tier);
     this.water.setWakeDisplacement(quality.wakeDisplacement);
@@ -3362,11 +3275,10 @@ class App {
     // for it — destroying the resources it is compiling against is precisely
     // the crash the comment below describes.
     //
-    // WebGPU only. The crash is an asynchronous pipeline build meeting a texture
-    // destroyed under it, which WebGL's synchronous programs cannot do; and
-    // there a timed-out boot compile can run for a minute and more (measured
-    // ~80 s), so waiting for it left a tier change hanging that long.
-    if (this.backend === 'webgpu') await this.pendingCompile?.catch(() => undefined);
+    // The crash is an asynchronous pipeline build meeting a texture destroyed
+    // under it. (This wait was once skipped on the retired WebGL2 fallback,
+    // where a timed-out boot compile could run ~80 s.)
+    await this.pendingCompile?.catch(() => undefined);
     try {
       while (this.pendingQuality !== null && !this.disposed) {
         const tier = this.pendingQuality;
@@ -4209,13 +4121,6 @@ class App {
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
   };
 
-  private restartWithBackend(forceWebGL: boolean): void {
-    const url = new URL(window.location.href);
-    if (forceWebGL) url.searchParams.set('webgl', '1');
-    else url.searchParams.delete('webgl');
-    window.location.replace(url.toString());
-  }
-
   /** Deterministic control surface for the Playwright verification loop. */
   private exposeTestHooks(): void {
     Object.assign(window, {
@@ -4233,8 +4138,7 @@ class App {
          * The two are composited, not chosen between, and the tier drives both
          * from one number — so a test that only asks "does hiding the ship change
          * the water" is satisfied by the planar layer alone and would pass with
-         * the screen-space trace completely broken. Null on the WebGL2 path,
-         * which has neither.
+         * the screen-space trace completely broken. Both are built at boot.
          */
         reflections: this.reflections,
         ssr: this.ssr,
@@ -4801,18 +4705,41 @@ class App {
 const canvas = document.getElementById('viewport') as HTMLCanvasElement | null;
 const uiRoot = document.getElementById('ui-root');
 
+/**
+ * Starts the model downloads at page load, while the visitor is still on the
+ * menu: the set is the same for every tier, and parsing (which needs the
+ * renderer) picks the bytes up later. See `prefetch`. Not in a browser that
+ * will only be shown the WebGPU notice, and not when the visitor asked to save
+ * data.
+ */
+function prefetchSceneContent(): void {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  if (!('gpu' in navigator) || connection?.saveData === true) return;
+  prefetch([SHIP_URL, REEF_FISH_URL]);
+  void dressingUrls().then(prefetch).catch(() => undefined);
+}
+
 if (!canvas || !uiRoot) {
   boot.fail('The page did not load completely. Reload to try again.');
 } else {
+  prefetchSceneContent();
   void openStartGate(boot.root as HTMLElement)
     .then((selection) => new App(canvas, uiRoot, selection).start())
     .catch((error: unknown) => {
     console.error(error);
+    // No WebGPU device: say what the page needs rather than a generic failure.
+    if (error instanceof WebGPUUnavailableError) {
+      showWebGPURequired(
+        boot.root as HTMLElement,
+        error.reason === 'no-device' ? 'the graphics device would not start' : '',
+      );
+      return;
+    }
     // What happened and what to do about it; the error's own words go under
     // it. Try again reloads to the menu, where a lighter choice can be made.
     boot.fail(
       'The sea could not be launched on this device. '
-        + 'Try again, and if it fails twice, choose WebGL2 and Low on the menu.',
+        + 'Try again, and if it fails twice, choose Low on the menu.',
       error instanceof Error ? error.message : '',
     );
     });

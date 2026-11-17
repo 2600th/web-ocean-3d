@@ -870,7 +870,7 @@ export class LensRain {
    * whole graph is skipped by a single compare, so a tier that does not want lens
    * rain pays nothing for the pass still being in the chain.
    *
-   * `1` is the WebGL2 and Low floor: runners and beads only, no misting pass, no
+   * `1` is the Low tier's floor: runners and beads only, no misting pass, no
    * dispersion. Two texture reads and two lattices.
    * `2` adds the middle grade and the misting. `3` adds the fine spray and the
    * chromatic fringe. Anything higher clamps to 3.

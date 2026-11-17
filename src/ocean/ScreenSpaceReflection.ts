@@ -124,13 +124,10 @@ import type { QualityTier } from '../core/QualityManager';
  * than having no SSR at all, because the eye tracks discontinuities far more
  * readily than it tracks a slightly wrong reflection.
  *
- * ## Backends
+ * ## Disabling
  *
- * Compiles on WebGL2. It should not be *enabled* there: the depth-buffer read is
- * the least portable thing the surface does, which is exactly why
- * `QualityManager` already disables refraction on that path. Call
- * `setQuality( 0 )` and the whole graph collapses to one uniform compare and the
- * fallback, at no bandwidth cost.
+ * Call `setQuality( 0 )` and the whole graph collapses to one uniform compare
+ * and the fallback, at no bandwidth cost. The Low tier does this.
  */
 
 /**
@@ -152,9 +149,9 @@ const MAX_STEPS = 64;
  * step is a single point-sampled depth fetch rather than an evaluation of a
  * procedural field.
  *
- * `low` is 0 deliberately. That tier is the WebGL2 floor, where the surface has
- * no depth-buffer read at all — SSR there would be reading a buffer the rest of
- * the material has already decided it cannot trust.
+ * `low` is 0 deliberately. That tier is the lightest, where the surface mixes
+ * out its own depth-buffer refraction — SSR there would lean on a buffer the
+ * rest of the material has already chosen not to show.
  */
 export const DEFAULT_SSR_STEPS: Record<QualityTier, number> = {
   low: 0,
@@ -894,8 +891,7 @@ export class ScreenSpaceReflection {
  * Clip-space position to the uv the viewport buffers are indexed by.
  *
  * The y flip is not cosmetic. `screenUV` is built from the fragment coordinate,
- * which runs top-down on the WebGPU backend and is explicitly flipped to run
- * top-down on the WebGL one — while NDC y runs bottom-up on both. Getting this
+ * which runs top-down on WebGPU — while NDC y runs bottom-up. Getting this
  * backwards produces a march that walks *down* the screen when the ray goes up,
  * which does not look like a bug so much as a reflection of the wrong thing.
  */

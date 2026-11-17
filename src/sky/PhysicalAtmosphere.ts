@@ -42,7 +42,7 @@ import { uniform } from '../core/uniform';
  *   the same tables must also exist on the CPU (`radiance`, `transmittance`):
  *   the sun's colour, the hemisphere fill and the clouds' ambient are all read
  *   from this model on the CPU, and two copies of a table cannot disagree. It
- *   also keeps the WebGL2 fallback on the same code path — no storage textures.
+ *   also kept the since-retired WebGL2 fallback on the same code path.
  *   Both depend on haze alone, so they are rebuilt only on a preset change.
  * - Their sky-view LUT is a compute pass run every frame. Here it is a fragment
  *   pass through three's `rtt` with `autoUpdate` off, re-rendered only when the

@@ -1,8 +1,8 @@
 /**
  * The living backdrop behind the start gate and the loading chart.
  *
- * The gate exists *before* the renderer does — it is where the visitor picks
- * WebGPU or WebGL2 — so it cannot borrow the real sea. Instead it paints its
+ * The gate exists *before* the renderer does — it is where the visitor picks a
+ * quality tier — so it cannot borrow the real sea. Instead it paints its
  * own: an illustrated dusk seascape in the interface's art direction, on a
  * plain 2D canvas. Parallax swell, drifting clouds, a silhouetted ship riding
  * the swell with spray off the bow, gulls, a lit lighthouse on a far headland

@@ -580,11 +580,11 @@ async function main() {
           }),
           prune(),
         );
-        await resizeNormalMaps(
-          lod,
-          Math.max(64, Math.floor(asset.texture * NORMAL_TEXTURE_SCALE) >> level),
-        );
-        await compressDocumentTextures(lod, ktx2Pool, ktx2Stats, ktx2Jobs, asset);
+        // No textures in a LOD file: every level takes its LOD0's maps at
+        // runtime (`shareMaterialMaps` in `src/scene/Props.ts`), so these were
+        // downloaded, transcoded and discarded — 4.4 MB of the 5.7 MB the LOD
+        // files weighed. See `scripts/strip-lod-textures.mjs`.
+        for (const texture of lod.getRoot().listTextures()) texture.dispose();
         await lod.transform(meshopt({ encoder: MeshoptEncoder, level: 'high' }));
         await io.write(lodDest, lod);
         const lodSize = statSync(lodDest).size;
