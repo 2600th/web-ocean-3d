@@ -97,19 +97,31 @@ test('whitecap coverage follows Monahan', async ({ page }) => {
     );
   }
 
-  // Absolute agreement to within a factor of three. The law is a fit to
-  // scattered ship observations with a wide spread of its own, and the buffer
-  // holds a decaying trail rather than an instantaneous census, so demanding
-  // more than an order-of-magnitude match would be demanding false precision.
-  // What it must not be is the ten-times-over it was.
+  // A documented band around the art-directed foam, not a physical match.
+  //
+  // The renderer was re-tuned by eye on 2026-11-16 (a 15 m/s sea read as bare
+  // water when it matched Monahan), so the foam is deliberately denser than the
+  // physical law in strong wind. Measured then, rendered against Monahan:
+  //
+  //   U (m/s)   rendered   Monahan   ratio
+  //      6        0.15%      0.17%    0.9
+  //      9        1.82%      0.69%    2.6
+  //     15       13.36%      3.94%    3.4
+  //     21       33.89%     12.4 %    2.7
+  //     24       46.10%     19.5 %    2.4
+  //
+  // The band is 0.5x to 4.5x the law. The top still fails the ten-times-over
+  // sheet of white this test was written against, and the bottom still fails a
+  // sea that has lost its foam. Re-tuning the look moves the figures above; it
+  // should not move them out of this band without the band being re-argued.
   for (let i = 0; i < speeds.length; i++) {
     const predicted = monahan(speeds[i]);
     expect(
       measured[i],
       `at ${speeds[i]} m/s the surface renders ${(measured[i] * 100).toFixed(2)}% foam ` +
         `against ${(predicted * 100).toFixed(2)}% predicted`,
-    ).toBeLessThan(predicted * 3);
-    expect(measured[i]).toBeGreaterThan(predicted / 3);
+    ).toBeLessThan(predicted * 4.5);
+    expect(measured[i]).toBeGreaterThan(predicted * 0.5);
   }
 
   // And the *shape* of the law, which is the part a single scale factor cannot
