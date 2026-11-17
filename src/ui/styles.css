@@ -1454,6 +1454,15 @@ body {
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 90'%3E%3Cpath d='M7 0l6.5 15H8.4v58H5.6V15H.5z'/%3E%3Cpath d='M5.6 70L1 76v8l4.6-6zM8.4 70l4.6 6v8l-4.6-6zM5.6 79L1 85v5l4.6-6zM8.4 79l4.6 6v5l-4.6-6z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
 }
 
+/* Stalled head to wind: the arrow and the reading's caption turn amber. */
+.hud-instruments.is-stalled .dial__wind {
+  color: var(--warn);
+}
+
+.hud-instruments.is-stalled .reading--log .reading__sub {
+  color: var(--warn);
+}
+
 /* Fixed to the bezel: the direction the view looks. */
 .dial__lubber {
   position: absolute;

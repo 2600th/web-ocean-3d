@@ -2439,6 +2439,7 @@ class App {
         },
         setObjective: (objective) => this.hud.setObjective(objective),
         setScore: (label, value) => this.hud.setScore(label, value),
+        setStalled: (stalled) => this.hud.setStalled(stalled),
         setShipTelemetry: (telemetry) => {
           if (telemetry === null) {
             this.hud.clearScore();
