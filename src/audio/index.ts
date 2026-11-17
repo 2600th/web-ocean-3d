@@ -9,6 +9,7 @@ export type {
   AudioBus,
   AudioMix,
   AudioQualitySettings,
+  AudioReflector,
   AudioSceneParams,
   AudioSystemOptions,
   GullFix,

@@ -1008,6 +1008,7 @@ class App {
     // The geology first: the reef grows on its outcrops, and the sand reads
     // its map. Same ground treatment as the reef.
     this.rocks = new Rocks(quality.reefRocks, { shading: seabedShading });
+    this.audio.setReflectors(this.rocks.outcropCentres());
     this.scene.add(this.rocks.object);
     this.seafloor.setRockInfluence(this.rocks.influence);
     this.reefLife = new ReefLife(quality.reefLife, { shading: seabedShading, gardens: this.rocks.gardens });
@@ -3884,6 +3885,8 @@ class App {
     // so a sky with no birds in it stays silent instead of the audio inventing
     // some. Low draws none, and hears none.
     audio.birdCount = this.birds.getCount();
+    audio.listenerX = this.camera.position.x;
+    audio.listenerZ = this.camera.position.z;
     this.updateShipAudio(dt, audio);
     this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);

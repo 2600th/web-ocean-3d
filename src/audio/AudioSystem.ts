@@ -3,6 +3,7 @@ import { mulberry32 } from '../core/random';
 import { NoiseBed, type NoiseBedOptions } from './NoiseBed';
 import { NOISE_SECONDS, createNoiseBuffer } from './noise';
 import { ParamTarget } from './ParamTarget';
+import { Room } from './Room';
 import { MusicEngine, type MusicState, type MusicSting } from './music/MusicEngine';
 import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
 
@@ -71,6 +72,13 @@ import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
  * `setBusVolume`, `setBusMuted`, `applyMix`): music, ambience (beds, thunder,
  * gulls, what is heard under water), effects (the ship bus and the one-shots)
  * and interface. The application saves them; this class only applies them.
+ *
+ * **Room.** Nothing in the world is dry: every effect and ambience sends to
+ * one shared reverb (`Room`) with its own amount (`*_SEND`), through a feed
+ * that follows its bus's level and mute. The deck's short, sparse room is
+ * always there; a rock face near the listener (`setReflectors`, `listenerX/Z`)
+ * adds its echo; under water the water's own room takes over. The interface
+ * stays dry, because it is not in the world.
  *
  * **Lifecycle.** A hidden tab fades the master and suspends the context; a
  * visible one resumes it and re-seats the score. A context the platform stops
@@ -155,6 +163,23 @@ export interface AudioSceneParams {
   sailFill?: number;
   /** How hard the canvas is luffing (head to wind, or being set or taken in), 0..1. */
   sailLuff?: number;
+  /**
+   * The listener's world position on the water plane, metres: the camera.
+   * With `setReflectors`, how close it is to a rock face sets how much of the
+   * cliff room is heard. Optional; without it there are no cliffs.
+   */
+  listenerX?: number;
+  listenerZ?: number;
+}
+
+/** A rock face for the cliff room: where it stands, how far it reaches, how high. */
+export interface AudioReflector {
+  x: number;
+  z: number;
+  /** Horizontal radius, metres. */
+  reach: number;
+  /** Height of its top above the sea, metres. */
+  top: number;
 }
 
 export const DEFAULT_AUDIO_SCENE_PARAMS: AudioSceneParams = {
@@ -372,6 +397,30 @@ const RESUME_RAMP = 0.6;
 const HIDE_FADE = 0.08;
 /** Time constant of a bus slider or mute, seconds. */
 const BUS_TAU = 0.03;
+
+// --- room ------------------------------------------------------------------
+//
+// How wet each sound is in the shared room (`Room`). The open sea is nearly
+// dry, so the beds barely send at all; what happens on the ship sends more,
+// because the deck and the rails are right there; thunder and gulls are far
+// off and most of what reaches the ear of them has bounced.
+
+const BED_SEND = 0.1;
+const SHIP_SEND = 0.5;
+const SPLASH_SEND = 0.4;
+const THUNDER_SEND = 0.4;
+const CHAIN_SEND = 0.4;
+const GULL_SEND = 0.3;
+/**
+ * Bubbles into the underwater room. Not the rumble: a dark room on brown
+ * noise only makes more of the bottom octave.
+ */
+const UNDER_SEND = 0.7;
+/** Rock faces: closer than `NEAR` is the full cliff room, past `FAR` none of it. Metres. */
+const CLIFF_NEAR = 20;
+const CLIFF_FAR = 160;
+/** Height, metres, at which a rock face reflects fully; a low reef rock barely does. */
+const CLIFF_FULL_HEIGHT = 12;
 /** Grace between a disable fading out and the context being suspended. */
 const SUSPEND_DELAY = 0.35;
 /** How long an unlock attempt may hang before the next gesture tries again, ms. */
@@ -1092,6 +1141,18 @@ export class AudioSystem {
   private ambienceUnder!: GainNode;
   /** The viewer's effects level: the ship and the one-shots. */
   private effectsBus!: GainNode;
+  /** The shared room, and each bus's feed into it (following that bus's level). */
+  private room!: Room;
+  private ambienceWet!: GainNode;
+  private effectsWet!: GainNode;
+  private underWet!: GainNode;
+  /** Bubbles and what else is in the water with the lens; into the under bus. */
+  private underFx!: GainNode;
+  private bedSend!: GainNode;
+  private shipSend!: GainNode;
+  private underSend!: GainNode;
+  /** Rock faces near enough to echo: x, z, reach, height, four per face. */
+  private reflectors = new Float64Array(0);
   private readonly busVolume: Record<AudioBus, number> = { music: 0.5, ambience: 1, effects: 1, interface: 1 };
   private readonly busMuted: Record<AudioBus, boolean> = { music: false, ambience: false, effects: false, interface: false };
   /** The tab is hidden and the context was suspended for it. */
@@ -1619,6 +1680,19 @@ export class AudioSystem {
     // at once instead of closing over the lens.
     this.muffle.set(AIR_OPEN_HZ * Math.pow(AIR_CLOSED_HZ / AIR_OPEN_HZ, submersion), now, live);
     this.underGain.set(Math.pow(submersion, UNDER_EXPONENT), now, live);
+    // --- room ---------------------------------------------------------------
+    // The deck is always there and a rock face adds its echo; both return into
+    // the air, so going under muffles and ducks them with everything else.
+    // The water's own room takes over by submersion, fed by what is in it.
+    this.room.tick(now);
+    const lx = params.listenerX;
+    const lz = params.listenerZ;
+    const cliffs =
+      this.reflectors.length > 0 && lx !== undefined && lz !== undefined && Number.isFinite(lx) && Number.isFinite(lz)
+        ? this.cliffAt(lx, lz)
+        : 0;
+    this.room.setMix(1, submersion, cliffs, now, live);
+
     // Gated off when dry (the bus is at zero then anyway), so the bed parks
     // instead of rendering into silence the whole time the lens is in air.
     this.rumble.setLevel(
@@ -1638,7 +1712,7 @@ export class AudioSystem {
       while (this.bubbleTimer <= 0) {
         this.spawnBubble(
           now + offset,
-          this.underBus,
+          this.underFx,
           BUBBLE_LEVEL * (0.55 + 0.45 * this.bubbleRandom()),
         );
         offset += BUBBLE_MIN_GAP;
@@ -1690,6 +1764,35 @@ export class AudioSystem {
 
   getVolume(): number {
     return this.volume;
+  }
+
+  /**
+   * The rock faces that echo, set once the geology is placed. Those whose top
+   * is under the sea are left out: a reef does not throw back a creak.
+   */
+  setReflectors(faces: readonly Readonly<AudioReflector>[]): void {
+    const above = faces.filter((f) => Number.isFinite(f.x) && Number.isFinite(f.z) && f.top > 1);
+    const out = new Float64Array(above.length * 4);
+    above.forEach((f, i) => {
+      out[i * 4] = f.x;
+      out[i * 4 + 1] = f.z;
+      out[i * 4 + 2] = Math.max(0, f.reach);
+      out[i * 4 + 3] = f.top;
+    });
+    this.reflectors = out;
+  }
+
+  /** 0..1: how much of the cliff room the listener at (x, z) hears. Allocates nothing. */
+  private cliffAt(x: number, z: number): number {
+    const r = this.reflectors;
+    let best = 0;
+    for (let i = 0; i < r.length; i += 4) {
+      const gap = Math.max(0, Math.hypot(r[i] - x, r[i + 1] - z) - r[i + 2]);
+      const near = 1 - smoothstepNumber(gap, CLIFF_NEAR, CLIFF_FAR);
+      const weight = near * Math.min(1, r[i + 3] / CLIFF_FULL_HEIGHT);
+      if (weight > best) best = weight;
+    }
+    return best;
   }
 
   /** One bus's level, 0..1, under the master volume. See `AudioBus`. */
@@ -1760,8 +1863,11 @@ export class AudioSystem {
     if (bus === 'ambience') {
       ramp(this.ambienceBus.gain);
       ramp(this.ambienceUnder.gain);
+      ramp(this.ambienceWet.gain);
+      ramp(this.underWet.gain);
     } else if (bus === 'effects') {
       ramp(this.effectsBus.gain);
+      ramp(this.effectsWet.gain);
     } else {
       ramp(this.uiBus.gain);
     }
@@ -1904,11 +2010,13 @@ export class AudioSystem {
     source.connect(body);
     body.connect(thump);
     thump.connect(out);
+    const wet = this.sendFrom(crown, SPLASH_SEND, this.effectsWet);
+    thump.connect(wet);
 
     const tail = decay * 1.6 + 0.05;
     source.start(now, random() * this.white.duration);
-    if (panner === null) this.trackVoice(source, band, crown, body, thump);
-    else this.trackVoice(source, band, crown, body, thump, panner);
+    if (panner === null) this.trackVoice(source, band, crown, body, thump, wet);
+    else this.trackVoice(source, band, crown, body, thump, wet, panner);
 
     // Entrained air, surfacing behind the impact.
     const count = Math.round(1 + SPLASH_BUBBLES * amount);
@@ -2037,6 +2145,8 @@ export class AudioSystem {
     rollLow.connect(rollEnv);
     rollEnv.connect(rollLevel);
     rollLevel.connect(this.ambienceBus);
+    const wet = this.sendFrom(crackLevel, THUNDER_SEND, this.ambienceWet);
+    rollLevel.connect(wet);
 
     // Sidechain, by hand: the score and the sea beds make room for the strike,
     // in proportion to how loud it arrives, at the moment it arrives.
@@ -2058,6 +2168,7 @@ export class AudioSystem {
       rollLow,
       rollEnv,
       rollLevel,
+      wet,
     );
     // Counted against thunder's own voices, not the deck's.
     this.thunderLive++;
@@ -2377,9 +2488,10 @@ export class AudioSystem {
     source.connect(band);
     band.connect(gate);
     gate.connect(this.effectsBus);
+    const wet = this.sendFrom(gate, CHAIN_SEND, this.effectsWet);
     source.start(now, random() * this.white.duration);
     source.stop(now + duration + 0.05);
-    this.trackVoice(source, band, gate);
+    this.trackVoice(source, band, gate, wet);
   }
 
   /**
@@ -2431,6 +2543,14 @@ export class AudioSystem {
     this.ambienceBus.disconnect();
     this.ambienceUnder.disconnect();
     this.effectsBus.disconnect();
+    this.bedSend.disconnect();
+    this.shipSend.disconnect();
+    this.underSend.disconnect();
+    this.underWet.disconnect();
+    this.underFx.disconnect();
+    this.ambienceWet.disconnect();
+    this.effectsWet.disconnect();
+    this.room.dispose();
     this.stopVoices();
     for (const bed of this.beds) bed.dispose();
     this.beds.length = 0;
@@ -2695,6 +2815,27 @@ export class AudioSystem {
     });
 
     const settings = this.settings;
+
+    // The room: one shared send. Each bus's wet feed follows that bus's level,
+    // so muting the ship mutes its reverb too. Deck and cliffs return into the
+    // air (muffled under water with the rest); the underwater room past it.
+    this.room = new Room(ctx, this.airBus, this.mix, settings.musicReverb);
+    this.ambienceWet = ctx.createGain();
+    this.ambienceWet.gain.value = this.busLevel('ambience');
+    this.ambienceWet.connect(this.room.input);
+    this.effectsWet = ctx.createGain();
+    this.effectsWet.gain.value = this.busLevel('effects');
+    this.effectsWet.connect(this.room.input);
+    // Bus-wide sends: the beds, the whole ship, and what is under water.
+    this.bedSend = this.sendFrom(this.bedBus, BED_SEND, this.ambienceWet);
+    this.shipSend = this.sendFrom(this.shipPanner ?? this.shipBus, SHIP_SEND, this.effectsWet);
+    this.underWet = ctx.createGain();
+    this.underWet.gain.value = this.busLevel('ambience');
+    this.underWet.connect(this.room.underInput);
+    this.underFx = ctx.createGain();
+    this.underFx.connect(this.underBus);
+    this.underSend = this.sendFrom(this.underFx, UNDER_SEND, this.underWet);
+
     this.music = new MusicEngine(ctx, this.mix, this.white, {
       voices: settings.musicVoices,
       reverb: settings.musicReverb,
@@ -2710,6 +2851,15 @@ export class AudioSystem {
     this.shipSfx = new ShipSfx(host, this.white, this.shipBus);
 
     this.applyQuality();
+  }
+
+  /** A send of `amount` from `node` into a wet feed. The caller disconnects it. */
+  private sendFrom(node: AudioNode, amount: number, wet: AudioNode): GainNode {
+    const send = (this.ctx as BaseAudioContext).createGain();
+    send.gain.value = amount;
+    node.connect(send);
+    send.connect(wet);
+    return send;
   }
 
   private addBed(ctx: BaseAudioContext, options: NoiseBedOptions): NoiseBed {
@@ -2734,6 +2884,7 @@ export class AudioSystem {
     this.rainHiss.setActive(settings.rainHiss, now, live);
     this.music.setVoices(settings.musicVoices);
     this.music.setReverb(settings.musicReverb);
+    this.room.setMode(settings.musicReverb);
   }
 
   private swellAt(depth: number, period: number, groupPeriod: number, phase: number): number {
@@ -2758,6 +2909,7 @@ export class AudioSystem {
 
   private flushAll(now: number): void {
     for (const target of this.targets) target.flush(now);
+    this.room.flush(now);
   }
 
   /**
@@ -2841,7 +2993,7 @@ export class AudioSystem {
       // The air the lens drags down with it, heard from below.
       for (let i = 0; i < PLUNGE_BUBBLES; i++) {
         const at = now + 0.04 + i * 0.035 + this.bubbleRandom() * 0.03;
-        this.spawnBubble(at, this.underBus, BUBBLE_LEVEL * 1.5);
+        this.spawnBubble(at, this.underFx, BUBBLE_LEVEL * 1.5);
       }
     } else {
       this.playSplash(0.3);
@@ -3058,10 +3210,12 @@ export class AudioSystem {
       panner.connect(this.ambienceBus);
     }
 
+    const wet = this.sendFrom(panner ?? gain, GULL_SEND, this.ambienceWet);
+
     osc.start(when);
     osc.stop(end);
-    if (panner === null) this.trackVoice(osc, formant, tone, gain);
-    else this.trackVoice(osc, formant, tone, gain, panner);
+    if (panner === null) this.trackVoice(osc, formant, tone, gain, wet);
+    else this.trackVoice(osc, formant, tone, gain, panner, wet);
   }
 }
 
