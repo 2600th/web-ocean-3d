@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { HERO_ANISOTROPY, type AssetLoader } from './AssetLoader';
+import { ShipSails, type SailStateInput } from './ship/Sails';
 
 /**
  * The hero sailing ship.
@@ -58,16 +59,8 @@ export class Ship {
   private readonly probeGroup: THREE.Group;
   private readonly probeGeometry: THREE.SphereGeometry;
   private readonly probeMaterial: THREE.MeshBasicNodeMaterial;
-  private readonly sails: THREE.Object3D[] = [];
-  /**
-   * Each sail's scale as loaded, which the billow multiplies rather than
-   * replaces. Meshopt quantisation stores every mesh's dequantisation scale on
-   * its node, so a sail node's scale is not 1 — it is the factor that turns its
-   * int16 positions back into metres, and writing `(1, 1, billow)` over it
-   * shrinks the sail to a unit cube.
-   */
-  private readonly sailScales: THREE.Vector3[] = [];
-  private time = 0;
+  /** Canvas, cloth and pennant; see `ship/Sails`. */
+  private readonly sails: ShipSails;
   private disposed = false;
 
   private constructor(model: THREE.Group, hullBox: THREE.Box3) {
@@ -129,6 +122,7 @@ export class Ship {
     }
     this.object.add(this.probeGroup);
 
+    this.sails = new ShipSails(model, scale, this.object);
     this.applyRenderFlags();
   }
 
@@ -157,28 +151,27 @@ export class Ship {
   }
 
   /**
-   * Sail and rigging life. Deliberately tiny: the ship's motion comes from
-   * buoyancy, and anything larger here reads as the mesh breathing.
-   */
-  /**
-   * Rewinds the sail-billow clock.
-   *
-   * This is an accumulating clock, not a function of simulation time, so it is
-   * the one piece of ship state a deterministic reset cannot reach by setting
-   * `elapsed`. Left alone it silently made every capture unique — the sails are
-   * small, but they are lit, and a fraction of a percent of scale is enough to
-   * move thousands of pixels.
+   * Rewinds the sails: the cloth goes back to its rest pose and is warmed up
+   * by a fixed number of steps on the next update, so every reset to the same
+   * state draws the same canvas.
    */
   resetClock(time = 0): void {
-    this.time = time;
-    if (this.sails.length === 0) return;
-    this.applyBillow(billowAt(time));
+    this.sails.reset(time);
+  }
+
+  /** Sail setting, wind and luff, each frame; see `SailStateInput`. */
+  setSailState(state: SailStateInput): void {
+    this.sails.setState(state);
+  }
+
+  /** Builds the sail cloth's compute pipelines; part of the boot prewarm. */
+  compileSails(renderer: THREE.WebGPURenderer): Promise<void> {
+    return this.sails.compile(renderer);
   }
 
   update(dt: number): void {
-    if (this.disposed || this.sails.length === 0) return;
-    this.time += dt;
-    this.applyBillow(billowAt(this.time));
+    if (this.disposed) return;
+    this.sails.update(dt);
   }
 
   dispose(): void {
@@ -187,19 +180,13 @@ export class Ship {
     this.object.removeFromParent();
     this.probeGeometry.dispose();
     this.probeMaterial.dispose();
+    this.sails.dispose();
     // Geometry, materials and textures under `model` belong to the AssetLoader
     // and are shared with any other clone of this asset.
     this.model.clear();
   }
 
   // ------------------------------------------------------------------ internals
-
-  private applyBillow(billow: number): void {
-    for (let i = 0; i < this.sails.length; i++) {
-      const base = this.sailScales[i];
-      this.sails[i].scale.set(base.x, base.y, base.z * billow);
-    }
-  }
 
   private applyRenderFlags(): void {
     this.model.traverse((node) => {
@@ -219,11 +206,6 @@ export class Ship {
       const isSail = name.includes('sail');
       const isRigging = name.includes('rigging') || name.includes('rope');
 
-      if (isSail) {
-        this.sails.push(mesh);
-        this.sailScales.push(mesh.scale.clone());
-      }
-
       for (const material of materials) {
         // Canvas and rope are surfaces with no back face to speak of; without
         // DoubleSide the sails vanish when the camera crosses the wind.
@@ -232,11 +214,6 @@ export class Ship {
       }
     });
   }
-}
-
-/** Sail scale at a given clock value. Pure, so `resetClock` can jump to it. */
-function billowAt(time: number): number {
-  return 1 + Math.sin(time * 0.7) * 0.012 + Math.sin(time * 1.9) * 0.004;
 }
 
 const SCRATCH_FORWARD = /*@__PURE__*/ new THREE.Vector3();
