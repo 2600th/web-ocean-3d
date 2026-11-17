@@ -749,9 +749,11 @@ async function main() {
           },
         );
         if (r.wav) {
-          const file = join(OUT_DIR, `${name}.wav`);
+          // The baseline keeps its own files, so before and after can be heard side by side.
+          const base = args.saveBaseline ? `${name}-before` : name;
+          const file = join(OUT_DIR, `${base}.wav`);
           writeFileSync(file, Buffer.from(r.wav, 'base64'));
-          r.file = `test-results/audio/${name}.wav`;
+          r.file = `test-results/audio/${base}.wav`;
         }
         delete r.wav;
         results[name] = r;
