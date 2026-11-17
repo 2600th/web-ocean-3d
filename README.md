@@ -125,8 +125,8 @@ on the 150 m summit, and closed shoreline rock that can be dropped at any angle.
 
 ![Interface](docs/images/interface.png)
 
-*The control panel and HUD. Buoyancy probes are switched on here, showing the four hull
-sample points the physics solves against.*
+*The game at the helm: the compass, the objective and the control panel over a ship under way,
+with no debug overlay.*
 
 Regenerate every image above from the current renderer:
 
@@ -284,7 +284,7 @@ The short version is in the ledger's folded *About the tech*. The long version:
 
 ```
 src/
-  core/        renderer bootstrap + fallback, frame loop, quality tiers, seeded random
+  core/        renderer bootstrap (WebGPU only), frame loop, quality tiers, seeded random
   ocean/       spectrum, FFT, simulation, mesh, surface shading, planar reflection, SSR, CPU sampler
   sky/         atmosphere, volumetric clouds, aerial perspective, weather
   underwater/  fog and god rays, particulates, caustics
@@ -339,7 +339,7 @@ Notable checks:
 
 - Sea state read straight off the GPU: crest amplitude in metres, no non-finite values,
   whitecap coverage under 8%
-- Boot on both backends with zero console errors
+- Boot on WebGPU with zero console errors
 - Presets must each change the image and not collapse to one look
 - Texture and geometry counts across repeated quality cycles, to catch leaks
 - Layout overflow from 360 px to 1920 px

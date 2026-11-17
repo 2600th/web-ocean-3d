@@ -183,9 +183,9 @@ with content, XL several systems. Each task says what done looks like.
 
 ### Milestone 0: groundwork
 
-- [ ] **P0.1 Rewrite the brief** (S). `PRODUCT.md` describes a short-session
+- [x] **P0.1 Rewrite the brief** (S). `PRODUCT.md` describes a short-session
   game; `README.md` follows. Done when the two no longer contradict this file.
-- [ ] **P0.2 Extend the reference board** (S). Add rows to
+- [x] **P0.2 Extend the reference board** (S). Add rows to
   `docs/REFERENCE_TARGETS.md` for the ship under sail, the ship at night, the
   island from sea, and a squall front. View references; do not download them.
 - [ ] **P0.3 Set budgets** (S). A table per tier of frame time, start-up time
