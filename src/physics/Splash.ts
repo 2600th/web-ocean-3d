@@ -101,7 +101,7 @@ const JET_AROUND = 12;
 const JET_ALONG = 16;
 
 /** Pending foam flecks (drops landing, the jet's fall). */
-const MAX_PENDING = 32;
+const MAX_PENDING = 64;
 
 /** Crown launch elevation at first ejection and its fall-off, radians. */
 const PHI0 = 1.25;
@@ -344,6 +344,39 @@ export class Splash {
       this.queue(x, z, radius * 1.8 + 0.3, 0.18 + 0.22 * heavy, this.clock + jetStart + jetSpan + (2 * jetSpeed) / GRAVITY);
     }
     this.setVisible((sprayUniforms.strength.value as number) > 0);
+  }
+
+  /**
+   * Thrown water coming back down at (x, z) `delay` seconds from now: a fleck
+   * of foam, and if `ring`, a small ring wave spreading from it. For drops this
+   * system did not throw — the hull's spray and the bow's (`Spray.setLanding`).
+   *
+   * The ring takes a free slot or none: it never cuts short a splash still in
+   * the air, which a cask coming down off a crest would lose to a slam's drops.
+   */
+  land(x: number, z: number, radius: number, amount: number, delay: number, ring: boolean): void {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    const time = this.clock + Math.max(0, delay);
+    this.queue(x, z, radius, amount, time);
+    if (!ring || !this.wake) return;
+    for (let k = 0; k < SLOTS; k++) {
+      const slot = (this.cursor + k) % SLOTS;
+      if (this.slotEnd[slot] > this.clock || this.slotStart[slot] > this.clock) continue;
+      // Nothing in the air from this slot: its record's start is far in the past.
+      (this.uA.array as THREE.Vector4[])[slot].set(x, 0, z, -1000);
+      this.slotStart[slot] = time;
+      this.slotX[slot] = x;
+      this.slotZ[slot] = z;
+      this.ringWave[slot] = 1.2;
+      this.ringSpeed[slot] = 0.5 * Math.sqrt((GRAVITY * 1.2) / (2 * Math.PI)) + 0.3;
+      this.ringLife[slot] = 2.2;
+      this.ringFoam[slot] = 0.35 + 0.3 * amount;
+      this.ringAmp[slot] = 0.012;
+      this.ringWidth[slot] = 0.3;
+      this.ringR0[slot] = 0.4;
+      this.slotEnd[slot] = time + this.ringLife[slot];
+      return;
+    }
   }
 
   /** Advances the clock to `elapsed` (simulation seconds); deposits foam and drives the rings. */

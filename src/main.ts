@@ -897,6 +897,7 @@ class App {
     this.splash = new Splash();
     this.splash.setWake(this.wake);
     this.splash.setSurface((x, z) => this.sampler.height(x, z));
+    this.spray.setLanding(this.splash);
     this.scene.add(this.splash.object);
 
     this.fish = new FishSchool(quality.fish);
@@ -2473,6 +2474,7 @@ class App {
         splash: (x, y, z, options) => this.splash.fire(x, y, z, options),
       });
       this.gameplay.object.visible = false;
+      this.gameplay.setSprayLanding(this.splash);
       loaded.push(this.gameplay.object);
       this.scene.add(this.gameplay.object);
       const hooks = (window as unknown as { __ocean?: Record<string, unknown> }).__ocean;

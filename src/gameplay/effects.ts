@@ -11,6 +11,7 @@ import {
   sprayUniforms,
 } from '../physics/sprayLook';
 import { BowSheet, levelQuaternion, sheetPoint, sheetPointWorld, sheetStation, type SheetStation } from './BowSheet';
+import type { SprayLanding } from '../physics/Spray';
 
 /**
  * The two pieces of gameplay feedback that have to be visible at any range:
@@ -260,6 +261,8 @@ const SPRAY_COUNT = 1792;
  * past 1.0x — and then only the oldest mist is cut short.
  */
 const SPRAY_RATE = 1000;
+/** Seconds between two bow drops traced to where they land; see `BowSpray.traceLanding`. */
+const BOW_LANDING_INTERVAL = 0.18;
 /** Hull speed, m/s, below which the bow throws nothing, and at which it throws most. */
 const SPRAY_START_SPEED = 2.4;
 const SPRAY_FULL_SPEED = 7;
@@ -366,6 +369,9 @@ export class BowSpray {
   private lastEmit = -1000;
   /** Ring slots in use at this tier; see `update`. */
   private capacity = SPRAY_COUNT;
+  /** Where flung drops leave foam; see `traceLanding`. */
+  landing: SprayLanding | null = null;
+  private lastLanding = -1000;
 
   constructor() {
     this.geometry = new THREE.InstancedBufferGeometry();
@@ -517,6 +523,7 @@ export class BowSpray {
     this.bowPrimed = false;
     this.intensity = 0;
     this.lastEmit = -1000;
+    this.lastLanding = -1000;
   }
 
   dispose(): void {
@@ -574,6 +581,38 @@ export class BowSpray {
       strength,
     );
     this.dirty = true;
+    if (this.landing && cls === CLASS_DROP && this.time - this.lastLanding >= BOW_LANDING_INTERVAL) {
+      this.lastLanding = this.time;
+      this.traceLanding(i, water - 0.1, strength);
+    }
+  }
+
+  /**
+   * Where drop `i` comes back down, from the closed form the shader draws it
+   * with (droplet drag 0.6/s), reported as a fleck of foam. A few a second, not
+   * every drop: the bow wave's own foam is already under most of them, and the
+   * flecks are for the ones flung clear of it.
+   */
+  private traceLanding(i: number, water: number, strength: number): void {
+    const k = 0.6;
+    const fall = -GRAVITY / k;
+    const wind = sprayUniforms.wind.value as THREE.Vector3;
+    const y0 = this.origin.getY(i);
+    const vy = this.launch.getY(i);
+    const height = (t: number) => y0 + fall * t + (vy - fall) * ((1 - Math.exp(-k * t)) / k) - water;
+    let lo = 0.02;
+    let hi = 3;
+    if (height(hi) > 0) return;
+    for (let n = 0; n < 12; n++) {
+      const mid = (lo + hi) / 2;
+      if (height(mid) > 0) lo = mid;
+      else hi = mid;
+    }
+    const t = (lo + hi) / 2;
+    const reach = (1 - Math.exp(-k * t)) / k;
+    const x = this.origin.getX(i) + wind.x * t + (this.launch.getX(i) - wind.x) * reach;
+    const z = this.origin.getZ(i) + wind.z * t + (this.launch.getZ(i) - wind.z) * reach;
+    this.landing!.land(x, z, 0.8, 0.25 + 0.15 * strength, t, false);
   }
 
   /** Trajectory, size and opacity; `particleVertex` does the rest. */

@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { BuoyantBody, createRadialProbes } from '../physics/Buoyancy';
 import type { ShipController } from '../physics/ShipController';
+import type { SprayLanding } from '../physics/Spray';
 import type { OceanSampler } from '../ocean/Sampler';
 import { mulberry32 } from '../core/random';
 import { BowSpray, Burst, ObjectiveBeacon } from './effects';
@@ -472,6 +473,11 @@ export class Gameplay {
       (x, z) => this.o.sampler.height(x, z),
     );
     this.bowSpray.mesh.visible = !this.bowSpray.idle;
+  }
+
+  /** Where the bow's flung drops leave foam (`physics/Splash`). */
+  setSprayLanding(landing: SprayLanding | null): void {
+    this.bowSpray.landing = landing;
   }
 
   /* ------------------------------------------------------------- commands */
