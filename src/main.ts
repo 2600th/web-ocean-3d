@@ -12,6 +12,7 @@ import { uniform } from './core/uniform';
 import { createRenderer, clampPixelRatio, WebGPUUnavailableError, type Backend } from './core/Renderer';
 import {
   installInstanceCopySync,
+  installShadowCasterSharing,
   installSubmissionFixes,
 } from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
@@ -664,6 +665,7 @@ class App {
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
     installInstanceCopySync(this.renderer);
+    installShadowCasterSharing(this.renderer);
     // `?batch=0`: submit every render call on its own, as three does. For A/B
     // measurements of `installSubmitBatching`.
     installSubmissionFixes(this.renderer, {
