@@ -144,7 +144,10 @@ All sound is synthesised. There are no sample files.
 ## Decisions
 
 Decided 2026-11-17: the recommendation is taken on all eight, and on any
-later decision that carries one. Changing one moves tasks between milestones;
+later decision that carries one, except where an entry below says otherwise.
+Standing rule for every task: if a good open-source or free project, asset or
+package already does the job, reuse it with credit instead of rebuilding it,
+and download what the work needs without asking. Changing one moves tasks between milestones;
 it does not invalidate the rest.
 
 1. **Is this now a game first?** `PRODUCT.md` still defines it as a showcase
@@ -162,15 +165,16 @@ it does not invalidate the rest.
 5. **Frame-rate floor.** Recommendation: High holds 100 fps or better on the
    development machine. Anything that cannot fit goes to Ultra and Max.
 6. **New models.** Crew figures, cannons and extra buildings need assets.
-   Recommendation: build them procedurally or in Blender where they are simple,
-   and ask before downloading any CC0 model.
+   Decided: where a good free or open-licensed model exists, use it instead of
+   building one, and record its licence in `ASSET_LICENSES.md`. Build
+   procedurally only where nothing suitable exists.
 7. **Recorded sound.** Everything is synthesised today. Published listening
    tests found the best synthesised thunder still told apart from a recording,
    and the audio lead on No Man's Sky has said procedural wind and rain work
-   but lack feeling. Recommendation: stay synthesised through Milestone 1,
-   then judge by ear. If the thunder crack, the gulls or the surf still fall
-   short, add a small set of CC0 recordings for those alone. The Sonniss
-   bundle cannot go in a public repository under its licence.
+   but lack feeling. Decided: use CC0 recordings wherever they beat synthesis,
+   starting with the thunder crack, the gulls and the surf, layered with the
+   synthesised beds so they still follow the sea state. The Sonniss bundle
+   cannot go in a public repository under its licence.
 8. **Period of the instruments.** The score uses concertina, hurdy-gurdy and
    bodhrán. Fiddle, fife, drum and trumpet are documented aboard ships of the
    time; the concertina and the work shanty are from the 1800s.
