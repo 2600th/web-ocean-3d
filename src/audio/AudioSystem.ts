@@ -327,6 +327,8 @@ const ENABLE_RAMP = 0.2;
 const RESUME_RAMP = 0.6;
 /** Grace between a disable fading out and the context being suspended. */
 const SUSPEND_DELAY = 0.35;
+/** How long an unlock attempt may hang before the next gesture tries again, ms. */
+const RETRY_UNLOCK_MS = 1000;
 
 // --- swell -----------------------------------------------------------------
 
@@ -1217,15 +1219,32 @@ export class AudioSystem {
     const listener = target ?? (typeof window === 'undefined' ? null : window);
     if (this.ctx === null || listener === null) return () => {};
 
-    const events = ['pointerdown', 'keydown', 'touchstart'] as const;
-    const handler = (): void => {
-      void this.resume();
+    // The release events as well as the presses: on a touch screen Chrome grants
+    // user activation on the lift (`pointerup`, `touchend`), not the touch, so a
+    // resume from `touchstart` alone is refused.
+    const events = ['pointerdown', 'pointerup', 'keydown', 'touchstart', 'touchend', 'click'] as const;
+    const remove = (): void => {
       for (const name of events) listener.removeEventListener(name, handler);
+    };
+    let pending = false;
+    const handler = (): void => {
+      if (pending) return;
+      pending = true;
+      // A refused `resume()` can stay pending rather than reject; the next
+      // gesture must still get its try.
+      const release = setTimeout(() => (pending = false), RETRY_UNLOCK_MS);
+      void this.resume().then((running) => {
+        clearTimeout(release);
+        pending = false;
+        // Only once audio is actually running. A refused resume (no activation
+        // yet, an audio device that is busy or gone) leaves the listeners in
+        // place, so the next gesture tries again instead of audio staying
+        // silent for the rest of the visit.
+        if (running || this.disposed) remove();
+      });
     };
     for (const name of events) listener.addEventListener(name, handler, { passive: true });
-    return () => {
-      for (const name of events) listener.removeEventListener(name, handler);
-    };
+    return remove;
   }
 
   /**
