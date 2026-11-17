@@ -1,5 +1,8 @@
 # AAA pass — plan and task list
 
+> The next pass, judged against shipped games rather than web demos, is planned in
+> [`AAA_ROADMAP.md`](AAA_ROADMAP.md). This file is the record of the passes before it.
+
 Started 2026-11-13. Goal: make the ocean, island and ship read as a shipped
 AAA game rather than a graphics demo, load in a fraction of the time, and run
 across devices — copying proven code from the reference projects rather than
