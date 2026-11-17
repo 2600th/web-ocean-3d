@@ -18,6 +18,8 @@ import {
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import { prefetch } from './scene/AssetLoader';
 import { SHIP_URL } from './scene/Ship';
+import { ShipLights } from './scene/ship/ShipLights';
+import { ShipFittings } from './scene/ship/Fittings';
 import { REEF_FISH_URL } from './scene/Fish';
 import { dressingUrls } from './scene/Props';
 import {
@@ -536,6 +538,9 @@ class App {
   private shipControls: ShipController | null = null;
   /** Helm-mode sailing, anchor and cargo. See `src/gameplay`. */
   private gameplay: Gameplay | null = null;
+  /** Deck lanterns and stern windows; the anchor cable. See `src/scene/ship`. */
+  private shipLights: ShipLights | null = null;
+  private shipFittings: ShipFittings | null = null;
   /** Rain wetting for the ship and the floating props. */
   private readonly wetness = new SurfaceWetness();
 
@@ -1755,6 +1760,7 @@ class App {
     // The ship's channel only: green water on the deck does not wet the island.
     if (impact.kind === 'wash') this.wetness.douse(0.55 * s, 'ship');
     else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s, 'ship');
+    this.wetness.spray(p, s);
   }
 
   /**
@@ -2302,6 +2308,12 @@ class App {
         causticFacing: (normal) => this.caustics.facingNode(normal),
         groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
       });
+      // Light aboard, the anchor cable and the hull's own water. See `src/scene/ship`.
+      this.shipLights = new ShipLights(ship.object);
+      this.lighting.local.setShipLanterns(this.shipLights.lanternPositions);
+      this.shipFittings = new ShipFittings(ship.object, ship.hullLength, ship.hullBeam, (x, z) => seafloorHeight(x, z));
+      this.scene.add(this.shipFittings.object);
+      this.wetness.trackWaterline(ship.object, ship.hullLength, ship.hullBeam, (x, z) => this.sampler.height(x, z));
 
       this.shipBody = new BuoyantBody({
         object: ship.object,
@@ -4058,6 +4070,8 @@ class App {
     const ship = this.ship;
     if (ship) {
       ship.update(dt);
+      this.shipLights?.update(dt, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
+      this.shipFittings?.update(this.gameplay?.anchorCable(this.shipFittings.anchorState) ?? null);
 
       const position = ship.object.position;
       // Speed along the bow, from the body, rather than frame-to-frame distance.
@@ -4494,6 +4508,7 @@ class App {
           this.wetness.setWetness(resetRain);
           if (shipInput) this.shipControls?.setInput(shipInput.throttle, shipInput.rudder);
           this.ship?.resetClock(start);
+          this.shipLights?.reset(start);
           this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);
           // The resets above write each body's position and quaternion, not its
           // world matrix, which only refreshes when a frame renders — and the
@@ -4731,6 +4746,8 @@ class App {
     this.lighting?.dispose();
     this.buoyancy?.dispose();
     this.wake?.dispose();
+    this.shipLights?.dispose();
+    this.shipFittings?.dispose();
     this.ship?.dispose();
     this.props?.dispose();
     this.seafloor?.dispose();

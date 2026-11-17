@@ -542,6 +542,21 @@ export class Gameplay {
     this.ui.toast('Hauling the anchor up…', 'info');
   }
 
+  /**
+   * The rode as drawn by `scene/ship/Fittings`: where the anchor lies, which bow
+   * it leads from, its length and how much of it the capstan has taken in (0..1).
+   * Null while the anchor is up. Allocation-free.
+   */
+  anchorCable<T extends { x: number; z: number; side: number; rode: number; hauled: number }>(out: T): T | null {
+    if (this.anchor === 'up') return null;
+    out.x = this.anchorPoint.x;
+    out.z = this.anchorPoint.z;
+    out.side = this.anchorSide;
+    out.rode = this.rode;
+    out.hauled = this.anchor === 'weighing' ? 1 - Math.max(0, this.weighTimer) / WEIGH_SECONDS : 0;
+    return out;
+  }
+
   /** Moves the current cargo to `distance` metres off the bow. For tests. */
   placeTargetAhead(distance = 40, lateral = 0): void {
     const p = this.o.body.object.position;

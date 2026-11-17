@@ -23,7 +23,8 @@ import { uniform } from '../core/uniform';
  *   from the eye. Past that it is zero, and a light whose lit area is under a
  *   pixel from where the viewer is gives nothing for its cost.
  * - **Tier-gated.** Low lights none (`QualitySettings.localLights`); a tier
- *   change only moves the count.
+ *   change only moves the count, and the count goes to the lights nearest the
+ *   eye relative to their reach.
  * - **Only when it is dark enough.** Full strength from deep dusk on and under a
  *   storm deck, nothing at noon — a fire at noon lights nothing you can see.
  * - **No shadows.** A point light's shadow is six more passes of the scene, and
@@ -45,6 +46,10 @@ interface Source {
   flicker: number;
   seed: number;
   placed: boolean;
+  /** Where it is when something else carries it (the deck lanterns); copied each update. */
+  follow: THREE.Vector3 | null;
+  /** Distance over reach this frame; Infinity when out of reach or unplaced. */
+  score: number;
 }
 
 const FIRE_COLOR = new THREE.Color(1.0, 0.5, 0.2);
@@ -65,7 +70,9 @@ export class LocalLights {
   private readonly lantern: Source;
   private readonly shipLantern: Source;
   private readonly beacon: Source;
-  /** In order of how much they matter; the tier lights the first `count`. */
+  /** The ship's swinging deck lanterns (`scene/ship/ShipLights`). */
+  private readonly deckLanterns: Source[];
+  /** Every light; the tier lights the `count` nearest, relative to their reach. */
   private readonly sources: Source[];
   private count = 0;
   /** Brightness of the ship lantern's glow (and the jetty lantern's glass), 0..1. */
@@ -93,7 +100,7 @@ export class LocalLights {
       light.position.set(0, -10000, 0);
       light.visible = false;
       this.group.add(light);
-      return { light, peak, reach, flicker, seed, placed: false };
+      return { light, peak, reach, flicker, seed, placed: false, follow: null, score: Infinity };
     };
     // In order of how much they matter: the fire lights the camp, the ship's
     // lantern is on the hero, and the jetty's pair are dressing.
@@ -103,10 +110,16 @@ export class LocalLights {
     this.lantern = make('jetty-lantern-light', LANTERN_COLOR, 2.5, 10, 150, 0.2, 0.53);
     // The lighthouse lamp: a hoop of candles in a glazed lantern 20 m up. Lights
     // its own gallery and lantern frame and the tower head; 30 m of radius
-    // reaches the gallery deck and the cottage roof. Last in the list, so the
-    // tiers that light four keep the camp and the ship.
+    // reaches the gallery deck and the cottage roof. Its long reach ranks it
+    // behind anything nearer (see `setCount`).
     this.beacon = make('lighthouse-light', BEACON_COLOR, 14, 30, 420, 0.15, 0.91);
-    this.sources = [this.fire, this.shipLantern, this.torch, this.lantern, this.beacon];
+    // The ship's deck lanterns: a hand lantern's worth each, reaching the deck,
+    // the rail and the foot of the canvas above. Eight point lights in all,
+    // which is `BatchedLighting`'s array size; at most `count` are ever lit.
+    this.deckLanterns = [0, 1, 2].map((i) =>
+      make(`ship-deck-lantern-light-${i}`, LANTERN_COLOR, 5, 12, 200, 0.25, 0.19 + i * 0.23),
+    );
+    this.sources = [this.fire, this.shipLantern, this.torch, this.lantern, this.beacon, ...this.deckLanterns];
     this.setCount(count);
 
     // The ship lantern's flame. Additive, so at zero it adds nothing — the hull
@@ -176,13 +189,28 @@ export class LocalLights {
   }
 
   /**
-   * How many of the lights the tier pays for, most important first. Only the
-   * count moves: the lights beyond it go dark on the next update and stay in the
-   * group, so a tier change compiles nothing (see `BatchedLighting`).
+   * The ship's deck lanterns, as world positions `ShipLights` moves in place.
+   * Up to three; the lights read them on every update.
+   */
+  setShipLanterns(positions: readonly THREE.Vector3[]): void {
+    this.deckLanterns.forEach((s, i) => {
+      s.follow = positions[i] ?? null;
+      s.placed = s.follow !== null;
+    });
+  }
+
+  /**
+   * How many of the lights the tier pays for. Only the count moves: the lights
+   * beyond it go dark on the next update and stay in the group, so a tier change
+   * compiles nothing (see `BatchedLighting`).
+   *
+   * The budget goes to the lights nearest the eye relative to their reach, not
+   * to a fixed list: at sea the island's fire and torches are out of reach and
+   * the ship's lanterns get the budget; at the cove the camp gets it back.
    */
   setCount(count: number): void {
     this.count = Math.max(0, Math.min(this.sources.length, Math.round(count)));
-    for (let i = this.count; i < this.sources.length; i++) this.setLevel(this.sources[i], 0);
+    if (this.count === 0) for (const s of this.sources) this.setLevel(s, 0);
   }
 
   /** A light at zero is hidden, which drops it from the batched loop. */
@@ -217,9 +245,20 @@ export class LocalLights {
       const flutter = 1 + 0.06 * Math.sin(t * 2.3) + 0.04 * Math.sin(t * 5.7 + 1.1) + 0.03 * Math.sin(t * 13.1 + 0.3);
       this.beaconLevel = Math.max(0, Math.min(1, darkness)) * flutter;
     }
-    for (let i = 0; i < this.count; i++) {
+    for (const s of this.sources) {
+      if (s.follow) s.light.position.copy(s.follow);
+      const d = s.light.position.distanceTo(eye);
+      s.score = s.placed && night > 0 && d < s.reach ? d / s.reach : Infinity;
+    }
+    for (let i = 0; i < this.sources.length; i++) {
       const s = this.sources[i];
-      if (!s.placed || night <= 0) {
+      // Rank among the candidates, ties to list order: deterministic, no sort.
+      let rank = 0;
+      for (let j = 0; j < this.sources.length; j++) {
+        const o = this.sources[j];
+        if (o.score < s.score || (o.score === s.score && j < i)) rank++;
+      }
+      if (s.score === Infinity || rank >= this.count) {
         this.setLevel(s, 0);
         continue;
       }
