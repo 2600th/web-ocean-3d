@@ -485,6 +485,8 @@ class App {
   /** Hoisted: `update` reads these every frame and must not allocate. */
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
   /** Sail state for the audio, polled from gameplay without allocating. */
+  /** True while a deterministic shot is driving the ship by scripted input. */
+  private scriptedUnderWay = false;
   private readonly sailAudio = { active: false, sailFill: 0, sailLuff: 0 };
   private readonly slaps = new SlapDetector(SLAP_PROBES.length);
   /** Weather hysteresis for the score, so a squall at the threshold does not flip it. */
@@ -2649,7 +2651,7 @@ class App {
     // wind when nobody is (`fill: null`). Cloth or analytic by tier.
     const windToward = getPreset(this.state.preset).sea.windDirection;
     ship.setSailState({
-      fill: sails?.active ? sails.sailFill : null,
+      fill: sails?.active && !this.scriptedUnderWay ? sails.sailFill : null,
       trueWind: _sailWind.set(Math.cos(windToward), 0, Math.sin(windToward)).multiplyScalar(this.state.windSpeed),
       velocity: this.shipBody?.velocity ?? _sailStill,
       luff: audio.sailLuff,
@@ -4578,6 +4580,8 @@ class App {
           // three hundred settle steps later.
           this.wetness.setWetness(resetRain);
           if (shipInput) this.shipControls?.setInput(shipInput.throttle, shipInput.rudder);
+          // A shot that drives her by scripted input shows her under sail.
+          this.scriptedUnderWay = (shipInput?.throttle ?? 0) > 0;
           this.ship?.resetClock(start);
           this.shipLights?.reset(start);
           this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);

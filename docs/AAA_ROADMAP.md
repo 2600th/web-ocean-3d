@@ -203,7 +203,7 @@ with content, XL several systems. Each task says what done looks like.
   - the dark wedge by the beached pinnace in `landfall`;
   - the straight ridge in the breaker;
   - the unused `'danger'` toast.
-- [ ] **P0.5 Fix the effect defects** (S each):
+- [x] **P0.5 Fix the effect defects** (S each):
   - the wash impact reported about 8 m off the starboard side, so its foam
     and its sound are in the wrong place (`Spray.ts:627`);
   - bow sheet and bow spray reading last frame's hull pose (`main.ts:4042`);
@@ -215,7 +215,7 @@ with content, XL several systems. Each task says what done looks like.
   - the objective arrow spinning the long way round when the bearing crosses
     180 degrees (`Hud.ts:1010`);
   - the beacon ring snapping back to full opacity every 2.2 s.
-- [ ] **P0.6 Fix the audio defects** (S each):
+- [x] **P0.6 Fix the audio defects** (S each):
   - spray impacts attenuated and panned twice (`main.ts:1736-1742` and the
     ship bus);
   - wave slaps probably firing twice, from the slap detector and from spray
@@ -232,7 +232,7 @@ with content, XL several systems. Each task says what done looks like.
   four situations: helm in a breeze, a hard turn, the storm, and landfall. The
   texture-scroll foam fault was invisible in stills; this is how the next one
   is caught.
-- [ ] **V5 An audio test bench** (M). The engine already accepts an offline
+- [x] **V5 An audio test bench** (M). The engine already accepts an offline
   context and nothing uses it. Render 60 s of each state offline and report
   integrated loudness, true peak, clicks, voices alive and the time before
   material repeats. Save the renders as files so they can be listened to.
@@ -245,7 +245,7 @@ different files, so they can run side by side.
 
 **Ship lane** (`scene/Ship.ts`, new `scene/ship/`)
 
-- [ ] **S1 Sails that set, fill and luff** (L). Replace the 1.2% scale with
+- [x] **S1 Sails that set, fill and luff** (L). Replace the 1.2% scale with
   cloth pinned at the yards and clews, driven by apparent wind, and tie the
   furled, half and full settings to what is drawn. Start from three.js's
   `webgpu_compute_cloth` (verlet springs in a compute pass, MIT). Low and
@@ -260,11 +260,11 @@ different files, so they can run side by side.
   swings, the yards brace toward the wind, a pennant streams from the
   masthead, and the anchor cable is visible when it is down. The pennant is
   also the player's wind indicator.
-- [ ] **S4 Light aboard** (S to M). Glowing stern windows and three to five
+- [x] **S4 Light aboard** (S to M). Glowing stern windows and three to five
   swinging deck lanterns through `ClusteredLightsNode`, lighting the sails and
   reflecting in the sea. Done when the ship in `night` and `squall` reads as a
   lit vessel and not a cut-out.
-- [ ] **S5 Wet hull and deck** (S to M). `scene/Wetness.ts` already darkens and
+- [x] **S5 Wet hull and deck** (S to M). `scene/Wetness.ts` already darkens and
   glosses surfaces under rain. Add a waterline band that follows the sea and a
   spray-driven wet mask that dries over seconds.
 - [ ] **S6 The hull below the waterline** (M). Planking, keel, rudder and
@@ -272,12 +272,12 @@ different files, so they can run side by side.
 
 **Water lane** (`ocean/`, `physics/Spray.ts`)
 
-- [ ] **W1 Light through the crests and bubbles under the foam** (S). Blend
+- [x] **W1 Light through the crests and bubbles under the foam** (S). Blend
   deep and scatter colour by view angle, sun direction and a wave-peak mask
   (Sea of Thieves), and add a bubble colour scaled by foam density (Atlas).
   Done when storm crests are translucent green toward the light. Near zero
   cost.
-- [ ] **W2 Spindrift off the whitecaps** (M). Atlas's method: emit particles
+- [x] **W2 Spindrift off the whitecaps** (M). Atlas's method: emit particles
   across the view and kill any that are not on a whitecap in the foam
   texture. Compute particles, soft against depth, lit by the scene. Budget
   0.5 ms for 50,000 to 100,000 particles; High and up.
@@ -286,7 +286,7 @@ different files, so they can run side by side.
   for a low sun. `AAA_PLAN.md` section C deferred this for want of the second
   moments; this task adds them. Done when the moon's path in `moonlit` is a
   smooth column with no blocks.
-- [ ] **W5 Fine detail and gusts** (S to M). A low-frequency gust mask scaling
+- [x] **W5 Fine detail and gusts** (S to M). A low-frequency gust mask scaling
   the smallest wave band (dark "cat's paws" crossing the water) and finer
   ripples near the camera. Done when `waves` no longer reads as gel.
 - [ ] **W6 The horizon** (S to M). Fade each band's displacement with distance
@@ -295,48 +295,48 @@ different files, so they can run side by side.
 
 **Feel lane** (`cameras/`, `gameplay/sailing.ts`, `physics/ShipController.ts`, input)
 
-- [ ] **F1 Speed you can feel** (S to M). Field of view widens with speed, the
+- [x] **F1 Speed you can feel** (S to M). Field of view widens with speed, the
   camera lags and looks into the turn, and bow spray and wind noise scale with
   it. All of it off under reduced motion.
-- [ ] **F2 Apparent wind and trim** (M). Wind that is potent, not punishing: a
+- [x] **F2 Apparent wind and trim** (M). Wind that is potent, not punishing: a
   floor speed on every heading, a trim control that rewards skill, and a no-go
   indicator that fades once learned. Remove the hidden engine. Turn response
   is exaggerated at speed.
-- [ ] **F3 Gamepad and rumble** (S to M). Standard mapping, with rumble
+- [x] **F3 Gamepad and rumble** (S to M). Standard mapping, with rumble
   feature-detected: `playEffect` exists in Chrome, Edge and Safari 16.4 and
   later, and not in Firefox or iOS Safari.
-- [ ] **F6 One shake budget and hit-stop** (S). Grounding, slams and thunder
+- [x] **F6 One shake budget and hit-stop** (S). Grounding, slams and thunder
   draw on the same decaying trauma value; a few frames of hit-stop on a hard
   impact, and an intensity slider from 0 to 100%.
-- [ ] **F8 A pickup worth making** (S). The cask is hauled aboard instead of
+- [x] **F8 A pickup worth making** (S). The cask is hauled aboard instead of
   vanishing, it glints while afloat, the gold counts up, and the next beacon
   fades in after a beat.
-- [ ] **F9 Failure you can see** (S). Grounding raises a sand plume and gives
+- [x] **F9 Failure you can see** (S). Grounding raises a sand plume and gives
   the camera a short kick; a stall shakes the canvas (through S1) and slackens
   the pennant.
-- [ ] **F10 One set of timings** (S). Replace the 23 interface durations with
+- [x] **F10 One set of timings** (S). Replace the 23 interface durations with
   a short scale shared by the interface and the camera. Reduced motion is
   honoured by the mode-change sweep and the beacon as well.
 
 **Effects lane** (`physics/Spray.ts`, `physics/Splash.ts`, `post/LensRain.ts`)
 
-- [ ] **X1 Spray that reaches the lens** (S). Slams and green water wet the
+- [x] **X1 Spray that reaches the lens** (S). Slams and green water wet the
   camera through the existing lens-rain pass, as rain and surfacing already do.
-- [ ] **X2 Drops that land** (M). Slam and bow drops leave foam flecks and
+- [x] **X2 Drops that land** (M). Slam and bow drops leave foam flecks and
   rings where they fall, as splash drops already do, and water streams off
   the hull as she rises.
-- [ ] **X3 Bubbles under the hull and wake** (S). Seen from below, the wake is
+- [x] **X3 Bubbles under the hull and wake** (S). Seen from below, the wake is
   a trail of rising bubbles.
-- [ ] **X4 Soft edges everywhere** (S). Camp smoke, the pickup burst and rain
+- [x] **X4 Soft edges everywhere** (S). Camp smoke, the pickup burst and rain
   fade against depth, as spray does.
 
 **Audio lane** (`src/audio/`)
 
-- [ ] **A1 Buses, memory and lifecycle** (S). Separate music, ambience,
+- [x] **A1 Buses, memory and lifecycle** (S). Separate music, ambience,
   effects and interface buses, each with a slider and a mute, all saved
   locally. Suspend on a hidden tab, resume cleanly, and recover from a failed
   unlock. Music scheduling no longer depends on a throttled timer.
-- [ ] **A2 A room around every sound** (S). A shared reverb send built from a
+- [x] **A2 A room around every sound** (S). A shared reverb send built from a
   synthesised impulse, with three settings crossfaded by state: open deck,
   under water, and near cliffs. Done when no effect is fully dry.
 - [ ] **A3 Loudness and priority** (M). A target of about -18 LUFS integrated

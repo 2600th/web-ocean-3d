@@ -172,8 +172,13 @@ test.describe('gallery', () => {
     const helm = SHOTS.find((s) => s.id === 'boat-chase');
     if (helm === undefined) throw new Error('gallery: no canonical shot "boat-chase"');
     await applyShot(page, helm);
-    // Two more frames so the HUD has read the settled hull.
-    await page.evaluate(() => window.__ocean.step(1 / 60, 2));
+    // The shot drives her by scripted input, which leaves the helm's own sail
+    // setting furled. Set it, so the HUD reads what the picture shows, and give
+    // the canvas and the HUD two seconds to follow.
+    await page.evaluate(async () => {
+      (window.__ocean as any).gameplay?.setSail('full');
+      await window.__ocean.step(1 / 60, 120);
+    });
     const ui = await page.screenshot({ animations: 'disabled' });
     writeFileSync(join(IMAGE_DIR, 'interface.png'), ui);
     console.log('[gallery] interface.png');
