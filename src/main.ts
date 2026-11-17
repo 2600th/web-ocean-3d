@@ -2434,7 +2434,7 @@ class App {
         toast: (text, kind) => {
           this.hud.toast(text, kind);
           // The reward toast has its chime already; the others get a cue of their own.
-          if (kind === 'warning') this.audio.uiTick('warn');
+          if (kind === 'warning' || kind === 'danger') this.audio.uiTick('warn');
           else if (kind !== 'reward') this.audio.uiTick('info');
         },
         setObjective: (objective) => this.hud.setObjective(objective),

@@ -867,13 +867,17 @@ export class Gameplay {
     if (grounded && !this.grounded) {
       this.addTrauma(Math.min(0.7, 0.3 + speed * 0.08));
       this.o.audio?.hullImpact?.(Math.min(1, 0.4 + speed * 0.1), true);
+      // The shoal warning below has usually fired already; this says she has
+      // struck, and holds it back so the two do not stack.
+      this.shoalCooldown = 8;
+      this.ui.toast("Aground! Turn her away and she'll slide free", 'danger');
     }
     if (grounded) this.trauma = Math.max(this.trauma, Math.min(0.45, speed * 0.1));
     this.grounded = grounded;
     this.shoalCooldown = Math.max(0, this.shoalCooldown - dt);
     if (depth < GROUND_DEPTH + 3 && speed > 1 && this.shoalCooldown === 0) {
       this.shoalCooldown = 8;
-      this.ui.toast('Shallows! Turn her away', 'warning');
+      this.ui.toast('Shallows! Turn her away', 'danger');
     }
 
     this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * dt);
