@@ -141,10 +141,11 @@ All sound is synthesised. There are no sample files.
 | Interface timing | One pair of easing curves, but 23 different durations from 100 ms to 1.6 s, and the camera uses its own | `ui/styles.css:123` |
 | Reduced motion | Honoured by the interface, the shake and the Tour. Ignored by the mode-change sweep, the beacon pulse and the lightning | `CameraDirector.ts:347-351`, `effects.ts:113-120` |
 
-## Decisions for you
+## Decisions
 
-Each has a recommendation, and the plan below assumes it. Changing one moves
-tasks between milestones; it does not invalidate the rest.
+Decided 2026-11-17: the recommendation is taken on all eight, and on any
+later decision that carries one. Changing one moves tasks between milestones;
+it does not invalidate the rest.
 
 1. **Is this now a game first?** `PRODUCT.md` still defines it as a showcase
    whose visitor stays "fifteen seconds to a few minutes". Recommendation: yes,
