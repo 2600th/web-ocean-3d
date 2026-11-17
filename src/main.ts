@@ -3911,8 +3911,14 @@ class App {
     // Set explicitly rather than left to the effect's own default, because which
     // way rain runs down a lens is exactly the kind of thing that is obvious to a
     // viewer and invisible to every test we have.
+    // The lean is the wind across the view: its component along the camera's
+    // right, so drops run with the wind whichever way the camera faces.
     const lean = Math.min(0.5, this.state.windSpeed * 0.018);
-    this.lensRain.setGravity(Math.sin(preset.sea.windDirection) * lean, 1, 1 + lean);
+    this.camera.getWorldDirection(_impactForward);
+    const across =
+      (Math.sin(preset.sea.windDirection) * _impactForward.x - Math.cos(preset.sea.windDirection) * _impactForward.z) /
+      Math.max(1e-3, Math.hypot(_impactForward.x, _impactForward.z));
+    this.lensRain.setGravity(across * lean, 1, 1 + lean);
     this.lensRain.update(dt);
 
     // Volumetric fog follows the key light, and fades out as the camera goes

@@ -361,7 +361,7 @@ export class LensRain {
   private quality = 3;
   private disposed = false;
 
-  private readonly gravityTarget = new THREE.Vector2(0, -1);
+  private readonly gravityTarget = new THREE.Vector2(0, 1);
   private gravityMagnitude = 1;
   private gravityMagnitudeTarget = 1;
 
@@ -378,8 +378,8 @@ export class LensRain {
    */
   private readonly uGlass = uniform(0);
   private readonly uClock = uniform(0);
-  /** Unit "down" on the glass, in the square screen metric. */
-  private readonly uGravity = uniform(new THREE.Vector2(0, -1));
+  /** Unit "down" on the glass, in the square screen metric; `+y` is down. */
+  private readonly uGravity = uniform(new THREE.Vector2(0, 1));
 
   // --- droplets -------------------------------------------------------------
   private readonly uRollRadius = uniform(DEFAULT_LENS_RAIN_PARAMS.rollRadius);
@@ -888,8 +888,11 @@ export class LensRain {
   /**
    * Which way is downhill on the glass, and how hard.
    *
-   * `(x, y)` is a direction in screen space with `+y` up, so the default is
-   * `(0, -1)`. Feed it the camera's roll and the wind's screen-space projection
+   * `(x, y)` is a direction in screen space with `+x` right and **`+y` down**:
+   * the lattice is built on the quad's uv, which runs top-down like screen uv
+   * everywhere else in this project, so straight down the glass is `(0, 1)`.
+   * (This said `+y` up once, and a caller that believed it ran the beads up the
+   * screen.) Feed it the camera's roll and the wind's screen-space projection
    * and the drops lean and run with the weather instead of always falling square
    * to the frame. `magnitude` scales the pinning threshold: harder driving breaks
    * more drops free, which is why a windscreen at speed sheets and a parked one
@@ -977,7 +980,7 @@ export class LensRain {
       gravity.x /= length;
       gravity.y /= length;
     } else {
-      gravity.set(0, -1);
+      gravity.set(0, 1);
     }
     this.gravityMagnitude += (this.gravityMagnitudeTarget - this.gravityMagnitude) * blend;
     this.uRollRadius.value = this.params.rollRadius / Math.max(0.05, this.gravityMagnitude);
