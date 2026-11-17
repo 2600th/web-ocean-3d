@@ -235,6 +235,28 @@ export class Splash {
     this.jet.renderOrder = 5;
     this.materials.push(crownMaterial, jetMaterial, particleMaterial);
     this.geometries.push(crownGeometry, jetGeometry, quad);
+
+    // The dense parts again, into depth only, so the post-process fog sees a
+    // splash at its own distance instead of fogging it as the sea or sky behind
+    // it — in a storm's fog that was total. The same pre-pass `Spray` draws, for
+    // the same reason; ordered before the colour so each soft-fades against the
+    // scene and not against itself (see `sharedSceneDepth`).
+    const depthMaterials = [
+      sheetMaterial(() => this.crownVertex(), () => this.crownFragment(), true),
+      sheetMaterial(() => this.jetVertex(), () => this.jetFragment(), true),
+      sprayMaterial(() => this.particleVertex(), true),
+    ];
+    [this.crown, this.jet, this.particles].forEach((mesh, i) => {
+      const depth = new THREE.Mesh(mesh.geometry, depthMaterials[i]);
+      depth.name = `${mesh.name}-depth`;
+      depth.frustumCulled = false;
+      depth.castShadow = false;
+      depth.receiveShadow = false;
+      depth.matrixAutoUpdate = false;
+      depth.renderOrder = 4;
+      mesh.add(depth);
+    });
+    this.materials.push(...depthMaterials);
   }
 
   /** Where the foam and the ring waves go. */
@@ -666,13 +688,15 @@ function sheetFragment(options: { rimFingers: boolean }): any {
   return vec4(radiance, alpha);
 }
 
-function sheetMaterial(vertex: () => any, fragment: () => any): THREE.MeshBasicNodeMaterial {
+function sheetMaterial(vertex: () => any, fragment: () => any, depthOnly = false): THREE.MeshBasicNodeMaterial {
   const material = new THREE.MeshBasicNodeMaterial();
   material.side = THREE.DoubleSide;
   material.transparent = true;
-  material.depthWrite = false;
+  material.depthWrite = depthOnly;
+  material.colorWrite = !depthOnly;
   material.fog = false;
-  material.alphaTest = SPRAY_ALPHA_FLOOR;
+  // The depth pass takes only the dense sheet, as `sprayMaterial`'s does.
+  material.alphaTest = depthOnly ? 0.3 : SPRAY_ALPHA_FLOOR;
   material.positionNode = Fn(() => vertex())() as any;
   material.colorNode = Fn(() => fragment())() as any;
   return material;
