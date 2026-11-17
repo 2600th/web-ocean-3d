@@ -1079,8 +1079,9 @@ export class MusicEngine implements NoteHost {
       if (beat || e > 0.6) {
         const level = VEL.buzz * p.buzz * (beat ? 1 : 0.45) * (0.6 + 0.4 * e);
         const g = this.buzzGate.gain;
-        g.setValueAtTime(0, t);
-        g.linearRampToValueAtTime(level, t + 0.012);
+        // Struck from wherever the last stroke's decay has got to. Setting it to
+        // zero first was a step on every stroke under way, which is a click.
+        g.setTargetAtTime(level, t, 0.004);
         g.setTargetAtTime(0, t + 0.035, 0.05);
       }
     }
