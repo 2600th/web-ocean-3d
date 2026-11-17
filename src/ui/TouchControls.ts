@@ -1,11 +1,12 @@
 /**
- * On-screen throttle and rudder for touch devices.
+ * On-screen helm for touch devices.
  *
- * Boat mode is driven with W/S and A/D, which a phone does not have. This is the
- * same two axes as a thumbstick: push forward for ahead, pull back for astern,
- * left and right for rudder. It writes into `ShipController.setInput`, the same
- * entry point the keyboard resolves to, so there is one place where throttle and
- * rudder become forces and no second control path to keep in step.
+ * Boat mode is steered with A/D, which a phone does not have. The stick's
+ * left and right are the rudder, written to `ShipController.setRudderInput`.
+ * It used to be a throttle as well, and that opened an engine the ship only has
+ * for the tour and the tests: at the helm the sails drive her, and they are
+ * set with the buttons beside the stick. Up and down work the sheets instead:
+ * up hauls the sails in, down eases them out, the keyboard's Q and E.
  *
  * Shown only when there is a coarse pointer *and* Boat mode is selected. A mouse
  * user already has better controls and a stick over the frame would only be in
@@ -29,10 +30,17 @@ const KNOB_TRAVEL = 0.62;
  * all. 0.12 is small enough that deliberate input still feels immediate.
  */
 const DEAD_ZONE = 0.12;
+/** Dead zone for the stick's vertical, the sheets. */
+const TRIM_DEAD_ZONE = 0.3;
 
 export interface TouchControlsCallbacks {
-  /** Throttle and rudder, each -1..1. Called only when a value changes. */
-  onInput(throttle: number, rudder: number): void;
+  /** Rudder, -1..1. Called only when the value changes. */
+  onSteer(rudder: number): void;
+  /**
+   * Sheet rate, -1 (haul in, stick up) .. 1 (ease out, stick down). Called only
+   * when the value changes. Omitted: the stick's vertical does nothing.
+   */
+  onTrim?(rate: number): void;
   /** Sail trim one step up (1) or down (-1). Omitted: no sail buttons. */
   onSail?(direction: 1 | -1): void;
   /** Drop or weigh the anchor. Omitted: no anchor button. */
@@ -49,8 +57,8 @@ export class TouchControls {
   private readonly controller = new AbortController();
 
   private activePointer: number | null = null;
-  private throttle = 0;
   private rudder = 0;
+  private trim = 0;
   private visible = false;
   private disposed = false;
 
@@ -62,7 +70,12 @@ export class TouchControls {
     const pad = document.createElement('div');
     pad.className = 'touchpad';
     pad.setAttribute('role', 'group');
-    pad.setAttribute('aria-label', 'Steering stick: up for ahead, down for astern, left and right to steer');
+    pad.setAttribute(
+      'aria-label',
+      callbacks.onTrim
+        ? 'Steering stick: left and right to steer, up to haul the sails in, down to ease them out'
+        : 'Steering stick: left and right to steer',
+    );
     pad.hidden = true;
 
     const ring = document.createElement('div');
@@ -71,15 +84,17 @@ export class TouchControls {
     const knob = document.createElement('div');
     knob.className = 'touchpad__knob';
 
-    const ahead = document.createElement('span');
-    ahead.className = 'touchpad__label touchpad__label--ahead';
-    ahead.textContent = 'AHEAD';
-    const astern = document.createElement('span');
-    astern.className = 'touchpad__label touchpad__label--astern';
-    astern.textContent = 'ASTERN';
-
     ring.append(knob);
-    pad.append(ring, ahead, astern);
+    pad.append(ring);
+    if (callbacks.onTrim) {
+      const haul = document.createElement('span');
+      haul.className = 'touchpad__label touchpad__label--ahead';
+      haul.textContent = 'HAUL IN';
+      const ease = document.createElement('span');
+      ease.className = 'touchpad__label touchpad__label--astern';
+      ease.textContent = 'EASE OUT';
+      pad.append(haul, ease);
+    }
 
     pad.addEventListener('pointerdown', this.onPointerDown, { signal });
     pad.addEventListener('pointermove', this.onPointerMove, { signal });
@@ -93,7 +108,7 @@ export class TouchControls {
     this.knob = knob;
     this.root.append(pad);
 
-    // The stick is rudder and engine; the sails and the anchor are discrete
+    // The stick is the rudder; the sails and the anchor are discrete
     // orders, so they are buttons — the same three a keyboard player reaches
     // with W, S and R.
     let actions: HTMLElement | null = null;
@@ -228,15 +243,21 @@ export class TouchControls {
       `translate(calc(-50% + ${(nx * KNOB_TRAVEL * radius).toFixed(1)}px), ` +
       `calc(-50% + ${(ny * KNOB_TRAVEL * radius).toFixed(1)}px))`;
 
-    // Screen y grows downward; pushing the stick up is ahead.
-    this.emit(deadZone(-ny), deadZone(nx));
+    // Screen y grows downward: up hauls the sheets in (negative), down eases.
+    // A wider dead zone than the rudder's, so steering with a thumb that is
+    // not perfectly level does not also work the sheets.
+    this.emit(deadZone(nx), deadZone(ny, TRIM_DEAD_ZONE));
   }
 
-  private emit(throttle: number, rudder: number): void {
-    if (throttle === this.throttle && rudder === this.rudder) return;
-    this.throttle = throttle;
-    this.rudder = rudder;
-    this.callbacks.onInput(throttle, rudder);
+  private emit(rudder: number, trim: number): void {
+    if (rudder !== this.rudder) {
+      this.rudder = rudder;
+      this.callbacks.onSteer(rudder);
+    }
+    if (trim !== this.trim) {
+      this.trim = trim;
+      this.callbacks.onTrim?.(trim);
+    }
   }
 }
 
@@ -244,11 +265,11 @@ export class TouchControls {
  * Rescales past the dead zone rather than clipping to it.
  *
  * Clipping leaves a step: the first input past the threshold jumps straight to
- * 0.12 of full throttle. Rescaling means the usable range still starts at zero.
+ * 0.12 of full rudder. Rescaling means the usable range still starts at zero.
  */
-function deadZone(value: number): number {
+function deadZone(value: number, zone = DEAD_ZONE): number {
   const magnitude = Math.abs(value);
-  if (magnitude <= DEAD_ZONE) return 0;
-  const scaled = (magnitude - DEAD_ZONE) / (1 - DEAD_ZONE);
+  if (magnitude <= zone) return 0;
+  const scaled = (magnitude - zone) / (1 - zone);
   return value < 0 ? -scaled : scaled;
 }

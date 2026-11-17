@@ -102,6 +102,7 @@ import { Panel } from './ui/Panel';
 import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
+import { GamepadInput } from './input/Gamepad';
 import { DEFAULT_UI_STATE, type UiState } from './ui/types';
 import { openStartGate, showWebGPURequired, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
@@ -565,6 +566,7 @@ class App {
   private stormQuote!: StormQuote;
   /** On-screen throttle/rudder. Null on devices with a fine pointer. */
   private touchControls: TouchControls | null = null;
+  private gamepad: GamepadInput | null = null;
   private loop!: Loop;
   private adaptive!: AdaptiveQuality;
 
@@ -2731,12 +2733,28 @@ class App {
     // viewer to discover by accident.
     if (TouchControls.isTouchDevice()) {
       this.touchControls = new TouchControls(this.uiRoot, {
-        onInput: (throttle, rudder) => this.shipControls?.setInput(throttle, rudder),
+        onSteer: (rudder) => this.shipControls?.setRudderInput(rudder),
+        onTrim: (rate) => {
+          this.gameplay?.setTrimInput(rate);
+          if (rate !== 0) this.hud.noteLesson('trim');
+        },
         onSail: (direction) => this.gameplay?.stepSail(direction),
         onAnchor: () => this.gameplay?.toggleAnchor(),
       });
       this.touchControls.setVisible(this.state.cameraMode === 'boat');
     }
+    // Gamepad at the helm; see `src/input/Gamepad`. Inert until a pad connects.
+    this.gamepad = new GamepadInput({
+      onSteer: (rudder) => this.shipControls?.setRudderInput(rudder),
+      onTrim: (rate) => {
+        this.gameplay?.setTrimInput(rate);
+        if (rate !== 0) this.hud.noteLesson('trim');
+      },
+      onSail: (direction) => this.gameplay?.stepSail(direction),
+      onAnchor: () => this.gameplay?.toggleAnchor(),
+      onLook: (x, y) => this.director.setChaseLook(x, y),
+      onActive: () => this.hud.setPadInUse(),
+    });
   }
 
   private onStateChange(key: keyof UiState): Promise<void> | void {
@@ -4079,6 +4097,8 @@ class App {
       const orders = this.director.shipInput;
       this.shipControls.setInput(orders.throttle, orders.rudder);
     }
+    if (this.gamepad) this.gamepad.haptics = this.state.haptics;
+    this.gamepad?.update(dt, this.state.cameraMode === 'boat', this.gameplay?.shakeTrauma ?? 0);
     this.shipControls?.update(dt);
     // Sails, anchor and cargo: adds to the forces the controller just set, so
     // it runs between the controller and the solve. See `src/gameplay`.
@@ -4723,6 +4743,7 @@ class App {
     this.detachUiSounds = null;
     this.hud?.dispose();
     this.touchControls?.dispose();
+    this.gamepad?.dispose();
     this.director?.dispose();
     this.sampler?.dispose();
     this.simulation?.dispose();

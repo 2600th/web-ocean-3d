@@ -62,6 +62,11 @@ export interface UiState {
   /** Device pixel ratio multiplier, 0.5..2. */
   pixelRatio: number;
   cameraMode: CameraMode;
+  /**
+   * Gamepad rumble on hard knocks, where the pad and browser support it
+   * (Chrome, Edge, Safari 16.4+; not Firefox or iOS Safari).
+   */
+  haptics: boolean;
 }
 
 export interface UiCallbacks {
@@ -137,6 +142,7 @@ export const DEFAULT_UI_STATE: UiState = {
   wakeProbes: false,
   pixelRatio: 1,
   cameraMode: 'orbit',
+  haptics: true,
 };
 
 export const QUALITY_TIERS: readonly QualityTier[] = ['low', 'medium', 'high', 'ultra', 'max'];

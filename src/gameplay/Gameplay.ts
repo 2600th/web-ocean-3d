@@ -5,17 +5,23 @@ import type { OceanSampler } from '../ocean/Sampler';
 import { mulberry32 } from '../core/random';
 import { BowSpray, Burst, CargoGlint, ObjectiveBeacon } from './effects';
 import {
+  FLOOR_DRIVE,
   IRONS_DEG,
   KNOTS_PER_MS,
   angleOffWind,
+  apparentWind,
   approach,
   compassFromHeading,
   compassFromVector,
+  idealTrim,
+  overpress,
   pointOfSail,
   polarDrive,
+  sailPressure,
   smoothstep,
-  windDriveFactor,
+  trimFactor,
   windFromCompass,
+  type ApparentWind,
   type PointOfSail,
 } from './sailing';
 import {
@@ -32,7 +38,7 @@ import {
  * recover.
  *
  * **Everything here is a force or a report.** Like `ShipController`, this never
- * writes the hull's pose. The sails hand the controller a drive fraction, and
+ * writes the hull's pose. The sails hand the controller a force, and
  * heel, leeway and the anchor rode are added to the body's external force and
  * torque *after* the controller has set them and *before* the buoyancy solver
  * integrates them — so they are felt by the same substeps that float the ship,
@@ -56,13 +62,28 @@ const SAIL_ORDER: readonly SailSetting[] = ['furled', 'half', 'full'];
 /** How fast canvas is set or taken in, fraction per second. Crew, not a switch. */
 const SAIL_RATE = 0.45;
 /**
- * Drive at full sail on the best point of sail, as a fraction of the engine.
+ * Force along the bow, N, at full drive: full sail at full pressure on the
+ * best point of sail, before trim.
  *
- * The controller's drag gives about 15 knots for a full engine; a laden
- * square-rigger at her best makes ten to twelve, and this puts the top of the
- * curve there, with waves and leeway adding a knot either way.
+ * Its own figure rather than a fraction of the controller's engine, which the
+ * helm never opens. Against the hull's drag this gives about twelve knots on a
+ * beam reach in a fresh breeze once apparent wind is counted, which is what a
+ * laden square-rigger makes at her best, and some fourteen at the peak of the
+ * overpress curve in a strong one.
  */
-const SAIL_POWER = 0.6;
+const SAIL_THRUST = 66_000;
+/** Sheet travel per second for a held trim input, full range in two seconds. */
+const TRIM_RATE = 0.5;
+/** Sheet setting at the start: half out, which suits nothing exactly. */
+const TRIM_START = 0.5;
+/** Extra rudder authority at speed while the player has the helm. */
+const TURN_BOOST = 0.4;
+/**
+ * Most canvas pressure the heel and leeway see. Pressure past full is what
+ * over-heels her in a gale; this cap keeps a hurricane slider from rolling her
+ * past what the buoyancy probes can right.
+ */
+const HEEL_PRESSURE_MAX = 2.2;
 /**
  * Fraction of the drive left while anchored. The crew spills the wind rather
  * than let the canvas tear the anchor out — which also lets her swing.
@@ -261,6 +282,14 @@ export interface GameplaySnapshot {
   drive: number;
   angleOffWindDeg: number;
   pointOfSail: PointOfSail;
+  /** Sheets, 0 hauled in .. 1 eased out, and the setting that suits the wind now. */
+  trim: number;
+  idealTrim: number;
+  /** Apparent wind on the canvas: angle off the bow it comes from, and speed. */
+  apparentAngleDeg: number;
+  apparentKnots: number;
+  /** Canvas pressure, 1 is full; above about 1.3 she is overpressed. */
+  pressure: number;
   heelDeg: number;
   speedKnots: number;
   headingDeg: number;
@@ -289,6 +318,13 @@ export class Gameplay {
   private sailFill = 0;
   private drive = 0;
   private offWind = 0;
+  /** Sheets, 0 hauled hard in .. 1 eased right out. */
+  private trim = TRIM_START;
+  /** Held sheet rate from the pad or touch stick, -1..1; keys add to it. */
+  private trimInput = 0;
+  private readonly trimKeys = new Set<string>();
+  private pressure = 0;
+  private readonly apparent: ApparentWind = { speed: 0, angleDeg: 0, side: 0, towardRad: 0 };
 
   // --- anchor -------------------------------------------------------------
   private anchor: AnchorState = 'up';
@@ -395,6 +431,10 @@ export class Gameplay {
     keys?.addEventListener('keydown', this.onKeyDown as EventListener, {
       signal: this.abort.signal,
     });
+    keys?.addEventListener('keyup', this.onKeyUp as EventListener, { signal: this.abort.signal });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('blur', () => this.trimKeys.clear(), { signal: this.abort.signal });
+    }
 
     this.reset();
   }
@@ -425,6 +465,10 @@ export class Gameplay {
     this.sailFill = 0;
     this.drive = 0;
     this.offWind = 0;
+    this.trim = TRIM_START;
+    this.trimInput = 0;
+    this.trimKeys.clear();
+    this.pressure = 0;
     this.anchor = 'up';
     this.weighTimer = 0;
     this.wasTaut = false;
@@ -442,7 +486,7 @@ export class Gameplay {
     this.ironsCooldown = 0;
     this.shoalCooldown = 0;
     this.random = mulberry32(this.seed);
-    this.o.controller.setSailDrive(0);
+    this.o.controller.setSailForce(0);
     this.burst.clear();
     this.sandPlume.clear();
     this.kick = 0;
@@ -492,22 +536,34 @@ export class Gameplay {
     // --- sails ------------------------------------------------------------
     this.sailFill = approach(this.sailFill, SAIL_FILL[this.sail], SAIL_RATE * dt);
     this.offWind = angleOffWind(body.heading, wind.towardRad);
-    const windFactor = windDriveFactor(wind.speed);
-    this.drive =
-      this.sailFill *
-      polarDrive(this.offWind) *
-      windFactor *
-      SAIL_POWER *
-      (this.anchor === 'up' ? 1 : ANCHORED_SAIL);
+
+    // Sheets: keys and the held stick or pad rate together, clamped.
+    const keyTrim = (this.trimKeys.has('KeyE') ? 1 : 0) - (this.trimKeys.has('KeyQ') ? 1 : 0);
+    const trimRate = Math.max(-1, Math.min(1, keyTrim + this.trimInput));
+    if (trimRate !== 0) this.trim = Math.min(1, Math.max(0, this.trim + trimRate * TRIM_RATE * dt));
+
+    // The wind on the canvas: true wind less the ship's own way.
+    apparentWind(wind.towardRad, wind.speed, body.velocity.x, body.velocity.z, body.heading, this.apparent);
+    this.pressure = sailPressure(this.apparent.speed, wind.speed, this.sailFill);
+    let drive =
+      overpress(this.pressure) *
+      polarDrive(this.apparent.angleDeg) *
+      trimFactor(this.trim, this.apparent.angleDeg);
+    // The floor: set canvas keeps her moving on any heading outside the no-go
+    // zone, faded out across its edge on the *true* wind so a ship whose own
+    // way has drawn the apparent wind forward is not stalled by it.
+    const pulling = smoothstep(IRONS_DEG - 8, IRONS_DEG + 15, this.offWind);
+    drive = Math.max(drive, FLOOR_DRIVE * this.sailFill * pulling);
+    this.drive = drive * (this.anchor === 'up' ? 1 : ANCHORED_SAIL);
     // Read by the controller on its next update — a frame of latency on a
     // quantity that itself takes seconds to change.
-    this.o.controller.setSailDrive(this.drive);
+    this.o.controller.setSailForce(this.drive * SAIL_THRUST);
 
     this.forward.set(1, 0, 0).applyQuaternion(body.object.quaternion).setY(0);
     if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
     this.forward.normalize();
 
-    this.applyHeel(wind.towardRad, windFactor);
+    this.applyHeel();
     this.applyAnchor(dt, wind);
     this.updateLoot(dt);
     this.updateFeel(dt);
@@ -541,6 +597,33 @@ export class Gameplay {
     if (setting === this.sail) return;
     this.sail = setting;
     this.pushTelemetry();
+  }
+
+  /**
+   * Held sheet rate from a stick or a pad, -1 (haul in) .. 1 (ease out). A
+   * latch, like the rudder: the caller sets it back to 0 on release. Q and E
+   * add to it from the keyboard.
+   */
+  setTrimInput(rate: number): void {
+    this.trimInput = Number.isFinite(rate) ? Math.max(-1, Math.min(1, rate)) : 0;
+  }
+
+  /** Sheets, 0 hauled in .. 1 eased out. */
+  get sheetTrim(): number {
+    return this.trim;
+  }
+
+  /**
+   * The apparent wind on the canvas as of the last update: what the sails
+   * should be drawn filling to. Live object; do not retain or modify it.
+   */
+  get apparentWind(): Readonly<ApparentWind> {
+    return this.apparent;
+  }
+
+  /** Camera-shake trauma, 0..1, for rumble. Read only. */
+  get shakeTrauma(): number {
+    return this.trauma;
   }
 
   /**
@@ -668,6 +751,11 @@ export class Gameplay {
       drive: this.drive,
       angleOffWindDeg: angleOffWind(body.heading, wind.towardRad),
       pointOfSail: pointOfSail(angleOffWind(body.heading, wind.towardRad)),
+      trim: this.trim,
+      idealTrim: idealTrim(this.apparent.angleDeg),
+      apparentAngleDeg: this.apparent.angleDeg,
+      apparentKnots: this.apparent.speed * KNOTS_PER_MS,
+      pressure: this.pressure,
       heelDeg: THREE.MathUtils.radToDeg(this.rollAngle()),
       speedKnots: Math.hypot(body.velocity.x, body.velocity.z) * KNOTS_PER_MS,
       headingDeg: compassFromHeading(body.heading),
@@ -694,6 +782,10 @@ export class Gameplay {
       state: () => this.snapshot(),
       setSail: (s: SailSetting) => this.setSail(s),
       stepSail: (d: 1 | -1) => this.stepSail(d),
+      setTrim: (trim: number) => {
+        this.trim = Math.min(1, Math.max(0, trim));
+      },
+      setTrimInput: (rate: number) => this.setTrimInput(rate),
       dropAnchor: () => this.dropAnchor(),
       weighAnchor: () => this.weighAnchor(),
       toggleAnchor: () => this.toggleAnchor(),
@@ -723,10 +815,13 @@ export class Gameplay {
     this.active = active;
     const controller = this.o.controller;
     controller.setThrottleKeysEnabled(!active);
+    controller.setTurnBoost(active ? TURN_BOOST : 0);
     if (!active) {
-      controller.setSailDrive(0);
+      controller.setSailForce(0);
       this.kick = 0;
       this.setStalled(false);
+      this.trimKeys.clear();
+      this.trimInput = 0;
       this.clearShake();
       this.ui.setObjective(null);
       this.ui.setShipTelemetry(null);
@@ -753,11 +848,12 @@ export class Gameplay {
    * moment, so the angle she settles at is the solver's answer, and a wave
    * rolling her further is still felt on top of it.
    */
-  private applyHeel(windToward: number, windFactor: number): void {
+  private applyHeel(): void {
     if (this.sailFill <= 0.001) return;
-    // Leeward: the component of the wind's direction across the bow.
-    const wx = Math.cos(windToward);
-    const wz = Math.sin(windToward);
+    // Leeward: the component of the apparent wind's direction across the bow,
+    // the wind the canvas actually feels.
+    const wx = Math.cos(this.apparent.towardRad);
+    const wz = Math.sin(this.apparent.towardRad);
     const along = wx * this.forward.x + wz * this.forward.z;
     this.lee.set(wx - along * this.forward.x, 0, wz - along * this.forward.z);
     const across = this.lee.length();
@@ -765,9 +861,11 @@ export class Gameplay {
     this.lee.divideScalar(across);
 
     // Zero in irons (the canvas is luffing, not pulling), largest abeam, gone
-    // dead downwind where the push is all along the bow.
+    // dead downwind where the push is all along the bow. Pressure already
+    // carries the sail fill, and past full it is what over-heels her in a gale:
+    // the cue that half sail is now the faster call.
     const pulling = smoothstep(IRONS_DEG - 8, IRONS_DEG + 15, this.offWind);
-    const side = across * pulling * this.sailFill * windFactor;
+    const side = across * pulling * Math.min(HEEL_PRESSURE_MAX, this.pressure);
 
     const body = this.o.body;
     // U x L, with U = world up: the axis that rolls the mastheads to leeward.
@@ -1197,10 +1295,19 @@ export class Gameplay {
       case 'KeyR':
         this.toggleAnchor();
         break;
+      // Sheets: held, so the key's up event ends the haul.
+      case 'KeyQ':
+      case 'KeyE':
+        this.trimKeys.add(event.code);
+        break;
       default:
         return;
     }
     event.preventDefault();
+  };
+
+  private readonly onKeyUp = (event: KeyboardEvent): void => {
+    this.trimKeys.delete(event.code);
   };
 }
 

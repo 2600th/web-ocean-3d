@@ -1054,6 +1054,29 @@ body {
   clip-path: polygon(100% 50%, 0 10%, 20% 50%, 0 90%);
 }
 
+/* The no-go zone either side of the wind. Fades for good once learned; brighter
+   while her bow is inside it. Off the visible arc it is simply not drawn. */
+.hud-compass__window > .hud-compass__nogo {
+  z-index: 2;
+  bottom: 0;
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--wax) 22%, var(--wax) 78%, transparent);
+  opacity: 0.55;
+  transition: opacity 1.6s ease;
+  pointer-events: none;
+}
+
+.hud-compass__nogo.is-inside {
+  opacity: 1;
+}
+
+.hud-compass__nogo.is-learned,
+.hud-compass__nogo.is-off-left,
+.hud-compass__nogo.is-off-right {
+  opacity: 0;
+}
+
 .hud-compass__mark--ship {
   bottom: 0;
   width: 14px;
