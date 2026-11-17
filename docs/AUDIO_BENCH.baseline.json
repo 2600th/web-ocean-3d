@@ -1,0 +1,195 @@
+{
+  "date": "2026-11-17T18:37:31.144Z",
+  "args": {
+    "states": [
+      "calm",
+      "sailing",
+      "storm",
+      "underwater",
+      "tour",
+      "nightCalm",
+      "tierChange"
+    ],
+    "seconds": 60,
+    "tier": "high",
+    "volume": 1,
+    "music": 0.5,
+    "saveBaseline": true,
+    "wav": true
+  },
+  "clickRatio": 10,
+  "clickFloor": 0.004,
+  "selfTest": {
+    "sine": 0,
+    "cut": 1,
+    "noise": 0
+  },
+  "results": {
+    "calm": {
+      "integratedLufs": -27.60383731869433,
+      "shortTermMaxLufs": -22.626685013981135,
+      "samplePeakDb": -7.284997678117393,
+      "truePeakDb": -7.284997678117393,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 4,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 18,
+      "peakLiveNodes": 193,
+      "peakNodesPerSecond": 180,
+      "nodesCreated": 1614,
+      "bedsRendering": 10,
+      "bedsAtZero": 6,
+      "repeatMeasured": null,
+      "repeatProjected": 110.76923076923077,
+      "file": "test-results/audio/calm.wav"
+    },
+    "sailing": {
+      "integratedLufs": -22.74362429330353,
+      "shortTermMaxLufs": -19.374867597991113,
+      "samplePeakDb": -5.472747870912454,
+      "truePeakDb": -5.458744329383447,
+      "clicks": 2,
+      "clickTimes": [
+        {
+          "t": 41.785,
+          "ratio": 10.6,
+          "size": 0.0813
+        },
+        {
+          "t": 57.189,
+          "ratio": 11.5,
+          "size": 0.1223
+        }
+      ],
+      "peakFxVoices": 5,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 20,
+      "peakLiveNodes": 251,
+      "peakNodesPerSecond": 264,
+      "nodesCreated": 5011,
+      "bedsRendering": 10,
+      "bedsAtZero": 3,
+      "repeatMeasured": null,
+      "repeatProjected": 60.65200909780136,
+      "file": "test-results/audio/sailing.wav"
+    },
+    "storm": {
+      "integratedLufs": -16.174607371829232,
+      "shortTermMaxLufs": -15.042069913952174,
+      "samplePeakDb": -2.2977100897397946,
+      "truePeakDb": -2.2710873608514337,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 8,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 24,
+      "peakLiveNodes": 298,
+      "peakNodesPerSecond": 287,
+      "nodesCreated": 7993,
+      "bedsRendering": 10,
+      "bedsAtZero": 0,
+      "repeatMeasured": 46.784,
+      "repeatProjected": 47.244094488188985,
+      "file": "test-results/audio/storm.wav"
+    },
+    "underwater": {
+      "integratedLufs": -23.519062129588537,
+      "shortTermMaxLufs": -21.86818066562596,
+      "samplePeakDb": -8.102013784135957,
+      "truePeakDb": -8.101777982109668,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 11,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 8,
+      "peakLiveNodes": 169,
+      "peakNodesPerSecond": 153,
+      "nodesCreated": 626,
+      "bedsRendering": 10,
+      "bedsAtZero": 5,
+      "repeatMeasured": null,
+      "repeatProjected": 106.66666666666667,
+      "file": "test-results/audio/underwater.wav"
+    },
+    "tour": {
+      "integratedLufs": -24.523585524928134,
+      "shortTermMaxLufs": -21.242715844425064,
+      "samplePeakDb": -7.354564261800153,
+      "truePeakDb": -7.334333341196394,
+      "clicks": 1,
+      "clickTimes": [
+        {
+          "t": 53.99,
+          "ratio": 10.1,
+          "size": 0.0519
+        }
+      ],
+      "peakFxVoices": 4,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 25,
+      "peakLiveNodes": 230,
+      "peakNodesPerSecond": 207,
+      "nodesCreated": 3406,
+      "bedsRendering": 10,
+      "bedsAtZero": 3,
+      "repeatMeasured": 55.104,
+      "repeatProjected": 55.652173913043484,
+      "file": "test-results/audio/tour.wav"
+    },
+    "nightCalm": {
+      "integratedLufs": -27.17608772881768,
+      "shortTermMaxLufs": -22.512595911749063,
+      "samplePeakDb": -7.261272737393426,
+      "truePeakDb": -7.261272737393426,
+      "clicks": 0,
+      "clickTimes": [],
+      "peakFxVoices": 5,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 18,
+      "peakLiveNodes": 195,
+      "peakNodesPerSecond": 180,
+      "nodesCreated": 1620,
+      "bedsRendering": 10,
+      "bedsAtZero": 6,
+      "repeatMeasured": null,
+      "repeatProjected": 110.76923076923077,
+      "file": "test-results/audio/nightCalm.wav"
+    },
+    "tierChange": {
+      "integratedLufs": -23.13094358388399,
+      "shortTermMaxLufs": -21.236421995884463,
+      "samplePeakDb": -7.650588563773192,
+      "truePeakDb": -7.6423464480357906,
+      "clicks": 3,
+      "clickTimes": [
+        {
+          "t": 42.543,
+          "ratio": 11.5,
+          "size": 0.0976
+        },
+        {
+          "t": 42.946,
+          "ratio": 10.7,
+          "size": 0.1152
+        },
+        {
+          "t": 43.991,
+          "ratio": 10.8,
+          "size": 0.0993
+        }
+      ],
+      "peakFxVoices": 5,
+      "fxVoiceCap": 12,
+      "peakMusicNotes": 19,
+      "peakLiveNodes": 215,
+      "peakNodesPerSecond": 264,
+      "nodesCreated": 4443,
+      "bedsRendering": 10,
+      "bedsAtZero": 3,
+      "repeatMeasured": null,
+      "repeatProjected": 60.65200909780136,
+      "file": "test-results/audio/tierChange.wav"
+    }
+  }
+}
