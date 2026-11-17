@@ -360,6 +360,11 @@ export class LensRain {
   private film = 0;
   private quality = 3;
   private disposed = false;
+  /** The viewer's reduced-motion preference; see `douse`. */
+  private readonly motionQuery: MediaQueryList | null =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
 
   private readonly gravityTarget = new THREE.Vector2(0, 1);
   private gravityMagnitude = 1;
@@ -883,6 +888,24 @@ export class LensRain {
   /** 0 = above water, 1 = fully submerged. */
   setSubmersion(value: number): void {
     this.submersion = clampNumber(value, 0, 1);
+  }
+
+  /**
+   * Water thrown onto the lens: a slam's sheet or green water coming over the
+   * bow close to the camera. `amount` 0..1, the caller's share of the impact
+   * that reaches the glass, falling off with distance from it.
+   *
+   * It loads the same film surfacing does, and drains the same way — a scatter
+   * of large drops and runners gone in a second or two, with little misting —
+   * because it is the same thing: bulk water on the front element, not rain.
+   * Never takes the film down, so a second slam on a wet lens tops it up.
+   *
+   * Skipped under reduced motion: what it draws is drops running down the
+   * whole frame at once.
+   */
+  douse(amount: number): void {
+    if (this.disposed || this.motionQuery?.matches) return;
+    this.film = Math.max(this.film, clampNumber(amount, 0, 1));
   }
 
   /**

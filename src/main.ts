@@ -1741,6 +1741,9 @@ class App {
       if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
       else audio?.hullImpact?.(audible);
     }
+    // A slam or green water close to the eye throws water onto the lens: all of
+    // it inside 8 m, none past 22 m.
+    if (impact.kind !== 'slap') this.lensRain.douse(s * THREE.MathUtils.clamp((22 - distance) / 14, 0, 1));
 
     // White water where it hit, and water on the deck when it came aboard.
     const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
