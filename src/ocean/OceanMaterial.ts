@@ -268,6 +268,35 @@ const DETAIL_ROTATION = 1.1071487; // atan(2)
 const DETAIL_MIP_BIAS = 2;
 
 /**
+ * Gusts (see `OceanMaterial.gust`). A gust darkens the water it crosses
+ * because it raises the shortest waves first: the rougher patch mirrors less
+ * of the bright low sky and more of the darker sky overhead, the cat's paw.
+ *
+ * Scale and stretch: patches about a hundred metres across, half again as
+ * long along the wind. Drift: carried at 0.6 of the wind speed, as gust
+ * fronts are. Edges: the smoothstep that turns the noise into patches with
+ * lulls between them. Gain: the shortest band's slope in a lull and in a
+ * gust, which averages a little under 1 over the field. Mean: the field's
+ * value when `uGustStrength` is 0.
+ */
+const GUST_SCALE = 55;
+const GUST_STRETCH = 1.5;
+const GUST_DRIFT = 0.6;
+const GUST_EDGE: readonly [number, number] = [0.36, 0.7];
+const GUST_GAIN: readonly [number, number] = [0.3, 1.8];
+const GUST_MEAN = 0.5;
+
+/**
+ * The near-ripple read of the detail band: stretched 2.3 times (so 1 cm to
+ * 29 cm at High), turned by atan(1/3) so it never registers with the other
+ * two reads, at 0.6 of their slope, and drawn inside 6 m to gone by 45 m.
+ */
+const NEAR_RIPPLE_SCALE = 2.3;
+const NEAR_RIPPLE_ROTATION = 0.3217506; // atan(1/3)
+const NEAR_RIPPLE_GAIN = 0.6;
+const NEAR_RIPPLE_REACH: readonly [number, number] = [6, 45];
+
+/**
  * Gain on the sky's reflection (the environment lookup, not the planar
  * mirror's objects).
  *
@@ -303,6 +332,28 @@ const SKY_REFLECTION_GAIN = 1.3;
  * the dome nor the haze drew it).
  */
 const REFLECTION_GAIN_GRAZE = [0.0015, 0.012] as const;
+
+/**
+ * Where the swell stops displacing geometry, metres from the eye. Atlas fades
+ * each band's displacement at about thirty of its wave periods (GDC 2019);
+ * the two shorter cascades already go long before that, cut by the mesh's
+ * own band limit (`cascadeReach`), and this is the swell's. Past 4 km a
+ * metre-high crest is under a pixel from a deck, and the geometry only
+ * shimmers along the horizon row; its shading carries on in the normal.
+ * Far past the ship, so the buoyancy sampler's near field is untouched.
+ *
+ * The horizon line itself is not this file's to close. Blending the last
+ * pixels of sea toward the environment's horizon or toward `uHorizonColor`
+ * was tried (2026-11-18) and made the lines worse. By day and in the storm
+ * the scene's aerial perspective lays most of the colour on those pixels,
+ * and with the water drawn black the haze alone sat far under the dome's
+ * horizon (sRGB 115 against 204-224 in clear-day-wide, 86 against 148 in
+ * storm), so nothing the water draws beneath it can meet the dome; matching
+ * the haze's level-ray inscatter to the dome is `sky/AerialPerspective`'s
+ * job. At night the haze is dark and the far sea's own colour is the
+ * brighter side of the edge; neither target colour was the dome's there.
+ */
+const SWELL_DISPLACEMENT_FADE: readonly [number, number] = [4000, 12000];
 
 /**
  * Fresnel's flattening of the normal toward vertical, at a grazing view.
@@ -914,6 +965,29 @@ const SCATTER_WRAP = 0.45;
 const FACE_SHEET_METRES = 0.35;
 const FACE_GLOW = 4;
 
+/**
+ * The crest blend (Sea of Thieves, SIGGRAPH 2018): where on a wave it starts
+ * and is full, as height over the crest scale (`uCrestScale`; most crests
+ * stand under a third of it, and a mask that only lit the tallest left the
+ * storm's near waves slate); how much of the lobe is left cross-lit and
+ * down-light; how far toward the scatter colour a backlit crest goes; and
+ * that colour's luminance against the sky it is lit by. A little over 1,
+ * because the sky behind a crest seen toward the light is the bright part
+ * of it, brighter than the sky the facet itself mirrors.
+ */
+const CREST_PEAK: readonly [number, number] = [0.03, 0.32];
+const CREST_CROSS_LIT = 0.2;
+const CREST_BLEND = 0.6;
+const CREST_LIFT = 1.1;
+
+/**
+ * Bubbles under the foam (Atlas, GDC 2019): how far the water under foam goes
+ * toward the lit bubble colour, per unit of aeration (which tops out at 0.5),
+ * and that colour's albedo against the foam's. Milky turquoise, not white.
+ */
+const BUBBLE_MILK = 1.3;
+const BUBBLE_ALBEDO = 0.42;
+
 export class OceanMaterial {
   readonly material: THREE.MeshBasicNodeMaterial;
 
@@ -996,6 +1070,10 @@ export class OceanMaterial {
   private readonly uWhitePoint = uniform(1 / 0.42);
   /** Wind gain on the detail band's slope; see `shortWaveGain`. */
   private readonly uShortWaveGain = uniform(1);
+  /** Wind speed, m/s, for the gusts' drift. See `gust`. */
+  private readonly uWindSpeed = uniform(7);
+  /** How much of the gust field reaches the surface, 0..1. See `gust`. */
+  private readonly uGustStrength = uniform(1);
   /**
    * How lit the scene is, 0..1, independent of the key light's colour.
    *
@@ -1005,6 +1083,8 @@ export class OceanMaterial {
   private readonly uLightLevel = uniform(1);
   /** Significant wave height, metres. Sets the scale a crest is measured against. */
   private readonly uWaveScale = uniform(3.5);
+  /** Significant height the crest blend measures a crest against. See `setSurf`. */
+  private readonly uCrestScale = uniform(3.5);
   private readonly uSkyColor = uniform(new THREE.Color(0x5793d0));
   private readonly uHorizonColor = uniform(new THREE.Color(0xbdd6ec));
   private readonly uFogColor = uniform(new THREE.Color(0xb9d2e8));
@@ -1208,6 +1288,10 @@ export class OceanMaterial {
     // the surf zone running out past the shelf it sits on.
     const height = Math.min(3.6, (this.uWaveScale.value as number) * 0.3 + 0.6);
     setSurfState(phase, period, height, strength, shoreNear);
+    // The crest blend's scale: the fully developed height, but no taller than
+    // a wind sea of this peak can stand (steepness Hs / L near 1/14), since
+    // the storm's 21 m/s gives 10.8 m while its 60 m peak carries about 4.
+    this.uCrestScale.value = Math.max(0.35, Math.min(this.uWaveScale.value as number, Math.max(4, peakWavelength) / 14));
   }
 
   setWind(bearingRadians: number, speed: number): void {
@@ -1224,6 +1308,7 @@ export class OceanMaterial {
     // nothing but. The floor keeps a glassy preset from dividing by nearly zero.
     this.uWaveScale.value = Math.max(0.35, 0.0246 * Math.max(0, speed) ** 2);
     this.uShortWaveGain.value = shortWaveGain(speed);
+    this.uWindSpeed.value = Math.max(0, speed);
     // The foam pattern's streaks lie along the same axis; it is shared with the
     // island's ground, which draws the swash foam, so it lives in `FoamPattern`.
     setFoamWind(bearingRadians);
@@ -1445,6 +1530,30 @@ export class OceanMaterial {
     this.uVertexSpacing.value = Math.max(0, spacingPerMetre);
   }
 
+  /**
+   * The gust field: how hard the wind is blowing at a world point, 0 in a
+   * lull to 1 in a gust. Its gain on the shortest waves (`GUST_GAIN`) draws
+   * the dark "cat's paws" that cross a sea under a gusty wind.
+   *
+   * The one source of gusts on the surface, so a global wind field can replace
+   * it by returning its own value here. Today it is two octaves of value noise
+   * a hundred metres across, stretched along the wind and carried down it at
+   * GUST_DRIFT of the wind speed on the simulation clock (`uRainTime`, see
+   * `setRain`), so a deterministic rewind puts every patch back. Its uniforms
+   * are `uWindAxis`, `uWindSpeed` and `uGustStrength`.
+   */
+  private gust(worldXZ: any): any {
+    const along = vec2(this.uWindAxis.x, this.uWindAxis.y);
+    const across = vec2(this.uWindAxis.y.negate(), this.uWindAxis.x);
+    const travel = this.uWindSpeed.mul(GUST_DRIFT).mul(this.uRainTime);
+    const p = vec2(
+      worldXZ.dot(along).sub(travel).div(GUST_SCALE * GUST_STRETCH),
+      worldXZ.dot(across).div(GUST_SCALE),
+    ).toVar();
+    const n = valueNoise(p).mul(0.65).add(valueNoise(p.mul(2.13).add(vec2(5.2, 1.3))).mul(0.35));
+    return mix(float(GUST_MEAN), n.smoothstep(GUST_EDGE[0], GUST_EDGE[1]), this.uGustStrength);
+  }
+
   private build(inputs: OceanMaterialInputs): void {
     const { displacementTextures, derivativeTextures, tileSizes } = inputs;
     const floorDepth = inputs.floorDepthNode ?? null;
@@ -1560,6 +1669,8 @@ export class OceanMaterial {
           0.5,
           1,
         ).toVar();
+        // The swell's far fade; see SWELL_DISPLACEMENT_FADE.
+        if (i === 0) reach.mulAssign(smoothstepDownClamped(groundDistance, SWELL_DISPLACEMENT_FADE[0], SWELL_DISPLACEMENT_FADE[1]));
         const sample = this.displacementNodes[i]
           .sample(worldXZ.div(this.uTileSizes[i]))
           .level(lod)
@@ -1678,6 +1789,9 @@ export class OceanMaterial {
       const lostSlopeVariance = float(0).toVar();
       /** Cascade 0's share of the slope: the swell, which the surf replaces. */
       const swellSlope = vec2(0).toVar();
+      // Gusts: how hard the wind is blowing on this patch of water, as a gain
+      // on the shortest waves' slope. See `gust`.
+      const gustGain = mix(float(GUST_GAIN[0]), float(GUST_GAIN[1]), this.gust(fieldXZ)).toVar();
       for (let i = 0; i < cascadeCount; i++) {
         const d = this.derivativeNodes[i].sample(fieldXZ.div(this.uTileSizes[i])).toVar();
         // Weight folds into the fade, so a cascade the tier does not use
@@ -1685,7 +1799,10 @@ export class OceanMaterial {
         const fade = cascadeShadingFade(viewDistance, i, cascadeCount).mul(
           this.uCascadeWeights[i],
         );
-        slope.addAssign(vec2(d.x, d.y).mul(fade));
+        // The ripple cascade answers the gusts in its slope and variance, not
+        // in its fold: whitecap coverage stays the spectrum's.
+        const gustOn = i === MAX_CASCADES - 1 ? gustGain : float(1);
+        slope.addAssign(vec2(d.x, d.y).mul(fade).mul(gustOn));
         if (i === 0) swellSlope.assign(slope);
         // The *total* Jacobian, to first order: J - 1 = Σ (J_i - 1). See the
         // breaking-crest term in `Wake`, which uses the same sum, and why.
@@ -1697,7 +1814,7 @@ export class OceanMaterial {
         // land a few ulps negative when the variance is genuinely nil. Squared
         // fade because variance scales with the square of a linear weight.
         lostSlopeVariance.addAssign(
-          d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
+          d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade).mul(gustOn).mul(gustOn),
         );
       }
 
@@ -1719,7 +1836,7 @@ export class OceanMaterial {
       const cosR = Math.cos(DETAIL_ROTATION);
       const sinR = Math.sin(DETAIL_ROTATION);
       for (let i = 0; i < MAX_DETAIL; i++) {
-        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(Math.SQRT1_2);
+        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(gustGain).mul(Math.SQRT1_2);
         const uvA = fieldXZ.div(this.uDetailTiles[i]);
         // Two levels coarser than the footprint: see DETAIL_MIP_BIAS.
         const a = this.detailNodes[i].sample(uvA).bias(float(DETAIL_MIP_BIAS)).toVar();
@@ -1740,9 +1857,38 @@ export class OceanMaterial {
           .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
           .mul(this.uDetailWeights[i])
           .mul(this.uShortWaveGain.mul(this.uShortWaveGain))
+          .mul(gustGain.mul(gustGain))
           .mul(0.5)
           .toVar();
         lostDetailVariance.addAssign(detailLost);
+
+        // Ripples near the eye: a third read of the same band, stretched by
+        // NEAR_RIPPLE_SCALE and turned by a second irrational angle, so the
+        // decimetre ripples between this band and the ripple cascade's
+        // shortest waves are drawn where they are resolved instead of the
+        // near water reading as gel. Shading only, the same texture (no new
+        // binding; the stage is at 16), and gone past NEAR_RIPPLE_REACH,
+        // where the bias has already turned it into variance. The k^-4 tail
+        // has the same slope in every octave, so the stretched read keeps
+        // the band's slope statistics.
+        const near = smoothstepDownClamped(viewDistance, NEAR_RIPPLE_REACH[0], NEAR_RIPPLE_REACH[1])
+          .mul(this.uDetailWeights[i])
+          .toVar();
+        const cosC = Math.cos(NEAR_RIPPLE_ROTATION);
+        const sinC = Math.sin(NEAR_RIPPLE_ROTATION);
+        const uvC = vec2(
+          fieldXZ.x.mul(cosC).add(fieldXZ.y.mul(sinC)),
+          fieldXZ.y.mul(cosC).sub(fieldXZ.x.mul(sinC)),
+        )
+          .div(this.uDetailTiles[i].mul(NEAR_RIPPLE_SCALE))
+          .add(vec2(0.13, 0.59));
+        const c = this.detailNodes[i].sample(uvC).bias(float(DETAIL_MIP_BIAS)).toVar();
+        const cSlope = vec2(c.x.mul(cosC).sub(c.y.mul(sinC)), c.x.mul(sinC).add(c.y.mul(cosC)));
+        const nearWeight = this.uShortWaveGain.mul(gustGain).mul(near).mul(NEAR_RIPPLE_GAIN).toVar();
+        slope.addAssign(cSlope.mul(nearWeight));
+        lostDetailVariance.addAssign(
+          c.w.sub(c.x.mul(c.x).add(c.y.mul(c.y))).max(0).mul(nearWeight).mul(nearWeight),
+        );
       }
 
       // Rain impacts, added to the wave slope before the normal is built so they
@@ -2011,9 +2157,14 @@ export class OceanMaterial {
       const windU = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
       const shareU = this.uSlopeAnisotropy.div(this.uSlopeAnisotropy.add(1)).toVar();
       const roughScale = this.uRoughness.div(0.075).pow(2).toVar();
+      // The capillaries under the finest band are what a gust raises first,
+      // and past a few hundred metres they are all a cat's paw is: a patch of
+      // rougher sheen. Linear in the gain, not squared, so the far sea's mean
+      // sheen barely moves.
       const unresolved = float(0.0024)
         .mul(roughScale)
         .add(viewDistance.smoothstep(30, 500).mul(0.0035))
+        .mul(gustGain)
         .toVar();
       const varU = unresolved.add(lostSlopeVariance.mul(shareU)).add(lostDetailVariance.mul(0.5)).toVar();
       const varC = unresolved
@@ -2581,6 +2732,8 @@ export class OceanMaterial {
       const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
         .mul(mix(float(1), float(SKY_REFLECTION_GAIN), smoothstep(REFLECTION_GAIN_GRAZE[0], REFLECTION_GAIN_GRAZE[1], viewDir.y)))
         .toVar();
+      /** The sky's brightness on this facet, before any object takes the ray. */
+      const skyLuma = reflection.dot(vec3(0.2126, 0.7152, 0.0722)).toVar();
       /** How much of this pixel's mirror ray an object (hull, island) takes. */
       const objectCover = float(0).toVar();
 
@@ -2979,6 +3132,44 @@ export class OceanMaterial {
         .add(seenThrough)
         .mul(bedShade)
         .add(scatter.mul(sunShade))
+        .toVar();
+
+      // --- light through the crests --------------------------------------------
+      //
+      // Sea of Thieves' blend (Ang, "The Technical Art of Sea of Thieves",
+      // SIGGRAPH 2018 talks): the body is blended from its deep colour toward
+      // the scatter colour by a wave-peak mask, a forward lobe toward the light
+      // and the view's grazing angle. The terms above add light; they are sun
+      // terms, and a storm's deck takes the sun (`sunShade`, `uLightLevel`), so
+      // its crests stayed the slate of the troughs (REFERENCE_TARGETS, storm).
+      // What lights a crest from behind under an overcast is the bright sky
+      // behind the wave: so the crest colour is the scatter albedo's hue
+      // through a thin crest at the sky's own brightness, and it is blended
+      // over the reflection as well as the body (in `surface`, below), because
+      // at a grazing view Fresnel leaves the body a few percent of the pixel
+      // and a crest tip lit from behind is still seen green against a grey sky.
+      // Gone after dark with the sky (`skyLight`), so a night crest is not
+      // green. Near zero cost: a dozen ALU on values already in registers.
+      const crestPeak = worldPos.y.div(this.uCrestScale).smoothstep(CREST_PEAK[0], CREST_PEAK[1]).max(surfThin).toVar();
+      const lightBearing = vec2(sunDir.x, sunDir.z).add(vec2(1e-5, 0)).normalize();
+      const viewBearing = vec2(viewDir.x, viewDir.z).negate().add(vec2(1e-5, 0)).normalize();
+      const towardLight = viewBearing.dot(lightBearing).mul(0.5).add(0.5).toVar();
+      const crestLobe = mix(float(CREST_CROSS_LIT), float(1), towardLight.mul(towardLight).mul(towardLight));
+      const scatterHue = (this.uScatterColor as any)
+        .mul(this.uExtinction.mul(THIN_CREST_METRES).negate().exp())
+        .toVar();
+      const crestColor = scatterHue
+        .div(scatterHue.dot(vec3(0.2126, 0.7152, 0.0722)).max(1e-4))
+        .mul(skyLuma.mul(CREST_LIFT))
+        .toVar();
+      const crestBlend = crestPeak
+        .mul(crestLobe)
+        .mul(awayFromSun.mul(0.5).add(0.5))
+        .mul(across.mul(0.6).add(0.4))
+        .mul(this.uCrestGlow.div(DEFAULT_APPEARANCE.crestGlow).min(1.5))
+        .mul(skyLight)
+        .mul(CREST_BLEND)
+        .clamp(0, 0.8)
         .toVar();
 
       // --- foam --------------------------------------------------------------------
@@ -4206,6 +4397,17 @@ export class OceanMaterial {
       // turned the bubble cloud under every deep-water whitecap into a grey disc:
       // the bubbles brighten the water they are in, they do not repaint it.
       const aeratedLift = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(0.34);
+      // Atlas's bubble colour (GDC 2019): the water under and around foam is
+      // full of bubbles, so it goes milky toward their lit colour in
+      // proportion to the foam's density, instead of staying as clear as open
+      // water with a white film on top. Toward `max(water, bubbles)`, so it
+      // only ever lightens: the grey disc above came from a blend that could
+      // darken the body. Under Fresnel, where bubbles below the surface
+      // belong, so it shows looking down into the water more than from a
+      // deck. (Blended over the reflection as well, it washed the storm's
+      // green crests grey and still barely read at grazing.)
+      const bubbleLit = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(BUBBLE_ALBEDO);
+      litBody.assign(mix(litBody, litBody.max(bubbleLit), aeration.mul(BUBBLE_MILK).clamp(0, 0.7)));
       litBody.addAssign(aeratedLift.mul(aeration));
 
       // Foam kills the specular under it. Bubbles are a diffuse rough medium, so a
@@ -4221,7 +4423,7 @@ export class OceanMaterial {
       // contour, and not the mesh.
       const nearLand = smoothstepDownClamped(seabedSigned, 0.4, 1.2);
       const edgeVisible = mix(float(1), straightThickness.smoothstep(0.0, 0.045), nearLand).toVar();
-      const surface = mix(litBody, reflection, fresnel.mul(edgeVisible))
+      const surface = mix(mix(litBody, reflection, fresnel.mul(edgeVisible)), crestColor, crestBlend.mul(edgeVisible))
         .add(specular.mul(foamMask.mul(0.88).oneMinus()).mul(edgeVisible))
         .toVar();
 
