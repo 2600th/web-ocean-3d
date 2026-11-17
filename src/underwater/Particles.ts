@@ -8,6 +8,7 @@ import {
   mod,
   sin,
   smoothstep,
+  uniformArray,
   uv,
   vec2,
   vec3,
@@ -24,7 +25,7 @@ import { SEEDS, fillRandom, mulberry32 } from '../core/random';
  *
  *   marine snow   fine organic detritus, near-neutrally buoyant, sinking at a
  *                 few centimetres per second with a slow lateral sway. Dim and
- *                 almost colourless — it reads as texture in the fog, not as
+ *                 almost colourless â€” it reads as texture in the fog, not as
  *                 sparkle.
  *   bubble trains rising columns of air, an order of magnitude faster, brighter
  *                 and distinctly cyan, wobbling as they go because a bubble's
@@ -37,7 +38,7 @@ import { SEEDS, fillRandom, mulberry32 } from '../core/random';
  * single pixel.
  *
  * Motion is entirely in the vertex stage, from per-instance seed attributes and
- * one clock uniform. The CPU never writes a particle position — `update` only
+ * one clock uniform. The CPU never writes a particle position â€” `update` only
  * pushes the camera position into a uniform so the wrap volume re-centres, which
  * is a single `Vector3.copy` per frame with no allocation.
  *
@@ -51,7 +52,7 @@ import { SEEDS, fillRandom, mulberry32 } from '../core/random';
 const SNOW_RADIUS = 15;
 const SNOW_HEIGHT = 12;
 
-/** Half-extents of the bubble volume, metres. Taller — columns need run-up. */
+/** Half-extents of the bubble volume, metres. Taller â€” columns need run-up. */
 const BUBBLE_RADIUS = 12;
 const BUBBLE_HEIGHT = 15;
 
@@ -79,6 +80,25 @@ const SEEP_RISE = 0.32;
 const SEEP_HEIGHT = 7;
 const SEEP_SIZE: readonly [number, number] = [0.035, 0.08];
 const SEEP_GROWTH = 0.8;
+
+/**
+ * The ship's wake seen from below: a trail of air the hull and its wake drive
+ * under, rising and thinning behind her. Recorded as `WAKE_SAMPLES` points along
+ * her track, one every `WAKE_INTERVAL` seconds while she makes way (a ring,
+ * oldest overwritten), and each point releases its own cloud of bubbles:
+ * spread across the beam and widening as it ages, starting up to a few metres
+ * down, rising at a small bubble's terminal speed (decimetres a second) and
+ * dissolving over `WAKE_LIFE` seconds. Every bubble is closed form in the
+ * point's age, so a rewind reproduces the trail; opaque and depth-writing like
+ * the seeps, so the underwater pass fogs each one at its own distance.
+ */
+const WAKE_SAMPLES = 40;
+const WAKE_INTERVAL = 0.35;
+const WAKE_LIFE = 12;
+/** Bubbles per track point at the top of the tier range; see `wakePerSample`. */
+const WAKE_PER_SAMPLE = 32;
+/** Hull speed, m/s, under which she drives no air down. */
+const WAKE_MIN_SPEED = 0.8;
 
 /** Fraction of the budget spent on marine snow; the rest becomes bubbles. */
 const SNOW_SHARE = 0.82;
@@ -114,7 +134,7 @@ export class UnderwaterParticles {
 
   // --- uniforms ------------------------------------------------------------
   private readonly uTime = uniform(0);
-  /** Centre of the wrap volume — the viewer. */
+  /** Centre of the wrap volume â€” the viewer. */
   private readonly uCenter = uniform(new THREE.Vector3());
   private readonly uSnowOpacity = uniform(0.75);
   private readonly uBubbleOpacity = uniform(1.0);
@@ -122,6 +142,21 @@ export class UnderwaterParticles {
   private readonly uBubbleColor = uniform(new THREE.Color(0.55, 0.94, 1.0));
   private readonly uSnowFall = uniform(0.16);
   private readonly uBubbleRise = uniform(1.35);
+
+  // --- the wake's bubbles (see `WAKE_SAMPLES`) ------------------------------
+  private readonly wake: THREE.Mesh;
+  private readonly wakeGeometry: THREE.InstancedBufferGeometry;
+  private readonly wakeMaterial: THREE.SpriteNodeMaterial;
+  /** Per track point: x, water level y, z, time recorded. */
+  private readonly uWakeA = uniformArray(
+    Array.from({ length: WAKE_SAMPLES }, () => new THREE.Vector4(0, 0, 0, -1000)),
+  );
+  /** Per track point: heading x, heading z, beam, strength 0..1. */
+  private readonly uWakeB = uniformArray(Array.from({ length: WAKE_SAMPLES }, () => new THREE.Vector4()));
+  private readonly uWakeClock = uniform(0);
+  private wakeClock = 0;
+  private wakeLast = -1000;
+  private wakeCursor = 0;
 
   constructor(count: number) {
     this.count = Math.max(0, Math.floor(count));
@@ -150,14 +185,47 @@ export class UnderwaterParticles {
     this.bubbles.renderOrder = 141;
 
     this.object.add(this.snow, this.bubbles);
+
+    this.wakeGeometry = buildWakeGeometry();
+    this.wakeGeometry.instanceCount = WAKE_SAMPLES * this.wakePerSample();
+    this.wakeMaterial = this.buildWakeMaterial();
+    this.wake = new THREE.Mesh(this.wakeGeometry, this.wakeMaterial);
+    this.wake.name = 'wake-bubbles';
+    this.wake.frustumCulled = false;
+    this.wake.renderOrder = 142;
+    this.object.add(this.wake);
     this.object.visible = false;
+  }
+
+  /**
+   * Records the hull's track for the wake's bubbles. Call every frame, above
+   * water or below, so a dive finds the trail already laid: this is the only
+   * part of the system that runs while it is hidden, and it is a compare.
+   *
+   * @param heading `atan2(forward.z, forward.x)`, as `Ship.heading`.
+   * @param speed   Speed along the bow, m/s.
+   */
+  trackHull(dt: number, x: number, y: number, z: number, heading: number, speed: number, beam: number, length: number): void {
+    if (this.disposed || !(dt > 0)) return;
+    this.wakeClock += dt;
+    this.uWakeClock.value = this.wakeClock;
+    if (speed < WAKE_MIN_SPEED || this.wakeClock - this.wakeLast < WAKE_INTERVAL) return;
+    this.wakeLast = this.wakeClock;
+    const slot = this.wakeCursor;
+    this.wakeCursor = (this.wakeCursor + 1) % WAKE_SAMPLES;
+    const fx = Math.cos(heading);
+    const fz = Math.sin(heading);
+    // Laid at the stern, where the hull's run releases what it drove under.
+    (this.uWakeA.array as THREE.Vector4[])[slot].set(x - fx * length * 0.45, y, z - fz * length * 0.45, this.wakeClock);
+    const strength = Math.min(1, (speed - WAKE_MIN_SPEED) / 5);
+    (this.uWakeB.array as THREE.Vector4[])[slot].set(fx, fz, beam, strength);
   }
 
   getCount(): number {
     return this.count;
   }
 
-  /** Rebuilds both instance buffers. Not cheap — call it on quality changes only. */
+  /** Rebuilds both instance buffers. Not cheap â€” call it on quality changes only. */
   setCount(count: number): void {
     const next = Math.max(0, Math.floor(count));
     if (next === this.count) return;
@@ -171,6 +239,7 @@ export class UnderwaterParticles {
 
     this.snow.geometry = this.snowGeometry;
     this.bubbles.geometry = this.bubbleGeometry;
+    this.wakeGeometry.instanceCount = WAKE_SAMPLES * this.wakePerSample();
   }
 
   setVisible(v: boolean): void {
@@ -236,6 +305,12 @@ export class UnderwaterParticles {
   resetClock(time = 0): void {
     this.clock = ((time % CLOCK_WRAP) + CLOCK_WRAP) % CLOCK_WRAP;
     this.uTime.value = this.clock;
+    // The wake's trail is history, and a rewind has none.
+    this.wakeClock = 0;
+    this.uWakeClock.value = 0;
+    this.wakeLast = -1000;
+    this.wakeCursor = 0;
+    for (const a of this.uWakeA.array as THREE.Vector4[]) a.set(0, 0, 0, -1000);
   }
 
   dispose(): void {
@@ -246,6 +321,8 @@ export class UnderwaterParticles {
     this.bubbleGeometry.dispose();
     this.snowMaterial.dispose();
     this.bubbleMaterial.dispose();
+    this.wakeGeometry.dispose();
+    this.wakeMaterial.dispose();
     if (this.seeps) {
       this.object.remove(this.seeps);
       this.seeps.geometry.dispose();
@@ -261,6 +338,80 @@ export class UnderwaterParticles {
 
   private bubbleCount(): number {
     return this.count - this.snowCount();
+  }
+
+  /**
+   * Bubbles per track point from the tier's particle budget: 4 on Low, 12 on
+   * Medium, 24 on High, 32 above â€” at most 1,280 sprites, drawn only under
+   * water, with no CPU work beyond the track.
+   */
+  private wakePerSample(): number {
+    if (this.count <= 0) return 0;
+    return Math.max(4, Math.min(WAKE_PER_SAMPLE, Math.round(this.count / 100)));
+  }
+
+  /** The wake's bubbles; see `WAKE_SAMPLES`. */
+  private buildWakeMaterial(): THREE.SpriteNodeMaterial {
+    const material = new THREE.SpriteNodeMaterial();
+    material.transparent = false;
+    material.depthWrite = true;
+    material.depthTest = true;
+    material.sizeAttenuation = true;
+    material.fog = false;
+
+    const index: any = (attribute('wakeSlot', 'float') as any).toInt();
+    const seed: any = attribute('wakeSeed', 'vec4');
+    const A: any = (this.uWakeA.element(index) as any).toVar('wakeA');
+    const B: any = (this.uWakeB.element(index) as any).toVar('wakeB');
+    const age: any = this.uWakeClock.sub(A.w).toVar('wakeAge');
+    const life: any = seed.w.mul(0.6).add(0.4).mul(WAKE_LIFE);
+
+    // Across the beam, widening as the trail's turbulence spreads it; along
+    // the track between this point and the next; down to a few metres, most
+    // of it shallow, deeper the faster she was going.
+    const across: any = seed.x.sub(0.5).mul(B.z).mul(1.3).mul(age.mul(0.12).add(1));
+    const along: any = seed.y.sub(0.5).mul(3);
+    const depth: any = seed.z.mul(seed.z).mul(2.6).add(0.4).mul(B.w.mul(0.6).add(0.4));
+    // Bigger bubbles rise faster: 8 to 30 cm/s across 1 to 5 mm.
+    const big: any = seed.w.mul(seed.w);
+    const rise: any = big.mul(0.22).add(0.08);
+    const wobble: any = sin(age.mul(big.mul(2).add(2.4)).add(seed.x.mul(40))).mul(0.06);
+    const y: any = A.y.sub(depth).add(rise.mul(age));
+    const position = vec3n(
+      A.x.add(B.y.negate().mul(across)).add(B.x.mul(along)).add(wobble),
+      y,
+      A.z.add(B.x.mul(across)).add(B.y.mul(along)).add(wobble.mul(0.8)),
+    );
+    material.positionNode = position;
+
+    // Gone when it reaches the surface band, when it has dissolved, and where
+    // the trail was never laid.
+    const alive: any = age
+      .greaterThanEqual(0)
+      .and(age.lessThan(life))
+      .and(y.lessThan(A.y.sub(0.35)))
+      .and(B.w.greaterThan(0))
+      .select(float(1), float(0));
+    const fade: any = smoothstepDown(age.div(life), 0.55, 1).mul(smoothstep(0, 0.4, age));
+    // Larger than one bubble: each sprite stands for a knot of them, which is
+    // what a wake reads as from a few metres off.
+    const size: any = mix(float(0.06), float(0.2), big)
+      .mul(alive)
+      .mul(fade)
+      .mul(B.w.mul(0.5).add(0.5))
+      .mul(this.nearFade(position));
+    material.scaleNode = vec2(size, size);
+
+    // A silvered bead, as the seeps draw one.
+    const d = uv().sub(vec2(0.5, 0.5)).length();
+    material.maskNode = d.lessThan(0.48);
+    const rimShade = smoothstep(0.26, 0.44, d);
+    const spec = smoothstepDown(uv().sub(vec2(0.4, 0.64)).length(), 0.03, 0.11);
+    // Brighter than a seep's: air in the wake is lit from the surface just above
+    // it, and at ten metres the medium has taken most of what a seep shows.
+    const bright: any = mix(float(1.2), float(3.2), rimShade).add(spec.mul(2.5)).mul(this.uBubbleOpacity);
+    material.colorNode = vec4((this.uBubbleColor as any).mul(bright), 1);
+    return material;
   }
 
   /**
@@ -294,7 +445,7 @@ export class UnderwaterParticles {
    * It was additive and depth-less, and that made it invisible exactly where it
    * matters: `UnderwaterPass` fogs each pixel by the depth buffer, so a speck
    * drawn over open water was fogged as though it were the open water fifty
-   * metres behind it — transmittance zero, gone. Particulate showed only against
+   * metres behind it â€” transmittance zero, gone. Particulate showed only against
    * the near reef and never in the blue, which is the one place a diver sees it.
    * Writing its own depth gets each speck its own extinction: crisp near the
    * lens, fading into the haze with distance, the way suspended matter gives
@@ -386,7 +537,7 @@ export class UnderwaterParticles {
 
     const coord = uv();
     const d = coord.sub(vec2(0.5, 0.5)).length();
-    // Bright rim plus a dimmer fill — a bubble is a lens, not a dot.
+    // Bright rim plus a dimmer fill â€” a bubble is a lens, not a dot.
     const rim = smoothstepDown(d, 0.4, 0.5).mul(smoothstep(0.24, 0.36, d));
     const fill = smoothstepDown(d, 0.05, 0.5).mul(0.35);
     const alpha = max(rim, fill)
@@ -483,6 +634,23 @@ function buildSnowGeometry(count: number): THREE.InstancedBufferGeometry {
   const geometry = buildQuad(count);
   const seeds = fillRandom(new Float32Array(count * 4), SEEDS.underwaterSnow);
   geometry.setAttribute('seed', new THREE.InstancedBufferAttribute(seeds, 4));
+  return geometry;
+}
+
+/**
+ * The wake's bubbles: track point fastest, as `physics/Spray` lays out its
+ * events, so a tier's `instanceCount` takes bubbles from every point evenly.
+ */
+function buildWakeGeometry(): THREE.InstancedBufferGeometry {
+  const count = WAKE_SAMPLES * WAKE_PER_SAMPLE;
+  const geometry = buildQuad(count);
+  const slot = new Float32Array(count);
+  for (let i = 0; i < count; i++) slot[i] = i % WAKE_SAMPLES;
+  geometry.setAttribute('wakeSlot', new THREE.InstancedBufferAttribute(slot, 1));
+  geometry.setAttribute(
+    'wakeSeed',
+    new THREE.InstancedBufferAttribute(fillRandom(new Float32Array(count * 4), SEEDS.bubbles ^ 0x3a4e), 4),
+  );
   return geometry;
 }
 

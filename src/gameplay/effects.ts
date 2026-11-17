@@ -1,5 +1,18 @@
 import * as THREE from 'three/webgpu';
-import { attribute, exp, float, normalView, smoothstep, uv, vec2, vec3 } from 'three/tsl';
+import {
+  attribute,
+  cameraFar,
+  cameraNear,
+  exp,
+  float,
+  normalView,
+  perspectiveDepthToViewZ,
+  positionView,
+  smoothstep,
+  uv,
+  vec2,
+  vec3,
+} from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import {
@@ -7,10 +20,12 @@ import {
   CLASS_DROP,
   CLASS_MIST,
   particleVertex,
+  sharedSceneDepth,
   sprayMaterial,
   sprayUniforms,
 } from '../physics/sprayLook';
 import { BowSheet, levelQuaternion, sheetPoint, sheetPointWorld, sheetStation, type SheetStation } from './BowSheet';
+import type { SprayLanding } from '../physics/Spray';
 
 /**
  * The two pieces of gameplay feedback that have to be visible at any range:
@@ -240,7 +255,11 @@ export class Burst {
     this.material.colorNode = (this.uTint as any).mul(3);
     const radius = uv().sub(vec2(0.5, 0.5)).length().mul(2);
     const glow = float(1).sub(radius).clamp(0, 1).pow(2.2);
-    this.material.opacityNode = glow.mul(this.uFade) as any;
+    // Soft against what is behind it, as spray is: a spark passing into the
+    // water or the planks fades out over half a metre instead of being cut.
+    const sceneZ: any = perspectiveDepthToViewZ(sharedSceneDepth().x, cameraNear, cameraFar);
+    const soft: any = (positionView as any).z.sub(sceneZ).div(0.5).clamp(0, 1);
+    this.material.opacityNode = glow.mul(this.uFade).mul(soft) as any;
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, BURST_COUNT);
     this.mesh.name = 'gameplay-burst';
     this.mesh.frustumCulled = false;
@@ -335,6 +354,8 @@ const SPRAY_COUNT = 1792;
  * past 1.0x — and then only the oldest mist is cut short.
  */
 const SPRAY_RATE = 1000;
+/** Seconds between two bow drops traced to where they land; see `BowSpray.traceLanding`. */
+const BOW_LANDING_INTERVAL = 0.18;
 /** Hull speed, m/s, below which the bow throws nothing, and at which it throws most. */
 const SPRAY_START_SPEED = 2.4;
 const SPRAY_FULL_SPEED = 7;
@@ -437,6 +458,13 @@ export class BowSpray {
   /** The sheet's and the spray's strength, 0..~1.3, following speed, immersion and plunge. */
   private intensity = 0;
   private speed = 0;
+  /** Clock of the last particle thrown; see `idle`. */
+  private lastEmit = -1000;
+  /** Ring slots in use at this tier; see `update`. */
+  private capacity = SPRAY_COUNT;
+  /** Where flung drops leave foam; see `traceLanding`. */
+  landing: SprayLanding | null = null;
+  private lastLanding = -1000;
 
   constructor() {
     this.geometry = new THREE.InstancedBufferGeometry();
@@ -509,6 +537,18 @@ export class BowSpray {
     this.time += dt;
     this.uClock.value = this.time;
 
+    // The quality tier's spray control (`sprayUniforms.strength`): below 1 a
+    // shorter ring at a lower rate, so the same seconds of spray are in the air
+    // but thinner; at 0 nothing, the sheet included.
+    const tier = Math.max(0, sprayUniforms.strength.value as number);
+    const capacity = tier <= 0 ? 0 : Math.max(64, Math.round(SPRAY_COUNT * Math.min(1, tier)));
+    if (capacity !== this.capacity) {
+      this.capacity = capacity;
+      this.geometry.instanceCount = Math.max(1, capacity);
+      if (this.cursor >= capacity) this.cursor = 0;
+    }
+    this.sheet.mesh.visible = tier > 0;
+
     // How fast the stem is driving down, from its own track: a plunge into a
     // sea throws a burst on top of the steady fan.
     this.bow.set(hullLength * 0.5, 0, 0).applyMatrix4(hull.matrixWorld);
@@ -530,7 +570,7 @@ export class BowSpray {
     this.speed = Math.max(0, speed);
     this.sheet.update(this.time, hull, this.intensity, this.speed, hullLength * 0.5, hullBeam);
 
-    this.pending += SPRAY_RATE * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
+    this.pending += SPRAY_RATE * Math.min(1, tier) * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
     if (this.pending >= 1) {
       this.forward.set(1, 0, 0).applyQuaternion(hull.quaternion).setY(0);
       if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
@@ -555,6 +595,11 @@ export class BowSpray {
     return this.intensity;
   }
 
+  /** Nothing to draw: no sheet, and the last particle thrown has come down. */
+  get idle(): boolean {
+    return this.capacity === 0 || (this.intensity < 0.005 && this.time - this.lastEmit > 2);
+  }
+
   clear(): void {
     (this.origin.array as Float32Array).fill(0);
     (this.launch.array as Float32Array).fill(0);
@@ -570,6 +615,8 @@ export class BowSpray {
     this.dirty = false;
     this.bowPrimed = false;
     this.intensity = 0;
+    this.lastEmit = -1000;
+    this.lastLanding = -1000;
   }
 
   dispose(): void {
@@ -587,8 +634,9 @@ export class BowSpray {
     hullBeam: number,
   ): void {
     const i = this.cursor;
-    this.cursor = (this.cursor + 1) % SPRAY_COUNT;
+    this.cursor = (this.cursor + 1) % Math.max(1, this.capacity);
     const n = this.serial++;
+    this.lastEmit = this.time;
     const r1 = hash(n, 1);
     const r2 = hash(n, 2);
     const r3 = hash(n, 3);
@@ -626,6 +674,38 @@ export class BowSpray {
       strength,
     );
     this.dirty = true;
+    if (this.landing && cls === CLASS_DROP && this.time - this.lastLanding >= BOW_LANDING_INTERVAL) {
+      this.lastLanding = this.time;
+      this.traceLanding(i, water - 0.1, strength);
+    }
+  }
+
+  /**
+   * Where drop `i` comes back down, from the closed form the shader draws it
+   * with (droplet drag 0.6/s), reported as a fleck of foam. A few a second, not
+   * every drop: the bow wave's own foam is already under most of them, and the
+   * flecks are for the ones flung clear of it.
+   */
+  private traceLanding(i: number, water: number, strength: number): void {
+    const k = 0.6;
+    const fall = -GRAVITY / k;
+    const wind = sprayUniforms.wind.value as THREE.Vector3;
+    const y0 = this.origin.getY(i);
+    const vy = this.launch.getY(i);
+    const height = (t: number) => y0 + fall * t + (vy - fall) * ((1 - Math.exp(-k * t)) / k) - water;
+    let lo = 0.02;
+    let hi = 3;
+    if (height(hi) > 0) return;
+    for (let n = 0; n < 12; n++) {
+      const mid = (lo + hi) / 2;
+      if (height(mid) > 0) lo = mid;
+      else hi = mid;
+    }
+    const t = (lo + hi) / 2;
+    const reach = (1 - Math.exp(-k * t)) / k;
+    const x = this.origin.getX(i) + wind.x * t + (this.launch.getX(i) - wind.x) * reach;
+    const z = this.origin.getZ(i) + wind.z * t + (this.launch.getZ(i) - wind.z) * reach;
+    this.landing!.land(x, z, 0.8, 0.25 + 0.15 * strength, t, false);
   }
 
   /** Trajectory, size and opacity; `particleVertex` does the rest. */
@@ -702,7 +782,12 @@ export class BowSpray {
     // Back into the sea a little below where it left the crest.
     const water: any = attribute('bowWater', 'float');
     const submerged: any = smoothstepDown(water.sub(centre.y), 0.05, 0.4);
-    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged).mul(strength.sqrt());
+    const opacity: any = density
+      .mul(fadeIn)
+      .mul(fadeOut)
+      .mul(submerged)
+      .mul(strength.sqrt())
+      .mul(sprayUniforms.strength.min(1));
 
     return particleVertex({
       centre,

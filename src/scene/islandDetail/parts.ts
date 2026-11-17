@@ -2,11 +2,15 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   attribute,
+  cameraFar,
+  cameraNear,
   cameraViewMatrix,
   float,
   mix,
   mx_noise_float,
+  perspectiveDepthToViewZ,
   positionGeometry,
+  positionView,
   sin,
   vec3,
   vec4,
@@ -15,6 +19,7 @@ import {
 import { uniform } from '../../core/uniform';
 import { getLeafAtlas, tileUv, type TileName } from '../flora/leafAtlas';
 import { mulberry32 } from '../../core/random';
+import { sharedSceneDepth } from '../../physics/sprayLook';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;
@@ -356,7 +361,12 @@ export function buildSmoke(clock: DetailClock, origin: THREE.Vector3, count: num
     // grey all night and was the brightest thing on the beach.
     const firelight: Node = vec3n(1.0, 0.45, 0.16).mul(clock.uFireGlow).mul(float(1).sub(age.smoothstep(0.05, 0.35)).mul(1.0));
     const lit: Node = grey.mul(vec3n(clock.uSmokeLight)).add(grey.mul(firelight));
-    return vec4(lit, puff.mul(fade).mul(0.13));
+    // Soft against what is behind it, as spray is (`sprayLook`): a puff that
+    // meets the sand, a palm or the hill fades into it over a couple of metres
+    // instead of cutting a straight quad edge across it.
+    const sceneZ = perspectiveDepthToViewZ(sharedSceneDepth().x, cameraNear, cameraFar) as Node;
+    const soft = (positionView as Node).z.sub(sceneZ).div(2.5).clamp(0, 1);
+    return vec4(lit, puff.mul(fade).mul(soft).mul(0.13));
   })();
   const mesh = new THREE.Mesh(g, m);
   mesh.name = 'camp-smoke';

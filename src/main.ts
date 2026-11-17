@@ -914,6 +914,7 @@ class App {
     this.splash = new Splash();
     this.splash.setWake(this.wake);
     this.splash.setSurface((x, z) => this.sampler.height(x, z));
+    this.spray.setLanding(this.splash);
     this.scene.add(this.splash.object);
 
     this.fish = new FishSchool(quality.fish);
@@ -1758,6 +1759,9 @@ class App {
       if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
       else audio?.hullImpact?.(audible);
     }
+    // A slam or green water close to the eye throws water onto the lens: all of
+    // it inside 8 m, none past 22 m.
+    if (impact.kind !== 'slap') this.lensRain.douse(s * THREE.MathUtils.clamp((22 - distance) / 14, 0, 1));
 
     // White water where it hit, and water on the deck when it came aboard.
     const radius = impact.kind === 'wash' ? 7 : impact.kind === 'slap' ? 3.5 : 4.5;
@@ -2503,6 +2507,7 @@ class App {
         },
       });
       this.gameplay.object.visible = false;
+      this.gameplay.setSprayLanding(this.splash);
       loaded.push(this.gameplay.object);
       this.scene.add(this.gameplay.object);
       const hooks = (window as unknown as { __ocean?: Record<string, unknown> }).__ocean;
@@ -3827,7 +3832,7 @@ class App {
     );
     // The lens and the frame height set the one-pixel floor on droplet width.
     this.spray.setView(this.camera.fov, this.renderer.getDrawingBufferSize(_drawingBuffer).y, this.camera.position, dt);
-    // While the bow sheet is up (at the helm, under way) it takes the routine
+    // While the bow sheet is up (under way, in any mode) it takes the routine
     // pitching at the bow off the impact spray; see `SHEET_COVERS_CLOSING`.
     this.spray.setBowSheet(this.gameplay?.bowSheetUp ?? false);
     this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
@@ -3972,8 +3977,14 @@ class App {
     // Set explicitly rather than left to the effect's own default, because which
     // way rain runs down a lens is exactly the kind of thing that is obvious to a
     // viewer and invisible to every test we have.
+    // The lean is the wind across the view: its component along the camera's
+    // right, so drops run with the wind whichever way the camera faces.
     const lean = Math.min(0.5, this.state.windSpeed * 0.018);
-    this.lensRain.setGravity(Math.sin(preset.sea.windDirection) * lean, 1, 1 + lean);
+    this.camera.getWorldDirection(_impactForward);
+    const across =
+      (Math.sin(preset.sea.windDirection) * _impactForward.x - Math.cos(preset.sea.windDirection) * _impactForward.z) /
+      Math.max(1e-3, Math.hypot(_impactForward.x, _impactForward.z));
+    this.lensRain.setGravity(across * lean, 1, 1 + lean);
     this.lensRain.update(dt);
 
     // Volumetric fog follows the key light, and fades out as the camera goes
@@ -4107,6 +4118,9 @@ class App {
     // Safe before the sampler's first readback resolves: it reports height 0 and
     // bodies simply settle to flat water rather than producing NaN.
     this.buoyancy.update(dt, this.sampler);
+    // The bow spray, and the slam spray below, read this frame's solved pose.
+    this.ship?.object.updateWorldMatrix(true, false);
+    this.gameplay?.updateBowSpray(dt);
 
     const ship = this.ship;
     if (ship) {
@@ -4124,6 +4138,7 @@ class App {
       this.previousShipPosition.copy(position);
 
       this.wake.emit(position.x, position.z, ship.heading, speed, ship.hullBeam);
+      this.particles.trackHull(dt, position.x, position.y, position.z, ship.heading, speed, ship.hullBeam, ship.hullLength);
       this.water.setHull({
         x: position.x,
         z: position.z,

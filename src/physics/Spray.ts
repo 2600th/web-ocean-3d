@@ -130,6 +130,14 @@ const SHEET_COVERS_CLOSING = 2.2;
 /** Minimum seconds between two emissions from the same probe. */
 const PROBE_COOLDOWN = 0.22;
 
+/**
+ * Rising speed out of the sea, m/s, past which water streams off the topsides
+ * at a side, shoulder or quarter probe, and seconds between two streams there.
+ * A hull lifting slowly on a long swell drains without a show.
+ */
+const STREAM_RISE = 1.0;
+const STREAM_COOLDOWN = 0.7;
+
 /** Float sources further than this from the viewer are not tested at all. */
 const FLOAT_RANGE = 180;
 
@@ -180,6 +188,16 @@ export interface SprayImpact {
   hull: boolean;
   /** The source's size: a float's radius, or the hull's half-beam. Metres. */
   radius: number;
+}
+
+/**
+ * Where thrown water comes back down: a fleck of foam at (x, z) `delay`
+ * seconds from now, and a small ring wave there if `ring`. A delay rather than
+ * a time, because the bow spray keeps a clock of its own. `physics/Splash` is
+ * one.
+ */
+export interface SprayLanding {
+  land(x: number, z: number, radius: number, amount: number, delay: number, ring: boolean): void;
 }
 
 export interface SprayHullOptions {
@@ -258,6 +276,8 @@ export class Spray {
    * reported either way.
    */
   floatParticles = true;
+  /** Where hull spray's drops land; see `setLanding`. */
+  private landing: SprayLanding | null = null;
   private disposed = false;
   private listener: ((impact: SprayImpact) => void) | null = null;
   private readonly impact: SprayImpact = {
@@ -302,6 +322,16 @@ export class Spray {
     depth.castShadow = false;
     depth.receiveShadow = false;
     this.mesh.add(depth);
+  }
+
+  /**
+   * Where the hull's spray comes back down. Each slam, slap and wash traces a
+   * few of its own droplets — the same closed form the shader draws, solved for
+   * where each re-enters the sea — and leaves flecks of foam there as they land,
+   * with a small ring under the hardest, as `Splash` does for its own drops.
+   */
+  setLanding(landing: SprayLanding | null): void {
+    this.landing = landing;
   }
 
   /** Called once per impact, hull or prop. Replaces any previous listener. */
@@ -359,6 +389,8 @@ export class Spray {
   setStrength(strength: number): void {
     const s = Math.max(0, strength);
     this.uStrength.value = s;
+    // The bow spray and the splashes follow the same control.
+    sprayUniforms.strength.value = s;
     const perEvent = s <= 0 ? 0 : Math.max(8, Math.round(PER_EVENT * Math.min(1, s)));
     // Instances are laid out event-fastest (see `buildGeometry`), so trimming
     // the count trims particles from every impact evenly.
@@ -541,9 +573,24 @@ export class Spray {
       // same impact to the water.
       const closing = (state.previousHeight - height) / dt;
       const crossed = state.previousHeight > 0 && height <= 0;
+      const emerged = state.previousHeight <= 0 && height > 0;
       state.previousHeight = height;
 
       const role = probe.role ?? 'side';
+
+      // Rising out of a sea: the topsides come up wet, and the water they carry
+      // up streams off them back into it — a curtain along the side, the
+      // wash's pour at a fraction of its strength. Particles only: nothing to
+      // hear, and no foam beyond where the streams land.
+      if (source.hull && role !== 'bow' && emerged && closing < -STREAM_RISE && this.clock - state.last > STREAM_COOLDOWN) {
+        state.last = this.clock;
+        const side = Math.abs(probe.offset.z) < 1e-3 ? 1 : Math.sign(probe.offset.z);
+        _out.copy(_starboard).multiplyScalar(side);
+        _at.set(_probeWorld.x, surface + 0.9, _probeWorld.z).addScaledVector(_out, 0.15);
+        const rise = Math.min(0.55, (0.2 + (-closing - STREAM_RISE) / 4) * (0.5 + 0.5 * probe.weight));
+        this.write(_at, source.velocity ?? _zero, _out, _forward, source.hullLength * 0.22, KIND_WASH, rise, 1);
+        continue;
+      }
 
       // Green water: the bow buried past its rail. Detected on the bow probe
       // only, on the way down.
@@ -624,7 +671,10 @@ export class Spray {
         1,
       );
     }
-    _at.set(0, source.railHeight, source.hullLength * 0.3).applyMatrix4(object.matrixWorld);
+    // On the centreline over the foredeck, where the water came aboard: the
+    // hull's +X is the bow and Z the beam, so a length along Z put the foam and
+    // the sound eight metres off the starboard side.
+    _at.set(source.hullLength * 0.3, source.railHeight, 0).applyMatrix4(object.matrixWorld);
     this.report('wash', strength, _at, 0, true);
   }
 
@@ -652,6 +702,80 @@ export class Spray {
     const twist = (hash2(this.eventSerial, 5) - 0.5) * 0.3;
     _twisted.copy(along).addScaledVector(out, twist).setY(0).normalize().multiplyScalar(spread);
     (this.uAlong.array as THREE.Vector4[])[slot].set(_twisted.x, 0, _twisted.z, scale);
+    if (kind !== KIND_FLOAT && this.landing) this.traceLandings(at, carry, out, spread, kind, strength);
+  }
+
+  /**
+   * Follows a few of this event's droplets down and reports where they land.
+   *
+   * The droplet class's own launch and drag, from `buildVertex`, with seeds
+   * hashed from the event: so the flecks fall inside the fan the drawn drops
+   * make, though not under any one of them. Bisection on the closed-form
+   * height, which only rises then falls, so a dozen halvings place it to a
+   * centimetre.
+   */
+  private traceLandings(
+    at: THREE.Vector3,
+    carry: THREE.Vector3,
+    out: THREE.Vector3,
+    spread: number,
+    kind: number,
+    strength: number,
+  ): void {
+    const landing = this.landing!;
+    const wind = sprayUniforms.wind.value as THREE.Vector3;
+    const wash = kind === KIND_WASH;
+    const slap = kind === KIND_SLAP;
+    const k = 0.35;
+    const fall = -GRAVITY / k;
+    const speedScale = strength * 0.9 + 0.55;
+    const alongX = _twisted.x / Math.max(1e-4, spread);
+    const alongZ = _twisted.z / Math.max(1e-4, spread);
+    const water = at.y - (wash ? WASH_DROP : 0);
+    const drops = wash ? 3 : 4;
+    for (let j = 0; j < drops; j++) {
+      const sx = hash2(this.eventSerial, 20 + j);
+      const sy = hash2(this.eventSerial, 30 + j);
+      const sz = hash2(this.eventSerial, 40 + j);
+      let vx = carry.x * 0.9;
+      let vz = carry.z * 0.9;
+      let vy: number;
+      let px = at.x;
+      let pz = at.z;
+      if (wash) {
+        const o = sz * 1.4 + 0.6;
+        vx += out.x * o;
+        vz += out.z * o;
+        vy = sy * 0.9 - 0.3;
+        px += _twisted.x * (sx - 0.5);
+        pz += _twisted.z * (sx - 0.5);
+      } else {
+        const lateral = (sx - 0.5) * 2;
+        const o = (sz * 3.6 + 2) * speedScale * (slap ? 0.45 : 1);
+        const a = lateral * 3.2 * (slap ? 1.5 : 1);
+        vx += out.x * o + alongX * a;
+        vz += out.z * o + alongZ * a;
+        vy = (sy * 7 + 4.5) * speedScale * (slap ? 1.35 : 1);
+        px += alongX * lateral * 0.6 + out.x * sz * 0.3;
+        pz += alongZ * lateral * 0.6 + out.z * sz * 0.3;
+      }
+      const height = (t: number) => at.y + fall * t + (vy - fall) * ((1 - Math.exp(-k * t)) / k) - water;
+      let lo = 0.05;
+      let hi = 4;
+      if (height(hi) > 0) continue;
+      for (let n = 0; n < 12; n++) {
+        const mid = (lo + hi) / 2;
+        if (height(mid) > 0) lo = mid;
+        else hi = mid;
+      }
+      const t = (lo + hi) / 2;
+      const reach = (1 - Math.exp(-k * t)) / k;
+      const x = px + wind.x * t + (vx - wind.x) * reach;
+      const z = pz + wind.z * t + (vz - wind.z) * reach;
+      // A metre or so across: under three texels the wake buffer spreads a
+      // fleck thin enough to vanish (`Wake.splash`).
+      landing.land(x, z, 0.9 + 0.5 * strength, 0.25 + 0.35 * strength, t, j === 0 && !wash && strength > 0.35);
+    }
   }
 
   private report(
