@@ -188,12 +188,12 @@ with content, XL several systems. Each task says what done looks like.
 
 ### Milestone 0: groundwork
 
-- [ ] **P0.1 Rewrite the brief** (S). `PRODUCT.md` describes a short-session
+- [x] **P0.1 Rewrite the brief** (S). `PRODUCT.md` describes a short-session
   game; `README.md` follows. Done when the two no longer contradict this file.
-- [ ] **P0.2 Extend the reference board** (S). Add rows to
+- [x] **P0.2 Extend the reference board** (S). Add rows to
   `docs/REFERENCE_TARGETS.md` for the ship under sail, the ship at night, the
   island from sea, and a squall front. View references; do not download them.
-- [ ] **P0.3 Set budgets** (S). A table per tier of frame time, start-up time
+- [x] **P0.3 Set budgets** (S). A table per tier of frame time, start-up time
   and download size, with a cap for every new system below. Add rows to
   `scripts/profile-frame.mjs`.
 - [ ] **P0.4 Fix what the audit found** (S each):
@@ -228,7 +228,7 @@ with content, XL several systems. Each task says what done looks like.
   - wave height guessed from wavelength instead of the spectrum's own figure
     (`main.ts:3869`);
   - barrel and buoy splashes making no sound.
-- [ ] **V2 Motion clips** (S). A script that saves ten-second frame strips of
+- [x] **V2 Motion clips** (S). A script that saves ten-second frame strips of
   four situations: helm in a breeze, a hard turn, the storm, and landfall. The
   texture-scroll foam fault was invisible in stills; this is how the next one
   is caught.

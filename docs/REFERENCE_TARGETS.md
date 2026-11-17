@@ -86,6 +86,98 @@ Sources, and what each one gave:
   bright cream beach under white surf. The talks say what it does, but give
   no formulas.
 
+## Added 2026-11-17: the ship, the island, the squall, fire and sound
+
+These rows came with `docs/AAA_ROADMAP.md`. "We do" is that file's audit tables,
+read off the gallery stills and the code. "Reference does" is what shipped
+sailing games are described as doing in the sources the roadmap lists: Rare's
+SIGGRAPH 2018 talk on Sea of Thieves, the Atlas and Horizon Forbidden West
+water talks, the Black Flag, Dredge, Sailwind and Sea of Thieves interviews, and
+the DICE and No Man's Sky audio material. No game was watched or listened to
+for this, and a few sources were read only as summaries (the roadmap says which).
+Nothing here is art, a name or a tune to copy.
+
+### The ship under sail (Sea of Thieves, Black Flag, Sailwind)
+
+| Reference does | We do |
+|---|---|
+| Canvas fills and luffs with the wind. A sail close-hauled is flatter than one running, and a ship head to wind shakes her canvas | Topsails permanently furled, courses hang flat. The sail setting reaches the audio and nothing visible; the only animation is a 1.2% scale on the sails |
+| Rigging sags and tightens with the sails (Sea of Thieves solves a catenary per rope on the CPU with a slack value and bends a tube in the vertex stage) | Rigging is rigid |
+| Parts of the ship answer the player: the wheel turns, the rudder swings, the yards brace round | Nothing moves; wheel, rudder and yards are fixed |
+| A pennant or flag shows the wind, and doubles as the player's indicator | No flag. Head to wind is shown by a toast and the luff sound |
+| The hull is wet where the sea reaches it, and dries over seconds | `Wetness.ts` wets surfaces under rain only. No waterline band, no spray-driven wetting |
+| Figures on deck: a helmsman, a lookout, hands at the braces | Nobody is aboard |
+| The hull is as detailed below the waterline as above: planking, keel, rudder | `underwater` shows a smooth dark underside with no planking, keel or rudder |
+
+### The ship at night (Sea of Thieves, Black Flag)
+
+| Reference does | We do |
+|---|---|
+| Lit stern windows and lanterns make the ship a readable shape against a dark sea, and lantern light falls on sails, deck and rigging | In `night`, `squall` and `moonlit` she is a near-black silhouette with one lantern. No lit windows, no lanterns lighting the canvas |
+| Lantern light reflects in the water around the hull | Lantern glow does not reach the sails or the sea |
+| Lights move: lanterns swing with the roll | Lights flicker in brightness and never move |
+| A glowing wake is one of the moments that make a sea feel alive | None |
+
+### The island seen from the sea (Sea of Thieves, Black Flag)
+
+| Reference does | We do |
+|---|---|
+| A sculpted silhouette you can name from a kilometre off: cliffs, a headland, a cove, trees standing above the canopy | One low dome. The cove, fort, lighthouse and skull rock exist as props, but the landmass itself has no cliffs or relief in its outline |
+| Depth in the canopy: shading between crowns, variation in height and species, gaps and emergent trees | A uniform green texture of same-sized crowns with no shading between them |
+| A ragged vegetation edge, then scrub, then a beach with some relief | A flat lawn band from the sea, then a thin flat beach. Props read as specks |
+| New land on the horizon every 45 to 90 seconds at cruising speed (Dredge: top speed sets the map) | One island, 1.4 km from the start, and nothing else |
+| Landmarks answer the player: anchor in the cove, light the lighthouse | Nothing on the island can be interacted with |
+| Soft blue aerial haze on far land | Good (see the tropical shore table) |
+
+### A squall front (Black Flag, Sea of Thieves)
+
+| Reference does | We do |
+|---|---|
+| A front you can see coming: a dark wall of cloud with towers and anvils, and rain shafts under the cells | The squall exists only in the Tour. Clouds are same-sized puffs in rows toward the horizon, with hard cut-out edges and no tall forms |
+| Weather moves, and can be skirted or sailed into (Sea of Thieves redistributes cloud cover with pressure zones) | Weather is fixed in play |
+| Rain streams past with the ship's speed, takes its colour from the scene, is sheltered under canvas and splashes on the planks | 5,000 additive sprites of one constant colour within 34 m of the camera, carried with it. Not sheltered, no splashes on deck, no distant sheets |
+| Lightning lights the clouds from inside, with tapered forks and now and then a close strike | A branching ribbon whose forks are as bright as the main channel. It lights the ship and sea, not the clouds. No strike closer than 900 m; about one flash every 7 s with no reduce-flashes option |
+| Wind-torn spray off the crests, and crests translucent green toward the light | No spindrift; crests not green (see Storm above) |
+| The horizon dissolves into spray haze | A bright horizon line |
+
+### Fire and smoke (Black Flag, Sea of Thieves)
+
+| Reference does | We do |
+|---|---|
+| Animated flame, with embers or sparks carried on the wind | The camp fire and torches are static six-sided cones with a flickering emissive colour. No flame sheets, embers, sparks or heat haze |
+| Fire light that moves, so shadows dance | Lights flicker in brightness, never move, and cast no shadows. The two torches share one light |
+| Smoke is soft where it meets geometry and is lit from several directions (the six-way lit smoke method in the roadmap's sources) | 34 billboards drifting with the wind, hard-edged against the ground. Rain does not affect them |
+
+### Sound: the sea bed (Sea of Thieves, Black Flag, No Man's Sky)
+
+| Reference does | We do |
+|---|---|
+| No audible repeat in the sea, wind and rain beds | All beds loop the same 4 s of noise |
+| Every sound has a room: the deck, below decks, under water | Reverb on the music only. Every effect and ambience is dry |
+| Sounds sit where they happen: creaks on the hull, thunder from the bolt | Stereo pan and a 1/distance gain for the ship and gulls only. No listener, no positional sources |
+| Buses per kind, a loudness target and priority ducking (DICE's HDR audio) | One path into a compressor, a limiter and a soft clipper. Loudness figures exist only in a header comment |
+| Volume per kind, remembered between visits | Master and Music sliders; volume resets to 0.4 every visit |
+
+### Sound: the storm (Sea of Thieves, Black Flag)
+
+| Reference does | We do |
+|---|---|
+| Thunder arrives after a delay set by distance, from the bearing of the strike, and no two are alike | Delayed by distance, which is right. No bearing, and the same two envelope curves on every strike. A distant strike holds a voice slot for up to 37 s |
+| Rain sounds different on wood, canvas and sea, mixed by where the listener is | One rain bed |
+| Wind in the ears rises with speed | True wind only, with no speed term |
+| Music gives way to thunder and impacts | No ducking |
+
+### Sound: the island (Sea of Thieves, Black Flag)
+
+| Reference does | We do |
+|---|---|
+| The island is heard before it is reached: shore surf, fire crackle, land birds by day, insects by night | Silent. No surf although breakers are drawn, no crackle, no insects. The audio has no time-of-day input |
+| Silence is used on purpose, and music follows the voyage | Two tunes in D minor, 40 bars in all, layered by ship speed. A silent state exists and is never chosen. One sting |
+
+Every sound row is read from the synthesis code. Nothing has been listened to,
+so none of them can be scored by ear yet. V5 in the roadmap, the audio test
+bench, will give figures for loudness, clicks and repetition.
+
 ## Scoreboard against the reference demos (2026-11-16)
 
 **Look.** Twelve blind A/B rounds of 32 pairs, judged by an art-director critic with sides randomised per pair (`docs/AAA_PLAN.md` section Q). Final round: **30 of 32**. All pairs won in waves, refraction, caustics, beach transparency, foam, boat-sea, sky and clouds; three of four reflections; two of three underwater (against abyssal-garden).
