@@ -87,7 +87,10 @@ export class ObjectiveBeacon {
     ring.side = THREE.DoubleSide;
     ring.fog = false;
     ring.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(1.6) as any;
-    ring.opacityNode = float(1).sub(this.uRing).mul(this.uOpacity).mul(0.7) as any;
+    // Rises over the first tenth of the loop and falls to nothing at its end, so
+    // the ring is invisible at the wrap instead of snapping back to full.
+    const ringEnvelope = smoothstep(0, 0.1, this.uRing).mul(float(1).sub(this.uRing));
+    ring.opacityNode = ringEnvelope.mul(this.uOpacity).mul(0.9) as any;
     this.ring = new THREE.Mesh(ringGeometry, ring);
     this.ring.frustumCulled = false;
     this.ring.renderOrder = 7;
@@ -104,17 +107,19 @@ export class ObjectiveBeacon {
    * hundred metres; faded out close in, because at arm's length a shaft of light
    * is no longer a marker, it is a wall.
    */
-  update(dt: number, target: THREE.Vector3, viewer: THREE.Vector3): void {
+  update(dt: number, target: THREE.Vector3, viewer: THREE.Vector3, reducedMotion = false): void {
     this.time += dt;
     this.object.position.set(target.x, target.y + 0.2, target.z);
     const distance = Math.hypot(viewer.x - target.x, viewer.z - target.z);
     const widen = Math.min(6, Math.max(1, distance / 70));
     this.column.scale.set(widen, 1, widen);
-    const pulse = 0.82 + 0.18 * Math.sin(this.time * 2.6);
+    // Reduced motion: a steady column and a ring held still part-way through
+    // its spread, rather than a pulse and a ripple.
+    const pulse = reducedMotion ? 0.91 : 0.82 + 0.18 * Math.sin(this.time * 2.6);
     const near = Math.min(1, Math.max(0, (distance - 14) / 40));
     this.uOpacity.value = pulse * (0.25 + 0.75 * near);
 
-    const phase = (this.time / 2.2) % 1;
+    const phase = reducedMotion ? 0.3 : (this.time / 2.2) % 1;
     this.uRing.value = phase;
     const radius = 1.5 + phase * 9;
     this.ring.scale.set(radius, 1, radius);

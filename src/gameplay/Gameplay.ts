@@ -762,7 +762,7 @@ export class Gameplay {
     this.lootBody.update(dt, this.o.sampler);
     const ship = this.o.body.object.position;
     const lp = this.loot.position;
-    this.beacon.update(dt, lp, this.o.camera.position);
+    this.beacon.update(dt, lp, this.o.camera.position, this.reducedMotion);
 
     // Distance to the hull's centreline, so a target alongside the quarter is
     // taken as readily as one dead ahead.
