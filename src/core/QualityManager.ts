@@ -201,6 +201,14 @@ export interface QualitySettings {
    * raising the tier cannot compile a shader mid-session.
    */
   spray: number;
+  /**
+   * Spindrift slots: spray the wind tears off breaking crests in a gale (see
+   * `physics/Spindrift`). One compute pass and one instanced draw, budgeted at
+   * about 0.5 ms for High's 60,000. Zero at Low and Medium, where nothing is
+   * dispatched or drawn; the pipelines are still built at boot at every tier,
+   * so raising the tier compiles nothing.
+   */
+  spindrift: number;
   underwaterParticles: number;
   /**
    * Gulls in the flock, and fish in the school.
@@ -428,6 +436,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 0,
     godRaySteps: 0,
     spray: 0,
+    spindrift: 0,
     underwaterParticles: 400,
     birds: 0,
     fish: 0,
@@ -472,6 +481,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 12,
     godRaySteps: 12,
     spray: 0.6,
+    spindrift: 0,
     underwaterParticles: 1200,
     birds: 14,
     fish: 110,
@@ -516,6 +526,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 18,
     godRaySteps: 24,
     spray: 1,
+    spindrift: 60000,
     underwaterParticles: 2400,
     birds: 26,
     // [underwater-look-3] Round 12: 240 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
@@ -559,6 +570,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 34,
     godRaySteps: 40,
     spray: 1,
+    spindrift: 80000,
     underwaterParticles: 4000,
     birds: 40,
     // [underwater-look-3] Round 12: 380 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
@@ -604,6 +616,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 34,
     godRaySteps: 40,
     spray: 1,
+    spindrift: 100000,
     underwaterParticles: 6000,
     birds: 64,
     // [underwater-look-3] Round 12: 560 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.

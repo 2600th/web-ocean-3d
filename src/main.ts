@@ -77,6 +77,7 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
+import { Spindrift } from './physics/Spindrift';
 import { BatchedLighting, LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
 import { DEFAULT_VOLUMETRIC_FOG_PARAMS, VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
@@ -449,6 +450,9 @@ class App {
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
+  /** Spray torn off breaking crests in a gale; `spindriftOverride` (test) replaces the tier's count. */
+  private spindrift!: Spindrift;
+  private spindriftOverride: number | null = null;
   /** Things hitting the water: crown, jet, drops, foam and ring wave. See `Splash`. */
   private splash!: Splash;
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
@@ -894,6 +898,9 @@ class App {
     // Floats coming down off a swell splash through `Splash`, like the anchor,
     // rather than as a fan of slam spray.
     this.spray.floatParticles = false;
+    this.spindrift = new Spindrift(this.wake.texture, this.simulation.displacementNode());
+    this.spindrift.setCount(quality.spindrift);
+    this.scene.add(this.spindrift.mesh);
     this.splash = new Splash();
     this.splash.setWake(this.wake);
     this.splash.setSurface((x, z) => this.sampler.height(x, z));
@@ -2145,6 +2152,8 @@ class App {
     );
     let timer = 0;
     try {
+      // The spindrift's compute passes, which no scene compile reaches.
+      await this.renderer.compileComputeAsync(this.spindrift.computeNodes);
       compile = this.compileForFrame();
       const timeout = new Promise<never>((_, reject) => {
         timer = window.setTimeout(() => reject(timeoutError), timeoutMs);
@@ -2914,6 +2923,7 @@ class App {
     // at every tier and only the master scale moves, so changing tier cannot
     // compile anything.
     this.spray.setStrength(quality.spray);
+    this.spindrift.setCount(this.spindriftOverride ?? quality.spindrift);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
     this.kelp.setRange(quality.vegetationRange);
@@ -4091,6 +4101,11 @@ class App {
     //
     // Must run outside an active render target; it saves and restores its own.
     this.wake.update(dt, this.renderer);
+    // After the wake, so it tests the foam the water is drawing this frame.
+    this.spindrift.update(
+      dt, this.camera, this.state.windSpeed, getPreset(this.state.preset).sea.windDirection,
+      this.wake.centerX, this.wake.centerZ, this.wake.extent, this.renderer,
+    );
   }
 
   /**
@@ -4437,6 +4452,7 @@ class App {
           this.clouds.resetWind();
           this.birds.resetClock(start);
           this.spray.resetClock(start);
+          this.spindrift.reset(this.renderer);
           this.splash.resetClock(start);
           this.fish.resetClock(start);
           this.kelp.resetClock(start);
@@ -4624,6 +4640,12 @@ class App {
         setSprayStrength: (strength: number) => this.spray.setStrength(strength),
         /** Live impact events, for the spray test. */
         sprayLiveEvents: () => this.spray.liveEvents(),
+        /** Test-only spindrift slot count; null follows the tier. */
+        setSpindriftOverride: (count: number | null) => {
+          this.spindriftOverride = count;
+          this.spindrift.setCount(count ?? QUALITY_TIERS[this.state.quality].spindrift);
+        },
+        spindrift: this.spindrift,
         /** The spray system itself, for probing its event table. */
         spray: this.spray,
         /** The impact splashes, for firing one by hand. */
@@ -4698,6 +4720,7 @@ class App {
     this.spatialAa?.dispose();
     this.postChain?.dispose();
     this.spray?.dispose();
+    this.spindrift?.dispose();
     this.particles?.dispose();
     this.caustics?.dispose();
     this.shipControls?.dispose();
