@@ -2,7 +2,6 @@ import { test, expect } from '@playwright/test';
 import {
   collectConsoleErrors,
   hasGpuAdapter,
-  measureFrameRate,
   setCamera,
   setState,
   waitForOcean,
@@ -511,9 +510,12 @@ test.describe('interaction', () => {
       await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
     };
 
-    test('W drives the ship forward and S drives it astern', async ({ page }) => {
+    // One boot for the three, each part from a deterministic reset: they share
+    // the setup, and a boot is most of what each used to cost.
+    test('W/S drive ahead and astern, A/D steer only with way on, and only Boat mode steers', async ({ page }) => {
       await boot(page);
 
+      // W and S.
       const ahead = await drive(page, 1, 0, 20);
       expect(ahead!.forwardSpeed, 'full throttle produced no headway').toBeGreaterThan(2);
 
@@ -521,15 +523,13 @@ test.describe('interaction', () => {
       await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
       const astern = await drive(page, -1, 0, 20);
       expect(astern!.forwardSpeed, 'reverse throttle produced no sternway').toBeLessThan(-0.5);
-    });
 
-    test('A and D steer, and the turn needs way on', async ({ page }) => {
-      await boot(page);
-
-      const before = await page.evaluate(() => window.__ocean.shipState());
+      // A and D.
+      await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
+      const beforeTurn = await page.evaluate(() => window.__ocean.shipState());
       // A rudder is a foil: hard over from a standstill should do almost nothing.
       const stopped = await drive(page, 0, 1, 6);
-      const stoppedTurn = Math.abs(stopped!.heading - before!.heading);
+      const stoppedTurn = Math.abs(stopped!.heading - beforeTurn!.heading);
       expect(stoppedTurn, 'the ship turned on the spot with no way on').toBeLessThan(0.2);
 
       await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
@@ -554,12 +554,10 @@ test.describe('interaction', () => {
         Math.sign(toStarboard),
         `A and D turned the same way (starboard ${toStarboard.toFixed(2)}, port ${toPort.toFixed(2)})`,
       ).not.toBe(Math.sign(toPort));
-    });
 
-    test('other camera modes do not steer the ship', async ({ page }) => {
-      await boot(page);
+      // Any other camera mode.
+      await page.evaluate(() => window.__ocean.resetDeterministic(10, 60));
       await setState(page, { cameraMode: 'orbit' });
-
       const enabled = await page.evaluate(() => window.__ocean.shipControlsEnabled());
       expect(enabled, 'ship input is still live outside Boat mode').toBe(false);
 
@@ -1423,18 +1421,6 @@ test.describe('interaction', () => {
     }
   });
 
-  test('quality tiers apply cleanly and rebuild GPU resources', async ({ page }) => {
-    const errors = collectConsoleErrors(page);
-    await page.goto('/?gate=0&quality=high');
-    await waitForOcean(page);
-
-    for (const quality of ['low', 'medium', 'high', 'ultra', 'max', 'high']) {
-      await setState(page, { quality });
-    }
-
-    expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([]);
-  });
-
   /**
    * Shadow and reflection resolution have to *follow* the tier, not just survive
    * it.
@@ -1443,15 +1429,19 @@ test.describe('interaction', () => {
    * afterwards — as a workaround for a crash that turned out to be a GPU
    * resource-lifetime race, now fixed properly by the drain in
    * `App.drainQualityRequests`. The workaround was invisible to every existing
-   * test: the tier-change test above only asserts that nothing throws, so it
-   * passed just as happily with both setters returning on their first line.
+   * test: a tier change that only asserts nothing throws passes just as happily
+   * with both setters returning on their first line.
+   *
+   * It also walks every tier, and fails on any console error on the way, which
+   * is the check a separate "tiers apply cleanly" test used to make on its own
+   * boot.
    *
    * This asserts the resolutions actually move, and it moves *up* then *down*,
    * because a setter that reallocates only when growing would pass a one-way
    * check. Low boots first so the interesting direction is exercised on a
    * session that started small — the case the latch was hiding.
    */
-  test('shadow and reflection resolution follow the tier', async ({ page }) => {
+  test('quality tiers apply cleanly, and shadow and reflection resolution follow them', async ({ page }) => {
     const errors = collectConsoleErrors(page);
     await page.goto('/?gate=0&quality=high');
     await waitForOcean(page);
@@ -1465,7 +1455,11 @@ test.describe('interaction', () => {
       }));
     };
 
+    // Through every tier on the way up, so a tier that throws on entry fails here.
     const low = await sample('low');
+    await sample('medium');
+    await sample('high');
+    await sample('ultra');
     const max = await sample('max');
     const backDown = await sample('low');
 
@@ -1680,39 +1674,11 @@ test.describe('interaction', () => {
 });
 
 test.describe('performance', () => {
-  /**
-   * These gates key on per-frame WORK, not on delivered frame rate.
-   *
-   * Automated Chromium throttles requestAnimationFrame independently of load —
-   * this project measured 1.1 "FPS" while spending 0.8 ms per frame, and the
-   * same 1.00 fps appears with every effect switched off. Asserting on FPS here
-   * would test the harness, not the renderer. When the browser is NOT throttling
-   * we additionally assert the frame rate, so a real regression on an
-   * interactive run still fails.
-   */
-  const budget = (target: number) => (sample: {
-    fps: number;
-    frameMs: number;
-    rafThrottled: boolean;
-  }) => {
-    expect(
-      sample.frameMs,
-      `frame work was ${sample.frameMs.toFixed(2)} ms (budget ${target} ms); ` +
-        `delivered ${sample.fps.toFixed(1)} FPS, rafThrottled=${sample.rafThrottled}`,
-    ).toBeLessThan(target);
-  };
-
-  test('stays within the frame budget at High on WebGPU', async ({ page }) => {
-    await page.goto('/?gate=0&quality=high');
-    await waitForOcean(page);
-    await setState(page, { quality: 'high' });
-
-    const sample = await measureFrameRate(page, 4);
-    budget(16.7)(sample);
-    if (!sample.rafThrottled) {
-      expect(sample.fps, `median FPS was ${sample.fps.toFixed(1)}`).toBeGreaterThan(55);
-    }
-  });
+  // No frame-rate gate here. Automated Chromium paces requestAnimationFrame
+  // independently of load (this project measured 1.1 "FPS" at 0.8 ms of work a
+  // frame), and the suite shares the GPU with whatever else is running, so a
+  // budget asserted here tests the harness. Frame time is settled by
+  // `scripts/benchmark.mjs`, with GPU timestamps; see docs/PERFORMANCE.md.
 
   test('does not leak GPU memory across quality changes', async ({ page }) => {
     await page.goto('/?gate=0&quality=high');
@@ -1775,30 +1741,44 @@ test.describe('performance', () => {
 });
 
 test.describe('responsiveness', () => {
-  for (const [label, width, height] of [
-    ['desktop', 1920, 1080],
-    ['laptop', 1440, 900],
-    ['tablet', 834, 1112],
-    ['phone', 390, 844],
-    ['narrow', 360, 720],
-  ] as const) {
-    test(`${label} (${width}x${height}) has no layout overflow`, async ({ page }) => {
-      await page.setViewportSize({ width, height });
-      await page.goto('/?gate=0&quality=high');
-      await waitForOcean(page, 1200);
+  // One boot, resized through the viewports. The layout is CSS reacting to the
+  // window, and the app's own resize path is what a visitor rotating a tablet or
+  // dragging a window meets; a fresh boot per size cost half a minute each and
+  // tested nothing a resize does not.
+  test('no viewport from desktop down to a narrow phone overflows the layout', async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.goto('/?gate=0&quality=high');
+    await waitForOcean(page, 1200);
 
+    for (const [label, width, height] of [
+      ['desktop', 1920, 1080],
+      ['laptop', 1440, 900],
+      ['tablet', 834, 1112],
+      ['phone', 390, 844],
+      ['narrow', 360, 720],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      // Two frames for the resize to reach layout and the canvas.
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const overflow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,
       }));
-      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
-    });
-  }
+      expect(overflow.scrollWidth, `${label} (${width}x${height}) overflows`).toBeLessThanOrEqual(
+        overflow.clientWidth + 1,
+      );
+    }
+
+    // And the short viewport the reachability test below needs, on the same page.
+    await page.setViewportSize({ width: 1280, height: 700 });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await expectPanelReachable(page);
+  });
 
   /**
    * Every control the panel offers must be reachable.
    *
-   * The overflow tests above pass whether or not this holds, and that is not a
+   * The overflow checks above pass whether or not this holds, and that is not a
    * hypothetical: the panel body is a flex child, defaulted to `min-height:
    * auto`, and so refused to shrink to the panel's `max-height`. It grew past its
    * container, `.panel { overflow: hidden }` cut the bottom off, and the Time of
@@ -1816,11 +1796,7 @@ test.describe('responsiveness', () => {
    * are removed until it fits, this test stops proving anything — hence the
    * assertion that the body really is overflowing to begin with.
    */
-  test('every panel control is reachable on a short viewport', async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 700 });
-    await page.goto('/?gate=0&quality=high');
-    await waitForOcean(page, 1200);
-
+  async function expectPanelReachable(page: import('@playwright/test').Page): Promise<void> {
     // The ledger ships folded so the sea leads; unfold it the way a visitor
     // does before measuring what it holds.
     const fold = page.locator('.panel__collapse');
@@ -1885,7 +1861,7 @@ test.describe('responsiveness', () => {
       `scrolled to the end, the last control (${g.lastControlLabel}) is still below ` +
         'the panel and cannot be reached',
     ).toBeLessThanOrEqual(g.panelBottom + 1);
-  });
+  }
 });
 
 // ---------------------------------------------------------------------- utils

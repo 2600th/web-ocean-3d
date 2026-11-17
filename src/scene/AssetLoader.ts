@@ -79,26 +79,69 @@ export async function fetchWithDeadline(
  * the visitor is still on the menu — takes it off the path to a playable scene.
  * `AssetLoader` parses what is here and fetches anything that is not, so a
  * failed or missing prefetch costs only the head start.
+ *
+ * **A few at a time, in the order given.** All forty-odd files at once ran
+ * Windows out of socket buffers against the local server
+ * (`net::ERR_NO_BUFFER_SPACE`, logged by Chrome as a console error even though
+ * the loader recovered), and gains nothing on a real connection, where the
+ * bandwidth is shared either way: the ship, asked for first, would only arrive
+ * later. A file the loader asks for while still queued starts at once.
  */
-const prefetched = new Map<string, Promise<ArrayBuffer>>();
+const PREFETCH_IN_FLIGHT = 4;
+
+interface Prefetch {
+  bytes: Promise<ArrayBuffer>;
+  start: () => void;
+}
+
+const prefetched = new Map<string, Prefetch>();
+const prefetchQueue: string[] = [];
+let prefetchInFlight = 0;
+
+function pumpPrefetch(): void {
+  while (prefetchInFlight < PREFETCH_IN_FLIGHT && prefetchQueue.length > 0) {
+    prefetched.get(prefetchQueue.shift()!)?.start();
+  }
+}
 
 export function prefetch(urls: readonly string[]): void {
   for (const url of urls) {
     if (prefetched.has(url)) continue;
-    const bytes = fetch(url).then((response) => {
-      if (!response.ok) throw new Error(`Prefetch failed: ${response.status} ${url}`);
-      return response.arrayBuffer();
+    let start!: () => void;
+    const bytes = new Promise<ArrayBuffer>((resolve, reject) => {
+      let started = false;
+      start = () => {
+        if (started) return;
+        started = true;
+        prefetchInFlight++;
+        fetch(url)
+          .then((response) => {
+            if (!response.ok) throw new Error(`Prefetch failed: ${response.status} ${url}`);
+            return response.arrayBuffer();
+          })
+          .then(resolve, reject)
+          .finally(() => {
+            prefetchInFlight--;
+            pumpPrefetch();
+          });
+      };
     });
     // Consumed or not, a failure here is not an error: the loader refetches.
     bytes.catch(() => undefined);
-    prefetched.set(url, bytes);
+    prefetched.set(url, { bytes, start });
+    prefetchQueue.push(url);
   }
+  pumpPrefetch();
 }
 
 function takePrefetched(url: string): Promise<ArrayBuffer> | undefined {
-  const bytes = prefetched.get(url);
-  if (bytes) prefetched.delete(url);
-  return bytes;
+  const entry = prefetched.get(url);
+  if (!entry) return undefined;
+  prefetched.delete(url);
+  const queued = prefetchQueue.indexOf(url);
+  if (queued >= 0) prefetchQueue.splice(queued, 1);
+  entry.start();
+  return entry.bytes;
 }
 
 /** Rejects if `work` has not settled within `timeoutMs`. */

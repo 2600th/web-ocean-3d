@@ -65,7 +65,7 @@ export default defineConfig({
       // 1280x720 shot resolution, and running them here as well would compare
       // captures taken at a different viewport — passing or failing for reasons
       // that have nothing to do with what they measure.
-      testIgnore: /(visual|gallery|gallery-jitter|isolation|foam|foam-attribution)\.spec\.ts/,
+      testIgnore: /(visual|gallery|gallery-jitter|isolation|foam)\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1600, height: 900 },
@@ -107,7 +107,7 @@ export default defineConfig({
       name: 'visual',
       // `gallery.spec.ts` lives here too: it needs the same GPU flags and the
       // same shot resolution, and it skips itself unless CAPTURE_GALLERY=1.
-      testMatch: /(visual|gallery|gallery-jitter|isolation|foam|foam-attribution)\.spec\.ts/,
+      testMatch: /(visual|gallery|gallery-jitter|isolation|foam)\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1280, height: 720 },

@@ -416,9 +416,8 @@ back under budget by re-cutting four numbers.
 
 **Read that with care.** Automated Chromium throttles `requestAnimationFrame` independently
 of load — this project measured 1.1 "FPS" while spending 0.8 ms per frame, and the same
-~1 fps appears with every effect disabled. The test suite therefore gates on per-frame *work*
-(16.7 ms) and only asserts frame rate when the browser is demonstrably
-not throttling. `frameMs` is also wall-clock around the render call, and WebGPU submits work
+~1 fps appears with every effect disabled. The test suite therefore asserts no frame rate at
+all; frame time is settled by `scripts/benchmark.mjs`, with GPU timestamps. `frameMs` is also wall-clock around the render call, and WebGPU submits work
 asynchronously, so it **undercounts true GPU time**.
 
 Full methodology, cost model and the honest list of what remains unmeasured:
