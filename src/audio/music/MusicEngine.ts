@@ -14,6 +14,22 @@
  * Energy (ship speed, under sail) moves the tempo, the stem balance and how
  * many drum and string notes are played.
  *
+ * **The band under sail** plays a jig's engine room: the bass on both beats,
+ * root then fifth or octave, walking up into the next bar's chord when she is
+ * moving; the squeezebox's chords stabbed on the off-quavers and a cittern
+ * picking between them (the "oom-pah-pah"); the bodhrán accenting the beats
+ * with a roll into every phrase end. Over that the lead (`lead`) plays the
+ * score's call bars, the second voice (`second`) its answer bars, and the two
+ * together in thirds and sixths on tutti bars and on a section's repeat.
+ *
+ * | state      | tune                | tempo, dotted crotchets/min | lead / second       |
+ * |------------|---------------------|-----------------------------|---------------------|
+ * | calm       | Ballast and Brass   | 52–60                       | squeezebox / cittern |
+ * | sailing    | Ballast and Brass   | 66–84 with speed            | fiddle / squeezebox |
+ * | tour       | Ballast and Brass   | 69                          | fiddle / squeezebox |
+ * | storm      | Close-Reefed        | 92–104                      | fiddle / fiddle     |
+ * | underwater | Ballast and Brass   | 36                          | bells               |
+ *
  * **Scheduling.** Look-ahead, driven from the frame loop: each `update` schedules
  * every quaver that starts within `LOOKAHEAD` seconds on the audio clock. The
  * audio thread's clock is the accurate one, so notes land exactly wherever the
@@ -24,7 +40,8 @@
  * **Cost.** The drone is five persistent oscillators; everything else is built
  * per note and released when it ends. Notes are counted against a cap, and when
  * the band is over it the lowest-priority notes (ghost drum strokes, inner
- * plucks) are dropped first — the tune is the last thing to go. A stem whose
+ * plucks, off-beat stabs) are dropped first — the tune is the last thing to
+ * go. A squeezebox stab is one voice however many reeds sound in it. A stem whose
  * target gain is zero schedules nothing at all, so `silent` and a music volume
  * of zero cost only the drone's idle oscillators.
  *
@@ -45,6 +62,7 @@ import {
   playGlass,
   playPluck,
   playReed,
+  playReedChord,
   renderPluck,
   type DrumStroke,
   type NoteHost,
@@ -54,12 +72,13 @@ import {
   ORDERS,
   SONGS,
   STEPS_PER_BAR,
+  nextChord,
   type Bar,
   type OrderId,
   type Phrase,
   type SongId,
 } from './score';
-import { atOrAbove, chordToneBelow, midiToHz, voicing } from './theory';
+import { atOrAbove, harmonyBelow, inKey, midiToHz, voicing } from './theory';
 
 export type MusicState = 'calm' | 'sailing' | 'storm' | 'underwater' | 'tour' | 'silent';
 export type MusicSting = 'cargo';
@@ -88,6 +107,8 @@ const STEMS: readonly StemId[] = [
 
 type Mix = Readonly<Record<StemId, number>>;
 
+type TuneVoice = 'fiddle' | 'squeeze' | 'pluck' | 'glass';
+
 interface Profile {
   readonly song: SongId;
   readonly order: OrderId;
@@ -95,13 +116,14 @@ interface Profile {
   readonly tempo: readonly [number, number];
   readonly low: Mix;
   readonly high: Mix;
-  /** Who carries the tune, and who harmonises it. */
-  readonly tune: 'fiddle' | 'squeeze' | 'glass';
-  readonly harmony: 'squeeze' | 'fiddle' | null;
-  readonly pluck: 'jig' | 'arp' | 'none';
+  /** Who plays the call bars; with no second voice, every bar. */
+  readonly lead: TuneVoice;
+  /** Who plays the answer bars, and the harmony under the other's tune. */
+  readonly second: TuneVoice | null;
+  readonly pluck: 'pick' | 'arp' | 'none';
   readonly drum: 'jig' | 'toms' | 'pulse' | 'none';
-  readonly bass: 'beats' | 'tremolo' | 'none';
-  readonly reeds: 'chords' | 'low' | 'none';
+  readonly bass: 'beats' | 'gallop' | 'none';
+  readonly reeds: 'chords' | 'stabs' | 'low' | 'none';
   /** Depth of the hurdy-gurdy's rhythmic buzz on the beats, 0..1. */
   readonly buzz: number;
   /** Semitones the drone sits below its home D3/A3. */
@@ -131,35 +153,37 @@ function mix(m: Partial<Record<StemId, number>>): Mix {
  */
 const PROFILES: Readonly<Record<MusicState, Profile>> = {
   calm: {
+    // Relaxed but alive: the air on the squeezebox, the cittern answering,
+    // a heartbeat on the drum and the bass, the chords held under it.
     song: 'voyage',
     order: 'calm',
-    tempo: [40, 46],
-    low: mix({ drone: 0.55, reeds: 0.6, squeeze: 0.85, pluck: 0.8, glass: 0.3 }),
-    high: mix({ drone: 0.55, reeds: 0.6, squeeze: 0.85, pluck: 0.85, glass: 0.3 }),
-    tune: 'squeeze',
-    harmony: null,
+    tempo: [52, 60],
+    low: mix({ drone: 0.4, reeds: 0.55, squeeze: 0.95, pluck: 0.85, drum: 0.55, bass: 0.6, glass: 0.25 }),
+    high: mix({ drone: 0.4, reeds: 0.55, squeeze: 0.95, pluck: 0.9, drum: 0.65, bass: 0.65, glass: 0.25 }),
+    lead: 'squeeze',
+    second: 'pluck',
     pluck: 'arp',
-    drum: 'none',
-    bass: 'none',
+    drum: 'pulse',
+    bass: 'beats',
     reeds: 'chords',
     buzz: 0,
     droneShift: 0,
-    cutoff: 7000,
-    reverb: 0.4,
+    cutoff: 7500,
+    reverb: 0.38,
   },
   sailing: {
     song: 'voyage',
     order: 'sailing',
-    tempo: [70, 104],
-    low: mix({ drone: 0.5, reeds: 0.45, fiddle: 0.75, squeeze: 0.5, pluck: 0.7, drum: 0.55, bass: 0.45 }),
-    high: mix({ drone: 0.55, reeds: 0.35, fiddle: 0.9, squeeze: 0.6, pluck: 0.8, drum: 0.85, bass: 0.65 }),
-    tune: 'fiddle',
-    harmony: 'squeeze',
-    pluck: 'jig',
+    tempo: [66, 84],
+    low: mix({ drone: 0.35, reeds: 0.65, fiddle: 0.8, squeeze: 0.7, pluck: 0.8, drum: 1.0, bass: 0.9 }),
+    high: mix({ drone: 0.4, reeds: 0.75, fiddle: 0.95, squeeze: 0.8, pluck: 0.9, drum: 1.3, bass: 1.1 }),
+    lead: 'fiddle',
+    second: 'squeeze',
+    pluck: 'pick',
     drum: 'jig',
     bass: 'beats',
-    reeds: 'chords',
-    buzz: 0.6,
+    reeds: 'stabs',
+    buzz: 0.5,
     droneShift: 0,
     cutoff: 14000,
     reverb: 0.22,
@@ -167,28 +191,28 @@ const PROFILES: Readonly<Record<MusicState, Profile>> = {
   storm: {
     song: 'squall',
     order: 'storm',
-    tempo: [80, 92],
-    low: mix({ drone: 1.4, reeds: 0.8, fiddle: 1.4, drum: 1.35, bass: 1.5 }),
-    high: mix({ drone: 1.5, reeds: 0.9, fiddle: 1.5, drum: 1.6, bass: 1.7 }),
-    tune: 'fiddle',
-    harmony: 'fiddle',
+    tempo: [92, 104],
+    low: mix({ drone: 1.1, reeds: 0.75, fiddle: 1.25, drum: 1.2, bass: 1.25 }),
+    high: mix({ drone: 1.2, reeds: 0.85, fiddle: 1.35, drum: 1.45, bass: 1.45 }),
+    lead: 'fiddle',
+    second: 'fiddle',
     pluck: 'none',
     drum: 'toms',
-    bass: 'tremolo',
+    bass: 'gallop',
     reeds: 'low',
     buzz: 0.25,
     droneShift: 12,
     cutoff: 6000,
-    reverb: 0.32,
+    reverb: 0.3,
   },
   underwater: {
     song: 'voyage',
     order: 'underwater',
-    tempo: [34, 34],
+    tempo: [36, 36],
     low: mix({ drone: 0.25, glass: 1 }),
     high: mix({ drone: 0.25, glass: 1 }),
-    tune: 'glass',
-    harmony: null,
+    lead: 'glass',
+    second: null,
     pluck: 'none',
     drum: 'none',
     bass: 'none',
@@ -201,11 +225,11 @@ const PROFILES: Readonly<Record<MusicState, Profile>> = {
   tour: {
     song: 'voyage',
     order: 'tour',
-    tempo: [62, 62],
-    low: mix({ drone: 0.45, reeds: 0.55, fiddle: 0.8, squeeze: 0.6, pluck: 0.6, drum: 0.45, bass: 0.35, glass: 0.3 }),
-    high: mix({ drone: 0.45, reeds: 0.55, fiddle: 0.8, squeeze: 0.6, pluck: 0.6, drum: 0.45, bass: 0.35, glass: 0.3 }),
-    tune: 'fiddle',
-    harmony: 'squeeze',
+    tempo: [69, 69],
+    low: mix({ drone: 0.4, reeds: 0.55, fiddle: 0.8, squeeze: 0.65, pluck: 0.6, drum: 0.55, bass: 0.5, glass: 0.25 }),
+    high: mix({ drone: 0.4, reeds: 0.55, fiddle: 0.8, squeeze: 0.65, pluck: 0.6, drum: 0.55, bass: 0.5, glass: 0.25 }),
+    lead: 'fiddle',
+    second: 'squeeze',
     pluck: 'arp',
     drum: 'pulse',
     bass: 'beats',
@@ -218,11 +242,11 @@ const PROFILES: Readonly<Record<MusicState, Profile>> = {
   silent: {
     song: 'voyage',
     order: 'calm',
-    tempo: [40, 40],
+    tempo: [52, 52],
     low: mix({}),
     high: mix({}),
-    tune: 'squeeze',
-    harmony: null,
+    lead: 'squeeze',
+    second: null,
     pluck: 'none',
     drum: 'none',
     bass: 'none',
@@ -255,10 +279,13 @@ const PLUCK_BASE = 48;
 
 /** Per-instrument note velocities, before the stem gain. */
 const VEL = {
-  fiddle: 0.2,
+  fiddle: 0.17,
   squeeze: 0.16,
   reeds: 0.07,
+  stab: 0.11,
   pluck: 0.65,
+  /** The cittern taking a melody, over its own accompaniment. */
+  pluckTune: 0.9,
   drum: 0.42,
   bass: 0.2,
   glass: 0.075,
@@ -280,13 +307,16 @@ interface FilterSpec {
 
 const CHANNELS: Readonly<Record<Exclude<StemId, 'drone'>, { filters: FilterSpec[]; pan: number }>> = {
   fiddle: {
-    // A violin body: the air resonance, the bridge hill, and the top of a
+    // A violin body: the air resonance (A0) and the main wood resonance, a
+    // dip through the nasal region, the bridge hill, and the top of a
     // sawtooth taken off so it stops being a synth.
     filters: [
-      { type: 'highpass', frequency: 190, q: 0.7 },
-      { type: 'peaking', frequency: 480, q: 1.4, gain: 3 },
-      { type: 'peaking', frequency: 2900, q: 1.1, gain: 4 },
-      { type: 'lowpass', frequency: 6500, q: 0.6 },
+      { type: 'highpass', frequency: 180, q: 0.7 },
+      { type: 'peaking', frequency: 285, q: 2, gain: 3 },
+      { type: 'peaking', frequency: 520, q: 1.4, gain: 3 },
+      { type: 'peaking', frequency: 1500, q: 1.4, gain: -2.5 },
+      { type: 'peaking', frequency: 2800, q: 1.1, gain: 4.5 },
+      { type: 'lowpass', frequency: 7000, q: 0.6 },
     ],
     pan: -0.14,
   },
@@ -316,7 +346,8 @@ const CHANNELS: Readonly<Record<Exclude<StemId, 'drone'>, { filters: FilterSpec[
     pan: -0.04,
   },
   bass: {
-    filters: [{ type: 'lowpass', frequency: 480, q: 0.9 }],
+    // Each note closes its own filter; this only takes off the fizz.
+    filters: [{ type: 'lowpass', frequency: 2400, q: 0.7 }],
     pan: 0,
   },
   glass: {
@@ -660,16 +691,19 @@ export class MusicEngine implements NoteHost {
     this.duck(0.6, 1.5, t);
     switch (kind) {
       case 'cargo': {
-        // A run up the D major arpeggio, a held top D over a squeezebox chord.
-        const run = [69, 74, 78, 81, 86];
-        const gap = 0.072;
+        // The hook's leap as a fanfare — up in fourths and fifths to the high
+        // D — landing on D major: the minor tune's tierce de Picardie, which is
+        // what makes it read as a win.
+        const run = [57, 62, 69, 74];
+        const gap = 0.085;
         for (let i = 0; i < run.length; i++) {
           const last = i === run.length - 1;
           playFiddle(
             this,
             this.sting,
+            this.white,
             t + i * gap,
-            run[i],
+            run[i] + 12,
             last ? 0.95 : gap * 1.3,
             VEL.fiddle * (last ? 1.1 : 0.85),
             { cut: null, slide: last },
@@ -677,9 +711,8 @@ export class MusicEngine implements NoteHost {
           );
         }
         const land = t + (run.length - 1) * gap;
-        for (const m of [62, 66, 69, 74]) {
-          playReed(this, this.sting, this.reedWave, land, m, 1.0, VEL.reeds * 1.4, 0.04, 0.35, (this.random() - 0.5) * 8);
-        }
+        playReedChord(this, this.sting, this.reedWave, land, [62, 66, 69, 74], 1.0, VEL.reeds * 1.4, 0.04, 0.35, (this.random() - 0.5) * 8);
+        playBass(this, this.sting, land, 38, 0.9, VEL.bass);
         playBell(this, this.sting, land, 86, VEL.bell * 0.8);
         playDrum(this, this.sting, this.white, land, VEL.drum * 1.1, 'down', this.random);
         break;
@@ -735,6 +768,8 @@ export class MusicEngine implements NoteHost {
       this.start(now);
       this.flush(now);
       this.nextStep = now + 0.06;
+      // A band coming in starts at its tempo; the glide is for changing it.
+      this.stepDur = this.targetStepDur();
     }
     this.pump(now);
   }
@@ -752,9 +787,7 @@ export class MusicEngine implements NoteHost {
   pump(now: number): void {
     if (!this.wasLive) return;
     if (this.nextStep < now - RESYNC_BEHIND) this.nextStep = now + 0.02;
-    const p = this.profile;
-    const tempo = p.tempo[0] + (p.tempo[1] - p.tempo[0]) * this.energy;
-    const targetDur = 60 / (Math.max(20, tempo) * 3);
+    const targetDur = this.targetStepDur();
     const audible = this.volume > 0;
     while (this.nextStep < now + LOOKAHEAD) {
       // A glide, not a jump: the band speeds up over a couple of bars.
@@ -863,6 +896,13 @@ export class MusicEngine implements NoteHost {
     this.phraseIndex = (this.phraseIndex + 1) % ORDERS[this.order].length;
   }
 
+  /** Seconds per quaver at the current state's tempo for the current energy. */
+  private targetStepDur(): number {
+    const p = this.profile;
+    const tempo = p.tempo[0] + (p.tempo[1] - p.tempo[0]) * this.energy;
+    return 60 / (Math.max(20, tempo) * 3);
+  }
+
   private canPlay(priority: number): boolean {
     if (priority >= PRIORITY_HIGH) return this.activeVoices < this.voiceCap * 1.25;
     if (priority === PRIORITY_MID) return this.activeVoices < this.voiceCap;
@@ -881,55 +921,77 @@ export class MusicEngine implements NoteHost {
       this.phraseIndex = 0;
       this.barIndex = 0;
     }
-    const plan: Phrase = ORDERS[this.order][this.phraseIndex % ORDERS[this.order].length];
-    const bars = SONGS[this.song].sections[plan.section];
+    const phrases = ORDERS[this.order];
+    const plan: Phrase = phrases[this.phraseIndex % phrases.length];
+    const song = SONGS[this.song];
+    const bars = song.sections[plan.section];
     if (bars === undefined) return;
     const bar = bars[this.barIndex];
     const p = this.profile;
     const s = this.stepIndex;
     const e = this.energy;
     const random = this.random;
+    const v = this.scratch;
+    const phraseEnd = this.barIndex === BARS_PER_PHRASE - 1;
 
     if (s === 0) this.scheduleBar(t, d, bar);
 
     // --- the tune ---------------------------------------------------------
     if (plan.tune) {
+      // Call bars to the lead, answer bars to the second voice; the other one
+      // harmonises on tutti bars and through a harmony phrase.
+      const second = p.second ?? p.lead;
+      const voice = bar.role === 'answer' ? second : p.lead;
+      const other = bar.role === 'answer' ? p.lead : second;
+      const harmony = p.second !== null && (bar.role === 'tutti' || plan.harmony);
       for (const note of bar.notes) {
-        if (note.step !== s) continue;
+        if (note.step < s || note.step >= s + 1) continue;
+        const at = t + (note.step - s) * d;
         const dur = note.len * d;
-        this.playTune(p.tune, t, note.midi, dur, note.len, false);
-        if (plan.harmony && p.harmony !== null) {
-          this.playTune(p.harmony, t, chordToneBelow(bar.chord, note.midi), dur, note.len, true);
+        this.playTune(voice, at, note.midi, dur, note.len, false);
+        if (harmony) {
+          this.playTune(other, at, harmonyBelow(bar.chord, song.scale, note.midi), dur, note.len, true);
         }
+      }
+    }
+
+    // --- the squeezebox's off-beat chords ---------------------------------
+    if (p.reeds === 'stabs' && this.on('reeds')) {
+      // The "pah-pah" of the jig: the last quaver of each beat always, the
+      // middle one too once she is moving.
+      const strong = s === 2 || s === 5;
+      if ((strong || ((s === 1 || s === 4) && e > 0.5)) && this.canPlay(PRIORITY_LOW)) {
+        voicing(bar.chord, 57, 69, v);
+        const level = VEL.stab * (strong ? 1 : 0.6) * (0.85 + 0.15 * e);
+        playReedChord(this, this.inputs.reeds, this.reedWave, t, v, 0.5 * d, level, 0.01, 0.07, (random() - 0.5) * 8);
       }
     }
 
     // --- strings ---------------------------------------------------------------
     if (p.pluck !== 'none' && this.on('pluck')) {
-      const v = this.scratch;
-      if (p.pluck === 'jig') {
-        // Boom, chick-chick: a bass note on each beat and the chord between.
-        const root = atOrAbove(bar.chord.root, 43);
-        if (s === 0) this.pluck(t, root, VEL.pluck, 2 * d, PRIORITY_MID);
-        else if (s === 3) this.pluck(t, root + 7, VEL.pluck * 0.85, 2 * d, PRIORITY_MID);
-        else if (s === 2 || s === 5) {
-          voicing(bar.chord, 55, 66, v);
-          const level = VEL.pluck * (0.45 + 0.25 * e);
-          for (let i = 0; i < v.length && i < 3; i++) {
-            // A strum: each string a few milliseconds after the last.
-            this.pluck(t + i * 0.011, v[i], level, d, PRIORITY_LOW);
+      if (p.pluck === 'pick') {
+        // A cittern picking between the beats from the chord's upper notes;
+        // the bass and the squeezebox have the beats themselves.
+        if (s !== 0 && s !== 3 && (s === 2 || s === 5 || e > 0.25)) {
+          voicing(bar.chord, 57, 74, v);
+          if (v.length > 0) {
+            const shape = [0, 1, 2, 0, 3, 1];
+            const idx = (shape[s] + (this.barIndex & 1)) % v.length;
+            const accent = s === 2 || s === 5 ? 1 : 0.7;
+            this.pluck(t, v[idx], VEL.pluck * accent * (0.85 + 0.3 * e), 1.2 * d, PRIORITY_LOW);
           }
-        } else if (e > 0.7) {
-          voicing(bar.chord, 59, 71, v);
-          if (v.length > 0) this.pluck(t, v[(s + this.barIndex) % v.length], VEL.pluck * 0.3, d, PRIORITY_LOW);
         }
       } else {
-        // A rolling arpeggio, harp-like, letting each note ring through the next.
-        voicing(bar.chord, 50, 76, v);
-        if (v.length > 0) {
-          const shape = [0, 2, 4, 5, 4, 2];
-          const idx = Math.min(v.length - 1, shape[s]);
-          this.pluck(t, v[idx], VEL.pluck * (s === 0 ? 0.8 : 0.55), 3 * d, s === 0 ? PRIORITY_MID : PRIORITY_LOW);
+        // A rolling arpeggio, harp-like, letting each note ring through the
+        // next; only the downbeat while the cittern itself has the tune.
+        const answering = p.second === 'pluck' && plan.tune && bar.role !== 'call';
+        if (!answering || s === 0) {
+          voicing(bar.chord, 50, 74, v);
+          if (v.length > 0) {
+            const shape = [0, 2, 4, 5, 4, 2];
+            const idx = Math.min(v.length - 1, shape[s]);
+            this.pluck(t, v[idx], VEL.pluck * (s === 0 ? 0.75 : 0.5), 3 * d, s === 0 ? PRIORITY_MID : PRIORITY_LOW);
+          }
         }
       }
     }
@@ -939,23 +1001,38 @@ export class MusicEngine implements NoteHost {
       let level = 0;
       let stroke: DrumStroke = 'up';
       if (p.drum === 'jig') {
-        // Accents on the two beats; the inner strokes fill in with speed.
-        const accent = [1, 0.32, 0.55, 0.85, 0.32, 0.55][s];
-        const gate = s === 0 || s === 3 ? 0 : s === 2 || s === 5 ? 0.2 : 0.55;
+        // Down on the beats, up between, the inner strokes filling in with
+        // speed; a semiquaver roll into every phrase end and a pickup halfway.
+        const accent = [1, 0.3, 0.5, 0.8, 0.3, 0.5][s];
+        const gate = s === 0 || s === 3 ? 0 : s === 2 || s === 5 ? 0.15 : 0.5;
         if (e >= gate) level = accent * (0.75 + 0.25 * e);
         stroke = s === 0 || s === 3 ? 'down' : 'up';
+        if (phraseEnd && s >= 3) {
+          const swell = 0.45 + 0.15 * (s - 3);
+          level = Math.max(level, swell);
+          this.drum(t + d * 0.5, swell * 0.85 * VEL.drum, 'up', PRIORITY_LOW);
+        } else if (this.barIndex === 3 && s === 5) {
+          this.drum(t + d * 0.5, 0.45 * VEL.drum, 'up', PRIORITY_LOW);
+        }
       } else if (p.drum === 'toms') {
-        const accent = [1, 0, 0, 0.8, 0, 0.45][s];
-        level = accent;
-        stroke = 'tom';
-        // A roll into every fourth bar.
+        // The big drum on the beats and a pickup, the frame drum driving the
+        // quavers between, and a roll into every fourth bar.
+        stroke = s === 0 || s === 3 || s === 5 ? 'tom' : 'up';
+        level = [1, 0.32, 0.4, 0.8, 0.32, 0.45][s];
+        if ((s === 1 || s === 4) && e < 0.3) level = 0;
         if (this.barIndex % 4 === 3 && s >= 3) {
-          level = 0.45 + 0.15 * (s - 3);
+          level = 0.5 + 0.15 * (s - 3);
+          stroke = 'tom';
           this.drum(t + d * 0.5, level * 0.8 * VEL.drum, 'tom', PRIORITY_LOW);
         }
       } else if (p.drum === 'pulse') {
-        level = s === 0 ? 0.7 : s === 3 ? 0.4 : 0;
+        // A heartbeat: the two beats, and a lift into the next phrase.
+        level = s === 0 ? 0.7 : s === 3 ? 0.42 : 0;
         stroke = s === 0 ? 'down' : 'up';
+        if (phraseEnd && s === 5) {
+          level = 0.35;
+          this.drum(t + d * 0.5, 0.45 * VEL.drum, 'up', PRIORITY_LOW);
+        }
       }
       if (level > 0) {
         const humanise = (random() - 0.5) * 0.008;
@@ -967,13 +1044,32 @@ export class MusicEngine implements NoteHost {
     if (p.bass !== 'none' && this.on('bass')) {
       const root = atOrAbove(bar.chord.root, 38);
       if (p.bass === 'beats') {
-        if ((s === 0 || s === 3) && this.canPlay(PRIORITY_MID)) {
-          playBass(this, this.inputs.bass, t, s === 0 ? root : root + 7 > 50 ? root - 5 : root + 7, 2.6 * d, VEL.bass);
+        if (s === 0) {
+          this.bass(t, root, 2.6 * d, VEL.bass, PRIORITY_MID);
+        } else if (s === 3) {
+          // The fifth, or on alternate bars the octave from a low root, so the
+          // line moves when the chord does not. Never under D2: below it a
+          // bass note grinds against the drone's low D.
+          const fifth = root + 7 <= 50 ? root + 7 : root - 5;
+          const up = this.barIndex % 2 === 1 && root <= 40 ? root + 12 : fifth;
+          this.bass(t, up, (e > 0.45 ? 1.7 : 2.6) * d, VEL.bass * 0.85, PRIORITY_MID);
+        } else if (s === 5 && e > 0.45) {
+          // Under way, a walk into the next bar's root from a step below, or
+          // from above where below would leave the bass's register.
+          const next = nextChord(song, this.order, this.phraseIndex, this.barIndex);
+          if (next !== undefined) {
+            const target = atOrAbove(next.root, 38);
+            let from = inKey(bar.chord, song.scale, target - 2) ? target - 2 : target - 1;
+            if (from < 38) from = target + 2;
+            this.bass(t, from, 0.9 * d, VEL.bass * 0.7, PRIORITY_LOW);
+          }
         }
-      } else if (this.canPlay(PRIORITY_MID)) {
-        // The storm's ostinato: every quaver, leaning on the beats.
-        const v = s === 0 || s === 3 ? VEL.bass * 1.25 : VEL.bass * 0.8;
-        playBass(this, this.inputs.bass, t, root, 0.85 * d, v);
+      } else {
+        // The storm's gallop: every quaver, root, octave and fifth, leaning on
+        // the beats.
+        const shape = [0, 0, 12, 0, 7, 12];
+        const level = s === 0 || s === 3 ? VEL.bass * 1.2 : VEL.bass * 0.75;
+        this.bass(t, root + shape[s], 0.8 * d, level, PRIORITY_MID);
       }
     }
 
@@ -990,23 +1086,22 @@ export class MusicEngine implements NoteHost {
     }
   }
 
-  /** Everything that happens once per bar: the chord. */
+  /** Everything that happens once per bar: the held chord, and the glass. */
   private scheduleBar(t: number, d: number, bar: Bar): void {
     const p = this.profile;
     const v = this.scratch;
     const barDur = STEPS_PER_BAR * d;
-    if (p.reeds !== 'none' && this.on('reeds')) {
+    if ((p.reeds === 'chords' || p.reeds === 'low') && this.on('reeds')) {
       if (p.reeds === 'low') voicing(bar.chord, 45, 58, v);
       else voicing(bar.chord, 54, 67, v);
       const attack = Math.min(0.4, barDur * 0.15);
-      for (let i = 0; i < v.length && i < 4; i++) {
-        if (!this.canPlay(PRIORITY_MID)) break;
-        playReed(
+      if (this.canPlay(PRIORITY_MID)) {
+        playReedChord(
           this,
           this.inputs.reeds,
           this.reedWave,
           t,
-          v[i],
+          v,
           barDur * 0.98,
           VEL.reeds,
           attack,
@@ -1016,22 +1111,18 @@ export class MusicEngine implements NoteHost {
       }
     }
     if (this.on('glass')) {
+      // Three notes where the glass is the band, two where it is a shimmer
+      // under one: each rings for seconds, and the cap has better uses.
+      const notes = p.lead === 'glass' ? 3 : 2;
       voicing(bar.chord, 57, 71, v);
-      for (let i = 0; i < v.length && i < 3; i++) {
+      for (let i = 0; i < v.length && i < notes; i++) {
         if (!this.canPlay(PRIORITY_MID)) break;
         playGlass(this, this.inputs.glass, t, v[i], barDur * 1.05, VEL.glass);
       }
     }
   }
 
-  private playTune(
-    who: 'fiddle' | 'squeeze' | 'glass',
-    t: number,
-    midi: number,
-    dur: number,
-    len: number,
-    harmony: boolean,
-  ): void {
+  private playTune(who: TuneVoice, t: number, midi: number, dur: number, len: number, harmony: boolean): void {
     if (!this.on(who)) return;
     const priority = harmony ? PRIORITY_MID : PRIORITY_HIGH;
     if (!this.canPlay(priority)) return;
@@ -1045,12 +1136,19 @@ export class MusicEngine implements NoteHost {
         const cut = ornate && r < 0.6 * (0.22 + 0.25 * this.energy) ? midi + 2 : null;
         const slide = ornate && cut === null;
         const vel = VEL.fiddle * scale * (0.9 + 0.2 * random());
-        playFiddle(this, this.inputs.fiddle, t, midi, dur * 1.02, vel, { cut, slide }, random);
+        playFiddle(this, this.inputs.fiddle, this.white, t, midi, dur * 1.02, vel, { cut, slide }, random);
         break;
       }
       case 'squeeze': {
         const vel = VEL.squeeze * scale * (0.9 + 0.15 * random());
-        playReed(this, this.inputs.squeeze, this.reedWave, t, midi, dur * 0.97, vel, 0.035, 0.09, (random() - 0.5) * 6);
+        playReed(this, this.inputs.squeeze, this.reedWave, t, midi, dur * 0.97, vel, 0.03, 0.09, (random() - 0.5) * 6);
+        break;
+      }
+      case 'pluck': {
+        // The cittern answering: an octave down where the tune would sit
+        // above the instrument, and let ring a little past the note.
+        const m = midi > 76 ? midi - 12 : midi;
+        this.pluck(t, m, VEL.pluckTune * scale * (0.9 + 0.15 * random()), dur + 0.15, priority);
         break;
       }
       case 'glass': {
@@ -1077,6 +1175,11 @@ export class MusicEngine implements NoteHost {
   private drum(t: number, vel: number, stroke: DrumStroke, priority: number): void {
     if (!this.canPlay(priority)) return;
     playDrum(this, this.inputs.drum, this.white, t, vel, stroke, this.random);
+  }
+
+  private bass(t: number, midi: number, dur: number, vel: number, priority: number): void {
+    if (!this.canPlay(priority)) return;
+    playBass(this, this.inputs.bass, t, midi, dur, vel);
   }
 }
 
