@@ -355,6 +355,21 @@ physics and look are this project's own. Affected files:
 
 - `src/physics/Spindrift.ts`
 
+## three.js examples: webgpu_compute_cloth
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_compute_cloth.html
+
+The sail and pennant cloth is adapted from three.js r187's
+`webgpu_compute_cloth` example: verlet springs in two compute passes (spring
+forces, then a per-vertex gather over a spring list), the buffer layout and the
+integration. Several grids share the buffers, the pins follow a CPU buffer, and
+the wind is an apparent-wind pressure with flutter; see the file header.
+Affected files:
+
+- `src/scene/ship/ClothSolver.ts`
+- `src/scene/ship/Sails.ts`
+- `src/scene/ship/Pennant.ts`
+
 ```
 The MIT License
 

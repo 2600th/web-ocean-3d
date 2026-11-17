@@ -415,6 +415,13 @@ export interface QualitySettings {
    * no texture and no shadow.
    */
   canopy: number;
+
+  /**
+   * Whether the sails are verlet cloth in compute (`scene/ship/ClothSolver`)
+   * rather than the analytic vertex-stage billow. About 900 vertices, eight
+   * small dispatches a frame at 60 Hz; budgeted at 0.5 ms.
+   */
+  sailCloth: boolean;
 }
 
 export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
@@ -462,6 +469,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 0,
     meadow: 0,
     canopy: 4000,
+    sailCloth: false,
   },
   medium: {
     fftSize: 128,
@@ -507,6 +515,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 0.5,
     meadow: 18000,
     canopy: 9000,
+    sailCloth: false,
   },
   high: {
     fftSize: 256,
@@ -551,6 +560,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 0.8,
     meadow: 38000,
     canopy: 15000,
+    sailCloth: true,
   },
   ultra: {
     fftSize: 256,
@@ -595,6 +605,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 1,
     meadow: 62000,
     canopy: 20000,
+    sailCloth: true,
   },
   max: {
     fftSize: 512,
@@ -641,6 +652,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 1,
     meadow: 90000,
     canopy: 24000,
+    sailCloth: true,
   },
 };
 

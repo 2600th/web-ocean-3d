@@ -306,6 +306,9 @@ const _audioRight = new THREE.Vector3();
 const _audioRel = new THREE.Vector3();
 const _audioBird = new THREE.Vector3();
 const _audioProbe = new THREE.Vector3();
+// Sails: the true wind, and a hull at rest when there is no body yet.
+const _sailWind = new THREE.Vector3();
+const _sailStill = new THREE.Vector3();
 
 /**
  * Hull probes for wave slaps, in the hull's frame as fractions of (half length,
@@ -2015,6 +2018,8 @@ class App {
     // too; see `installAsyncPipelines`.
     this.compilesInFlight++;
     const run = async (): Promise<void> => {
+      // The sail cloth's compute pipelines, which no scene compile reaches.
+      await this.ship?.compileSails(this.renderer);
       if (!scenePass) {
         await this.renderer.compileAsync(this.scene, this.camera);
         // Started, not built: see `installAsyncPipelines`. Same wait as below.
@@ -2621,6 +2626,16 @@ class App {
     const sails = this.gameplay?.audioState(this.sailAudio) ?? null;
     audio.sailFill = sails?.sailFill ?? 0;
     audio.sailLuff = sails?.sailLuff ?? 0;
+    // The same setting drawn: furled, half or full at the helm; chosen by the
+    // wind when nobody is (`fill: null`). Cloth or analytic by tier.
+    const windToward = getPreset(this.state.preset).sea.windDirection;
+    ship.setSailState({
+      fill: sails?.active ? sails.sailFill : null,
+      trueWind: _sailWind.set(Math.cos(windToward), 0, Math.sin(windToward)).multiplyScalar(this.state.windSpeed),
+      velocity: this.shipBody?.velocity ?? _sailStill,
+      luff: audio.sailLuff,
+      cloth: QUALITY_TIERS[this.state.quality].sailCloth,
+    });
 
     // Wave slaps: water climbing past a point on the planking, fast. Only
     // within earshot, since each probe is a sea-surface sample.
