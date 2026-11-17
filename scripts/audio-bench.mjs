@@ -134,6 +134,15 @@ const STATES = {
     motion: { heel: 0.05, heelPeriod: 9.5, pitch: 0.02, pitchPeriod: 6.1 },
     events: [...slaps(6, 0.2)],
   },
+  nearCliffs: {
+    // Sailing past a 30 m rock face 40 m off: open water, the cliff, open water.
+    music: 'sailing', energy: 0.6,
+    params: { windSpeed: 9, waveHeight: hs(9), peakWavelength: 40, rain: 0, submersion: 0, hullSpeed: 4.5, birdCount: 40, shipDistance: 18, shipPan: 0.1, sailFill: 0.9, sailLuff: 0, listenerZ: 0 },
+    motion: { heel: 0.1, heelPeriod: 7, pitch: 0.04, pitchPeriod: 5.2, heelBias: 0.08 },
+    reflectors: [{ x: 0, z: 60, reach: 20, top: 30 }],
+    listenerX: (t) => -270 + 9 * t,
+    events: [...slaps(2.8, 0.4), { t: 29, type: 'impact', strength: 0.35 }],
+  },
   tierChange: {
     // Not a game state: sailing with the adaptive quality dropping to Low at
     // 20 s and back to High at 40 s, which swaps the rooms and the beds.
@@ -144,7 +153,7 @@ const STATES = {
   },
 };
 
-const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'nightCalm', 'tierChange'];
+const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'nightCalm', 'nearCliffs', 'tierChange'];
 
 // --- arguments ---------------------------------------------------------------
 
@@ -273,8 +282,16 @@ async function renderInPage(cfg) {
   const params = { ...st.params, shipHeel: 0, shipPitch: 0 };
   sys.setMusicState(st.music, st.energy);
   sys.resetClock(0);
+  if (st.reflectors && typeof sys.setReflectors === 'function') sys.setReflectors(st.reflectors);
   await sys.resume();
-  if (cfg.diag) {
+  if (cfg.diag === 'wet') {
+    // Diagnosis only (BENCH_DIAG=wet): the room's return alone, every dry path
+    // and the score cut, to show how wet the world is.
+    sys.ambienceBus?.disconnect();
+    sys.effectsBus?.disconnect();
+    sys.ambienceUnder?.disconnect();
+    sys.music.output.disconnect();
+  } else if (cfg.diag) {
     // Diagnosis only (BENCH_DIAG=music or a stem name): the score alone.
     sys.airMuffle.disconnect();
     sys.underBus.disconnect();
@@ -286,6 +303,7 @@ async function renderInPage(cfg) {
   const events = st.events.slice().sort((a, b) => a.t - b.t);
   let nextEvent = 0;
   const submersionAt = st.submersion ? new Function('t', `return (${st.submersion})(t)`) : null;
+  const listenerAt = st.listenerX ? new Function('t', `return (${st.listenerX})(t)`) : null;
 
   let peakFx = 0;
   let peakMusic = 0;
@@ -302,6 +320,7 @@ async function renderInPage(cfg) {
     params.shipHeel = (m.heelBias ?? 0) + m.heel * Math.sin((2 * Math.PI * t) / m.heelPeriod);
     params.shipPitch = m.pitch * Math.sin((2 * Math.PI * t) / m.pitchPeriod + 0.7);
     if (submersionAt) params.submersion = submersionAt(t);
+    if (listenerAt) params.listenerX = listenerAt(t);
     while (nextEvent < events.length && events[nextEvent].t <= t) {
       const e = events[nextEvent++];
       switch (e.type) {
@@ -706,7 +725,7 @@ async function main() {
         const extra = process.env.BENCH_EVENTS ? JSON.parse(process.env.BENCH_EVENTS) : [];
         // BENCH_PARAMS='{"birdCount":0}' overrides scene values in every state (diagnosis).
         const over = process.env.BENCH_PARAMS ? JSON.parse(process.env.BENCH_PARAMS) : {};
-        const state = { ...st, params: { ...st.params, ...over }, events: [...st.events, ...extra], submersion: st.submersion ? st.submersion.toString() : null };
+        const state = { ...st, params: { ...st.params, ...over }, events: [...st.events, ...extra], submersion: st.submersion ? st.submersion.toString() : null, listenerX: st.listenerX ? st.listenerX.toString() : null };
         const r = await page.evaluate(
           async ({ src, cfg }) => {
             const fn = new Function(`return (${src})`)();
