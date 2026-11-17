@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { Fn, float, int, ivec2, mix, select, texture, textureLoad, uv, vec2, vec4 } from 'three/tsl';
+import { Fn, float, int, ivec2, mix, select, texture, textureLoad, uv, vec2, vec3, vec4 } from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { butterflyPassNode, cMul, createFFTResources, type FFTResources } from './FFT';
 import {
@@ -181,6 +181,26 @@ export class OceanSimulation {
       let sum: any = float(0);
       for (let i = 0; i < nodes.length; i++) {
         sum = sum.add(nodes[i].sample(vec2(worldXZ).div(tiles[i])).y.mul(weights[i]));
+      }
+      return sum;
+    };
+  }
+
+  /**
+   * Full surface displacement (choppy x, height y, choppy z) at a rest-grid
+   * world XZ, as a TSL function. The same fixed slots as `heightNode`, sampled
+   * at mip 0 explicitly so it can run in a compute stage (`physics/Spindrift`
+   * places spray on the displaced crest a foam texel describes).
+   */
+  displacementNode(): (worldXZ: any) => any {
+    this.ensureHeightBindings();
+    const nodes = this.heightNodes;
+    const tiles = this.heightTiles;
+    const weights = this.heightWeights;
+    return (worldXZ: any) => {
+      let sum: any = vec3(0, 0, 0);
+      for (let i = 0; i < nodes.length; i++) {
+        sum = sum.add(nodes[i].sample(vec2(worldXZ).div(tiles[i])).level(0).xyz.mul(weights[i]));
       }
       return sum;
     };
