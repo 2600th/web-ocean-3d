@@ -130,6 +130,20 @@ export interface Objective {
   bearingDeg: number | null;
   /** Distance in metres, or `null` to hide the distance. */
   distanceM: number | null;
+  /** What is coming, in a line of its own under the bearing. */
+  warning?: string;
+}
+
+/** The close of a voyage, for the tally. Mirrors `VoyageTally` in `src/gameplay/types.ts`. */
+export interface VoyageTally {
+  voyage: number;
+  cargo: number;
+  casks: number;
+  gold: number;
+  purse: number;
+  seconds: number;
+  bestSeconds: number | null;
+  newBest: boolean;
 }
 
 /**

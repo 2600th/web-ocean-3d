@@ -30,6 +30,7 @@ import {
   type ToastKind,
   type ToastOptions,
   type UiCallbacks,
+  type VoyageTally,
 } from './types.ts';
 
 interface Hint {
@@ -195,6 +196,12 @@ function beaufort(knots: number): number {
   return index < 0 ? 12 : index;
 }
 
+/** Minutes and seconds, for a voyage's time: 4:07. */
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
 function formatDistance(metres: number): string {
   if (metres < 1000) return `${Math.max(0, Math.round(metres / 5) * 5)} m`;
   return `${(metres / 1852).toFixed(1)} nmi`;
@@ -280,7 +287,15 @@ export class Hud {
   private readonly objectiveBearingRow: HTMLElement;
   private readonly objectiveArrow: HTMLElement;
   private readonly objectiveBearingText: HTMLElement;
+  private readonly objectiveWarning: HTMLElement;
   private readonly scoreEl: HTMLElement;
+  // voyage tally
+  private readonly tallyEl: HTMLElement;
+  private readonly tallyTitle: HTMLElement;
+  private readonly tallySub: HTMLElement;
+  private readonly tallyRows: HTMLElement;
+  private readonly tallyAgain: HTMLButtonElement;
+  private onSailAgain: (() => void) | null = null;
   private readonly scoreRows = new Map<string, ScoreRow>();
 
   private mode: CameraMode;
@@ -407,7 +422,10 @@ export class Hud {
     objectiveArrow.setAttribute('aria-hidden', 'true');
     const bearingText = el('span', 'objective__bearing-text');
     bearingRow.append(objectiveArrow, bearingText);
-    objectiveText.append(objectiveTitle, objectiveDetail, bearingRow);
+    // What is coming (a squall, the dark), said plainly under the bearing.
+    const objectiveWarning = el('p', 'objective__warning');
+    objectiveWarning.hidden = true;
+    objectiveText.append(objectiveTitle, objectiveDetail, bearingRow, objectiveWarning);
     // On a phone the scroll folds to a chip (seal, title, bearing); this
     // button unfolds it. A wide screen has room for the whole scroll and
     // never shows it.
@@ -426,7 +444,22 @@ export class Hud {
     const scoreEl = el('dl', 'score plate');
     scoreEl.hidden = true;
     scoreEl.setAttribute('aria-label', 'Score');
-    quest.append(objectiveEl, scoreEl);
+
+    // The voyage's close: what came home, and the choice to go again. Takes
+    // the objective's place while it is up; the only part of the quest column
+    // that takes clicks.
+    const tallyEl = el('article', 'tally parchment');
+    tallyEl.hidden = true;
+    tallyEl.setAttribute('aria-label', 'Voyage tally');
+    const tallyTitle = el('h2', 'tally__title');
+    const tallySub = el('p', 'tally__sub');
+    const tallyRows = el('dl', 'tally__rows');
+    const tallyAgain = el('button', 'tally__again');
+    tallyAgain.type = 'button';
+    tallyAgain.append(icon('anchor', 'tally__icon'), el('span', 'tally__again-label', 'Sail again'));
+    tallyAgain.addEventListener('click', () => this.onSailAgain?.(), { signal });
+    tallyEl.append(tallyTitle, tallySub, tallyRows, tallyAgain);
+    quest.append(objectiveEl, tallyEl, scoreEl);
 
     // ---- Wind dial + log ---------------------------------------------------
     const instruments = el('div', 'hud-instruments');
@@ -523,7 +556,13 @@ export class Hud {
     this.objectiveBearingRow = bearingRow;
     this.objectiveArrow = objectiveArrow;
     this.objectiveBearingText = bearingText;
+    this.objectiveWarning = objectiveWarning;
     this.scoreEl = scoreEl;
+    this.tallyEl = tallyEl;
+    this.tallyTitle = tallyTitle;
+    this.tallySub = tallySub;
+    this.tallyRows = tallyRows;
+    this.tallyAgain = tallyAgain;
 
     this.objectiveMore = objectiveMore;
     // Lessons are phrased for the hands in use: a phone has no W key.
@@ -763,6 +802,10 @@ export class Hud {
     setText(this.objectiveTitle, objective.title);
     setText(this.objectiveDetail, objective.detail ?? '');
     this.objectiveDetail.hidden = !objective.detail;
+    const warning = objective.warning ?? '';
+    if (warning !== '' && warning !== this.objectiveWarning.textContent) this.wake();
+    setText(this.objectiveWarning, warning);
+    this.objectiveWarning.hidden = warning === '';
     this.objectiveEl.hidden = false;
     if (fresh && !reducedMotion()) {
       this.objectiveEl.classList.remove('is-new');
@@ -771,6 +814,57 @@ export class Hud {
       this.objectiveEl.classList.add('is-new');
     }
     this.placeObjective(true);
+  }
+
+  /**
+   * Shows the voyage's tally in the objective's place, or puts it away with
+   * `null`. `onSailAgain` is what its one button does; the button takes focus
+   * so a keyboard can answer it with Enter.
+   */
+  setTally(tally: VoyageTally | null, onSailAgain?: () => void): void {
+    if (this.disposed) return;
+    if (tally === null) {
+      this.tallyEl.hidden = true;
+      this.onSailAgain = null;
+      return;
+    }
+    this.onSailAgain = onSailAgain ?? null;
+    const full = tally.cargo >= tally.casks;
+    setText(this.tallyTitle, full ? 'All cargo home' : 'Cargo home');
+    setText(this.tallySub, `Voyage ${tally.voyage} Â· at anchor off the cove`);
+    const best = tally.newBest
+      ? `${formatClock(tally.seconds)} Â· new best`
+      : tally.bestSeconds !== null
+        ? formatClock(tally.bestSeconds)
+        : 'Land every cask to set one';
+    const rows: readonly (readonly [string, string])[] = [
+      ['Cargo landed', `${tally.cargo} of ${tally.casks}`],
+      ['Gold', `+${tally.gold.toLocaleString('en-GB')}`],
+      ['Time', formatClock(tally.seconds)],
+      ['Best time', best],
+      ['Purse', `${tally.purse.toLocaleString('en-GB')} gold`],
+      ['Voyages home', tally.voyage.toLocaleString('en-GB')],
+    ];
+    this.tallyRows.replaceChildren(
+      ...rows.map(([label, value]) => {
+        const row = el('div', 'tally__row');
+        row.append(el('dt', 'tally__label', label), el('dd', 'tally__value', value));
+        return row;
+      }),
+    );
+    const fresh = this.tallyEl.hidden;
+    this.tallyEl.hidden = false;
+    this.objectiveEl.hidden = true;
+    this.objectiveMark.hidden = true;
+    this.wake();
+    if (fresh) {
+      if (!reducedMotion()) {
+        this.tallyEl.classList.remove('is-new');
+        void this.tallyEl.offsetWidth;
+        this.tallyEl.classList.add('is-new');
+      }
+      this.tallyAgain.focus({ preventScroll: true });
+    }
   }
 
   /**
@@ -953,6 +1047,7 @@ export class Hud {
     if (performance.now() - this.lastInput < IDLE_MS) return;
     // Something the viewer is reading or operating keeps the chrome up.
     if (this.toastStack.querySelector('.toast:not(.is-leaving)') !== null) return;
+    if (!this.tallyEl.hidden) return;
     if (this.root.querySelector(':focus-visible') !== null) return;
     this.idle = true;
     this.root.classList.add('is-idle');
