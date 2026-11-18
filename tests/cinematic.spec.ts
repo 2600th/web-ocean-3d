@@ -4,6 +4,7 @@ import { setState } from './helpers';
 import { bootOcean } from './lib/capture';
 import { CINEMATIC_LOOP_SECONDS, CinematicDirector } from '../src/cameras/Cinematic';
 import { seafloorHeight } from '../src/scene/Seafloor';
+import { Rocks } from '../src/scene/Rocks';
 
 /**
  * What the tour promises, asserted rather than trusted.
@@ -99,6 +100,58 @@ test.describe('the cinematic tour', () => {
     expect(lowestOverGround, 'the camera goes into the ground').toBeGreaterThan(2);
     expect([...underwater], 'only the dive goes under').toEqual(['reef-dive']);
     expect(seamWorst, 'the loop point is a cut').toBeLessThan(seamMedian * 4);
+  });
+
+  /**
+   * The reef-dive once flew into the side of the reef's rock pillar: the
+   * terrain check above only knows the seabed. This samples the dive densely
+   * (240 Hz) and holds it clear of every outcrop's bounds, using the real
+   * placements from `Rocks`: a cylinder of the rock's horizontal reach, from
+   * its base to its top, plus the margin below. Reach is the sculpt's own, so
+   * overhangs are inside it; the margin leaves room for the coral and sponges
+   * that grow out of the rock face.
+   */
+  test('the reef dive stays out of the reef rock', () => {
+    const MARGIN = 3;
+    const rocks = new Rocks(1);
+    const outcrops = rocks.outcropCentres();
+    const director = new CinematicDirector();
+    director.setEnabled(true);
+    const pose = { position: new THREE.Vector3(), target: new THREE.Vector3(), fov: 50, roll: 0 };
+
+    let samples = 0;
+    let nearest = Infinity;
+    let lowestOverGround = Infinity;
+    let deepest = Infinity;
+    let first = Infinity;
+    let last = -Infinity;
+    for (let t = 0; t < CINEMATIC_LOOP_SECONDS; t += 1 / 240) {
+      director.resetClock(t);
+      director.update(0, pose);
+      if (director.beatName !== 'reef-dive') continue;
+      samples++;
+      first = Math.min(first, t);
+      last = Math.max(last, t);
+      const p = pose.position;
+      deepest = Math.min(deepest, p.y);
+      lowestOverGround = Math.min(lowestOverGround, p.y - seafloorHeight(p.x, p.z));
+      for (const o of outcrops) {
+        // Metres inside the rock's bounds, extended by the margin; positive is a hit.
+        const side = Math.hypot(p.x - o.x, p.z - o.z) - (o.reach + MARGIN);
+        const up = Math.min(p.y - (o.y - MARGIN), o.top + MARGIN - p.y);
+        nearest = Math.min(nearest, Math.max(side, -up));
+      }
+    }
+
+    console.log(
+      `[cinematic] reef-dive: ${samples} samples over ${(last - first).toFixed(1)} s, ` +
+        `${outcrops.length} outcrops, nearest to rock bounds +${MARGIN} m: ${nearest.toFixed(1)} m, ` +
+        `deepest ${deepest.toFixed(1)} m, lowest over seabed ${lowestOverGround.toFixed(1)} m`,
+    );
+    expect(samples, 'the dive was not found').toBeGreaterThan(2000);
+    expect(deepest, 'the dive should actually go under').toBeLessThan(-8);
+    expect(nearest, 'the dive passes through reef rock').toBeGreaterThan(0);
+    expect(lowestOverGround, 'the dive scrapes the seabed').toBeGreaterThan(3);
   });
 
   test('reaches night, rains, and closes its environment on the loop', async ({ page }) => {
