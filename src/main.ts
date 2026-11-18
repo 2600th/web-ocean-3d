@@ -3785,6 +3785,9 @@ class App {
       this.atmosphere.sunDirection,
       this.atmosphere.sunColor,
     );
+    // W6: the far sea's haze is the dome's own horizon, thickened by spray as the wind rises.
+    this.aerial.setHorizon(this.atmosphere);
+    this.aerial.setSurfaceHaze(0.00025 * (1 + THREE.MathUtils.clamp((this.state.windSpeed - 10) / 10, 0, 1)));
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
     //
@@ -4176,6 +4179,8 @@ class App {
       ship.setHelm(this.shipControls?.getState(this.shipStateOut).rudder ?? 0);
       ship.update(dt);
       this.shipLights?.update(dt, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
+      // The lanterns' glints on the sea after dark (`OceanMaterial.setLanterns`).
+      this.water.setLanterns(this.shipLights?.lanternPositions ?? [], ship.object, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
       this.shipFittings?.update(this.gameplay?.anchorCable(this.shipFittings.anchorState) ?? null);
       this.crew?.update(dt);
 
@@ -4307,6 +4312,8 @@ class App {
          */
         adaptive: this.adaptive,
         atmosphere: this.atmosphere,
+        /** The shared haze, so a probe can A/B its horizon terms in one session. */
+        aerial: this.aerial,
         /**
          * The cloud layer, so `scripts/profile-frame.mjs` can vary its step
          * count without going through a tier change.

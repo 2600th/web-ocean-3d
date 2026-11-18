@@ -29,6 +29,7 @@ import {
 } from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDownClamped } from '../core/tslMath';
+import { SHIP_LANTERN_LOCAL } from '../lighting/LocalLights';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import { ISLAND } from '../scene/Seafloor';
 import { beachrockFootprints, type BeachrockFootprint } from '../scene/islandDetail/beachrock';
@@ -600,6 +601,66 @@ const GLINT_MAX_GAIN = 24;
 const GLINT_TWINKLE_HZ = 9;
 
 /**
+ * W3, a stable glitter path. Screen pixels a glint cell may span across the
+ * footprint's short axis before the draw hands over to its mean.
+ *
+ * The cells are world squares the area of the pixel's footprint. At a grazing
+ * view that footprint is a sliver, metres along the view and centimetres
+ * across it, so a square of its area is `sqrt(long / short)` pixels wide on
+ * screen: four pixels at a hundred metres from a deck, a dozen near the
+ * horizon. Each one is a whole cell drawn bright or dark together, and those
+ * were the hard white blocks the moon's path broke into and the tiles the sun's
+ * path showed toward the horizon. Past this span the draw fades to 1, which
+ * leaves the slope-filtered mean (LEAN): the column the eye expects there.
+ */
+const GLINT_CELL_SPAN: readonly [number, number] = [2.5, 6];
+
+/**
+ * W3. The lit source's size in slope space, as a slope variance added to the
+ * specular lobe only: the area-light highlight.
+ *
+ * The sun and moon are 0.0047 rad across, which in slope space is far under
+ * any facet's own spread, so on their own they add nothing. But a low sun or
+ * moon is not seen as a disc: forward scattering in the marine haze spreads
+ * it into an aureole a few degrees across, and that is what lights the gaps
+ * between glints and holds a sunset path together to the horizon (Atlas's
+ * area-light highlight, GDC 2019). Zero with the light high, this variance
+ * with it at the horizon.
+ */
+const LOW_LIGHT_SLOPE_VARIANCE = 0.0008;
+
+/**
+ * W3. Slope variance the glitter gains per metre of the pixel footprint's
+ * short axis, for the capillaries finer than the finest band that a wider
+ * footprint averages over (the LEADR "filtered variance widens with
+ * distance" term). Capped, so the far sheen keeps Cox-Munk-like totals.
+ *
+ * It is what keeps a resolved wave facet from lighting as one flat clipped
+ * patch in the middle distance: there the lobe was as narrow as at the bow,
+ * every facet turned to the moon drew far over white, and its edge was the
+ * edge of the facet.
+ */
+const FOOTPRINT_SLOPE_VARIANCE: readonly [number, number] = [0.04, 0.004];
+
+/**
+ * Lantern glints: the ship's deck lanterns and stern lantern mirrored in the
+ * sea at night. Four point sources through the same Gaussian slope lobe as
+ * the sun, so each is a warm broken streak under the light that follows the
+ * swell. Intensity per source at full darkness (scene units, at a metre), the
+ * extra slope variance that stands for the glass's size, and the colour of
+ * tallow light. The lobe is the slope statistics alone, without the sun's
+ * footprint widening: with it (and 0.004 here) each lantern laid a broad
+ * brown sheen under the stern instead of a streak of glints.
+ */
+const LANTERN_GLINT_INTENSITY = 14;
+const STERN_GLINT_INTENSITY = 22;
+const LANTERN_SLOPE_VARIANCE = 0.0005;
+const LANTERN_GLINT_COLOR = new THREE.Color(1.0, 0.6, 0.28);
+
+/** Scratch for `setLanterns`. */
+const _lanternScratch = new THREE.Vector3();
+
+/**
  * The undisplaced world XZ a fragment's surface point was generated from.
  *
  * A varying rather than a recomputation: the vertex stage is the only place that
@@ -1136,6 +1197,10 @@ export class OceanMaterial {
   private readonly uRainSlope = uniform(0.16);
   /** Rain clock, seconds. Separate from the wave clock so it can be frozen. */
   private readonly uRainTime = uniform(0);
+  /** W3 glitter filtering on (1) or off (0); see `setGlitterFilter`. */
+  private readonly uGlitterFilter = uniform(1);
+  /** Lantern glints: world positions (w = intensity), see `setLanterns`. */
+  private readonly uLanterns: any[] = Array.from({ length: 4 }, () => uniform(new THREE.Vector4(0, -1e4, 0, 0)));
 
   /** How much of the planar reflection reaches the surface, 0..1. */
   /**
@@ -1235,6 +1300,39 @@ export class OceanMaterial {
    * point it implies, and only the exposure knows where that is (the same
    * reason `SceneBloom.setExposure` exists).
    */
+  /**
+   * The W3 glitter filtering (area-light lobe, footprint variance, the glint
+   * cells' hand-over to their mean): 1 on, 0 off. A few ALU per water pixel,
+   * so it is on in every tier; the switch is for A/B captures.
+   */
+  setGlitterFilter(amount: number): void {
+    this.uGlitterFilter.value = Math.min(1, Math.max(0, amount));
+  }
+
+  /**
+   * The ship's lights, for their glints on the sea after dark: up to three
+   * deck lanterns (`ShipLights.lanternPositions`, world space) and the stern
+   * lantern, carried by `ship` at `SHIP_LANTERN_LOCAL`. `darkness` is
+   * `LightingRig.darkness`, 0 by day, when the term costs a few ALU and adds
+   * nothing.
+   */
+  setLanterns(deck: readonly THREE.Vector3[], ship: THREE.Object3D | null, darkness: number): void {
+    const dark = Math.min(1, Math.max(0, darkness));
+    for (let i = 0; i < 3; i++) {
+      const v = this.uLanterns[i].value as THREE.Vector4;
+      const p = deck[i];
+      if (p) v.set(p.x, p.y, p.z, LANTERN_GLINT_INTENSITY * dark);
+      else v.set(0, -1e4, 0, 0);
+    }
+    const stern = this.uLanterns[3].value as THREE.Vector4;
+    if (ship) {
+      _lanternScratch.copy(SHIP_LANTERN_LOCAL).applyMatrix4(ship.matrixWorld);
+      stern.set(_lanternScratch.x, _lanternScratch.y, _lanternScratch.z, STERN_GLINT_INTENSITY * dark);
+    } else {
+      stern.set(0, -1e4, 0, 0);
+    }
+  }
+
   setExposure(toneMappingExposure: number): void {
     this.uWhitePoint.value = 1 / Math.max(0.05, toneMappingExposure);
   }
@@ -2913,12 +3011,41 @@ export class OceanMaterial {
       const halfVector = normalize(viewDir.add(sunDirEarly)).toVar();
       const hSlope = vec2(halfVector.x, halfVector.z).negate().div(halfVector.y.max(1e-3)).toVar();
       const dSlope = hSlope.sub(slope).toVar();
-      const covDet = slopeCov.x.mul(slopeCov.y).sub(slopeCov.z.mul(slopeCov.z)).max(1e-10).toVar();
+      // [W3] The pixel footprint, shared with the glint draw below.
+      const glintFootprintX = dFdx(fieldXZ);
+      const glintFootprintY = dFdy(fieldXZ);
+      const glintArea = glintFootprintX.x
+        .mul(glintFootprintY.y)
+        .sub(glintFootprintX.y.mul(glintFootprintY.x))
+        .abs()
+        .max(1e-8)
+        .toVar();
+      // The footprint's short axis: its area over its long axis.
+      const footprintShort = glintArea
+        .div(glintFootprintX.length().max(glintFootprintY.length()).max(1e-4))
+        .toVar();
+      // [W3] The lobe's own covariance: the slope statistics plus the lit
+      // source's aureole when it is low (LOW_LIGHT_SLOPE_VARIANCE) and the
+      // capillaries the footprint averages away (FOOTPRINT_SLOPE_VARIANCE).
+      // Isotropic, so they add to the diagonal only.
+      const lowLight = float(1).sub(sunDirEarly.y.smoothstep(0.02, 0.3)).mul(this.uGlitterFilter).toVar();
+      const lobeWiden = lowLight
+        .mul(lowLight)
+        .mul(LOW_LIGHT_SLOPE_VARIANCE)
+        .add(
+          footprintShort
+            .mul(FOOTPRINT_SLOPE_VARIANCE[0])
+            .min(FOOTPRINT_SLOPE_VARIANCE[1])
+            .mul(this.uGlitterFilter),
+        )
+        .toVar();
+      const lobeCov = vec3(slopeCov.x.add(lobeWiden), slopeCov.y.add(lobeWiden), slopeCov.z).toVar();
+      const covDet = lobeCov.x.mul(lobeCov.y).sub(lobeCov.z.mul(lobeCov.z)).max(1e-10).toVar();
       const mahalanobis = dSlope.x
         .mul(dSlope.x)
-        .mul(slopeCov.y)
-        .add(dSlope.y.mul(dSlope.y).mul(slopeCov.x))
-        .sub(dSlope.x.mul(dSlope.y).mul(slopeCov.z).mul(2))
+        .mul(lobeCov.y)
+        .add(dSlope.y.mul(dSlope.y).mul(lobeCov.x))
+        .sub(dSlope.x.mul(dSlope.y).mul(lobeCov.z).mul(2))
         .div(covDet)
         .toVar();
       const slopePdf = mahalanobis.mul(-0.5).exp().div(covDet.sqrt().mul(2 * Math.PI)).toVar();
@@ -3003,14 +3130,6 @@ export class OceanMaterial {
       // its mean and the sheen is untouched; near the eye it is a scatter of
       // points that keeps the path's energy. Two power-of-two cell sizes are
       // blended so the cells do not pop as the footprint changes.
-      const glintFootprintX = dFdx(fieldXZ);
-      const glintFootprintY = dFdy(fieldXZ);
-      const glintArea = glintFootprintX.x
-        .mul(glintFootprintY.y)
-        .sub(glintFootprintX.y.mul(glintFootprintY.x))
-        .abs()
-        .max(1e-8)
-        .toVar();
       const glintLevel = log2(glintArea).mul(0.5).toVar();
       const glintLevel0 = glintLevel.floor().toVar();
       // `uRainTime` is the simulation clock (see `setRain`), so a deterministic
@@ -3050,10 +3169,13 @@ export class OceanMaterial {
         );
         return drawn.min(GLINT_MAX_GAIN);
       };
+      // [W3] How many pixels a cell spans across the footprint's short axis
+      // (GLINT_CELL_SPAN): past it the draw is its mean.
+      const glintSpan = glintArea.sqrt().div(footprintShort.max(1e-6));
       const glintDraw = mix(
-        glintGain(glintLevel0),
-        glintGain(glintLevel0.add(1)),
-        glintLevel.sub(glintLevel0),
+        mix(glintGain(glintLevel0), glintGain(glintLevel0.add(1)), glintLevel.sub(glintLevel0)),
+        float(1),
+        glintSpan.smoothstep(GLINT_CELL_SPAN[0], GLINT_CELL_SPAN[1]).mul(this.uGlitterFilter),
       ).toVar();
       specular.mulAssign(glintDraw);
       // The hull stands between these facets and the sun. Where the planar
@@ -3069,6 +3191,41 @@ export class OceanMaterial {
       // which the mirror's coverage misses under a hull on a swell; see
       // HULL_MIRROR_LENGTH.
       specular.mulAssign(hullHit.max(hullShade).oneMinus());
+
+      // --- lantern glints ---------------------------------------------------------
+      // The ship's lights mirrored in the sea (see LANTERN_GLINT_INTENSITY):
+      // the sun's lobe, for a point source at `lp`, falling as 1/d^2. Added
+      // after the hull's occlusion, which is the sun's: the lanterns hang over
+      // the water beside the hull, not behind it.
+      const lanternCov = vec3(
+        slopeCov.x.add(LANTERN_SLOPE_VARIANCE),
+        slopeCov.y.add(LANTERN_SLOPE_VARIANCE),
+        slopeCov.z,
+      ).toVar();
+      const lanternDet = lanternCov.x.mul(lanternCov.y).sub(lanternCov.z.mul(lanternCov.z)).max(1e-10).toVar();
+      const lanternNorm = float(1).div(lanternDet.sqrt().mul(2 * Math.PI).mul(viewDir.y.max(0.02).mul(4))).toVar();
+      const lanternSum = float(0).toVar();
+      for (let i = 0; i < 4; i++) {
+        const lp: any = this.uLanterns[i];
+        const toLight = lp.xyz.sub(worldPos);
+        const d2 = toLight.dot(toLight).max(0.25);
+        const ld = toLight.mul(d2.inverseSqrt());
+        const h = normalize(viewDir.add(ld));
+        const ds = vec2(h.x, h.z).negate().div(h.y.max(1e-3)).sub(slope);
+        const m = ds.x
+          .mul(ds.x)
+          .mul(lanternCov.y)
+          .add(ds.y.mul(ds.y).mul(lanternCov.x))
+          .sub(ds.x.mul(ds.y).mul(lanternCov.z).mul(2))
+          .div(lanternDet);
+        const hy2l = h.y.mul(h.y).max(1e-3);
+        const vh = float(1).sub(viewDir.dot(h).clamp(0, 1));
+        const fr = vh.mul(vh).mul(vh).mul(vh).mul(vh).mul(0.98).add(0.02);
+        lanternSum.addAssign(
+          m.mul(-0.5).exp().div(hy2l.mul(hy2l)).mul(fr).mul(lp.w).div(d2).mul(ld.y.greaterThan(0).select(float(1), float(0))),
+        );
+      }
+      specular.addAssign(vec3(LANTERN_GLINT_COLOR.r, LANTERN_GLINT_COLOR.g, LANTERN_GLINT_COLOR.b).mul(lanternSum.mul(lanternNorm)));
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out

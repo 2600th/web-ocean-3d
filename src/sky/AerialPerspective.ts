@@ -109,6 +109,38 @@ const ZENITH_BLEND_POWER = 0.55;
 /** Angular tightness of the forward Mie glow around the sun's bearing. */
 const SUN_GLOW_POWER = 9;
 
+/**
+ * Scale height of the sea-surface haze layer, metres: the spray and sea-salt
+ * aerosol that sits in the first tens of metres over open water. A level ray
+ * from a deck runs its whole length inside it, so it thickens the haze over
+ * the far sea and the island's beach without touching anything high in the
+ * frame. (W6, 2026-11-18.)
+ */
+const SURFACE_SCALE_HEIGHT = 45;
+
+/**
+ * Elevation of the dome samples that make the horizon ring (`setHorizon`):
+ * the first half degree over the horizon, which is the sky the far sea meets.
+ */
+const RING_ELEVATION = 0.008;
+
+/**
+ * The ring's weight in clear air. A little under 1: the half degree it is
+ * sampled at sits under the clouds' far band, which the frame shows above the
+ * far sea, and at full weight the haze came out 10-15 sRGB brighter than it.
+ */
+const RING_GAIN = 0.92;
+
+/** Bearings the ring is sampled at; its Fourier fit is taken to third order. */
+const RING_SAMPLES = 16;
+
+/**
+ * View elevation over which the haze leaves the ring for the authored blend.
+ * Every downward ray is the ring's: a long near-level path's inscatter *is*
+ * the horizon sky in that bearing, and a short steep one has no haze to colour.
+ */
+const RING_LIFT = 0.18;
+
 export class AerialPerspective {
   /** Assign to `scene.fogNode`. Built once; every input is a uniform. */
   readonly node: Node;
@@ -129,8 +161,19 @@ export class AerialPerspective {
    * — does not lose its haze. See `airFraction`.
    */
   private readonly uEyeInAir = uniform(1);
+  /**
+   * The dome's radiance along the horizon as a Fourier series in bearing:
+   * constant, then cos and sin of one, two and three times the bearing.
+   */
+  private readonly uRing: any[] = Array.from({ length: 7 }, () => uniform(new THREE.Color(0, 0, 0)));
+  /** 0 until `setHorizon` has run, so an unwired caller keeps the old haze. */
+  private readonly uRingWeight = uniform(0);
+  /** Density of the sea-surface layer at the sea, per metre. */
+  private readonly uSurface = uniform(0);
 
   private readonly beta = new THREE.Vector3();
+  private readonly ringDir = new THREE.Vector3();
+  private readonly ringSample = new THREE.Color();
 
   constructor() {
     this.node = Fn(() => {
@@ -140,7 +183,10 @@ export class AerialPerspective {
       const rd = v.div(max(dist, 1e-4)).toVar('apDir');
 
       const air = this.airFraction(wp).toVar('apAir');
-      const tau = this.opticalDepth(dist, rd).mul(air).toVar('apTau');
+      const tau = this.opticalDepth(dist, rd)
+        .add(this.surfaceDepth(dist, rd))
+        .mul(air)
+        .toVar('apTau');
       const transmittance = exp(tau.negate()).toVar('apT');
 
       const haze = this.inscatter(rd).toVar('apInscatter');
@@ -173,7 +219,8 @@ export class AerialPerspective {
   }
 
   apply(color: Node, distance: Node, rayDir: Node): Node {
-    const transmittance = exp(this.opticalDepth(distance, rayDir).negate());
+    const depth = this.opticalDepth(distance, rayDir).add(this.surfaceDepth(distance, rayDir));
+    const transmittance = exp(depth.negate());
     return mix(this.inscatter(rayDir), color, transmittance);
   }
 
@@ -226,6 +273,60 @@ export class AerialPerspective {
     this.uSunColor.value.copy(sunColor);
   }
 
+  /**
+   * Samples the dome along the horizon, so the haze over the far sea is the
+   * sky's own colour in every bearing.
+   *
+   * This is the horizon line (W6). The inscatter was built from the CPU-side
+   * horizon and zenith *tints* and the preset's fog colour, which are hues at a
+   * fill scale, not the dome's radiance: with the water drawn black the haze at
+   * the horizon came out at sRGB 115 under a dome of 204 to 224 in
+   * `clear-day-wide`, and 86 under 148 in `storm`, so nothing drawn beneath it
+   * could meet the sky. `sky` is the `Atmosphere`, whose `skyRadiance` mirrors the
+   * dome's shader (overcast, twilight, night and the highlight knee included);
+   * sixteen bearings are fitted to third order, enough for the twilight glow
+   * round the sun's bearing. Sixteen CPU evaluations a frame; uniform writes.
+   */
+  setHorizon(sky: {
+    skyRadiance(dir: THREE.Vector3, out: THREE.Color): THREE.Color;
+    readonly overcast: number;
+  }): void {
+    const ring = this.uRing.map((u) => (u.value as THREE.Color).setRGB(0, 0, 0));
+    const h = Math.sqrt(1 - RING_ELEVATION * RING_ELEVATION);
+    for (let i = 0; i < RING_SAMPLES; i++) {
+      const a = (i / RING_SAMPLES) * Math.PI * 2;
+      const c = sky.skyRadiance(this.ringDir.set(Math.cos(a) * h, RING_ELEVATION, Math.sin(a) * h), this.ringSample);
+      ring[0].r += c.r / RING_SAMPLES;
+      ring[0].g += c.g / RING_SAMPLES;
+      ring[0].b += c.b / RING_SAMPLES;
+      for (let m = 1; m <= 3; m++) {
+        const wc = (2 / RING_SAMPLES) * Math.cos(m * a);
+        const ws = (2 / RING_SAMPLES) * Math.sin(m * a);
+        ring[2 * m - 1].r += c.r * wc;
+        ring[2 * m - 1].g += c.g * wc;
+        ring[2 * m - 1].b += c.b * wc;
+        ring[2 * m].r += c.r * ws;
+        ring[2 * m].g += c.g * ws;
+        ring[2 * m].b += c.b * ws;
+      }
+    }
+    // Under a deck the sky over the far sea is the cloud base, not the dome
+    // the ring samples (the dome there is brighter than the deck drawn over
+    // it, and the ring turned the storm's island a pale beige against dark
+    // cloud). The authored, overcast-pulled haze already describes the deck.
+    this.uRingWeight.value = RING_GAIN * (1 - 0.85 * Math.min(1, Math.max(0, sky.overcast)));
+  }
+
+  /**
+   * Density of the sea-surface spray layer at the sea, per metre. It is the
+   * same air in every preset, so it is absolute rather than a multiple of the
+   * preset's haze; it rises with the wind as the crests tear, and in a gale
+   * it is the spray haze the far sea dissolves into.
+   */
+  setSurfaceHaze(perMetre: number): void {
+    this.uSurface.value = Math.max(0, perMetre);
+  }
+
   /** How strong the forward glow around the sun's bearing is, 0..1. */
   setSunGlow(value: number): void {
     this.uSunGlow.value = Math.max(0, value);
@@ -271,11 +372,25 @@ export class AerialPerspective {
   }
 
   private opticalDepth(distance: Node, rayDir: Node): Node {
-    const y0 = max(cameraPosition.y, 0).toVar('apY0');
+    return this.uBeta.mul(this.column(distance, rayDir, HAZE_SCALE_HEIGHT).mul(this.uDensity));
+  }
+
+  /**
+   * The sea-surface layer's optical depth. Spray and sea salt scatter nearly
+   * neutrally, so it is grey rather than per channel.
+   */
+  private surfaceDepth(distance: Node, rayDir: Node): Node {
+    const t = this.column(distance, rayDir, SURFACE_SCALE_HEIGHT).mul(this.uSurface);
+    return vec3(t, t, t);
+  }
+
+  /** Air mass along the ray through an exponential layer of scale height `H`. */
+  private column(distance: Node, rayDir: Node, H: number): Node {
+    const y0 = max(cameraPosition.y, 0);
     // Clamped for the same reason the cloud march clamps its span: nothing in
     // this world puts the camera a scale height above what it is looking at, and
     // an unbounded `exp(-k)` on a ray that did would return a column of hundreds.
-    const k = rayDir.y.mul(distance).div(HAZE_SCALE_HEIGHT).clamp(-4, 4).toVar('apK');
+    const k = rayDir.y.mul(distance).div(H).clamp(-4, 4);
 
     // The integral's shape factor, `(1 - exp(-k)) / k`. It is 1 at k = 0 and the
     // division is singular there, so near zero the series takes over.
@@ -285,18 +400,13 @@ export class AerialPerspective {
     // untaken side, and `mix(a, NaN, 0)` is NaN rather than `a` — so a divide
     // that produced an infinity at k = 0 would put a hole in the frame even
     // though its weight is zero.
-    const sign = k.lessThan(0).select(float(-1), float(1)).toVar('apSign');
-    const den = k.abs().max(SERIES_EDGE).mul(sign).toVar('apDen');
-    const series = float(1).sub(k.mul(0.5)).add(k.mul(k).mul(1 / 6)).toVar('apSeries');
-    const exact = k.negate().exp().oneMinus().div(den).toVar('apExact');
+    const sign = k.lessThan(0).select(float(-1), float(1));
+    const den = k.abs().max(SERIES_EDGE).mul(sign);
+    const series = float(1).sub(k.mul(0.5)).add(k.mul(k).mul(1 / 6));
+    const exact = k.negate().exp().oneMinus().div(den);
     const shape = mix(series, exact, k.abs().smoothstep(SERIES_EDGE * 0.5, SERIES_EDGE));
 
-    const column = distance
-      .mul(exp(y0.div(-HAZE_SCALE_HEIGHT)))
-      .mul(shape.max(0))
-      .toVar('apColumn');
-
-    return this.uBeta.mul(column.mul(this.uDensity));
+    return distance.mul(exp(y0.div(-H))).mul(shape.max(0));
   }
 
   private inscatter(rayDir: Node): Node {
@@ -309,6 +419,25 @@ export class AerialPerspective {
     // Forward Mie: the haze is brightest and warmest looking down the sun's
     // bearing, which is most of what makes a hazy afternoon read as one.
     const glow = rayDir.dot(this.uSunDir).clamp(0, 1).pow(SUN_GLOW_POWER).mul(this.uSunGlow);
-    return base.add(vec3(this.uSunColor).mul(glow).mul(base));
+    const authored = base.add(vec3(this.uSunColor).mul(glow).mul(base));
+    // The dome's own horizon in this bearing (`setHorizon`), for every ray at
+    // or below the horizon, fading out over the first ten degrees above it.
+    const flat = rayDir.xz.div(max(rayDir.xz.length(), 1e-4));
+    const c1 = flat.x;
+    const s1 = flat.y;
+    const c2 = c1.mul(c1).sub(s1.mul(s1));
+    const s2 = c1.mul(s1).mul(2);
+    const c3 = c2.mul(c1).sub(s2.mul(s1));
+    const s3 = s2.mul(c1).add(c2.mul(s1));
+    const ring = vec3(this.uRing[0])
+      .add(vec3(this.uRing[1]).mul(c1))
+      .add(vec3(this.uRing[2]).mul(s1))
+      .add(vec3(this.uRing[3]).mul(c2))
+      .add(vec3(this.uRing[4]).mul(s2))
+      .add(vec3(this.uRing[5]).mul(c3))
+      .add(vec3(this.uRing[6]).mul(s3))
+      .max(0);
+    const level = float(1).sub(rayDir.y.smoothstep(0, RING_LIFT)).mul(this.uRingWeight);
+    return mix(authored, ring, level);
   }
 }
