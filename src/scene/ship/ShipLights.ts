@@ -34,6 +34,15 @@ import { uniform } from '../../core/uniform';
 const LANTERN_COLOR = new THREE.Color(1.0, 0.62, 0.3);
 const WINDOW_COLOR = new THREE.Color(1.0, 0.55, 0.24);
 
+/**
+ * The deck lanterns' point lights, as `LocalLights` makes them: peak intensity
+ * (sun units, before the night ramp) and cut-off radius, metres. Enough that
+ * the planks under each lantern and the foot of the course above take a warm
+ * pool of light at night; zero by day.
+ */
+export const SHIP_DECK_LANTERN_PEAK = 26;
+export const SHIP_DECK_LANTERN_RADIUS = 22;
+
 /** Hook points in the ship's frame (metres, +X forward, +Z starboard). */
 const HOOKS: readonly THREE.Vector3[] = [
   // Aft face of the mainmast, over the waist: lights the main deck and the main course above it.
@@ -111,7 +120,7 @@ export class ShipLights {
     const glass = new THREE.MeshStandardNodeMaterial({ color: 0x3a2a18, roughness: 0.25 });
     glass.name = 'ship-lantern-glass';
     // HDR on purpose, like the stern lantern: past the bloom threshold at night.
-    glass.emissiveNode = color(LANTERN_COLOR).mul(this.uGlow).mul(5);
+    glass.emissiveNode = color(LANTERN_COLOR).mul(this.uGlow).mul(7);
     const halo = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     halo.name = 'ship-lantern-halo';
     halo.fog = false;

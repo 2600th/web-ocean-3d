@@ -90,6 +90,7 @@ One row per file shipped in `public/`.
 | --- | --- | --- | --- | --- | --- |
 | Dutch Ship Medium (`dutch_ship_medium`, 2k source) | `public/models/hero/dutch_ship_medium.glb` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock (model, textures, cleanup); Rico Cilliers (sails model, textures); Nicolò Zubbini (original model) | CC0 1.0 | Re-encoded by `scripts/optimize-assets.mjs`: hull colour and normal kept at 2k, the other seven maps resized to 1k, all nine KTX2 (UASTC colour/normal, ETC1S roughness), geometry Meshopt-compressed. No geometry or content edits. |
 | Rock 07 (`rock_07`, 1k source) | `public/models/dressing/rock_07.glb`, `rock_07_lod1.glb`, `rock_07_lod2.glb` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | Built by the dressing pipeline (see below): decimated, welded, KTX2 textures, Meshopt geometry, two LOD levels. |
+| Ultimate Animated Character Pack: `Pirate_Male`, `Casual_Bald` | `public/models/crew/crew_officer.glb`, `public/models/crew/crew_hand.glb` | https://opengameart.org/content/animated-characters-pack (also https://quaternius.com) | Quaternius | CC0 1.0 | From the pack's `.blend` files in Blender 5.2: materials baked to one vertex colour (skin, linen, breeches recoloured; a kerchief painted on the crown; alpha marks shirt and kerchief for per-instance tint), only the `Idle`, `PickUp` and `Walk` clips kept, then resampled, welded and Meshopt-encoded with gltf-transform. 247,472 bytes for both. |
 
 ### Scene dressing (`public/models/dressing/`)
 
