@@ -411,6 +411,20 @@ What the new baselines carry that is a matter of look, not a fault fixed:
   streaks in front of them; close to the lens the puffs are blobby.
 - **A pale puff of mist on the hull side** is still there in `ship-underway`.
 
+## After wave 2: the parked spray test runs again (2026-11-18)
+
+`tests/spray.spec.ts` ("a hull driven through a storm throws spray, and it is
+drawn") had been `fixme` since before this work: it captured twice in a row,
+spray on and then off, and two captures in a row differ by the TRAA resolve
+alone, by more than a sheet of spray changes. It now sails the same voyage
+from one reset four times, step for step: a scout that finds the round with
+the most impacts live, two with the spray on (the control pair) and one with
+it off throughout. Measured in three runs, identical each time: the control
+pair equal to the pixel, the spray changing 18 695 pixels of 1 440 000 (63%
+of them brighter) with nine impacts live. The functional suite has no skipped
+test left. The failing direction (spray drawing nothing) was not run; with a
+control pair at zero it follows from the arithmetic.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system
