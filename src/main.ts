@@ -545,6 +545,8 @@ class App {
   private shipControls: ShipController | null = null;
   /** Helm-mode sailing, anchor and cargo. See `src/gameplay`. */
   private gameplay: Gameplay | null = null;
+  /** True while the voyage's day and squall drive the sky at the helm; see `helmSky`. */
+  private helmSkyDriven = false;
   /** Deck lanterns and stern windows; the anchor cable. See `src/scene/ship`. */
   private shipLights: ShipLights | null = null;
   private shipFittings: ShipFittings | null = null;
@@ -2472,8 +2474,8 @@ class App {
       // the sail set and the anchor — as plaque lines, and leaving the helm
       // clears the plaque the gameplay filled.
       const ui: GameUiSink = {
-        toast: (text, kind) => {
-          this.hud.toast(text, kind);
+        toast: (text, kind, options) => {
+          this.hud.toast(text, kind, options);
           // The reward toast has its chime already; the others get a cue of their own.
           if (kind === 'warning' || kind === 'danger') this.audio.uiTick('warn');
           else if (kind !== 'reward') this.audio.uiTick('info');
@@ -2481,6 +2483,7 @@ class App {
         setObjective: (objective) => this.hud.setObjective(objective),
         setScore: (label, value) => this.hud.setScore(label, value),
         setStalled: (stalled) => this.hud.setStalled(stalled),
+        setTally: (tally, onSailAgain) => this.hud.setTally(tally, onSailAgain),
         setShipTelemetry: (telemetry) => {
           if (telemetry === null) {
             this.hud.clearScore();
@@ -3055,6 +3058,28 @@ class App {
     };
   }
   /**
+   * The voyage's sky while the helm is taken, or null for the preset's. Never
+   * under a capture. When it stops driving the sky, the preset's is handed
+   * back with a fresh environment cube, as leaving the Tour does.
+   */
+  private helmSky(): Readonly<ReturnType<Gameplay['voyageSky']>> {
+    const preset = getPreset(this.state.preset);
+    const sky =
+      this.state.cameraMode === 'boat' && !this.captureOwnsClock
+        ? this.gameplay?.voyageSky(
+            { coverage: this.state.cloudCoverage, kind: preset.weather.kind, intensity: preset.weather.intensity },
+            this.state.timeOfDay,
+          ) ?? null
+        : null;
+    if (sky === null && this.helmSkyDriven) {
+      this.helmSkyDriven = false;
+      this.applyPreset(true);
+      this.lastEnvElevation = Number.NaN;
+    }
+    if (sky !== null) this.helmSkyDriven = true;
+    return sky;
+  }
+  /**
    * Sun elevation, azimuth and night blend for a clock time.
    *
    * A simple diurnal arc rather than a real ephemeris: no latitude, no season,
@@ -3436,8 +3461,10 @@ class App {
      * `cinematicTimeOfDay` is a pure function of the loop clock, so this stays
      * inside the determinism guarantee the capture harness depends on.
      */
-    if (this.state.cameraMode === 'cinematic') {
-      const env = this.director.cinematicEnvironment();
+    // At the helm the voyage drives the same path: the Tour's hour curve on a
+    // ten-minute day, and the voyage's squall (`gameplay/Voyage.ts`).
+    const env = this.state.cameraMode === 'cinematic' ? this.director.cinematicEnvironment() : this.helmSky();
+    if (env) {
       this.atmosphere.setParams(this.tourSky(env.hours, env.rain));
       this.clouds.setParams({ coverage: env.cloudCoverage });
       // Kind *and* intensity. Setting the intensity alone produces no weather
