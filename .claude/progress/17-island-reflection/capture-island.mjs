@@ -39,6 +39,16 @@ const SHOTS = {
     state: { cameraMode: 'boat', windSpeed: 13, peakWavelength: 40, cloudCoverage: 0.4, preset: 'seaOfThieves' },
     time: 55.5, lens: 40, camera: { position: [-8, 10, 12], target: [-60, 0, -4] },
   },
+  calm: {
+    kind: 'world',
+    state: { cameraMode: 'orbit', windSpeed: 3, peakWavelength: 30, cloudCoverage: 0.3, preset: 'skyPro' },
+    time: 30, lens: 40, camera: { position: [-620, 4, -250], target: [-1150, 30, -780] },
+  },
+  calmsun: {
+    kind: 'world',
+    state: { cameraMode: 'orbit', windSpeed: 3, peakWavelength: 30, cloudCoverage: 0.3, preset: 'sunset' },
+    time: 30, lens: 40, camera: { position: [-620, 4, -250], target: [-1150, 30, -780] },
+  },
   moonlit: {
     kind: 'boat',
     state: { cameraMode: 'boat', windSpeed: 9, peakWavelength: 60, cloudCoverage: 0.25, preset: 'moonlit' },
@@ -95,6 +105,11 @@ async function setupShot(page, shot, tier, toggle) {
     await page.evaluate((s) => window.__ocean.setState(s), { ...TOUR, quality: tier });
     await page.evaluate(() => window.__ocean.setLens(null));
     await page.evaluate(({ t }) => window.__ocean.resetDeterministic(30 + t, 90, null, 0.5 + t), { t: shot.t });
+  } else if (shot.kind === 'world') {
+    await page.evaluate((s) => window.__ocean.setState(s), { ...shot.state, quality: tier });
+    await page.evaluate((lens) => window.__ocean.setLens(lens), shot.lens);
+    await page.evaluate((time) => window.__ocean.resetDeterministic(time, 240, null, null), shot.time);
+    await page.evaluate(({ c }) => window.__ocean.setCamera(...c.position, ...c.target), { c: shot.camera });
   } else {
     await page.evaluate((s) => window.__ocean.setState(s), { ...shot.state, quality: tier });
     await page.evaluate((lens) => window.__ocean.setLens(lens), shot.lens);
