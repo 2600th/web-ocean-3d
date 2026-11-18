@@ -1371,8 +1371,8 @@ class App {
     // the remaining live settings once, before any asset or shader work.
     this.applyQualitySettings(this.state.quality);
 
-    this.adaptive = new AdaptiveQuality(55, (tier) => {
-      console.info(`[ocean] adaptive quality: dropping to "${tier}"`);
+    this.adaptive = new AdaptiveQuality(55, (tier, why) => {
+      console.info(`[ocean] adaptive quality: dropping to "${tier}" (${why})`);
       this.state.quality = tier;
       this.panel.setState({ quality: tier });
       this.requestQuality(tier);
@@ -4239,13 +4239,19 @@ class App {
 
     // Adaptive quality answers sustained *real-time* frame pressure, so it has
     // no business running while the clock is detached. `Loop.step` deliberately
-    // does not write `stats.fps` — there is no wall-clock rate to report when
-    // frames are being issued on demand — so the value here would be whatever
-    // the live loop last saw. A capture taken after a heavy moment would then
-    // inherit that reading and downgrade the tier partway through, quietly
-    // changing the thing being measured.
+    // does not write the live stats — there is no wall-clock rate to report
+    // when frames are being issued on demand — so the values here would be
+    // whatever the live loop last saw. A capture taken after a heavy moment
+    // would then inherit that reading and downgrade the tier partway through,
+    // quietly changing the thing being measured.
     if (!this.loop.isPaused) {
-      this.adaptive.update(dt, this.loop.stats.fps, this.state.quality, elapsed);
+      const stats = this.loop.stats;
+      this.adaptive.update({
+        now: performance.now(),
+        intervalMs: stats.intervalMs,
+        costMs: stats.costMs,
+        tier: this.state.quality,
+      });
     }
   };
 

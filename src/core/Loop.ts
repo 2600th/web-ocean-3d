@@ -11,6 +11,16 @@ export interface FrameStats {
   refreshHz: number;
   /** The rate the pacer is holding: the refresh rate over a whole divisor. */
   targetFps: number;
+  /** Wall-clock time between the last two live frames, ms. Not smoothed. */
+  intervalMs: number;
+  /**
+   * What the last live frame cost the device, ms: the slower of the page
+   * encoding it and the GPU side finishing it, the number the pacer gates on.
+   * The encode time alone until the GPU fence answers, and without a fence.
+   * Tells a device that cannot keep up from a frame rate something else is
+   * holding down; see `AdaptiveQuality`.
+   */
+  costMs: number;
 }
 
 /**
@@ -52,7 +62,7 @@ export class Loop {
   private readonly inFlightFrames = new Set<Promise<void>>();
   private frameWaiters: Array<() => void> = [];
 
-  readonly stats: FrameStats = { fps: 0, frameMs: 0, refreshHz: 60, targetFps: 60 };
+  readonly stats: FrameStats = { fps: 0, frameMs: 0, refreshHz: 60, targetFps: 60, intervalMs: 0, costMs: 0 };
   /** Which refreshes live frames are drawn on; see `FramePacer`. */
   readonly pacer = new FramePacer();
   private gpuFence: GpuFence | null = null;
@@ -296,8 +306,13 @@ export class Loop {
       // to fit is the one from its refresh to the GPU finishing it. The encode
       // share is passed too; see `FramePacer.gpuLatency`.
       const encoded = performance.now() - now;
+      this.stats.costMs = encoded;
       this.gpuFence?.()
-        .then(() => this.pacer.gpuLatency(performance.now() - now, encoded))
+        .then(() => {
+          const total = performance.now() - now;
+          this.pacer.gpuLatency(total, encoded);
+          this.stats.costMs = Math.max(encoded, total - encoded);
+        })
         .catch(() => undefined);
     } finally {
       this.inFlight = false;
@@ -305,6 +320,7 @@ export class Loop {
       this.stats.frameMs = performance.now() - started;
       this.stats.refreshHz = 1000 / this.pacer.period;
       this.stats.targetFps = this.pacer.targetFps;
+      this.stats.intervalMs = rawDelta * 1000;
       const instantaneous = rawDelta > 0 ? 1 / rawDelta : 0;
       this.stats.fps =
         this.stats.fps === 0

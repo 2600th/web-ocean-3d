@@ -685,51 +685,144 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
 
 export const TIER_ORDER: QualityTier[] = ['low', 'medium', 'high', 'ultra', 'max'];
 
+/** One live frame as the controller sees it. */
+export interface FrameSample {
+  /** Wall clock, ms: `performance.now()` or the animation frame's timestamp. */
+  now: number;
+  /** Wall-clock time since the frame drawn before this one, ms. */
+  intervalMs: number;
+  /**
+   * What the frame cost the device, ms: the slower of the page encoding it and
+   * the GPU side finishing it (`Loop` keeps this as `stats.costMs`). Zero when
+   * it is not known, and the frame rate alone is then believed.
+   */
+  costMs: number;
+  tier: QualityTier;
+}
+
 /**
- * Watches frame health and steps the tier down when the experience is
- * persistently below target. Deliberately one-way during a session: oscillating
- * between tiers is more distracting than running one notch below optimal.
+ * Steps the tier down when the device has been unable to hold the target frame
+ * rate for seconds on end. One way during a session: oscillating between tiers
+ * is more distracting than running one notch below optimal, and a change costs
+ * a rebuild the viewer sits through.
+ *
+ * **When it drops.** All of these, together:
+ *
+ *  - the frame interval, smoothed over about ten frames, is longer than
+ *    `1000 / (0.75 * targetFps)` (24 ms, under 41 fps, at the default 55);
+ *  - the device is *busy*: a frame costs it at least half of the time between
+ *    frames.
+ *    A frame rate held down by something else (a 30 Hz display, a remote
+ *    desktop, the browser's energy saver halving the rate) has frames that cost
+ *    a fraction of the gap between them, and a lower tier would not raise it;
+ *  - both have held without a break for `SUSTAIN_MS` of wall clock, counted
+ *    from frames, each for at most `FRAME_CREDIT_MS`;
+ *  - it is not start-up, not the settle after the last change, and not the
+ *    moments after frames stopped (a load, a tier rebuild, a hidden tab).
+ *
+ * **What cannot drop it.** One slow frame of any length: it moves the smoothed
+ * interval by a tenth and earns `FRAME_CREDIT_MS` towards `SUSTAIN_MS`, and the
+ * next ten ordinary frames clear both. The same goes for a burst: `SUSTAIN_MS /
+ * FRAME_CREDIT_MS` is forty slow frames in a row at the least, so a second or
+ * two of compile hitches is not enough either.
+ *
+ * Wall clock, not the simulation's: the game clock runs slow under a hit-stop
+ * and is rewound by captures, and neither says anything about the device.
+ *
+ * Pure bookkeeping on numbers, so it is unit-tested without a browser
+ * (`tests/adaptiveQuality.spec.ts`).
  */
 export class AdaptiveQuality {
-  private belowTargetFor = 0;
-  private aboveTargetFor = 0;
-  private lastChange = 0;
+  /** Unbroken time below target, with the device busy, before a drop. */
+  static readonly SUSTAIN_MS = 4000;
+  /** The most one frame adds to that, however long it took. */
+  static readonly FRAME_CREDIT_MS = 100;
+  /** A frame longer than this is smoothed as this: a stall, not a frame rate. */
+  static readonly STALL_MS = 250;
+  /** A frame that costs under this share of the time between frames left the device idle. */
+  static readonly BUSY_SHARE = 0.5;
+  /** No verdicts for this long after the first live frame. */
+  static readonly STARTUP_QUIET_MS = 6000;
+  /** Nor for this long after a drop: the new tier is still compiling. */
+  static readonly CHANGE_QUIET_MS = 10000;
+  /** A gap this long between frames means they stopped: start over. */
+  static readonly GAP_MS = 1000;
+  /** And wait this long after one: the frames after a load are hitches. */
+  static readonly GAP_QUIET_MS = 2000;
+  private static readonly SMOOTHING = 0.1;
+
+  private readonly slowMs: number;
+  private belowMs = 0;
+  private intervalAvg = 0;
+  private costAvg = 0;
+  private lastNow = Number.NaN;
+  private quietUntil = Number.NEGATIVE_INFINITY;
 
   constructor(
-    private readonly targetFps = 55,
-    private readonly onDowngrade: (tier: QualityTier) => void = () => {},
-  ) {}
+    targetFps = 55,
+    private readonly onDowngrade: (tier: QualityTier, why: string) => void = () => {},
+  ) {
+    this.slowMs = 1000 / (targetFps * 0.75);
+  }
 
   enabled = true;
 
-  update(dt: number, fps: number, currentTier: QualityTier, elapsed: number): void {
-    if (!this.enabled) return;
-    // Ignore the first seconds — shader compilation and asset decode dominate.
-    if (elapsed < 4) return;
-    // Debounce so a single hitch never triggers a visible quality change.
-    if (elapsed - this.lastChange < 6) return;
-
-    if (fps < this.targetFps * 0.75) {
-      this.belowTargetFor += dt;
-      this.aboveTargetFor = 0;
-    } else {
-      this.aboveTargetFor += dt;
-      this.belowTargetFor = 0;
-    }
-
-    if (this.belowTargetFor > 2.5) {
-      const index = TIER_ORDER.indexOf(currentTier);
-      if (index > 0) {
-        this.belowTargetFor = 0;
-        this.lastChange = elapsed;
-        this.onDowngrade(TIER_ORDER[index - 1]);
-      }
-    }
+  /** Time banked towards a drop, ms; for probes and the tests. */
+  get pressureMs(): number {
+    return this.belowMs;
   }
 
+  update(frame: FrameSample): void {
+    if (!this.enabled) return;
+    const { now } = frame;
+    if (!(frame.intervalMs > 0) || !Number.isFinite(now)) return;
+
+    if (Number.isNaN(this.lastNow)) {
+      this.quietUntil = now + AdaptiveQuality.STARTUP_QUIET_MS;
+    } else if (now - this.lastNow > AdaptiveQuality.GAP_MS) {
+      // Frames stopped: a load, a rebuild, a pause, a hidden tab. What was
+      // measured before says nothing about what follows.
+      this.reset();
+      this.quietUntil = Math.max(this.quietUntil, now + AdaptiveQuality.GAP_QUIET_MS);
+    }
+    this.lastNow = now;
+
+    const k = AdaptiveQuality.SMOOTHING;
+    const interval = Math.min(frame.intervalMs, AdaptiveQuality.STALL_MS);
+    this.intervalAvg = this.intervalAvg === 0 ? interval : this.intervalAvg + (interval - this.intervalAvg) * k;
+    if (frame.costMs > 0) {
+      const cost = Math.min(frame.costMs, AdaptiveQuality.STALL_MS);
+      this.costAvg = this.costAvg === 0 ? cost : this.costAvg + (cost - this.costAvg) * k;
+    }
+
+    if (now < this.quietUntil) {
+      this.belowMs = 0;
+      return;
+    }
+
+    const slow = this.intervalAvg > this.slowMs;
+    const busy = this.costAvg === 0 || this.costAvg >= this.intervalAvg * AdaptiveQuality.BUSY_SHARE;
+    if (!(slow && busy)) {
+      this.belowMs = 0;
+      return;
+    }
+    this.belowMs += Math.min(frame.intervalMs, AdaptiveQuality.FRAME_CREDIT_MS);
+    if (this.belowMs <= AdaptiveQuality.SUSTAIN_MS) return;
+
+    const index = TIER_ORDER.indexOf(frame.tier);
+    if (index <= 0) return;
+    const why =
+      `${(1000 / this.intervalAvg).toFixed(0)} fps for ${(this.belowMs / 1000).toFixed(1)} s` +
+      (this.costAvg > 0 ? `, frames costing ${this.costAvg.toFixed(0)} ms` : '');
+    this.belowMs = 0;
+    this.quietUntil = now + AdaptiveQuality.CHANGE_QUIET_MS;
+    this.onDowngrade(TIER_ORDER[index - 1], why);
+  }
+
+  /** Forgets what has been measured. The quiet periods stand. */
   reset(): void {
-    this.belowTargetFor = 0;
-    this.aboveTargetFor = 0;
+    this.belowMs = 0;
+    this.intervalAvg = 0;
+    this.costAvg = 0;
   }
 }
-
