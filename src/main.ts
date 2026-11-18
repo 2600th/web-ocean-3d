@@ -3646,7 +3646,7 @@ class App {
       const at = this.lightning.lastStrike;
       if (Number.isFinite(at.distance)) {
         _flashAt.set(at.x, this.lightning.cloudBaseHeight, at.z);
-        (this.clouds as { setFlash?: (p: THREE.Vector3, i: number) => void }).setFlash?.(_flashAt, this.lightning.flashIntensity);
+        this.clouds.setFlash(_flashAt, this.lightning.flashIntensity);
       }
     }
 
