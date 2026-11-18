@@ -158,7 +158,7 @@ const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'night
 // --- arguments ---------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { states: DEFAULT_STATES, seconds: 60, tier: 'high', volume: 1, music: 0.5, saveBaseline: false, wav: true, src: ROOT };
+  const args = { states: DEFAULT_STATES, seconds: 60, tier: 'high', volume: 1, music: 0.5, saveBaseline: false, wav: true, src: ROOT, reduced: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--states') args.states = argv[++i].split(',');
@@ -171,6 +171,8 @@ function parseArgs(argv) {
     // re-record the baseline: git archive <rev> src/audio src/core | tar -x -C <dir>
     else if (a === '--src') args.src = resolve(argv[++i]);
     else if (a === '--no-wav') args.wav = false;
+    // The reduced dynamic range (laptop speakers), as the sound settings offer it.
+    else if (a === '--reduced') args.reduced = true;
     else throw new Error(`audio-bench: unknown argument ${a}`);
   }
   for (const s of args.states) if (!STATES[s]) throw new Error(`audio-bench: unknown state ${s}`);
@@ -257,6 +259,7 @@ async function renderInPage(cfg) {
   };
 
   const sys = new AudioSystem({ context: ctx, volume: cfg.volume, musicVolume: cfg.music, quality: cfg.tier });
+  if (cfg.reduced && typeof sys.setReducedRange === 'function') sys.setReducedRange(true);
   // Events refused for want of a voice (the deck's, and the gulls' share of it).
   let refused = 0;
   for (const name of ['acquireVoice', 'acquireGullVoice']) {
@@ -313,6 +316,8 @@ async function renderInPage(cfg) {
   let lastOrder = null;
   const fxCap = () => sys.settings?.voices ?? null;
   let peakFxCap = fxCap();
+  // The loudness window (A3), where the code has one: its gain, dB.
+  let hdrMin = Infinity, hdrMax = -Infinity, hdrSum = 0, hdrN = 0;
 
   const tick = (i) => {
     const t = i * dt;
@@ -345,6 +350,13 @@ async function renderInPage(cfg) {
     if (live > peakLive) peakLive = live;
     const cap = fxCap();
     if (cap !== null && (peakFxCap === null || cap > peakFxCap)) peakFxCap = cap;
+    const hdr = sys.hdrDebug;
+    if (hdr && i > 0) {
+      hdrMin = Math.min(hdrMin, hdr.gainDb);
+      hdrMax = Math.max(hdrMax, hdr.gainDb);
+      hdrSum += hdr.gainDb;
+      hdrN++;
+    }
 
     const pos = music?.position;
     if (pos) {
@@ -406,6 +418,7 @@ async function renderInPage(cfg) {
     bedsAtZero: bedsZero,
     repeatMeasured,
     repeatProjected,
+    hdrGainDb: hdrN > 0 ? { min: +hdrMin.toFixed(1), max: +hdrMax.toFixed(1), mean: +(hdrSum / hdrN).toFixed(1) } : null,
     wav,
   };
 
@@ -745,6 +758,7 @@ async function main() {
               clickRatio: CLICK_RATIO,
               clickFloor: CLICK_FLOOR,
               diag: process.env.BENCH_DIAG ?? null,
+              reduced: args.reduced,
             },
           },
         );
@@ -761,7 +775,9 @@ async function main() {
           `[audio-bench] ${name.padEnd(10)} ${fmt.lufs(r.integratedLufs).padStart(6)} LUFS  ` +
             `TP ${fmt.db(r.truePeakDb).padStart(5)} dBTP  clicks ${String(r.clicks).padStart(3)}  ` +
             `fx ${r.peakFxVoices}/${r.fxVoiceCap} refused ${r.refused}  notes ${r.peakMusicNotes}  nodes ${r.peakLiveNodes} (${r.peakNodesPerSecond}/s)  ` +
-            `beds@0 ${r.bedsAtZero}/${r.bedsRendering}  repeat ${fmt.repeat(r)}  (${((Date.now() - started) / 1000).toFixed(1)} s)`,
+            `beds@0 ${r.bedsAtZero}/${r.bedsRendering}  repeat ${fmt.repeat(r)}` +
+            (r.hdrGainDb ? `  hdr ${r.hdrGainDb.min}..${r.hdrGainDb.max} (mean ${r.hdrGainDb.mean}) dB` : '') +
+            `  (${((Date.now() - started) / 1000).toFixed(1)} s)`,
         );
       }
       await page.close();
@@ -776,7 +792,7 @@ async function main() {
   writeFileSync(join(OUT_DIR, 'bench.json'), JSON.stringify(current, null, 2));
   if (args.saveBaseline) writeFileSync(BASELINE, JSON.stringify(current, null, 2) + '\n');
   const full =
-    args.seconds === 60 && args.tier === 'high' && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS && !process.env.BENCH_PARAMS &&
+    args.seconds === 60 && args.tier === 'high' && !args.reduced && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS && !process.env.BENCH_PARAMS &&
     DEFAULT_STATES.every((s) => args.states.includes(s));
   if (full) {
     const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : null;

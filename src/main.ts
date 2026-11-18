@@ -2865,6 +2865,7 @@ class App {
       case 'ambienceMuted':
       case 'effectsMuted':
       case 'interfaceMuted':
+      case 'reducedRange':
         this.audio.applyMix(this.state);
         saveSoundPrefs(this.state);
         break;

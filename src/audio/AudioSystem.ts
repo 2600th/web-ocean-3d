@@ -1,5 +1,6 @@
 import type { QualityTier } from '../core/QualityManager';
 import { mulberry32 } from '../core/random';
+import { HdrMix, gainToDb } from './Hdr';
 import { NoiseBed, type NoiseBedOptions } from './NoiseBed';
 import { NOISE_SECONDS, createNoiseBuffer } from './noise';
 import { ParamTarget } from './ParamTarget';
@@ -252,6 +253,11 @@ export interface AudioMix {
   ambienceMuted: boolean;
   effectsMuted: boolean;
   interfaceMuted: boolean;
+  /**
+   * Less range between quiet and loud, for laptop speakers and noisy rooms.
+   * Optional so a mix without it keeps the full range.
+   */
+  reducedRange?: boolean;
 }
 
 export interface AudioQualitySettings {
@@ -386,6 +392,13 @@ const COMPRESSOR_KNEE_DB = 14;
 const COMPRESSOR_RATIO = 4;
 const COMPRESSOR_ATTACK = 0.006;
 const COMPRESSOR_RELEASE = 0.28;
+/**
+ * The reduced range's compressor: lower and firmer. Its makeup gain is larger
+ * too (a `DynamicsCompressorNode` always applies one), which is part of why
+ * the reduced range plays louder.
+ */
+const COMPRESSOR_REDUCED_THRESHOLD_DB = -20;
+const COMPRESSOR_REDUCED_RATIO = 3;
 
 /** Fades applied by the volume, mute and enable controls, seconds. */
 const VOLUME_RAMP = 0.05;
@@ -691,6 +704,14 @@ const SPLASH_BUBBLE_WINDOW = 0.4;
 
 const THUNDER_LEVEL = 0.85;
 /**
+ * Extra level on the crack and the roll. Rendered alone, a strike 600 m off
+ * peaked at -26 LUFS momentary against a storm sea at -17: buried. A close
+ * strike is the loudest thing in a storm, and the window (`HdrMix`) makes room
+ * for it, so it is played at its own level.
+ */
+const THUNDER_CRACK_GAIN = 5;
+const THUNDER_ROLL_GAIN = 2.5;
+/**
  * e-folding distance for the crack, km.
  *
  * Atmospheric absorption is strongly frequency dependent — of order 2 dB/km at
@@ -769,11 +790,18 @@ const CHAIN_LINKS_PER_SECOND = 14;
  * aground impact, a splash and the cargo sting on one sample) it bends about a
  * hundred samples; in every ordinary scenario measured, none.
  */
-const LIMITER_THRESHOLD_DB = -1;
+const LIMITER_THRESHOLD_DB = -3;
 const LIMITER_RATIO = 20;
 const LIMITER_ATTACK = 0.001;
 const LIMITER_RELEASE = 0.12;
-const SOFT_CLIP_KNEE = 0.7;
+/**
+ * The clipper bends from 0.6 and tops out at 0.84 (-1.5 dBFS), so that with
+ * the inter-sample overshoot a bent peak makes, the true peak stays at or
+ * under -1 dBTP (A3). The limiter's threshold came down to -3 dB with it, so
+ * its makeup (+1.7 dB) still leaves its ceiling under the clipper's.
+ */
+const SOFT_CLIP_KNEE = 0.6;
+const SOFT_CLIP_CEILING = 0.84;
 
 // --- the ship ------------------------------------------------------------------
 
@@ -808,11 +836,48 @@ const LUFF_BED_HZ = 520;
 
 // --- ducking --------------------------------------------------------------------
 
-/** How far a close strike pulls the score down, and the ambience beds. */
+/**
+ * How far a close strike pulls the score down, on top of the window (`HdrMix`)
+ * that pulls everything down under it. The beds have no duck of their own any
+ * more: the window is that duck, and it follows the strike's own loudness.
+ */
 const THUNDER_MUSIC_DUCK = 0.55;
-const THUNDER_BED_DUCK = 0.3;
 /** Seconds held before recovering. */
 const THUNDER_DUCK_HOLD = 1.6;
+/** A hard impact pulls the score down too: by this at full strength, for this long. */
+const IMPACT_MUSIC_DUCK = 0.45;
+const IMPACT_DUCK_HOLD = 0.6;
+
+// --- logical loudness ----------------------------------------------------------
+//
+// What `HdrMix` is told, dB on its scale (about LUFS before the master stage).
+// The beds report their own (`NoiseBed.loudnessDb`); these are the rest.
+
+/**
+ * The score, by arrangement, at its nominal level: measured by the bench with
+ * the score alone (`BENCH_DIAG=music`, music 0.5).
+ */
+const MUSIC_LOUDNESS_DB: Readonly<Record<MusicState, number>> = {
+  calm: -30.3,
+  sailing: -27.5,
+  storm: -23.7,
+  underwater: -32.5,
+  tour: -29.5,
+  silent: Number.NEGATIVE_INFINITY,
+};
+/**
+ * A strike's momentary loudness at its peak, from its crack and roll levels:
+ * `20 log10(level) + offset`, power-summed. Fitted against thunder rendered
+ * alone (the roll is mostly under 110 Hz, which loudness weighting discounts).
+ */
+const THUNDER_CRACK_LOUDNESS_DB = -18;
+const THUNDER_ROLL_LOUDNESS_DB = -25;
+/** A hull impact at full strength and presence, and a splash at full intensity. */
+const IMPACT_LOUDNESS_DB = -13;
+const SPLASH_LOUDNESS_DB = -22;
+/** A gull at the reference distance, and a creak or knock aboard at full presence. */
+const GULL_LOUDNESS_DB = -34;
+const SHIP_AMBIENT_LOUDNESS_DB = -28;
 
 // --- crossing the surface ---------------------------------------------------------
 
@@ -1121,6 +1186,9 @@ export class AudioSystem {
   private softClip!: WaveShaperNode;
   private compressor!: DynamicsCompressorNode;
   private mix!: GainNode;
+  /** Loudness and priority: the window the loudest sound sets. See `HdrMix`. */
+  private hdr!: HdrMix;
+  private reducedRange = false;
   /** Everything above the waterline, before the muffle. */
   private airBus!: GainNode;
   private airMuffle!: BiquadFilterNode;
@@ -1753,6 +1821,25 @@ export class AudioSystem {
       this.gullTimer = GULL_FLURRY_FLOOR;
     }
 
+    // --- loudness and priority ----------------------------------------------
+    // Each continuous sound's logical loudness, as it is heard: the air beds
+    // through the waterline's duck, the ship's through its distance, the
+    // rumble through the water. The loudest sets the window (`HdrMix`).
+    const hdr = this.hdr;
+    hdr.begin();
+    const air = gainToDb(1 - AIR_DUCK * submersion);
+    hdr.offer(sumDb(this.surfNear.loudnessDb(), this.surfFar.loudnessDb()) + air);
+    hdr.offer(sumDb(this.windBed.loudnessDb(), this.rigging.loudnessDb()) + air);
+    hdr.offer(sumDb(this.rainBed.loudnessDb(), this.rainHiss.loudnessDb()) + air);
+    hdr.offer(
+      sumDb(sumDb(this.hull.loudnessDb(), this.bowWash.loudnessDb()), this.luffBed.loudnessDb()) +
+        air +
+        gainToDb(presence),
+    );
+    hdr.offer(this.rumble.loudnessDb() + gainToDb(Math.pow(submersion, UNDER_EXPONENT)));
+    if (this.busLevel('music') > 0) hdr.offer(MUSIC_LOUDNESS_DB[this.music.currentState]);
+    hdr.update(now, step, live);
+
     // --- score --------------------------------------------------------------
     this.music.update(step, now, live);
   }
@@ -1825,6 +1912,35 @@ export class AudioSystem {
     this.readMix(mix);
     this.applyMasterGain(VOLUME_RAMP);
     for (const bus of AUDIO_BUSES) this.applyBus(bus);
+    this.applyRange();
+  }
+
+  /**
+   * Less range, for laptop speakers: a calm and a storm closer together, a
+   * strike rising less over the sea, and a firmer compressor behind them.
+   */
+  setReducedRange(reduced: boolean): void {
+    this.reducedRange = reduced;
+    this.applyRange();
+  }
+
+  isReducedRange(): boolean {
+    return this.reducedRange;
+  }
+
+  /** The window's state, for the bench and tests: its top and the gain it applies, dB. */
+  get hdrDebug(): { top: number; gainDb: number; reduced: boolean } | null {
+    if (this.ctx === null) return null;
+    return { top: this.hdr.windowTop, gainDb: this.hdr.gainDb, reduced: this.hdr.isReduced() };
+  }
+
+  private applyRange(): void {
+    if (this.ctx === null || this.hdr === undefined) return;
+    this.hdr.setReduced(this.reducedRange);
+    const c = this.compressor;
+    const reduced = this.reducedRange;
+    c.threshold.value = reduced ? COMPRESSOR_REDUCED_THRESHOLD_DB : COMPRESSOR_THRESHOLD_DB;
+    c.ratio.value = reduced ? COMPRESSOR_REDUCED_RATIO : COMPRESSOR_RATIO;
   }
 
   private readMix(mix: Readonly<AudioMix>): void {
@@ -1839,6 +1955,7 @@ export class AudioSystem {
     m.ambience = mix.ambienceMuted === true;
     m.effects = mix.effectsMuted === true;
     m.interface = mix.interfaceMuted === true;
+    if (mix.reducedRange !== undefined) this.reducedRange = mix.reducedRange === true;
   }
 
   private busLevel(bus: AudioBus): number {
@@ -1970,6 +2087,7 @@ export class AudioSystem {
     const now = ctx.currentTime;
     const decay = SPLASH_DECAY_MIN + SPLASH_DECAY_SPAN * amount;
     const level = SPLASH_LEVEL * Math.pow(amount, 0.8);
+    this.hdr.event(now, SPLASH_LOUDNESS_DB + gainToDb(Math.pow(amount, 0.8)), 0.05, 30, true);
 
     // A barrel or a buoy coming down somewhere off to one side.
     const side = clampNumber(finite(pan, 0), -1, 1);
@@ -2121,7 +2239,8 @@ export class AudioSystem {
     crackEnv.gain.setValueCurveAtTime(this.crackCurve, now, THUNDER_CRACK_SECONDS);
 
     const crackLevel = ctx.createGain();
-    crackLevel.gain.value = THUNDER_LEVEL * spread * crackWeight;
+    const crackGain = THUNDER_LEVEL * THUNDER_CRACK_GAIN * spread * crackWeight;
+    crackLevel.gain.value = crackGain;
 
     const rollLow = ctx.createBiquadFilter();
     rollLow.type = 'lowpass';
@@ -2133,7 +2252,8 @@ export class AudioSystem {
 
     const rollLevel = ctx.createGain();
     // A near strike is mostly crack; a far one is only roll.
-    rollLevel.gain.value = THUNDER_LEVEL * spread * (0.35 + 0.65 * (1 - crackWeight));
+    const rollGain = THUNDER_LEVEL * THUNDER_ROLL_GAIN * spread * (0.35 + 0.65 * (1 - crackWeight));
+    rollLevel.gain.value = rollGain;
 
     source.connect(crackHigh);
     crackHigh.connect(crackLow);
@@ -2148,14 +2268,17 @@ export class AudioSystem {
     const wet = this.sendFrom(crackLevel, THUNDER_SEND, this.ambienceWet);
     rollLevel.connect(wet);
 
-    // Sidechain, by hand: the score and the sea beds make room for the strike,
-    // in proportion to how loud it arrives, at the moment it arrives.
+    // The strike raises the window by its own loudness, at the moment it
+    // arrives, so everything else steps back under it; the score also ducks.
     const loudness = clampNumber(spread * 1.6, 0.25, 1);
     this.music.duck(THUNDER_MUSIC_DUCK * loudness, THUNDER_DUCK_HOLD + rollSeconds * 0.3, now);
-    const bed = this.bedBus.gain;
-    bed.cancelScheduledValues(now);
-    bed.setTargetAtTime(1 - THUNDER_BED_DUCK * loudness, now, 0.04);
-    bed.setTargetAtTime(1, now + THUNDER_DUCK_HOLD, 0.6);
+    this.hdr.event(
+      now,
+      sumDb(gainToDb(crackGain) + THUNDER_CRACK_LOUDNESS_DB, gainToDb(rollGain) + THUNDER_ROLL_LOUDNESS_DB),
+      THUNDER_CRACK_SECONDS * 0.4,
+      18 / rollSeconds,
+      true,
+    );
 
     source.start(now, this.oneShotRandom() * this.white.duration);
     source.stop(now + Math.max(THUNDER_CRACK_SECONDS, rollSeconds) + 0.1);
@@ -2357,7 +2480,15 @@ export class AudioSystem {
   hullImpact(strength: number, grind = false): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
-    this.shipSfx.hullImpact(clamp01(finite(strength, 0)), grind, ctx.currentTime);
+    const s = clamp01(finite(strength, 0));
+    const now = ctx.currentTime;
+    this.shipSfx.hullImpact(s, grind, now);
+    // Heard as loud as it is close: the window and the score make room for it.
+    const presence = this.shipGain.target;
+    if (s < 0.02 || presence <= 0) return;
+    const db = IMPACT_LOUDNESS_DB + gainToDb(Math.pow(s, 0.7) * presence);
+    this.hdr.event(now, db, 0.12, grind ? 10 : 24, true);
+    this.music.duck(IMPACT_MUSIC_DUCK * s * presence, IMPACT_DUCK_HOLD + (grind ? 1 : 0), now);
   }
 
   /**
@@ -2520,6 +2651,7 @@ export class AudioSystem {
     this.wasUnder = false;
     this.plungeCooldown = 0;
     this.thunderQueue.length = 0;
+    this.hdr?.reset();
     this.stopVoices();
     this.shipSfx?.reset();
     this.music?.reset();
@@ -2563,6 +2695,7 @@ export class AudioSystem {
     this.mix.disconnect();
     this.master.disconnect();
     this.compressor.disconnect();
+    this.hdr.node.disconnect();
 
     this.music.dispose();
     this.limiter.disconnect();
@@ -2599,7 +2732,7 @@ export class AudioSystem {
     this.limiter.attack.value = LIMITER_ATTACK;
     this.limiter.release.value = LIMITER_RELEASE;
     this.softClip = ctx.createWaveShaper();
-    this.softClip.curve = buildSoftClipCurve(SOFT_CLIP_KNEE);
+    this.softClip.curve = buildSoftClipCurve(SOFT_CLIP_KNEE, SOFT_CLIP_CEILING);
     this.master.connect(this.limiter);
     this.limiter.connect(this.softClip);
     this.softClip.connect(ctx.destination);
@@ -2617,7 +2750,11 @@ export class AudioSystem {
     this.compressor.connect(this.master);
 
     this.mix = ctx.createGain();
-    this.mix.connect(this.compressor);
+    this.hdr = new HdrMix(ctx);
+    this.hdr.setReduced(this.reducedRange);
+    this.mix.connect(this.hdr.node);
+    this.hdr.node.connect(this.compressor);
+    this.applyRange();
 
     // Past the compressor as well as past the muffle: an interface sound should
     // be the same every time it is heard, and routing it through the world bus
@@ -2803,6 +2940,7 @@ export class AudioSystem {
       // bottom of the spectrum, and a low-passed white bed to match would need a
       // filter steep enough to ring.
       buffer: brown,
+      spectrum: 'brown',
       destination: this.underBus,
       filter: 'lowpass',
       frequency: RUMBLE_HZ,
@@ -2845,7 +2983,9 @@ export class AudioSystem {
     const host: SfxHost = {
       ctx,
       acquire: () => this.acquireVoice(),
-      acquireAmbient: () => this.busyVoices() + SHIP_VOICE_RESERVE < this.settings.voices,
+      acquireAmbient: () =>
+        this.busyVoices() + SHIP_VOICE_RESERVE < this.settings.voices &&
+        this.hdr.audible(SHIP_AMBIENT_LOUDNESS_DB + gainToDb(this.shipGain.target)),
       track: (source, ...nodes) => this.trackVoice(source, ...nodes),
     };
     this.shipSfx = new ShipSfx(host, this.white, this.shipBus);
@@ -2910,6 +3050,7 @@ export class AudioSystem {
   private flushAll(now: number): void {
     for (const target of this.targets) target.flush(now);
     this.room.flush(now);
+    this.hdr.flush(now);
   }
 
   /**
@@ -3127,6 +3268,8 @@ export class AudioSystem {
   private spawnGullCall(when: number, distanceMetres: number, pan: number): void {
     const ctx = this.ctx;
     if (ctx === null || !this.acquireGullVoice()) return;
+    // Below the window: a gull a storm would bury is not worth a voice.
+    if (!this.hdr.audible(GULL_LOUDNESS_DB + gainToDb(GULL_REFERENCE_METRES / distanceMetres))) return;
 
     const random = this.gullRandom;
 
@@ -3395,10 +3538,19 @@ function buildThunderCurve(
  * Linear to `knee`, then a tanh shoulder. A `WaveShaperNode` holds its end
  * values for input beyond [-1, 1], so the curve's last point is the ceiling.
  */
-function buildSoftClipCurve(knee: number): Float32Array<ArrayBuffer> {
+function buildSoftClipCurve(knee: number, ceiling: number): Float32Array<ArrayBuffer> {
   const n = 2049;
   const curve = new Float32Array(new ArrayBuffer(n * 4));
-  const span = 1 - knee;
+  // The shoulder's width, so that full-scale input lands on the ceiling:
+  // knee + span * tanh((1 - knee) / span) = ceiling, solved by bisection.
+  let lo = 1e-3;
+  let hi = 1;
+  for (let i = 0; i < 40; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (knee + mid * Math.tanh((1 - knee) / mid) > ceiling) hi = mid;
+    else lo = mid;
+  }
+  const span = 0.5 * (lo + hi);
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
     const a = Math.abs(x);
@@ -3435,4 +3587,13 @@ function clamp01(v: number): number {
 function smoothstepNumber(x: number, edge0: number, edge1: number): number {
   const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+/** Power sum of two levels in dB. */
+function sumDb(a: number, b: number): number {
+  if (a === Number.NEGATIVE_INFINITY) return b;
+  if (b === Number.NEGATIVE_INFINITY) return a;
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  return hi + 10 * Math.log10(1 + Math.pow(10, (lo - hi) / 10));
 }
