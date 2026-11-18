@@ -2301,6 +2301,7 @@ class App {
       this.ship = ship;
       // Gulls work the ship and sit on her yards; see `Birds.setShip`.
       this.birds.setShip(ship.object);
+      ship.setKeyLight(this.atmosphere.sunLight);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);

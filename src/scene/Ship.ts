@@ -1,5 +1,19 @@
 import * as THREE from 'three/webgpu';
-import { abs, dot, float, materialColor, mix, mx_noise_float, positionWorld, smoothstep, uniform, vec3, vec4 } from 'three/tsl';
+import {
+  abs,
+  dot,
+  fwidth,
+  float,
+  materialColor,
+  mix,
+  mx_noise_float,
+  normalWorldGeometry,
+  positionWorld,
+  smoothstep,
+  uniform,
+  vec3,
+  vec4,
+} from 'three/tsl';
 import { HERO_ANISOTROPY, type AssetLoader } from './AssetLoader';
 import { ShipSails, type SailStateInput } from './ship/Sails';
 
@@ -97,6 +111,9 @@ export class Ship {
   private helm = 0;
   /** World to ship frame, for the bottom treatment. */
   private readonly uShipInverse = uniform(new THREE.Matrix4());
+  /** Light the water scatters up onto the bottom; follows the key light. */
+  private readonly uUpwell = uniform(new THREE.Color(0, 0, 0));
+  private keyLight: THREE.DirectionalLight | null = null;
   private readonly probeGroup: THREE.Group;
   private readonly probeGeometry: THREE.SphereGeometry;
   private readonly probeMaterial: THREE.MeshBasicNodeMaterial;
@@ -237,6 +254,11 @@ export class Ship {
     this.helm = THREE.MathUtils.clamp(rudder, -1, 1);
   }
 
+  /** The sun (or moon) key light, whose share the water scatters up onto the bottom. */
+  setKeyLight(light: THREE.DirectionalLight): void {
+    this.keyLight = light;
+  }
+
   update(dt: number): void {
     if (this.disposed) return;
     // Rudder to starboard: the blade's trailing edge (aft, -X) goes to +Z, a
@@ -245,6 +267,13 @@ export class Ship {
     // The staff's head to starboard: positive about +X takes +Y toward +Z.
     this.helmObject?.quaternion.setFromAxisAngle(this.helmAxis, this.helm * WHIPSTAFF_MAX);
     (this.uShipInverse.value as THREE.Matrix4).copy(this.object.matrixWorld).invert();
+    if (this.keyLight) {
+      // A few percent of the key, tinted by the water it came through.
+      (this.uUpwell.value as THREE.Color)
+        .copy(this.keyLight.color)
+        .multiplyScalar(this.keyLight.intensity)
+        .multiply(UPWELL_TINT);
+    }
     this.sails.update(dt);
   }
 
@@ -304,17 +333,43 @@ export class Ship {
     // Linear cream. The texture's light and dark (planks against seams, about
     // 0.02 to 0.12 in luma) become a 0.55 to 1.15 relief on it.
     const relief = luma.mul(6).add(0.45).clamp(0.4, 1.2);
-    const stuff = vec3(0.46, 0.41, 0.3).mul(relief);
+    // Planking. The texture's seams are too faint to carry under the cream,
+    // so the strakes are drawn again: 30 cm planks running fore and aft along
+    // an approximate girth (|z| on the flat of the floor, depth on the side,
+    // both round the bilge), with butts staggered every 6.5 m. Filtered by
+    // their own derivative so they fade rather than shimmer at range.
+    const girth = abs(p.z).sub(p.y);
+    const strake = girth.div(STRAKE);
+    const strakeIndex = strake.floor();
+    const butt = p.x.div(BUTT).add(strakeIndex.mul(0.37));
+    const seamLine = (v: any, width: number) => {
+      const w = fwidth(v).max(1e-4);
+      // 1 on the seam, 0 mid-plank; the line is `width` of a plank plus a pixel.
+      const d = v.fract().sub(0.5).abs().mul(2);
+      return smoothstep(float(1 - width).sub(w.mul(2)), 1, d).mul(float(1).sub(w.mul(3).clamp(0, 1)));
+    };
+    // The butts are across the strake, so their width is the strake's in x.
+    const seams = seamLine(strake, 0.06).max(seamLine(butt, 0.003)).mul(0.6);
+    const stuff = vec3(0.46, 0.41, 0.3).mul(relief).mul(float(1).sub(seams));
     // Weed and slime: strongest in the top 0.9 m, in patches streaked fore and
     // aft by the flow.
     const patch = mx_noise_float(vec3(p.x.mul(0.35), p.y.mul(2.2), p.z.mul(0.9))).mul(0.5).add(0.5);
     const band = smoothstep(-1.4, -0.25, p.y).mul(below);
     const weed = band.mul(smoothstep(0.35, 0.75, patch)).mul(0.85);
-    const fouled = mix(stuff, vec3(0.16, 0.19, 0.08).mul(relief), weed);
+    const fouled = mix(stuff, vec3(0.17, 0.18, 0.1).mul(relief), weed);
     // Keel: the bottom 35 cm within its sided width, kept tarred.
     const keel = float(1).sub(smoothstep(0.17, 0.24, abs(p.z))).mul(float(1).sub(smoothstep(-2.75, -2.6, p.y)));
     const bottom = mix(fouled, base.rgb.mul(0.8), keel);
     (target as unknown as { colorNode: unknown }).colorNode = vec4(mix(base.rgb, bottom, below), base.a);
+    // Upwelling: the water under the hull scatters the daylight back up onto
+    // the bottom, blue-green and from below. The sky probe the hull is lit by
+    // has nothing below the horizon, so without this a submerged bottom gets
+    // no light but the caustics and stays a silhouette.
+    const facing = normalWorldGeometry.y.negate().mul(0.6).add(0.4).clamp(0, 1);
+    const submerged = float(1).sub(smoothstep(-0.7, -0.25, p.y));
+    const upwell = bottom.mul(this.uUpwell).mul(facing).mul(submerged);
+    const emissive = target as unknown as { emissiveNode: unknown };
+    emissive.emissiveNode = emissive.emissiveNode ? (emissive.emissiveNode as any).add(upwell) : upwell;
     /* eslint-enable @typescript-eslint/no-explicit-any */
     target.needsUpdate = true;
   }
@@ -348,6 +403,11 @@ export class Ship {
 }
 
 const SCRATCH_FORWARD = /*@__PURE__*/ new THREE.Vector3();
+/** Upwelling per unit of key light: a few percent, blue-green. */
+const UPWELL_TINT = /*@__PURE__*/ new THREE.Color(0.15, 0.3, 0.33);
+/** Plank width and length on the bottom, metres. */
+const STRAKE = 0.3;
+const BUTT = 6.5;
 
 /**
  * Bounding box of the hull mesh alone, in the root's local space.
