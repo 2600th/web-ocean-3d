@@ -11,6 +11,7 @@ import {
 import { uniform } from './core/uniform';
 import { createRenderer, clampPixelRatio, WebGPUUnavailableError, type Backend } from './core/Renderer';
 import {
+  installDestroyedTextureRefresh,
   installInstanceCopySync,
   installShadowCasterSharing,
   installSubmissionFixes,
@@ -702,6 +703,7 @@ class App {
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
     installInstanceCopySync(this.renderer);
+    installDestroyedTextureRefresh(this.renderer);
     installShadowCasterSharing(this.renderer);
     // `?batch=0`: submit every render call on its own, as three does. For A/B
     // measurements of `installSubmitBatching`.
