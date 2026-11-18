@@ -1627,10 +1627,11 @@ export class Gameplay {
         distanceM: Math.hypot(a.x - ship.x, a.z - ship.z),
       };
     } else {
-      const count = this.recovering ? '' : ` · ${this.laid} of ${VOYAGE_CASKS}`;
+      // The count leads, so a narrow scroll wraps the name rather than the count.
+      const name = this.recovering ? capitalise(this.lootName) : `${this.laid} of ${VOYAGE_CASKS}: ${this.lootName}`;
       objective = {
         title: 'Haul in the drifting cargo',
-        detail: capitalise(this.lootName) + ` · ${this.lootValue} gold${count}`,
+        detail: `${name} · ${this.lootValue} gold`,
         bearingDeg: compassFromVector(lp.x - ship.x, lp.z - ship.z),
         distanceM: Math.hypot(lp.x - ship.x, lp.z - ship.z),
       };
