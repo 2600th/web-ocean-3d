@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { color, materialEmissive, normalView, vec3 } from 'three/tsl';
 import { uniform } from '../core/uniform';
+import { SHIP_DECK_LANTERN_PEAK, SHIP_DECK_LANTERN_RADIUS } from '../scene/ship/ShipLights';
 
 /**
  * Fire, torch and lantern light after dark.
@@ -113,11 +114,14 @@ export class LocalLights {
     // reaches the gallery deck and the cottage roof. Its long reach ranks it
     // behind anything nearer (see `setCount`).
     this.beacon = make('lighthouse-light', BEACON_COLOR, 14, 30, 420, 0.15, 0.91);
-    // The ship's deck lanterns: a hand lantern's worth each, reaching the deck,
-    // the rail and the foot of the canvas above. Eight point lights in all,
-    // which is `BatchedLighting`'s array size; at most `count` are ever lit.
+    // The ship's deck lanterns, reaching the deck, the rail and the foot of the
+    // canvas above. At 5 and 12 m the planks two metres below barely took the
+    // light and the courses not at all; a horn lantern is dim, but the eye at
+    // night is adapted to the moon, and it is the warm pool on the deck that
+    // says "lantern". Eight point lights in all, which is `BatchedLighting`'s
+    // array size; at most `count` are ever lit. Zero by day, so day is unchanged.
     this.deckLanterns = [0, 1, 2].map((i) =>
-      make(`ship-deck-lantern-light-${i}`, LANTERN_COLOR, 5, 12, 200, 0.25, 0.19 + i * 0.23),
+      make(`ship-deck-lantern-light-${i}`, LANTERN_COLOR, SHIP_DECK_LANTERN_PEAK, SHIP_DECK_LANTERN_RADIUS, 200, 0.25, 0.19 + i * 0.23),
     );
     this.sources = [this.fire, this.shipLantern, this.torch, this.lantern, this.beacon, ...this.deckLanterns];
     this.setCount(count);
