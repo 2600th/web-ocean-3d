@@ -78,6 +78,8 @@ export interface UiState {
    * (Chrome, Edge, Safari 16.4+; not Firefox or iOS Safari).
    */
   haptics: boolean;
+  /** Lightning as one soft pulse per strike instead of a flash train (WCAG 2.3.1). */
+  reduceFlashes: boolean;
 }
 
 export interface UiCallbacks {
@@ -161,6 +163,7 @@ export const DEFAULT_UI_STATE: UiState = {
   pixelRatio: 1,
   cameraMode: 'orbit',
   haptics: true,
+  reduceFlashes: false,
 };
 
 export const QUALITY_TIERS: readonly QualityTier[] = ['low', 'medium', 'high', 'ultra', 'max'];

@@ -422,6 +422,14 @@ export interface QualitySettings {
    * small dispatches a frame at 60 Hz; budgeted at 0.5 ms.
    */
   sailCloth: boolean;
+
+  /**
+   * Weather and fire detail, 0..1: the share of rain drops drawn (`Weather`),
+   * whether the deck takes splash crowns (from 0.5), the camp fire's embers
+   * and sparks, and the lightning's forks and leader. Instance counts only, so
+   * a tier change compiles nothing.
+   */
+  weatherDetail: number;
 }
 
 export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
@@ -470,6 +478,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 0,
     canopy: 4000,
     sailCloth: false,
+    weatherDetail: 0.4,
   },
   medium: {
     fftSize: 128,
@@ -516,6 +525,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 18000,
     canopy: 9000,
     sailCloth: false,
+    weatherDetail: 0.7,
   },
   high: {
     fftSize: 256,
@@ -561,6 +571,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 38000,
     canopy: 15000,
     sailCloth: true,
+    weatherDetail: 1,
   },
   ultra: {
     fftSize: 256,
@@ -606,6 +617,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 62000,
     canopy: 20000,
     sailCloth: true,
+    weatherDetail: 1,
   },
   max: {
     fftSize: 512,
@@ -653,6 +665,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 90000,
     canopy: 24000,
     sailCloth: true,
+    weatherDetail: 1,
   },
 };
 
