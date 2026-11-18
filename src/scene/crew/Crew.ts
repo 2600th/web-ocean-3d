@@ -93,6 +93,12 @@ interface Group {
   action: THREE.AnimationAction;
   duration: number;
   bones: Record<string, THREE.Bone | undefined>;
+  /**
+   * The layered bones' rotations as the clip left them. The mixer only writes
+   * a bone whose clip value changed since it last wrote it, so without putting
+   * these back first a still channel would keep, and pile up, our own turns.
+   */
+  clipPose: Map<THREE.Object3D, THREE.Quaternion>;
   stations: ResolvedStation[];
   instanceMatrix: THREE.InstancedBufferAttribute;
   meshInRoot: THREE.Matrix4;
@@ -223,12 +229,18 @@ export class Crew {
         action,
         duration: clip.duration,
         bones,
+        clipPose: new Map(
+          Object.values(bones).filter((b): b is THREE.Bone => !!b).map((b) => [b, b.quaternion.clone()]),
+        ),
         stations,
         instanceMatrix,
         meshInRoot,
         meshInRootInv,
         walkSpeed: spec.motion === 'walk' ? strideSpeed(root, mixer, action, clip.duration) * this.scale : 0,
       };
+      // The bones now hold what the mixer last wrote (`strideSpeed` ran it).
+      mixer.update(0);
+      for (const [bone, q] of group.clipPose) q.copy(bone.quaternion);
       this.groups.push(group);
       this.place(group, 0);
     }
@@ -323,7 +335,9 @@ export class Crew {
       if ((g.mesh as unknown as { count: number }).count === 0) continue;
       const local = g.spec.phase + t * g.spec.rate;
       g.action.time = ((local % g.duration) + g.duration) % g.duration;
+      for (const [bone, q] of g.clipPose) bone.quaternion.copy(q);
       g.mixer.update(0);
+      for (const [bone, q] of g.clipPose) q.copy(bone.quaternion);
       g.bones.head?.scale.setScalar(HEAD_SCALE);
       this.layer(g, local);
       if (g.spec.motion === 'walk') this.place(g, t);

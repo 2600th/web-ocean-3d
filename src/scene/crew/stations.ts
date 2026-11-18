@@ -140,7 +140,7 @@ const BOSUN: CrewLook = {
 const HAND_KERCHIEF: CrewLook = {
   role: 'deckhand',
   parts: [P.headMop, P.kerchief, P.bodyTunic, P.armsTunic, P.legsTunic, P.sash],
-  shirt: LINEN, breeches: INDIGO, hat: WELD, sash: MADDER, skin: 0x5a3824, hair: 0x141010, build: [1.02, 1.0],
+  shirt: LINEN, breeches: INDIGO, hat: WELD, sash: MADDER, skin: 0x7a4a2c, hair: 0x141010, build: [1.02, 1.0],
 };
 const HAND_GINGER: CrewLook = {
   role: 'deckhand',
@@ -165,7 +165,7 @@ const OLD_HAND: CrewLook = {
 const MATE: CrewLook = {
   role: 'mate',
   parts: [P.headMop, P.kerchief, P.eyePatch, P.bodyTunic, P.armsTunic, P.legsBoots],
-  shirt: 0xc9b48a, breeches: TAR, hat: INDIGO, sash: MADDER, skin: 0x6e4228, hair: 0x181210,
+  shirt: 0xc9b48a, breeches: TAR, hat: INDIGO, sash: MADDER, skin: 0x84522f, hair: 0x181210,
 };
 
 export const CREW_GROUPS: readonly CrewGroupSpec[] = [
