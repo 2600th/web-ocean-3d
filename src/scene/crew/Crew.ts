@@ -493,7 +493,13 @@ function findWheel(ship: THREE.Object3D): THREE.Vector3 | null {
 
 /**
  * The deck under a point, by a ray down onto the hull. Measured once, at load;
- * the sails, the rigging and anything of ours are not deck.
+ * the sails, the rigging, the yards and anything of ours are not deck.
+ *
+ * The yards are their own nodes (`yard_*`, see `Sails`) and are braced round
+ * with the wind, so whether one hung over a station depended on where the wind
+ * stood when the figures arrived: on some loads the hand at the mainmast was
+ * measured onto the main yard and stood there, ten metres up. Names are read
+ * up the whole chain to the ship, since a yard's mesh sits under its pivot.
  */
 class DeckProbe {
   private readonly raycaster = new THREE.Raycaster();
@@ -503,8 +509,9 @@ class DeckProbe {
     ship.traverse((n) => {
       const mesh = n as THREE.Mesh;
       if (!mesh.isMesh || (n as THREE.SkinnedMesh).isSkinnedMesh) return;
-      const name = `${mesh.name} ${mesh.parent?.name ?? ''}`.toLowerCase();
-      if (/sail|rig|rope|crew|lantern|cable|probe|pennant|flag|window|halo|glow/.test(name)) return;
+      let name = '';
+      for (let a: THREE.Object3D | null = mesh; a && a !== ship; a = a.parent) name += ` ${a.name.toLowerCase()}`;
+      if (/sail|rig|rope|yard|crew|lantern|cable|probe|pennant|flag|window|halo|glow/.test(name)) return;
       this.targets.push(mesh);
     });
   }
