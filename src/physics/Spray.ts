@@ -156,6 +156,12 @@ const KIND_SLAM = 0;
 const KIND_SLAP = 1;
 const KIND_WASH = 2;
 const KIND_FLOAT = 3;
+/**
+ * Water streaming off the topsides as the hull rises: a wash in the shader
+ * (inside its 1.5..2.5 window) but drops and clusters only, no mist and no
+ * sheets. With them it drew a pale fog bank on the hull's side.
+ */
+const KIND_STREAM = 2.2;
 
 export type SprayImpactKind = 'slam' | 'slap' | 'wash' | 'float';
 
@@ -588,7 +594,8 @@ export class Spray {
         _out.copy(_starboard).multiplyScalar(side);
         _at.set(_probeWorld.x, surface + 0.9, _probeWorld.z).addScaledVector(_out, 0.15);
         const rise = Math.min(0.55, (0.2 + (-closing - STREAM_RISE) / 4) * (0.5 + 0.5 * probe.weight));
-        this.write(_at, source.velocity ?? _zero, _out, _forward, source.hullLength * 0.22, KIND_WASH, rise, 1);
+        // Thin streams: beads only, at a little over half their size.
+        this.write(_at, source.velocity ?? _zero, _out, _forward, source.hullLength * 0.22, KIND_STREAM, rise, 0.6);
         continue;
       }
 
@@ -724,7 +731,7 @@ export class Spray {
   ): void {
     const landing = this.landing!;
     const wind = sprayUniforms.wind.value as THREE.Vector3;
-    const wash = kind === KIND_WASH;
+    const wash = kind === KIND_WASH || kind === KIND_STREAM;
     const slap = kind === KIND_SLAP;
     const k = 0.35;
     const fall = -GRAVITY / k;
@@ -851,6 +858,9 @@ export class Spray {
       .and(strength.greaterThan(0))
       .select(float(1), float(0))
       .toVar('sprayAlive');
+    // Streams off the topsides draw no mist and no sheet (`KIND_STREAM`).
+    const isStream: any = smoothstep(2.05, 2.15, kind).mul(isWash);
+    alive.mulAssign(float(1).sub(isStream.mul(isMist.add(isSheet))));
 
     // Launch, in the event's own frame: up, outward, and along the hull.
     // Figures are from slam footage of small ships: a sheet stands three to
