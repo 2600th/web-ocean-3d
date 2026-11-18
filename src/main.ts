@@ -4146,6 +4146,8 @@ class App {
     if (ship) {
       ship.update(dt);
       this.shipLights?.update(dt, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
+      // The lanterns' glints on the sea after dark (`OceanMaterial.setLanterns`).
+      this.water.setLanterns(this.shipLights?.lanternPositions ?? [], ship.object, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
       this.shipFittings?.update(this.gameplay?.anchorCable(this.shipFittings.anchorState) ?? null);
 
       const position = ship.object.position;

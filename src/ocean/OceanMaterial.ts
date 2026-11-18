@@ -29,6 +29,7 @@ import {
 } from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDownClamped } from '../core/tslMath';
+import { SHIP_LANTERN_LOCAL } from '../lighting/LocalLights';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import { ISLAND } from '../scene/Seafloor';
 import { beachrockFootprints, type BeachrockFootprint } from '../scene/islandDetail/beachrock';
@@ -642,6 +643,24 @@ const LOW_LIGHT_SLOPE_VARIANCE = 0.0008;
 const FOOTPRINT_SLOPE_VARIANCE: readonly [number, number] = [0.04, 0.004];
 
 /**
+ * Lantern glints: the ship's deck lanterns and stern lantern mirrored in the
+ * sea at night. Four point sources through the same Gaussian slope lobe as
+ * the sun, so each is a warm broken streak under the light that follows the
+ * swell. Intensity per source at full darkness (scene units, at a metre), the
+ * extra slope variance that stands for the glass's size, and the colour of
+ * tallow light. The lobe is the slope statistics alone, without the sun's
+ * footprint widening: with it (and 0.004 here) each lantern laid a broad
+ * brown sheen under the stern instead of a streak of glints.
+ */
+const LANTERN_GLINT_INTENSITY = 14;
+const STERN_GLINT_INTENSITY = 22;
+const LANTERN_SLOPE_VARIANCE = 0.0005;
+const LANTERN_GLINT_COLOR = new THREE.Color(1.0, 0.6, 0.28);
+
+/** Scratch for `setLanterns`. */
+const _lanternScratch = new THREE.Vector3();
+
+/**
  * The undisplaced world XZ a fragment's surface point was generated from.
  *
  * A varying rather than a recomputation: the vertex stage is the only place that
@@ -1180,6 +1199,8 @@ export class OceanMaterial {
   private readonly uRainTime = uniform(0);
   /** W3 glitter filtering on (1) or off (0); see `setGlitterFilter`. */
   private readonly uGlitterFilter = uniform(1);
+  /** Lantern glints: world positions (w = intensity), see `setLanterns`. */
+  private readonly uLanterns: any[] = Array.from({ length: 4 }, () => uniform(new THREE.Vector4(0, -1e4, 0, 0)));
 
   /** How much of the planar reflection reaches the surface, 0..1. */
   /**
@@ -1286,6 +1307,30 @@ export class OceanMaterial {
    */
   setGlitterFilter(amount: number): void {
     this.uGlitterFilter.value = Math.min(1, Math.max(0, amount));
+  }
+
+  /**
+   * The ship's lights, for their glints on the sea after dark: up to three
+   * deck lanterns (`ShipLights.lanternPositions`, world space) and the stern
+   * lantern, carried by `ship` at `SHIP_LANTERN_LOCAL`. `darkness` is
+   * `LightingRig.darkness`, 0 by day, when the term costs a few ALU and adds
+   * nothing.
+   */
+  setLanterns(deck: readonly THREE.Vector3[], ship: THREE.Object3D | null, darkness: number): void {
+    const dark = Math.min(1, Math.max(0, darkness));
+    for (let i = 0; i < 3; i++) {
+      const v = this.uLanterns[i].value as THREE.Vector4;
+      const p = deck[i];
+      if (p) v.set(p.x, p.y, p.z, LANTERN_GLINT_INTENSITY * dark);
+      else v.set(0, -1e4, 0, 0);
+    }
+    const stern = this.uLanterns[3].value as THREE.Vector4;
+    if (ship) {
+      _lanternScratch.copy(SHIP_LANTERN_LOCAL).applyMatrix4(ship.matrixWorld);
+      stern.set(_lanternScratch.x, _lanternScratch.y, _lanternScratch.z, STERN_GLINT_INTENSITY * dark);
+    } else {
+      stern.set(0, -1e4, 0, 0);
+    }
   }
 
   setExposure(toneMappingExposure: number): void {
@@ -3146,6 +3191,41 @@ export class OceanMaterial {
       // which the mirror's coverage misses under a hull on a swell; see
       // HULL_MIRROR_LENGTH.
       specular.mulAssign(hullHit.max(hullShade).oneMinus());
+
+      // --- lantern glints ---------------------------------------------------------
+      // The ship's lights mirrored in the sea (see LANTERN_GLINT_INTENSITY):
+      // the sun's lobe, for a point source at `lp`, falling as 1/d^2. Added
+      // after the hull's occlusion, which is the sun's: the lanterns hang over
+      // the water beside the hull, not behind it.
+      const lanternCov = vec3(
+        slopeCov.x.add(LANTERN_SLOPE_VARIANCE),
+        slopeCov.y.add(LANTERN_SLOPE_VARIANCE),
+        slopeCov.z,
+      ).toVar();
+      const lanternDet = lanternCov.x.mul(lanternCov.y).sub(lanternCov.z.mul(lanternCov.z)).max(1e-10).toVar();
+      const lanternNorm = float(1).div(lanternDet.sqrt().mul(2 * Math.PI).mul(viewDir.y.max(0.02).mul(4))).toVar();
+      const lanternSum = float(0).toVar();
+      for (let i = 0; i < 4; i++) {
+        const lp: any = this.uLanterns[i];
+        const toLight = lp.xyz.sub(worldPos);
+        const d2 = toLight.dot(toLight).max(0.25);
+        const ld = toLight.mul(d2.inverseSqrt());
+        const h = normalize(viewDir.add(ld));
+        const ds = vec2(h.x, h.z).negate().div(h.y.max(1e-3)).sub(slope);
+        const m = ds.x
+          .mul(ds.x)
+          .mul(lanternCov.y)
+          .add(ds.y.mul(ds.y).mul(lanternCov.x))
+          .sub(ds.x.mul(ds.y).mul(lanternCov.z).mul(2))
+          .div(lanternDet);
+        const hy2l = h.y.mul(h.y).max(1e-3);
+        const vh = float(1).sub(viewDir.dot(h).clamp(0, 1));
+        const fr = vh.mul(vh).mul(vh).mul(vh).mul(vh).mul(0.98).add(0.02);
+        lanternSum.addAssign(
+          m.mul(-0.5).exp().div(hy2l.mul(hy2l)).mul(fr).mul(lp.w).div(d2).mul(ld.y.greaterThan(0).select(float(1), float(0))),
+        );
+      }
+      specular.addAssign(vec3(LANTERN_GLINT_COLOR.r, LANTERN_GLINT_COLOR.g, LANTERN_GLINT_COLOR.b).mul(lanternSum.mul(lanternNorm)));
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
