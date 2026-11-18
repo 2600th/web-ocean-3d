@@ -3,6 +3,7 @@ import {
   Fn,
   If,
   cameraPosition,
+  cameraProjectionMatrix,
   dot,
   exp,
   float,
@@ -16,9 +17,11 @@ import {
   positionGeometry,
   pow,
   saturate,
+  screenSize,
   select,
   sin,
   smoothstep,
+  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -340,6 +343,12 @@ export interface AtmosphereParams {
   nightIntensity: number; // 0 = day, 1 = full night (stars + moon)
   moonElevation: number;
   moonAzimuth: number;
+  /**
+   * Phase of the moon, 0..1: 0 new, 0.25 first quarter, 0.5 full, 0.75 last
+   * quarter. Optional; `MOON_PHASE` when absent. The lit limb faces the sun's
+   * bearing, wherever under the horizon the sun is.
+   */
+  moonPhase?: number;
 }
 
 export const DEFAULT_ATMOSPHERE_PARAMS: AtmosphereParams = {
@@ -523,6 +532,22 @@ export class Atmosphere {
   private readonly envCapturedDir = new THREE.Vector3(0, -2, 0);
   private readonly uMoonDiscCos = uniform(0.9995);
   private readonly uTime = uniform(0);
+  /**
+   * The moon's own frame: screen-right and screen-up across its disc, and the
+   * direction its visible face is lit from (`moonPhase`). See `buildNightNode`.
+   */
+  private readonly uMoonRight = uniform(new THREE.Vector3(1, 0, 0));
+  private readonly uMoonUp = uniform(new THREE.Vector3(0, 1, 0));
+  private readonly uMoonLight = uniform(new THREE.Vector3(0, 0, 1));
+  /** Lit fraction of the disc, 0..1; scales the glow round it. */
+  private readonly uMoonLit = uniform(1);
+  /**
+   * Twinkle depth (`STAR_TWINKLE`), zeroed for good by `resetClock`: a rewound
+   * clock means a capture harness, and a capture shows the stars still.
+   */
+  private readonly uTwinkle = uniform(STAR_TWINKLE);
+  /** See `setNightOccluder`. */
+  private nightOccluder: ((dir: any) => any) | null = null;
 
   constructor(renderer: THREE.WebGPURenderer, environmentResolution = ENV_SIZE) {
     void renderer; // the dome needs no renderer-specific setup; kept for API symmetry
@@ -885,6 +910,10 @@ export class Atmosphere {
       p.moonAzimuth = params.moonAzimuth;
       changed = true;
     }
+    if (params.moonPhase !== undefined && params.moonPhase !== p.moonPhase) {
+      p.moonPhase = params.moonPhase;
+      changed = true;
+    }
     if (params.groundColor !== undefined && !p.groundColor.equals(params.groundColor)) {
       p.groundColor.copy(params.groundColor);
       changed = true;
@@ -1017,6 +1046,8 @@ export class Atmosphere {
    */
   resetClock(time = 0): void {
     this.elapsed = time;
+    // Only the deterministic harness rewinds the clock; its stars hold still.
+    this.uTwinkle.value = 0;
     this.uTime.value = ((time % 3600) + 3600) % 3600;
     this.invalidateEnvironment();
   }
@@ -1061,6 +1092,7 @@ export class Atmosphere {
 
     this.uSunDir.value.copy(this._sunDirection);
     this.uMoonDir.value.copy(this._moonDirection);
+    this.updateMoonFrame(p.moonPhase ?? MOON_PHASE);
     this.model.setHaze(p.haze ?? DEFAULT_HAZE);
     this.model.setSun(this._sunDirection, p.mieDirectionalG);
     const overcast = Math.min(1, Math.max(0, p.overcast ?? 0));
@@ -1515,6 +1547,88 @@ export class Atmosphere {
     this.material.needsUpdate = true;
   }
 
+  /**
+   * How much of the night sky the cloud deck lets through toward a direction
+   * (`Clouds.nightTransmittanceNode`). Stars, the Milky Way, the moon and its
+   * glow are multiplied by it, so none of them shows through a cloud, however
+   * dark or hazed that cloud is drawn. Rebuilds the dome's graph.
+   */
+  setNightOccluder(occluder: (dir: any) => any): void {
+    if (this.nightOccluder === occluder) return;
+    this.nightOccluder = occluder;
+    this.material.colorNode = this.buildSkyNode();
+    this.material.needsUpdate = true;
+  }
+
+  /**
+   * The moon's disc frame and the direction its face is lit from. Screen
+   * right is `moon x up`, so the disc is drawn upright whatever the moon's
+   * bearing. Light: a phase angle `a` from full (0) to new (pi), coming from
+   * the viewer's side at full and swinging round toward the sun's bearing
+   * across the disc, `L = -m cos a + t sin a` with `t` the sun's direction
+   * projected onto the disc. CPU only, on a parameter change.
+   */
+  private updateMoonFrame(phase: number): void {
+    const m = this._moonDirection;
+    const right = this.uMoonRight.value as THREE.Vector3;
+    const up = this.uMoonUp.value as THREE.Vector3;
+    right.set(0, 1, 0).cross(m);
+    right.negate(); // m x Y
+    if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+    right.normalize();
+    up.copy(right).cross(m).normalize();
+    const toward = _moonTangent.copy(this._sunDirection).addScaledVector(m, -this._sunDirection.dot(m));
+    if (toward.lengthSq() < 1e-8) toward.copy(up).negate();
+    toward.normalize();
+    const wrapped = ((phase % 1) + 1) % 1;
+    const angle = Math.abs(wrapped - 0.5) * 2 * Math.PI;
+    (this.uMoonLight.value as THREE.Vector3)
+      .copy(m)
+      .multiplyScalar(-Math.cos(angle))
+      .addScaledVector(toward, Math.sin(angle));
+    this.uMoonLit.value = 0.5 * (1 + Math.cos(angle));
+  }
+
+  /**
+   * One layer of point stars: at most one per cell of a `cells`-per-radian
+   * grid in direction space, drawn as a Gaussian a fraction of a pixel wide
+   * at its true direction rather than as the cell it lives in. A star of a
+   * fixed flux, not a fixed peak: where a pixel spans more sky (the 32-texel
+   * environment capture) the same star is wider and dimmer, so it does not
+   * brighten the light it contributes to.
+   *
+   * `presence` is the share of cells holding a star; `pixAngle` the angle one
+   * pixel spans. Returns `vec3` radiance before `uNightRadiance`.
+   */
+  private starLayer(d: any, cells: number, presence: any, pixAngle: any, seed: number): any {
+    const cell = floor(d.mul(cells)).toVar();
+    const r0 = hash13(cell.add(seed));
+    const r1 = hash13(cell.add(vec3(11.3, 7.7, 3.1).add(seed)));
+    const r2 = hash13(cell.add(vec3(23.7, 17.3, 5.9).add(seed)));
+    const r3 = hash13(cell.add(vec3(41.1, 29.5, 13.7).add(seed)));
+    // Kept a quarter of a cell from every face, so the point is never cut by
+    // the cell it is looked up in; and the projected point must still be in
+    // that cell, or the sphere only grazes it.
+    const star = normalize(cell.add(vec3(r1, r2, r3).mul(0.5).add(0.25))).toVar();
+    const inCell = floor(star.mul(cells)).sub(cell).abs().dot(vec3(1, 1, 1)).lessThan(0.5);
+    const lit = select(inCell, smoothstep(float(1).sub(presence), float(1).sub(presence.mul(0.6)), r0), float(0));
+    const sigma = pixAngle.mul(STAR_SIGMA_PX).max(1e-5);
+    const offset = d.sub(star).length().div(sigma);
+    const psf = exp(offset.mul(offset).mul(-0.5));
+    // Flux constant: peak falls with the square of the width past one pixel.
+    const flux = pow(STAR_SIGMA_REF.div(sigma).min(1), 2);
+    // Most stars faint, a few bright: magnitude from a steep power.
+    const magnitude = pow(r2, 5.0).mul(0.9).add(0.1);
+    // Blue-white through white to a few orange giants.
+    const tint = mix(
+      mix(vec3(0.7, 0.8, 1.0), vec3(1.0, 0.97, 0.92), smoothstep(0.0, 0.55, r3)),
+      vec3(1.0, 0.78, 0.55),
+      smoothstep(0.82, 1.0, r3),
+    );
+    const twinkle = sin(this.uTime.mul(r1.mul(1.7).add(1.6)).add(r0.mul(61.0))).mul(this.uTwinkle).add(1);
+    return tint.mul(lit.mul(psf).mul(flux).mul(magnitude).mul(twinkle));
+  }
+
   private buildNightNode(d: any): any {
     // Brighter toward the horizon, as real night skies are. See `NIGHT_HORIZON`.
     const base = mix(
@@ -1523,23 +1637,8 @@ export class Atmosphere {
       saturate(d.y.mul(1.7)),
     );
 
-    // --- star field ----------------------------------------------------------
-    // One candidate star per grid cell of direction space. Sparse enough that a
-    // single-cell lookup (no 3x3 neighbourhood) is visually indistinguishable
-    // and three times cheaper. The cell size is chosen so a star lands at rougly
-    // one pixel at a typical field of view — finer than that and the whole field
-    // aliases away between frames.
-    const cellSpace = d.mul(130.0);
-    const cell = floor(cellSpace);
-    const local = fract(cellSpace);
-
-    const r0 = hash13(cell);
-    const r1 = hash13(cell.add(vec3(11.3, 7.7, 3.1)));
-    const r2 = hash13(cell.add(vec3(23.7, 17.3, 5.9)));
-    const r3 = hash13(cell.add(vec3(41.1, 29.5, 13.7)));
-
-    const starCentre = vec3(r1, r2, r3);
-    const dist = local.sub(starCentre).length();
+    // The angle one pixel spans, for the stars' width (`starLayer`).
+    const pixAngle = float(2).div((cameraProjectionMatrix as any).element(1).y.abs().mul(screenSize.y).max(1));
 
     // --- the galaxy ---------------------------------------------------------
     //
@@ -1560,41 +1659,47 @@ export class Atmosphere {
         .mul(smoothstep(0.3, 0.65, mx_noise_float(d.mul(4.0).add(vec3(3.1, 0, 1.7))).mul(0.5).add(0.5)).mul(0.6).add(0.3)),
     );
 
-    // Unresolved stars: the band's grain. A second, much finer star grid with
-    // no per-cell centre — each cell is simply lit or not — at a density that
-    // follows the band. This is what keeps the band reading as *stars* rather
-    // than as a cloud; a smooth glow alone is indistinguishable from the
-    // moonlit cumulus drawn over it.
-    const fineCell = floor(d.mul(460.0));
-    const fine = hash13(fineCell);
-    const fineLit = smoothstep(float(1).sub(bandCore.mul(clumps).mul(0.22)), 1.0, fine);
     const band = bandCore.mul(clumps.mul(0.8).add(0.2)).mul(rift).mul(bulge.mul(1.6).add(0.4));
     const galaxyColor = mix(vec3(0.55, 0.64, 0.9), vec3(0.95, 0.86, 0.72), bulge);
 
-    const present = smoothstep(float(0.925).sub(bandCore.mul(0.04)), 0.985, r0);
-    const core = pow(saturate(float(1).sub(dist.mul(5.0))), 6.0);
-    const twinkle = sin(this.uTime.mul(2.6).add(r0.mul(61.0))).mul(0.3).add(0.7);
-    const tint = mix(vec3(0.72, 0.81, 1.0), vec3(1.0, 0.88, 0.74), r1);
-    const magnitude = r2.mul(0.85).add(0.25);
-
+    // --- star field ----------------------------------------------------------
+    // Two layers of point stars (`starLayer`): the sky's scattered stars, a
+    // little denser along the band, and a finer, fainter layer that exists only
+    // inside the band and is its grain — what keeps the Milky Way reading as
+    // stars rather than as one more moonlit cloud. The fine layer replaced a
+    // grid of lit cells, each one a square speck two pixels wide (`moonlit.png`).
     const horizonFade = smoothstep(-0.03, 0.2, d.y);
-    const stars = tint.mul(core.mul(present).mul(twinkle).mul(magnitude).mul(11.0).mul(horizonFade));
-    const galaxy = galaxyColor.mul(
-      band.mul(0.18).add(fineLit.mul(rift).mul(0.9)).mul(horizonFade),
-    );
+    const brightStars = this.starLayer(d, 130, bandCore.mul(0.03).add(0.07), pixAngle, 0);
+    const bandStars = this.starLayer(d, 330, bandCore.mul(clumps).mul(rift).mul(0.3), pixAngle, 57.0);
+    const stars = brightStars.mul(STAR_GAIN).add(bandStars.mul(STAR_GAIN * 0.35)).mul(horizonFade);
+    const galaxy = galaxyColor.mul(band.mul(MILKY_WAY_GAIN).mul(horizonFade));
 
     // --- moon ----------------------------------------------------------------
     const cosMoon = dot(d, this.uMoonDir).toVar('cosMoon');
     const discEdge = this.uMoonDiscCos;
     const disc = smoothstep(discEdge, discEdge.add(0.00025), cosMoon);
-    // Cheap maria: low-frequency noise across the disc so it is not a flat blob.
-    const maria = mx_noise_float(d.mul(85.0)).mul(0.14).add(0.9);
-    const moonBody = vec3(1.0, 0.98, 0.92).mul(disc.mul(maria).mul(9.0));
+    // The face: disc coordinates in the moon's own frame, -1..1 across it, so
+    // the surface is fixed to the moon and not to the sky behind it.
+    const face = vec2(dot(d, this.uMoonRight), dot(d, this.uMoonUp)).div(MOON_ANG_R).toVar('moonFace');
+    const r2 = face.dot(face).min(1);
+    const normal = this.uMoonRight
+      .mul(face.x)
+      .add(this.uMoonUp.mul(face.y))
+      .sub(this.uMoonDir.mul(float(1).sub(r2).sqrt()));
+    // Phase: the terminator, softened over a few per cent of the disc, and
+    // earthshine on the unlit part.
+    const sunlit = smoothstep(-0.05, 0.08, normal.dot(this.uMoonLight));
+    // Maria: broad dark basins from a two-octave field, with brighter
+    // highland and fine crater mottling over them. Fixed to the face.
+    const basins = smoothstep(0.05, 0.35, mx_fractal_noise_float(vec3(face.mul(1.3), 4.2), 2, 2.1, 0.5, 1.0));
+    const mottle = mx_noise_float(vec3(face.mul(7.5), 1.3)).mul(0.08);
+    const albedo = float(1).sub(basins.mul(0.38)).add(mottle);
+    const moonBody = vec3(1.0, 0.98, 0.92).mul(disc.mul(albedo).mul(sunlit.mul(0.97).add(0.03)).mul(9.0));
 
     const halo = saturate(cosMoon);
     const glow = vec3(0.55, 0.68, 1.0).mul(
       pow(halo, 1400.0).mul(0.5).add(pow(halo, 60.0).mul(0.06)).add(pow(halo, 5.0).mul(0.014)),
-    );
+    ).mul(this.uMoonLit.mul(0.8).add(0.2));
     // The 22-degree halo: moonlight refracted through hexagonal ice in high
     // cloud. A faint ring with a reddish inner edge and a bluer outer one —
     // the dispersion is what makes it read as an optical effect rather than
@@ -1612,12 +1717,19 @@ export class Atmosphere {
     // The galaxy and the faintest stars wash out near a bright moon.
     const moonWash = float(1).sub(pow(halo, 12.0).mul(0.85));
     // Stars, galaxy and moon go behind an overcast the way the sun's disc does
-    // (`uNightClear`); only the night sky's own gradient stays.
+    // (`uNightClear`), and behind each cloud (`setNightOccluder`); only the
+    // night sky's own gradient stays. The glow round the moon goes with the
+    // cloud over the moon itself as well, so a covered moon leaves no ring.
+    const clear =
+      this.nightOccluder === null
+        ? this.uNightClear
+        : this.uNightClear.mul(this.nightOccluder(d));
+    const moonClear = this.nightOccluder === null ? float(1) : this.nightOccluder(this.uMoonDir);
     return base.add(
       stars
         .add(galaxy.mul(moonWash))
-        .add(moonBody.add(glow).add(ring).mul(aboveHorizon))
-        .mul(this.uNightClear),
+        .add(moonBody.add(glow.mul(moonClear)).add(ring).mul(aboveHorizon))
+        .mul(clear),
     );
   }
 }
@@ -1635,6 +1747,23 @@ const GALACTIC_CENTRE = /*@__PURE__*/ new THREE.Vector3(-0.857, 0.12, 0.501)
   .projectOnPlane(GALACTIC_POLE)
   .normalize();
 const NIGHT_SKY_TINT = /*@__PURE__*/ new THREE.Color(0.12, 0.2, 0.42);
+/**
+ * Stars (K4). Width of a star's Gaussian in pixels; the width, in radians, at
+ * which a star keeps its full peak (wider, and it dims to hold its flux); peak
+ * radiance of the brightest; depth of the twinkle, a few per cent — a sea-level
+ * sky on a clear night shimmers, it does not blink. See `starLayer`.
+ */
+const STAR_SIGMA_PX = 0.6;
+const STAR_SIGMA_REF = /*@__PURE__*/ float(0.0006);
+const STAR_GAIN = 14;
+const STAR_TWINKLE = 0.07;
+/** The Milky Way's diffuse light, before `uNightRadiance`. Faint on purpose. */
+const MILKY_WAY_GAIN = 0.18;
+/** Default moon phase, waxing gibbous: 87 % of the disc lit. See `AtmosphereParams.moonPhase`. */
+const MOON_PHASE = 0.38;
+/** Angular radius of the drawn moon, from the disc's cosine (`uMoonDiscCos`). */
+const MOON_ANG_R = Math.acos(0.9995);
+const _moonTangent = /*@__PURE__*/ new THREE.Vector3();
 /**
  * The night dome's own glow, before `uNightRadiance` (0.168 at full night), at
  * the horizon and overhead. Shared by the shader and `skyRadiance`.

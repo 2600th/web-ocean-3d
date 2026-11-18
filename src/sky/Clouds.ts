@@ -368,6 +368,60 @@ const cloudFbm: any = /*@__PURE__*/ Fn(([pIn, octavesIn]: any) => {
 });
 
 /**
+ * Frequency of the big-cell octave relative to the base field, and its weight
+ * in fair-weather and in towering regions; the base octaves' weight in a
+ * towering region. See `cloudShapeFbm`.
+ */
+const BIG_CELL_FREQUENCY = 0.42;
+const BIG_WEIGHT_FAIR = 0.4;
+const BIG_WEIGHT_TOWER = 1.15;
+const SMALL_WEIGHT_TOWER = 0.55;
+/** Variance of the four-octave `cloudFbm` sum in amplitude units, 1 + 1/4 + 1/16 + 1/64. */
+const FBM_VARIANCE = 1.328125;
+
+/**
+ * The base shape field, with cells of more than one size (K1).
+ *
+ * `cloudFbm` at one feature scale gave every cell in the sky the same size,
+ * and in perspective a field of equal cells is rows of equal puffs marching
+ * to the horizon (`waves.png`, `night.png`). Here the first octave is a big
+ * one, 0.42 of the base frequency (cells of about 2 km rather than 900 m),
+ * and the rest are the base octaves; how much each counts comes from the
+ * cloud type (`typeAt`): small fair-weather puffs where the big octave is
+ * faint, broad towering cells where it dominates. Same octave count as
+ * before, so the same cost; the eighth-frequency octave it gave up is what
+ * the erosion octave covers anyway.
+ *
+ * The sum is renormalised to `cloudFbm`'s variance whatever the weights, so
+ * the coverage quantile table still maps coverage to a threshold.
+ */
+const cloudShapeFbm: any = /*@__PURE__*/ Fn(([pIn, octavesIn, towerIn]: any) => {
+  const tower = float(towerIn).toVar();
+  const bigWeight = mix(float(BIG_WEIGHT_FAIR), float(BIG_WEIGHT_TOWER), tower).toVar();
+  const p = rotateFbm(vec3(pIn)).toVar();
+  const big = rotateFbm(p.mul(BIG_CELL_FREQUENCY).add(vec3(2.9, 8.3, 4.1)));
+  const sum = mx_noise_float(big).mul(bigWeight).toVar();
+  const variance = bigWeight.mul(bigWeight).toVar();
+  const amplitude = mix(float(1), float(SMALL_WEIGHT_TOWER), tower).toVar();
+  const octaves = int(octavesIn).sub(1).toVar();
+  Loop(octaves as any, () => {
+    sum.addAssign(amplitude.mul(mx_noise_float(p)));
+    variance.addAssign(amplitude.mul(amplitude));
+    amplitude.mulAssign(0.5);
+    p.assign(rotateFbm(p).mul(FBM_LACUNARITY).add(vec3(5.3, 1.7, 9.1)));
+  });
+  return sum.mul(variance.max(1e-4).inverseSqrt()).mul(Math.sqrt(FBM_VARIANCE));
+}).setLayout({
+  name: 'cloudShapeFbm',
+  type: 'float',
+  inputs: [
+    { name: 'p', type: 'vec3' },
+    { name: 'octaves', type: 'int' },
+    { name: 'tower', type: 'float' },
+  ],
+});
+
+/**
  * The weather map: where there is cloud, and how tall it grows.
  *
  * Schneider's weather texture, procedurally: a 2D field over the sea, three
@@ -449,6 +503,67 @@ const DECK_BREAK = 0.3;
  * deck instead of one shape repeated is most of what breaks the rows up.
  */
 const TOP_MIN = 0.5;
+/**
+ * The cloud-type field (K1): 0 small fair-weather cumulus, 1 a towering cell.
+ * Half the weather map (dense regions build) and half its own 20 km 2D noise,
+ * so a cluster of cells is not always a cluster of towers; one 2D Perlin per
+ * march step, a few per cent of the march. Tapered with `uTypeAmount`, so a
+ * clear sky and a solid deck have no towers.
+ */
+const TYPE_SCALE = 1 / 20000;
+const TYPE_WEATHER = 1.6;
+const TYPE_NOISE = 0.7;
+const TYPE_LOW = 0.53;
+const TYPE_HIGH = 0.72;
+/**
+ * How far above the layer a tower may build, in layer thicknesses: 2.4 times
+ * the layer's own depth at the most, which for the 700 m of the clear
+ * presets is a 1.7 km cumulus congestus. The march's upper shell rises with
+ * it (`uTopFraction`); the step count does not, so overhead the step is
+ * longer — the temporal resolve integrates ten offsets of it.
+ */
+const TOWER_EXTRA = 1.4;
+/**
+ * Anvils: the top of a tall cell spreads into a flat shelf where the
+ * convection hits a stable layer. Over the top fifth of a tower column the
+ * threshold is lowered by `ANVIL_SPREAD` (wider) and the erosion is wispy.
+ * Only where convection is strong — a building sky (coverage 0.45 to 0.75)
+ * or a storm preset's ragged base (`baseRoughness`); see `applyParams`.
+ */
+const ANVIL_SPREAD = 0.14;
+/**
+ * Wispy edges (K1). Fair-weather cells and anvils keep less of the billowy
+ * erosion and reach full density over a longer ramp (`WISP_CRISP` against
+ * `EDGE_CRISP`), so their rims thin into torn, half-transparent wisps instead
+ * of ending in a cut-out line. Towers keep the hard cauliflower edge.
+ */
+const WISP_CRISP = 0.55;
+const FAIR_WISP = 0.55;
+/**
+ * Nubis's two cloud-specific lighting features (Schneider, "Nubis Cubed",
+ * Guerrilla 2023; no code taken), driven by how deep a sample is inside its
+ * cloud: the base field's height over the edge, a cheap stand-in for Nubis's
+ * signed distance, over `INSIDE_DEPTH`.
+ *
+ * - **Dark edge**: a sample near the surface has little cloud around it to
+ *   scatter light into the view ray, so the multiply-scattered light and part
+ *   of the ambient are darker there, most when the sun is behind the viewer.
+ *   It is what outlines each lobe of a cumulus seen from the sunny side.
+ * - **Inner glow**: deep inside a cloud the multiply-scattered light does not
+ *   care where the sun is; it is what makes a thick core glow through toward
+ *   the sun and keeps a big cell's interior from reading as flat grey.
+ */
+const INSIDE_DEPTH = 0.16;
+const DARK_EDGE = 0.45;
+const INNER_GLOW = 0.25;
+const INNER_GLOW_RATE = 0.06;
+/**
+ * Lightning inside the deck (`setFlash`): radius of the lit region, metres,
+ * and the radiance of a full strike there, relative to the noon key light.
+ */
+const FLASH_RADIUS = 900;
+const FLASH_GAIN = 5;
+const FLASH_COLOR = /*@__PURE__*/ new THREE.Color(0.78, 0.84, 1.0);
 /**
  * Frequency of the erosion field relative to the base. 8, from 5.5 in round 5:
  * at 5.5 the octave's cells were large enough that an overhead cloud, seen
@@ -902,6 +1017,14 @@ export class Clouds {
   private readonly uWeatherAmount = uniform(0);
   /** How much the weather map varies the cloud tops; tapers like the amount. */
   private readonly uTypeAmount = uniform(0);
+  /** Top of the marched shell in layer thicknesses: 1 plus the tower room. */
+  private readonly uTopFraction = uniform(1);
+  /** How readily tall cells spread into anvils; see `ANVIL_SPREAD`. */
+  private readonly uAnvil = uniform(0);
+  /** Lightning in the deck; see `setFlash`. Colour times strength. */
+  private readonly uFlashColor: any = uniform(new THREE.Color(0, 0, 0));
+  private readonly uFlashPos: any = uniform(new THREE.Vector3());
+  private flashOn = false;
 
   /**
    * Frame index for the march offset. A CPU counter advanced once per march,
@@ -1195,6 +1318,11 @@ export class Clouds {
     this.quad.name = 'clouds.resolve';
     this.quad.render(renderer);
     THREE.RendererUtils.restoreRendererState(renderer, this.rendererState);
+    // A flash lasts one march (`setFlash`).
+    if (this.flashOn) {
+      (this.uFlashColor.value as THREE.Color).setRGB(0, 0, 0);
+      this.flashOn = false;
+    }
 
     this.prevViewProj.copy(this.viewProj);
     (this.uOccluderViewProj.value as THREE.Matrix4).copy(this.viewProj);
@@ -1237,6 +1365,46 @@ export class Clouds {
       .w.clamp(0, 1)
       .mul(mix(this.airToward(tEnter, rd), float(1), this.uDeckHold));
     return onScreen.select(float(1).sub(smoothstep(DISC_HIDE_FROM, DISC_HIDE_AT, seen)), float(1));
+  }
+
+  /**
+   * How much of the night sky behind the deck shows toward `dir`, for the
+   * dome's stars, Milky Way and moon (`Atmosphere.setNightOccluder`).
+   *
+   * Unlike the sun's, by the march's own opacity *before* the haze: a far
+   * cloud the haze has faded toward the dome still stands between the eye and
+   * the stars, and drawing them through it is what put specks of starlight on
+   * dark cloud in `moonlit.png`. Hidden from 0.25 opacity; last frame's
+   * resolve, as for the sun; 1 off screen and when the layer did not draw.
+   */
+  nightTransmittanceNode(dir: any): any {
+    const look = this.uvFromRay(this.uOccluderViewProj, dir);
+    const onScreen = look.uv.x
+      .greaterThanEqual(0)
+      .and(look.uv.x.lessThanEqual(1))
+      .and(look.uv.y.greaterThanEqual(0))
+      .and(look.uv.y.lessThanEqual(1))
+      .and(look.w.greaterThan(0))
+      .and(this.uOccluderLive.greaterThan(0.5));
+    const cover = this.compositeNode.sample(look.uv).w.clamp(0, 1);
+    return onScreen.select(float(1).sub(smoothstep(0.01, 0.25, cover)), float(1));
+  }
+
+  /**
+   * Lights the cloud volume round `worldPosition` from inside, as a lightning
+   * strike does, for the next march only: call it every frame the flash
+   * lasts. `intensity` 1 is a full strike; 0 clears it. The position's height
+   * is held inside the layer, so a strike's ground point and the top of its
+   * channel light the same cloud. Uniform writes only; the term is a few
+   * operations per lit march sample whether or not a flash is on.
+   */
+  setFlash(worldPosition: THREE.Vector3, intensity: number): void {
+    const strength = Math.max(0, intensity);
+    (this.uFlashColor.value as THREE.Color).copy(FLASH_COLOR).multiplyScalar(strength * FLASH_GAIN);
+    const base = this.params.altitude;
+    const y = Math.min(base + this.params.thickness, Math.max(base + 0.25 * this.params.thickness, worldPosition.y));
+    (this.uFlashPos.value as THREE.Vector3).set(worldPosition.x, y, worldPosition.z);
+    this.flashOn = strength > 0;
   }
 
   /** Forget the history: the next frame is resolved from its own march alone. */
@@ -1486,6 +1654,12 @@ export class Clouds {
     const broken = 4 * c * (1 - c);
     this.uWeatherAmount.value = WEATHER_AMOUNT * broken * broken;
     this.uTypeAmount.value = Math.min(1, broken * broken * 1.3);
+    this.uTopFraction.value = 1 + TOWER_EXTRA * this.uTypeAmount.value;
+    // Anvils where convection is strong: a building sky, or a storm preset.
+    this.uAnvil.value = Math.max(
+      smooth01((c - 0.45) / 0.3),
+      smooth01((Math.min(1, Math.max(0, p.baseRoughness)) - 0.3) / 0.6),
+    );
 
     this.windVector.set(Math.cos(p.windDirection), 0, Math.sin(p.windDirection));
     (this.uWindAxis.value as THREE.Vector3).copy(this.windVector);
@@ -1573,6 +1747,7 @@ export class Clouds {
       const midLevel = this.uAltitude.add(this.uThickness.mul(0.5));
       const mid = p.add(this.uSunDir.mul(midLevel.sub(p.y).mul(invSunY).max(0)));
       const weather = this.weatherAt(mid).toVar('cloudShadowWeather');
+      const type = this.typeAt(mid, weather).toVar('cloudShadowType');
 
       Loop(shadowSamples, ({ i }: any) => {
         const fraction = float(i).add(0.5).mul(1 / shadowSamples);
@@ -1583,7 +1758,7 @@ export class Clouds {
         // erosion octave would only alias across the sea surface. At full
         // softness the erosion is already zero, so declining to evaluate it
         // saves a three-octave 3D noise per consumer (see `densityAt`).
-        acc.addAssign(this.densityAt(hit, float(1), weather, octaves));
+        acc.addAssign(this.densityAt(hit, float(1), weather, type, octaves));
       });
 
       // Beer-Lambert along the *sun path* through the layer, not down its
@@ -1703,9 +1878,29 @@ export class Clouds {
    * flat small cells where the map is thin, the full thickness where it is
    * dense. See `TOP_MIN`.
    */
-  private cloudTop(weather: any): any {
+  private cloudTop(weather: any, type: any): any {
     const sparse = float(1).sub(smoothstep(0.38, 0.62, weather));
-    return float(1).sub(sparse.mul(this.uTypeAmount).mul(1 - TOP_MIN));
+    return float(1).sub(sparse.mul(this.uTypeAmount).mul(1 - TOP_MIN)).add(type.mul(TOWER_EXTRA));
+  }
+
+  /**
+   * The cloud type at a point, 0 fair-weather to 1 towering, already tapered
+   * by `uTypeAmount`. See `TYPE_SCALE`.
+   */
+  private typeAt(p: any, weather: any): any {
+    const q = vec2(p.x.sub(this.uWindOffset.x), p.z.sub(this.uWindOffset.z)).mul(TYPE_SCALE);
+    const n = mx_noise_float(q.add(vec2(31.7, 3.9)));
+    const c = weather.sub(0.5).mul(TYPE_WEATHER).add(n.mul(0.5 * TYPE_NOISE)).add(0.5);
+    return smoothstep(TYPE_LOW, TYPE_HIGH, c).mul(this.uTypeAmount);
+  }
+
+  /** Anvil weight at height `h` of a column topping out at `top`; see `ANVIL_SPREAD`. */
+  private anvilAt(h: any, top: any, type: any): any {
+    const hb = h.div(top);
+    return smoothstep(0.62, 0.78, hb)
+      .mul(smoothstepDown(hb, 0.9, 1.0))
+      .mul(smoothstep(0.35, 0.8, type))
+      .mul(this.uAnvil);
   }
 
   /**
@@ -1713,27 +1908,29 @@ export class Clouds {
    * height. Lift only raises the base, so this bounds the real profile from
    * above and the edge from below: what the march's empty-sample test needs.
    */
-  private profileMax(h: any, top: any): any {
-    return smoothstep(0, 0.12, h).mul(smoothstepDown(h, top.mul(0.42), top));
+  private profileMax(h: any, top: any, anvil: any): any {
+    return max(smoothstep(0, 0.12, h).mul(smoothstepDown(h, top.mul(0.42), top)), anvil);
   }
 
   /**
    * The coverage threshold for a given profile: raised toward the top and
-   * bottom of the column (that is what rounds the tops), and moved by the
-   * weather map and any caller bias.
+   * bottom of the column (that is what rounds the tops), lowered across an
+   * anvil (that is what spreads it), and moved by the weather map and any
+   * caller bias.
    */
-  private edgeFor(profile: any, weather: any, bias: any): any {
+  private edgeFor(profile: any, weather: any, bias: any, anvil: any): any {
     return this.uThreshold
       .add(float(1).sub(profile).mul(0.22))
       .add(weather.sub(0.5).mul(this.uWeatherAmount))
       .add(smoothstep(0.6, 0.72, weather).mul(this.uDeckHold).mul(DECK_BREAK))
       .add(COVERAGE_BIAS)
+      .sub(anvil.mul(ANVIL_SPREAD))
       .add(bias);
   }
 
-  /** Base shape field, 0..1, at noise coordinate `q`. */
-  private baseField(q: any, octaves: number): any {
-    return cloudFbm(q, int(octaves)).mul(0.5).add(0.5);
+  /** Base shape field, 0..1, at noise coordinate `q`, for a cloud type. */
+  private baseField(q: any, octaves: number, type: any): any {
+    return cloudShapeFbm(q, int(octaves), type).mul(0.5).add(0.5);
   }
 
   /**
@@ -1756,13 +1953,14 @@ export class Clouds {
     p: any,
     softness: any,
     weather: any,
+    type: any,
     baseOctaves: number | null = null,
     bias: any = float(0),
   ): any {
     const h = this.heightFraction(p);
     const q = this.noiseCoord(p);
-    const base = this.baseField(q, baseOctaves ?? 4);
-    return this.densityFrom(h, q, base, softness, weather, this.cloudTop(weather), bias, baseOctaves === null);
+    const base = this.baseField(q, baseOctaves ?? 4, type);
+    return this.densityFrom(h, q, base, softness, weather, type, this.cloudTop(weather, type), bias, baseOctaves === null);
   }
 
   /**
@@ -1775,6 +1973,7 @@ export class Clouds {
     base: any,
     softness: any,
     weather: any,
+    type: any,
     top: any,
     bias: any,
     withDetail: boolean,
@@ -1830,11 +2029,13 @@ export class Clouds {
     // scaling density) is what makes the puffs read as rounded volumes instead
     // of as a sheet with soft edges. The top comes from the weather map's cloud
     // type, so a sparse region's cells stay low and flat.
-    const profile = smoothstep(lift, lift.add(0.12), h).mul(smoothstepDown(h, top.mul(0.42), top));
+    // An anvil holds the profile up across the top of a tall cell.
+    const anvil = this.anvilAt(h, top, type);
+    const profile = max(smoothstep(lift, lift.add(0.12), h).mul(smoothstepDown(h, top.mul(0.42), top)), anvil);
 
     // The weather field moves the threshold, so coverage varies across the sky
     // instead of being one number for the whole hemisphere.
-    const edge = this.edgeFor(profile, weather, bias);
+    const edge = this.edgeFor(profile, weather, bias, anvil);
     const width = float(EDGE_WIDTH).add(softness.mul(0.25));
 
     // The erosion octave fades out as the march coarsens.
@@ -1876,7 +2077,13 @@ export class Clouds {
     // |n| with its crease rounded over `DETAIL_CREASE`: sqrt(n^2 + k^2) - k.
     const nAbs = detail.mul(detail).add(DETAIL_CREASE * DETAIL_CREASE).sqrt().sub(DETAIL_CREASE);
     const lump = nAbs.min(DETAIL_RANGE).div(DETAIL_RANGE);
-    const billowy = smoothstep(WISP_LOW, WISP_HIGH, h.div(top).clamp(0, 1));
+    // Wispy where the cell is a fair-weather one or an anvil (`WISP_CRISP`);
+    // not under a continuous deck, whose look is tuned on the crisp edge.
+    const wisp = max(
+      float(1).sub(smoothstep(0.2, 0.7, type)).mul(float(FAIR_WISP).mul(float(1).sub(this.uDeckHold))),
+      anvil,
+    );
+    const billowy = smoothstep(WISP_LOW, WISP_HIGH, h.div(top).clamp(0, 1)).mul(float(1).sub(wisp.mul(0.6)));
     const erosion = mix(lump, float(1).sub(lump), billowy)
       .mul(EROSION_STRENGTH)
       .mul(detailFade);
@@ -1884,9 +2091,19 @@ export class Clouds {
     // And a little of the same octave through the body, which the remap
     // leaves at full density (`INTERIOR_VARIATION`).
     const body = float(1).sub(float(0.5).sub(detail.mul(2)).clamp(0, 1).mul(INTERIOR_VARIATION).mul(detailFade));
-    const shaped = smoothstep(0, EDGE_CRISP, remapped).mul(body);
+    const shaped = smoothstep(0, mix(float(EDGE_CRISP), float(WISP_CRISP), wisp), remapped).mul(body);
 
     return shaped.mul(profile).mul(this.uDensity).mul(deck);
+  }
+
+  /**
+   * Lightning's light on the cloud at `p` (`setFlash`): a core a strike's
+   * radius across and a wide, faint tail where the light has diffused
+   * further through the deck.
+   */
+  private flashAt(p: any): any {
+    const r = p.sub(this.uFlashPos).length().div(FLASH_RADIUS);
+    return this.uFlashColor.mul(exp(r.mul(r).negate()).mul(0.85).add(exp(r.mul(-0.4)).mul(0.15)));
   }
 
   /**
@@ -1942,7 +2159,7 @@ export class Clouds {
 
         const tEnter = this.shellDistance(ro, rd, this.uAltitude).max(0).toVar('tEnter');
         const tExit = min(
-          this.shellDistance(ro, rd, this.uAltitude.add(this.uThickness)).max(0),
+          this.shellDistance(ro, rd, this.uAltitude.add(this.uThickness.mul(this.uTopFraction))).max(0),
           tEnter.add(this.uThickness.mul(MAX_SPAN_FACTOR)),
         ).toVar('tExit');
 
@@ -2012,10 +2229,11 @@ export class Clouds {
             const p = ro.add(rd.mul(t)).toVar('cloudP');
             // One weather sample per step, shared with this step's light march.
             const weather = this.weatherAt(p).toVar('cloudWeather');
+            const type = this.typeAt(p, weather).toVar('cloudType');
             const h = this.heightFraction(p).toVar('cloudHf');
-            const top = this.cloudTop(weather).toVar('cloudTopF');
+            const top = this.cloudTop(weather, type).toVar('cloudTopF');
             const q = this.noiseCoord(p).toVar('cloudQ');
-            const base = this.baseField(q, 4).toVar('cloudBase');
+            const base = this.baseField(q, 4, type).toVar('cloudBase');
 
             // The base field first, and the rest only if it can matter. The
             // erosion only removes density and the base lift can only raise the
@@ -2023,9 +2241,10 @@ export class Clouds {
             // whatever else is computed. Exact, not a heuristic. Most of a
             // broken sky is that, and it skips the detail noise and the light
             // march.
-            const edgeMin = this.edgeFor(this.profileMax(h, top), weather, thin);
+            const anvil = this.anvilAt(h, top, type);
+            const edgeMin = this.edgeFor(this.profileMax(h, top, anvil), weather, thin, anvil).toVar('cloudEdgeMin');
             If(base.greaterThan(edgeMin), () => {
-              const d = this.densityFrom(h, q, base, softness, weather, top, thin, true).toVar('cloudD');
+              const d = this.densityFrom(h, q, base, softness, weather, type, top, thin, true).toVar('cloudD');
 
               If(d.greaterThan(0.002), () => {
                 // --- optical depth toward the sun -----------------------------
@@ -2038,7 +2257,7 @@ export class Clouds {
                 // field rather than a sample of it.
                 Loop(LIGHT_STEPS, ({ i }: any) => {
                   const lp = p.add(this.uSunDir.mul(this.uLightStep.mul(float(i).add(1.0))));
-                  lightAcc.addAssign(this.densityAt(lp, softness, weather, LIGHT_OCTAVES, thin));
+                  lightAcc.addAssign(this.densityAt(lp, softness, weather, type, LIGHT_OCTAVES, thin));
                 });
                 // Plus one sample a billow's radius toward the sun at the full
                 // field, erosion included (`NEAR_LIGHT_DISTANCE`).
@@ -2046,6 +2265,7 @@ export class Clouds {
                   p.add(this.uSunDir.mul(NEAR_LIGHT_DISTANCE)),
                   softness,
                   weather,
+                  type,
                   null,
                   thin,
                 ).mul(NEAR_LIGHT_DISTANCE * NEAR_LIGHT_WEIGHT);
@@ -2063,6 +2283,13 @@ export class Clouds {
                 // surface was.
                 const powder = float(1).sub(exp(d.mul(-2.4))).toVar('cloudPowder');
 
+                // Depth inside the cloud, 0 at its surface, for the dark edge
+                // and the inner glow (`INSIDE_DEPTH`).
+                const inside = smoothstep(edgeMin, edgeMin.add(INSIDE_DEPTH), base).toVar('cloudInside');
+                const darkEdge = float(1)
+                  .sub(float(1).sub(inside).mul(DARK_EDGE).mul(powderView.mul(0.6).add(0.4)))
+                  .toVar('cloudDarkEdge');
+
                 const sunTerm = float(0).toVar('cloudSun');
                 for (let n = 0; n < MS_OCTAVES; n++) {
                   const attenuation = Math.pow(MS_ATTENUATION, n);
@@ -2071,8 +2298,18 @@ export class Clouds {
                   const order = exp(opticalDepth.mul(-extinction))
                     .mul(mix(float(PHASE_ISOTROPIC), phase, phaseWeight))
                     .mul(attenuation);
-                  sunTerm.addAssign(n === 0 ? order.mul(mix(float(1), powder, powderView)) : order);
+                  sunTerm.addAssign(n === 0 ? order.mul(mix(float(1), powder, powderView)) : order.mul(darkEdge));
                 }
+                // Inner glow: deep, thick cloud lit through, strongest toward
+                // the sun.
+                const towardSun = cosTheta.mul(0.5).add(0.5);
+                sunTerm.addAssign(
+                  inside
+                    .mul(float(1).sub(exp(opticalDepth.mul(-0.5))))
+                    .mul(exp(opticalDepth.mul(-INNER_GLOW_RATE)))
+                    .mul(towardSun.mul(towardSun).mul(0.65).add(0.35))
+                    .mul(INNER_GLOW * MS_NORM),
+                );
                 sunTerm.mulAssign(this.uSunGain.mul(1 / MS_NORM));
 
                 // Ambient graded by depth in the layer.
@@ -2094,7 +2331,7 @@ export class Clouds {
                     exp(opticalDepth.mul(-AMBIENT_SHADOW_RATE)),
                     mix(float(AMBIENT_SHADOW), float(AMBIENT_SHADOW_DECK), this.uDeckHold),
                   ),
-                ).toVar('cloudAmbient');
+                ).mul(darkEdge.mul(0.5).add(0.5)).toVar('cloudAmbient');
 
                 // The low sun under the deck. Strongest at the very base and gone
                 // by half way up; and attenuated by how much cloud lies between
@@ -2112,6 +2349,7 @@ export class Clouds {
                   .add(underGlow)
                   .add(this.uColor.mul(this.uDeckGlow).div(opticalDepth.mul(DECK_GLOW_RATE).add(1)))
                   .mul(this.deckLight(weather, glowView))
+                  .add(this.flashAt(p))
                   .toVar('cloudLum');
 
                 const sampleT = exp(d.mul(stepSize).mul(this.uExtinction).mul(this.uViewGain).negate());
