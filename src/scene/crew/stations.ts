@@ -75,7 +75,7 @@ export const CREW_GROUPS: readonly CrewGroupSpec[] = [
     stations: [
       { x: 2.6, zBeam: -0.6, facing: -HALF_PI, shirt: BLUE, kerchief: LINEN },
       { x: -2.6, zBeam: 0.6, facing: HALF_PI + 0.35, shirt: LINEN, kerchief: BLUE },
-      { x: 5.0, zBeam: 0.5, facing: 2.5, shirt: GREY, kerchief: RED },
+      { x: 1.0, zBeam: 0.62, facing: 2.2, shirt: GREY, kerchief: RED },
     ],
   },
   {

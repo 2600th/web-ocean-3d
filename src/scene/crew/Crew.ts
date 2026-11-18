@@ -201,8 +201,10 @@ export class Crew {
     material.name = `ship-crew-${id}`;
     // Per-instance shirt and kerchief, chosen by the vertex colour's alpha.
     const vc = attribute<'vec4'>('color', 'vec4');
-    const shirt = vec3(uniformArray(shirts, 'color').element(instanceIndex) as never);
-    const cap = vec3(uniformArray(caps, 'color').element(instanceIndex) as never);
+    // One array: the lit fragment stage is one buffer short of its limit of twelve.
+    const colours = uniformArray([...shirts, ...caps], 'color');
+    const shirt = vec3(colours.element(instanceIndex) as never);
+    const cap = vec3(colours.element(instanceIndex.add(MAX_GROUP)) as never);
     const tint = select(vc.w.greaterThan(0.75), shirt, mix(vec3(1), cap, step(float(0.25), vc.w)));
     material.colorNode = vc.xyz.mul(tint);
     this.materials.push(material);
