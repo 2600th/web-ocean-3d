@@ -244,6 +244,32 @@ const UNDERWATER_LAYER = 4;
  */
 const SKY_LAYER = 5;
 
+/**
+ * Render layer for what the view draws and the planar mirror has no use for.
+ *
+ * The mirror is a second view of the scene at half resolution, read through a
+ * surface normal every ripple perturbs, and its cost is in objects and
+ * triangles, not pixels (a tenth of the resolution saved nothing measurable).
+ * So what cannot be made out in it is kept out of it:
+ *
+ *  - the depth-only copies of the spray, spindrift and splashes, which exist
+ *    for the fog pass (the mirror has none);
+ *  - the lanterns' ironwork (their glass, glow and halo stay);
+ *  - the rudder, which is under the mirror plane, and the whipstaff, which is
+ *    below decks;
+ *  - the meadow's 600 000 triangles of grass blades, the beach's flat decals
+ *    and the shells on the reef.
+ *
+ * Not everything small: the spindrift and the lantern glass were tried, and
+ * both show (the night shot moved by 0.93 mean Delta E without them).
+ *
+ * The mirror's camera only ever has layer 0 (three never copies layers onto
+ * it), so being on any other layer is what keeps an object out.
+ */
+const VIEW_ONLY_LAYER = 6;
+const VIEW_ONLY_OBJECTS = /-depth$|^rudder_geo$|^whipstaff_geo$|^island-meadow$|^beach-decals$|^reef-shells$/;
+const VIEW_ONLY_MATERIALS = /^ship-lantern-iron$/;
+
 /** Scratch for the sea creatures' key light. */
 const _creatureSun = new THREE.Color();
 
@@ -1116,6 +1142,8 @@ class App {
     // Everything that lives under the surface goes on its own layer, kept out of
     // the planar mirror — see `UNDERWATER_LAYER`.
     this.camera.layers.enable(UNDERWATER_LAYER);
+    this.camera.layers.enable(VIEW_ONLY_LAYER);
+    this.keepOutOfMirror();
     this.reflections?.excludeLayer(this.camera, UNDERWATER_LAYER);
     for (const root of [
       this.reefLife.object,
@@ -2589,6 +2617,7 @@ class App {
     // branch below is what the *other* caller would need — a tier change or any
     // future mid-session load — and it is kept working rather than deleted,
     // because the bug it closes is invisible until it is not.
+    this.keepOutOfMirror();
     if (!this.loop.isRunning) {
       for (const object of loaded) object.visible = true;
       this.sceneContentLoaded = true;
@@ -2605,6 +2634,22 @@ class App {
       resume();
     }
     this.sceneContentLoaded = true;
+  }
+
+  /**
+   * Moves what the mirror has no use for onto `VIEW_ONLY_LAYER`. Called again
+   * after anything that builds meshes (the scene load, a tier change); meshes
+   * already moved are left alone.
+   */
+  private keepOutOfMirror(): void {
+    this.scene.traverse((node) => {
+      if (node.layers.mask !== 1) return;
+      const material = (node as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      const materialName = Array.isArray(material) ? '' : (material?.name ?? '');
+      if (VIEW_ONLY_OBJECTS.test(node.name) || VIEW_ONLY_MATERIALS.test(materialName)) {
+        node.layers.set(VIEW_ONLY_LAYER);
+      }
+    });
   }
 
   /** The part of `loadSceneContent` that runs with the loop held. */
@@ -3513,6 +3558,7 @@ class App {
         if (this.disposed) return;
         this.rebuildQualityResources(tier);
         this.applyQualitySettings(tier);
+        this.keepOutOfMirror();
 
         // Build the new tier's pipelines *while the loop is still paused*.
         //
