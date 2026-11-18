@@ -399,6 +399,13 @@ function installFramebufferCopyFixes(r: any): void {
   const lastCopy = new WeakMap<object, { stamp: number; source: unknown; x: number; y: number; z: number; w: number }>();
   const copyFramebufferToTexture = backend.copyFramebufferToTexture.bind(backend);
   backend.copyFramebufferToTexture = (texture: any, renderContext: any, rectangle: any): void => {
+    // Not during a compile. `compileAsync` runs every object's `updateBefore`,
+    // the viewport nodes' included, with no frame drawn to copy from: the copy
+    // then read the canvas's depth buffer at the scene pass's size, which at a
+    // render scale under 1 (Low, Medium) is a partial copy of a depth texture
+    // and a validation error on every boot ("does not cover the entire
+    // subresource"). Three guards its shadow maps the same way.
+    if (r._precompilationState !== null && r._precompilationState !== undefined) return;
     const destination = backend.get(texture).texture;
     const sourceTexture = renderContext.renderTarget
       ? texture.isDepthTexture
