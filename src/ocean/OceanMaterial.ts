@@ -600,6 +600,48 @@ const GLINT_MAX_GAIN = 24;
 const GLINT_TWINKLE_HZ = 9;
 
 /**
+ * W3, a stable glitter path. Screen pixels a glint cell may span across the
+ * footprint's short axis before the draw hands over to its mean.
+ *
+ * The cells are world squares the area of the pixel's footprint. At a grazing
+ * view that footprint is a sliver, metres along the view and centimetres
+ * across it, so a square of its area is `sqrt(long / short)` pixels wide on
+ * screen: four pixels at a hundred metres from a deck, a dozen near the
+ * horizon. Each one is a whole cell drawn bright or dark together, and those
+ * were the hard white blocks the moon's path broke into and the tiles the sun's
+ * path showed toward the horizon. Past this span the draw fades to 1, which
+ * leaves the slope-filtered mean (LEAN): the column the eye expects there.
+ */
+const GLINT_CELL_SPAN: readonly [number, number] = [2.5, 6];
+
+/**
+ * W3. The lit source's size in slope space, as a slope variance added to the
+ * specular lobe only: the area-light highlight.
+ *
+ * The sun and moon are 0.0047 rad across, which in slope space is far under
+ * any facet's own spread, so on their own they add nothing. But a low sun or
+ * moon is not seen as a disc: forward scattering in the marine haze spreads
+ * it into an aureole a few degrees across, and that is what lights the gaps
+ * between glints and holds a sunset path together to the horizon (Atlas's
+ * area-light highlight, GDC 2019). Zero with the light high, this variance
+ * with it at the horizon.
+ */
+const LOW_LIGHT_SLOPE_VARIANCE = 0.0008;
+
+/**
+ * W3. Slope variance the glitter gains per metre of the pixel footprint's
+ * short axis, for the capillaries finer than the finest band that a wider
+ * footprint averages over (the LEADR "filtered variance widens with
+ * distance" term). Capped, so the far sheen keeps Cox-Munk-like totals.
+ *
+ * It is what keeps a resolved wave facet from lighting as one flat clipped
+ * patch in the middle distance: there the lobe was as narrow as at the bow,
+ * every facet turned to the moon drew far over white, and its edge was the
+ * edge of the facet.
+ */
+const FOOTPRINT_SLOPE_VARIANCE: readonly [number, number] = [0.04, 0.004];
+
+/**
  * The undisplaced world XZ a fragment's surface point was generated from.
  *
  * A varying rather than a recomputation: the vertex stage is the only place that
@@ -1136,6 +1178,8 @@ export class OceanMaterial {
   private readonly uRainSlope = uniform(0.16);
   /** Rain clock, seconds. Separate from the wave clock so it can be frozen. */
   private readonly uRainTime = uniform(0);
+  /** W3 glitter filtering on (1) or off (0); see `setGlitterFilter`. */
+  private readonly uGlitterFilter = uniform(1);
 
   /** How much of the planar reflection reaches the surface, 0..1. */
   /**
@@ -1235,6 +1279,15 @@ export class OceanMaterial {
    * point it implies, and only the exposure knows where that is (the same
    * reason `SceneBloom.setExposure` exists).
    */
+  /**
+   * The W3 glitter filtering (area-light lobe, footprint variance, the glint
+   * cells' hand-over to their mean): 1 on, 0 off. A few ALU per water pixel,
+   * so it is on in every tier; the switch is for A/B captures.
+   */
+  setGlitterFilter(amount: number): void {
+    this.uGlitterFilter.value = Math.min(1, Math.max(0, amount));
+  }
+
   setExposure(toneMappingExposure: number): void {
     this.uWhitePoint.value = 1 / Math.max(0.05, toneMappingExposure);
   }
@@ -2913,12 +2966,41 @@ export class OceanMaterial {
       const halfVector = normalize(viewDir.add(sunDirEarly)).toVar();
       const hSlope = vec2(halfVector.x, halfVector.z).negate().div(halfVector.y.max(1e-3)).toVar();
       const dSlope = hSlope.sub(slope).toVar();
-      const covDet = slopeCov.x.mul(slopeCov.y).sub(slopeCov.z.mul(slopeCov.z)).max(1e-10).toVar();
+      // [W3] The pixel footprint, shared with the glint draw below.
+      const glintFootprintX = dFdx(fieldXZ);
+      const glintFootprintY = dFdy(fieldXZ);
+      const glintArea = glintFootprintX.x
+        .mul(glintFootprintY.y)
+        .sub(glintFootprintX.y.mul(glintFootprintY.x))
+        .abs()
+        .max(1e-8)
+        .toVar();
+      // The footprint's short axis: its area over its long axis.
+      const footprintShort = glintArea
+        .div(glintFootprintX.length().max(glintFootprintY.length()).max(1e-4))
+        .toVar();
+      // [W3] The lobe's own covariance: the slope statistics plus the lit
+      // source's aureole when it is low (LOW_LIGHT_SLOPE_VARIANCE) and the
+      // capillaries the footprint averages away (FOOTPRINT_SLOPE_VARIANCE).
+      // Isotropic, so they add to the diagonal only.
+      const lowLight = float(1).sub(sunDirEarly.y.smoothstep(0.02, 0.3)).mul(this.uGlitterFilter).toVar();
+      const lobeWiden = lowLight
+        .mul(lowLight)
+        .mul(LOW_LIGHT_SLOPE_VARIANCE)
+        .add(
+          footprintShort
+            .mul(FOOTPRINT_SLOPE_VARIANCE[0])
+            .min(FOOTPRINT_SLOPE_VARIANCE[1])
+            .mul(this.uGlitterFilter),
+        )
+        .toVar();
+      const lobeCov = vec3(slopeCov.x.add(lobeWiden), slopeCov.y.add(lobeWiden), slopeCov.z).toVar();
+      const covDet = lobeCov.x.mul(lobeCov.y).sub(lobeCov.z.mul(lobeCov.z)).max(1e-10).toVar();
       const mahalanobis = dSlope.x
         .mul(dSlope.x)
-        .mul(slopeCov.y)
-        .add(dSlope.y.mul(dSlope.y).mul(slopeCov.x))
-        .sub(dSlope.x.mul(dSlope.y).mul(slopeCov.z).mul(2))
+        .mul(lobeCov.y)
+        .add(dSlope.y.mul(dSlope.y).mul(lobeCov.x))
+        .sub(dSlope.x.mul(dSlope.y).mul(lobeCov.z).mul(2))
         .div(covDet)
         .toVar();
       const slopePdf = mahalanobis.mul(-0.5).exp().div(covDet.sqrt().mul(2 * Math.PI)).toVar();
@@ -3003,14 +3085,6 @@ export class OceanMaterial {
       // its mean and the sheen is untouched; near the eye it is a scatter of
       // points that keeps the path's energy. Two power-of-two cell sizes are
       // blended so the cells do not pop as the footprint changes.
-      const glintFootprintX = dFdx(fieldXZ);
-      const glintFootprintY = dFdy(fieldXZ);
-      const glintArea = glintFootprintX.x
-        .mul(glintFootprintY.y)
-        .sub(glintFootprintX.y.mul(glintFootprintY.x))
-        .abs()
-        .max(1e-8)
-        .toVar();
       const glintLevel = log2(glintArea).mul(0.5).toVar();
       const glintLevel0 = glintLevel.floor().toVar();
       // `uRainTime` is the simulation clock (see `setRain`), so a deterministic
@@ -3050,10 +3124,13 @@ export class OceanMaterial {
         );
         return drawn.min(GLINT_MAX_GAIN);
       };
+      // [W3] How many pixels a cell spans across the footprint's short axis
+      // (GLINT_CELL_SPAN): past it the draw is its mean.
+      const glintSpan = glintArea.sqrt().div(footprintShort.max(1e-6));
       const glintDraw = mix(
-        glintGain(glintLevel0),
-        glintGain(glintLevel0.add(1)),
-        glintLevel.sub(glintLevel0),
+        mix(glintGain(glintLevel0), glintGain(glintLevel0.add(1)), glintLevel.sub(glintLevel0)),
+        float(1),
+        glintSpan.smoothstep(GLINT_CELL_SPAN[0], GLINT_CELL_SPAN[1]).mul(this.uGlitterFilter),
       ).toVar();
       specular.mulAssign(glintDraw);
       // The hull stands between these facets and the sun. Where the planar
