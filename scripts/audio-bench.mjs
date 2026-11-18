@@ -282,6 +282,8 @@ async function renderInPage(cfg) {
 
   const sys = new AudioSystem({ context: ctx, volume: cfg.volume, musicVolume: cfg.music, quality: cfg.tier });
   if (cfg.reduced && typeof sys.setReducedRange === 'function') sys.setReducedRange(true);
+  // The recordings decode before the render starts, so every run hears them.
+  if (sys.samplesReady) await sys.samplesReady;
   // Events refused for want of a voice (the deck's, and the gulls' share of it).
   let refused = 0;
   for (const name of ['acquireVoice', 'acquireGullVoice']) {
@@ -747,6 +749,12 @@ async function main() {
         const url = new URL(route.request().url());
         if (url.pathname === '/bench.js') {
           return route.fulfill({ status: 200, contentType: 'text/javascript', body: code });
+        }
+        // The recordings (`public/audio`), as the site serves them.
+        if (url.pathname.startsWith('/audio/')) {
+          const file = join(args.src, 'public', 'audio', url.pathname.slice('/audio/'.length).replace(/[^a-z0-9._-]/gi, ''));
+          if (existsSync(file)) return route.fulfill({ status: 200, contentType: 'audio/ogg', body: readFileSync(file) });
+          return route.fulfill({ status: 404, body: '' });
         }
         return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>audio bench</title>' });
       });

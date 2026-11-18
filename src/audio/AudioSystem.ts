@@ -6,6 +6,7 @@ import { NOISE_SECONDS, createNoiseBuffer } from './noise';
 import { ParamTarget } from './ParamTarget';
 import { Island, type AudioIsland } from './Island';
 import { Room } from './Room';
+import { DEFAULT_SAMPLES_URL, Samples } from './Samples';
 import { Spatial } from './Spatial';
 import { MusicEngine, type MusicState, type MusicSting } from './music/MusicEngine';
 import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
@@ -377,6 +378,11 @@ export interface AudioSystemOptions {
    * `update` (e.g. from `suspend()` points) and renders.
    */
   context?: BaseAudioContext;
+  /**
+   * Where the recordings are served from (`Samples`), or null for synthesis
+   * only. Defaults to `/audio/`.
+   */
+  samplesUrl?: string | null;
 }
 
 /**
@@ -745,6 +751,17 @@ const THUNDER_LEVEL = 0.85;
 const THUNDER_CRACK_GAIN = 5;
 const THUNDER_ROLL_GAIN = 2.5;
 /**
+ * The recorded crack (`Samples`), layered over the synthesised one, which
+ * then plays at `THUNDER_SYNTH_UNDER` of its level. Distance closes its
+ * low-pass (`THUNDER_REC_BRIGHT_HZ * crackWeight`) as it does the synthesis.
+ */
+const THUNDER_REC_LEVEL = 2.2;
+const THUNDER_REC_BRIGHT_HZ = 9000;
+const THUNDER_REC_DULL_HZ = 450;
+const THUNDER_SYNTH_UNDER = 0.5;
+/** The recording's momentary loudness at its peak, over `20 log10(level)`. */
+const THUNDER_REC_LOUDNESS_DB = -7;
+/**
  * e-folding distance for the crack, km.
  *
  * Atmospheric absorption is strongly frequency dependent — of order 2 dB/km at
@@ -1083,6 +1100,9 @@ const GULL_NEAR_METRES = 30;
 const GULL_FAR_METRES = 240;
 const GULL_REFERENCE_METRES = 60;
 const GULL_LEVEL = 0.15;
+/** Share of cries that are recorded (`Samples`) once the recordings are in, and their level. */
+const GULL_RECORDED_SHARE = 0.6;
+const GULL_RECORDED_LEVEL = 0.16;
 
 /**
  * Brightness against distance: corner = `BRIGHT * exp(-d / ABSORPTION)`.
@@ -1286,6 +1306,9 @@ export class AudioSystem {
     now: 0, dt: 0, live: false, day: 1, night: 0, waveHeight: 0, swellPeriod: 6, wind: 0, rain: 0, air: 1, clock: 0,
   };
   private readonly placeAt = { x: 0, y: 0, z: 0 };
+  /** Recorded thunder, gulls and surf, or null for synthesis only. */
+  private samples: Samples | null = null;
+  private samplesUrl: string | null = DEFAULT_SAMPLES_URL;
 
   private music!: MusicEngine;
   private shipSfx!: ShipSfx;
@@ -1353,8 +1376,8 @@ export class AudioSystem {
   private oneShotRandom = mulberry32(AUDIO_SEEDS.oneShots);
   private gullRandom = mulberry32(AUDIO_SEEDS.gulls);
 
-  private crackCurve!: Float32Array;
-  private rollCurve!: Float32Array;
+  /** Draws each strike's own envelopes and rumbles (A6). Reset with the clock. */
+  private thunderShape = mulberry32(AUDIO_SEEDS.thunderShape);
 
   /** Live one-shot sources, so a reset or a dispose can silence them. */
   private readonly voices: AudioScheduledSourceNode[] = [];
@@ -1368,6 +1391,7 @@ export class AudioSystem {
     this.busVolume.music = clamp01(finite(options.musicVolume, this.busVolume.music));
     if (options.mix !== undefined) this.readMix(options.mix);
     this.muted = options.muted ?? false;
+    if (options.samplesUrl !== undefined) this.samplesUrl = options.samplesUrl;
     this.tier = options.quality ?? 'high';
     this.settings = AUDIO_QUALITY_TIERS[this.tier] ?? AUDIO_QUALITY_TIERS.high;
 
@@ -1377,6 +1401,7 @@ export class AudioSystem {
       this.gestured = true;
       this.build(this.ctx);
       this.available = true;
+      void this.samples?.load();
       return;
     }
 
@@ -1505,6 +1530,8 @@ export class AudioSystem {
     this.startBeds(now);
     this.flushAll(now);
     this.applyMasterGain(this.offline ? 0 : RESUME_RAMP);
+    // The recordings load on the first gesture, not at page load.
+    void this.samples?.load();
     this.startTicker();
     return this.running();
   }
@@ -2287,9 +2314,20 @@ export class AudioSystem {
     // crack fades exponentially while the roll only spreads.
     const crackWeight = Math.exp(-distance / THUNDER_ABSORPTION_KM);
     const spread = 1 / (1 + distance * THUNDER_SPREAD_PER_KM);
-    const rollSeconds = Math.min(
-      THUNDER_ROLL_MAX_SECONDS,
-      THUNDER_ROLL_MIN_SECONDS + THUNDER_ROLL_PER_KM * distance,
+    // No two alike (A6): every strike draws its own envelopes, its own
+    // length, and its own train of later rumbles. Two shapes, not one: a
+    // crack and a roll are different envelopes, and a parameter cannot
+    // cross-fade between two curves.
+    const shape = this.thunderShape;
+    const rollSeconds =
+      Math.min(THUNDER_ROLL_MAX_SECONDS, THUNDER_ROLL_MIN_SECONDS + THUNDER_ROLL_PER_KM * distance) *
+      (0.8 + 0.45 * shape());
+    const crackSeconds = THUNDER_CRACK_SECONDS * (0.65 + 0.7 * shape());
+    const crackCurve = buildThunderCurve(
+      CURVE_POINTS, shape, 5 + 4 * shape(), 0.008 + 0.02 * shape(), 2 + Math.floor(3 * shape()), 0.25 + 0.25 * shape(),
+    );
+    const rollCurve = buildThunderCurve(
+      CURVE_POINTS, shape, 1.6 + 1.4 * shape(), 0.05 + 0.08 * shape(), 3 + Math.floor(3 * shape()), 0.4 + 0.3 * shape(),
     );
 
     const source = ctx.createBufferSource();
@@ -2317,7 +2355,7 @@ export class AudioSystem {
     // implies. What holds the path silent before `now` is the source not having
     // started, not the gain being zeroed.
     const crackEnv = ctx.createGain();
-    crackEnv.gain.setValueCurveAtTime(this.crackCurve, now, THUNDER_CRACK_SECONDS);
+    crackEnv.gain.setValueCurveAtTime(crackCurve, now, crackSeconds);
 
     const crackLevel = ctx.createGain();
     const crackGain = THUNDER_LEVEL * THUNDER_CRACK_GAIN * spread * crackWeight;
@@ -2329,7 +2367,7 @@ export class AudioSystem {
     rollLow.Q.value = 1.2;
 
     const rollEnv = ctx.createGain();
-    rollEnv.gain.setValueCurveAtTime(this.rollCurve, now, rollSeconds);
+    rollEnv.gain.setValueCurveAtTime(rollCurve, now, rollSeconds);
 
     const rollLevel = ctx.createGain();
     // A near strike is mostly crack; a far one is only roll.
@@ -2342,12 +2380,70 @@ export class AudioSystem {
     crackEnv.connect(crackLevel);
     crackLevel.connect(dest);
 
+    // The recorded crack over the synthesised one, darkened by the distance.
+    const recording = this.samples?.pick('thunder', 0) ?? null;
+    let recSource: AudioBufferSourceNode | null = null;
+    let recFilter: BiquadFilterNode | null = null;
+    let recGain: GainNode | null = null;
+    let recLevel = 0;
+    if (recording !== null) {
+      crackLevel.gain.value = crackGain * THUNDER_SYNTH_UNDER;
+      recLevel = THUNDER_REC_LEVEL * spread * (0.25 + 0.75 * crackWeight);
+      recSource = ctx.createBufferSource();
+      recSource.buffer = recording;
+      // No two strikes the same size: a bigger channel is a lower, slower one.
+      recSource.playbackRate.value = 0.82 + 0.3 * this.oneShotRandom();
+      recFilter = ctx.createBiquadFilter();
+      recFilter.type = 'lowpass';
+      recFilter.Q.value = 0.6;
+      recFilter.frequency.value = Math.min(ctx.sampleRate * 0.45, THUNDER_REC_DULL_HZ + THUNDER_REC_BRIGHT_HZ * crackWeight);
+      recGain = ctx.createGain();
+      recGain.gain.value = recLevel;
+      recSource.connect(recFilter);
+      recFilter.connect(recGain);
+      recGain.connect(dest);
+      recSource.start(now);
+      // Rides on the synthesis's voice: held until the longer of the two ends.
+      recSource.onended = () => {
+        recSource?.disconnect();
+        recFilter?.disconnect();
+        recGain?.disconnect();
+      };
+    }
+
     source.connect(rollLow);
     rollLow.connect(rollEnv);
     rollEnv.connect(rollLevel);
     rollLevel.connect(dest);
+
+    // Later rumbles: farther stretches of the channel arriving after the
+    // first, each later, quieter and shorter. A far strike has more of them,
+    // spread wider, because its channel spans more distance difference.
+    const rumbles: AudioNode[] = [];
+    let end = Math.max(crackSeconds, rollSeconds);
+    const count = 1 + Math.floor(shape() * 2.5) + (distance > 2 ? 1 : 0);
+    let delay = 0;
+    for (let i = 0; i < count; i++) {
+      delay += 0.35 + shape() * (0.5 + 0.3 * distance);
+      const seconds = rollSeconds * (0.45 + 0.4 * shape());
+      const env = ctx.createGain();
+      env.gain.setValueCurveAtTime(
+        buildThunderCurve(CURVE_POINTS, shape, 1.8 + 2 * shape(), 0.06 + 0.15 * shape(), 3, 0.5),
+        now + delay,
+        seconds,
+      );
+      const level = ctx.createGain();
+      level.gain.value = rollGain * (0.3 + 0.4 * shape()) * Math.pow(0.8, i);
+      rollLow.connect(env);
+      env.connect(level);
+      level.connect(dest);
+      rumbles.push(env, level);
+      end = Math.max(end, delay + seconds);
+    }
     const wet = this.sendFrom(crackLevel, THUNDER_SEND, this.ambienceWet);
     rollLevel.connect(wet);
+    recGain?.connect(wet);
+    for (let i = 1; i < rumbles.length; i += 2) rumbles[i].connect(wet);
 
     // The strike raises the window by its own loudness, at the moment it
     // arrives, so everything else steps back under it; the score also ducks.
@@ -2355,16 +2451,20 @@ export class AudioSystem {
     this.music.duck(THUNDER_MUSIC_DUCK * loudness, THUNDER_DUCK_HOLD + rollSeconds * 0.3, now);
     this.hdr.event(
       now,
-      sumDb(gainToDb(crackGain) + THUNDER_CRACK_LOUDNESS_DB, gainToDb(rollGain) + THUNDER_ROLL_LOUDNESS_DB),
-      THUNDER_CRACK_SECONDS * 0.4,
+      sumDb(
+        sumDb(gainToDb(crackLevel.gain.value) + THUNDER_CRACK_LOUDNESS_DB, gainToDb(rollGain) + THUNDER_ROLL_LOUDNESS_DB),
+        recLevel > 0 ? gainToDb(recLevel) + THUNDER_REC_LOUDNESS_DB : Number.NEGATIVE_INFINITY,
+      ),
+      crackSeconds * 0.4,
       18 / rollSeconds,
       true,
     );
 
     source.start(now, this.oneShotRandom() * this.white.duration);
-    source.stop(now + Math.max(THUNDER_CRACK_SECONDS, rollSeconds) + 0.1);
+    source.stop(now + end + 0.1);
     this.trackVoice(
       source,
+      ...rumbles,
       crackHigh,
       crackLow,
       crackEnv,
@@ -2730,6 +2830,7 @@ export class AudioSystem {
     this.gustRandom = mulberry32(AUDIO_SEEDS.gusts);
     this.oneShotRandom = mulberry32(AUDIO_SEEDS.oneShots);
     this.gullRandom = mulberry32(AUDIO_SEEDS.gulls);
+    this.thunderShape = mulberry32(AUDIO_SEEDS.thunderShape);
     this.gust = 1;
     this.gustTarget = 1;
     this.gustTimer = 0;
@@ -2808,12 +2909,6 @@ export class AudioSystem {
     const brown = createNoiseBuffer(ctx, 'brown', AUDIO_SEEDS.brown);
     this.gullWave = buildGullWave(ctx);
 
-    const shape = mulberry32(AUDIO_SEEDS.thunderShape);
-    // Two shapes, not one: a crack and a roll are different envelopes, and a
-    // parameter cannot cross-fade between two curves. They are separate paths,
-    // weighted by distance.
-    this.crackCurve = buildThunderCurve(CURVE_POINTS, shape, 7, 0.015, 2, 0.35);
-    this.rollCurve = buildThunderCurve(CURVE_POINTS, shape, 2.2, 0.08, 4, 0.55);
 
     this.master = ctx.createGain();
     // Pinned at zero until a gesture. Belt and braces against the suspend in the
@@ -3075,9 +3170,11 @@ export class AudioSystem {
     this.underFx.connect(this.underBus);
     this.underSend = this.sendFrom(this.underFx, UNDER_SEND, this.underWet);
 
+    this.samples = this.samplesUrl === null ? null : new Samples(ctx, this.samplesUrl);
     this.island = new Island(
       {
         ctx,
+        sample: (kind, u) => this.samples?.pick(kind, u) ?? null,
         white: this.white,
         brown,
         spatial: this.spatial,
@@ -3120,6 +3217,11 @@ export class AudioSystem {
   setIsland(island: Readonly<AudioIsland> | null): void {
     if (this.ctx === null) return;
     this.island.set(island);
+  }
+
+  /** Resolves once the recordings have loaded or failed (never rejects). For the bench. */
+  get samplesReady(): Promise<void> {
+    return this.samples?.load() ?? Promise.resolve();
   }
 
   /** Metres from the listener to the island's breakers, for tests. */
@@ -3358,6 +3460,37 @@ export class AudioSystem {
     this.trackVoice(osc, gain);
   }
 
+  /** A recorded cry, placed and filtered as a synthesised one is. */
+  private playRecordedGull(buffer: AudioBuffer, when: number, distanceMetres: number, pan: number, cutoff: number): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    const random = this.gullRandom;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    // A flock has members: a little larger or smaller, a little lower or higher.
+    src.playbackRate.value = 0.9 + 0.2 * random();
+    const tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.Q.value = 0.7;
+    tone.frequency.value = cutoff;
+    const gain = ctx.createGain();
+    gain.gain.value = GULL_RECORDED_LEVEL * (GULL_REFERENCE_METRES / distanceMetres);
+    src.connect(tone);
+    tone.connect(gain);
+    const panner = createStereoPanner(ctx);
+    if (panner !== null) {
+      panner.pan.value = pan;
+      gain.connect(panner);
+      panner.connect(this.ambienceBus);
+    } else {
+      gain.connect(this.ambienceBus);
+    }
+    const wet = this.sendFrom(panner ?? gain, GULL_SEND, this.ambienceWet);
+    src.start(when);
+    if (panner === null) this.trackVoice(src, tone, gain, wet);
+    else this.trackVoice(src, tone, gain, panner, wet);
+  }
+
   /**
    * One cluster of cries, placed around the listener.
    *
@@ -3430,6 +3563,16 @@ export class AudioSystem {
       // at half the sample rate is unstable rather than transparent.
       Math.min(GULL_BRIGHT_HZ, ctx.sampleRate * 0.45),
     );
+
+    // A recorded cry, most of the time once the recordings are in: the same
+    // distance, filter and placement, a real bird's gesture.
+    const recorded = this.samples !== null && this.samples.count('gull') > 0 && random() < GULL_RECORDED_SHARE
+      ? this.samples.pick('gull', random())
+      : null;
+    if (recorded !== null) {
+      this.playRecordedGull(recorded, when, distanceMetres, pan, cutoff);
+      return;
+    }
 
     const osc = ctx.createOscillator();
     osc.setPeriodicWave(this.gullWave);

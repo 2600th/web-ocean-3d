@@ -42,8 +42,15 @@ const SLOPE_FULL = 0.34;
 const SLOPE_REDUCED = 0.2;
 /** The reduced range: its firmer compressor adds makeup, which this takes back. */
 const REDUCED_LIFT_DB = -1.5;
-/** How far an event may push the window above the beds, scaled down when reduced. */
-const EVENT_SPAN_REDUCED = 0.5;
+/**
+ * How much of an event's rise over the beds is kept: the rest is taken off
+ * everything, the event with it. At 0.6 a strike 10 dB over the sea plays 6 dB
+ * over where the sea was, and the sea steps back 4 dB under it. The slope above
+ * is for the beds alone; applied to events too, a strike was only 2 dB over a
+ * storm (bench, recordings run). Less is kept in the reduced range.
+ */
+const EVENT_KEEP_FULL = 0.6;
+const EVENT_KEEP_REDUCED = 0.35;
 /** Limits on the gain this stage applies, dB. */
 const MAX_BOOST_DB = 10;
 const MAX_CUT_DB = -14;
@@ -77,6 +84,8 @@ export class HdrMix {
    */
   private loudest = FLOOR_DB;
   private bedPower = 0;
+  /** How far the loudest event stands over the beds, dB, after release. */
+  private excess = 0;
   /** Gain last written, dB; NaN before the first. */
   private written = Number.NaN;
   private readonly events = new Float64Array(EVENT_SLOTS * EVENT_STRIDE);
@@ -140,13 +149,14 @@ export class HdrMix {
     e[o + 1] = peakDb;
     e[o + 2] = at + Math.max(0, hold);
     e[o + 3] = Math.max(1, decayDbPerS);
-    const raised = this.lift(peakDb);
-    if (raised > this.top && live) this.write(this.gainFor(raised), at, ATTACK_TAU, true);
+    const over = peakDb - this.loudest;
+    if (over > this.excess && live) this.write(this.gainWith(this.loudest, over), at, ATTACK_TAU, true);
   }
 
   /** Advances the window and writes the gain. Allocates nothing. */
   update(now: number, dt: number, live: boolean): void {
-    let top = this.loudest;
+    const bed = this.loudest;
+    let top = bed;
     const e = this.events;
     for (let i = 0; i < EVENT_SLOTS; i++) {
       const o = i * EVENT_STRIDE;
@@ -157,18 +167,18 @@ export class HdrMix {
         e[o + 1] = -Infinity;
         continue;
       }
-      const lifted = this.lift(level);
-      if (lifted > top) top = lifted;
+      if (level > top) top = level;
     }
-    // Attack at once, release at a rate.
-    const released = this.top - RELEASE_DB_PER_S * Math.max(0, dt);
-    this.top = Math.max(FLOOR_DB, top, released);
-    if (live) this.write(this.gainFor(this.top), now, FOLLOW_TAU, false);
+    // The events' rise over the beds: attack at once, release at a rate.
+    const released = this.excess - RELEASE_DB_PER_S * Math.max(0, dt);
+    this.excess = Math.max(0, top - bed, released);
+    this.top = Math.max(FLOOR_DB, bed + this.excess);
+    if (live) this.write(this.gainWith(bed, this.excess), now, FOLLOW_TAU, false);
   }
 
   /** Jumps to the current gain, for the frame the context resumes on. */
   flush(now: number): void {
-    const db = this.gainFor(this.top);
+    const db = this.gainWith(this.loudest, this.excess);
     this.written = db;
     const g = this.node.gain;
     g.cancelScheduledValues(now);
@@ -179,12 +189,13 @@ export class HdrMix {
   reset(): void {
     for (let i = 0; i < EVENT_SLOTS; i++) this.events[i * EVENT_STRIDE + 1] = -Infinity;
     this.top = FLOOR_DB;
+    this.excess = 0;
   }
 
-  /** An event's level as the window sees it: in the reduced range it rises less over the beds. */
-  private lift(db: number): number {
-    if (!this.reduced || db <= this.loudest) return db;
-    return this.loudest + (db - this.loudest) * EVENT_SPAN_REDUCED;
+  /** The gain for beds at `bed` with an event `over` dB above them. */
+  private gainWith(bed: number, over: number): number {
+    const keep = this.reduced ? EVENT_KEEP_REDUCED : EVENT_KEEP_FULL;
+    return Math.max(MAX_CUT_DB, this.gainFor(bed) - (1 - keep) * Math.max(0, over));
   }
 
   private gainFor(top: number): number {

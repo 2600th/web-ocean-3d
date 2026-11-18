@@ -42,6 +42,8 @@ export interface IslandHost {
   readonly white: AudioBuffer;
   readonly brown: AudioBuffer;
   readonly spatial: Spatial;
+  /** A recording of a kind (`Samples`), or null while there is none. */
+  sample(kind: 'surf', u: number): AudioBuffer | null;
   /** Voice for ambience, held short of the cap. */
   acquireAmbient(): boolean;
   track(source: AudioScheduledSourceNode, ...nodes: AudioNode[]): void;
@@ -74,6 +76,12 @@ const SHORE_REF = 40;
 /** Past this the shore is silent and its bed parks. */
 const SHORE_SILENT = 1600;
 const SHORE_LEVEL = 0.34;
+/**
+ * A recorded wave breaking (`Samples`) on each crash, over the bed; with the
+ * recordings in, the bed drops to `SHORE_BED_UNDER` and carries the wash.
+ */
+const SHORE_REC_LEVEL = 0.5;
+const SHORE_BED_UNDER = 0.6;
 /** Brightness: corner = BRIGHT * exp(-d / ABSORB) + DULL. */
 const SHORE_BRIGHT_HZ = 2200;
 const SHORE_ABSORB_M = 260;
@@ -127,6 +135,7 @@ export class Island {
   private shoreZ = 0;
   private shoreDistance = Number.POSITIVE_INFINITY;
   private crackleTimer = 0;
+  private lastPhase = 0;
   private birdTimer = 3;
 
   constructor(host: IslandHost, destination: AudioNode, wet: AudioNode) {
@@ -282,9 +291,19 @@ export class Island {
     // Build, crash at a fifth of the period, drain: a skewed peak.
     const crash = phase < 0.2 ? Math.pow(phase / 0.2, 2) : Math.exp(-(phase - 0.2) * 4.5);
     const strength = 0.35 + 0.65 * Math.min(1, f.waveHeight / 2.5);
-    this.shore.setLevel(SHORE_LEVEL * near * audible * strength * (0.35 + 0.65 * crash) * f.air, f.now, f.live);
-    this.shore.setBand(SHORE_DULL_HZ + SHORE_BRIGHT_HZ * Math.exp(-d / SHORE_ABSORB_M) * (0.6 + 0.4 * crash), 0.6, f.now, f.live);
-    this.shore.setPan(0.8 * sp.panOf(this.shoreX, this.shoreZ), f.now, f.live);
+    const corner = SHORE_DULL_HZ + SHORE_BRIGHT_HZ * Math.exp(-d / SHORE_ABSORB_M);
+    const shorePan = 0.8 * sp.panOf(this.shoreX, this.shoreZ);
+    const level = near * audible * strength * f.air;
+    // A recorded wave as each one starts to break, a little before the crest.
+    const recorded = this.host.sample('surf', 0) !== null;
+    if (f.live && recorded && level > 0.01 && this.lastPhase < 0.12 && phase >= 0.12) {
+      this.wave(f.now, level, corner, shorePan);
+    }
+    this.lastPhase = phase;
+    const bed = recorded ? SHORE_BED_UNDER : 1;
+    this.shore.setLevel(SHORE_LEVEL * bed * level * (0.35 + 0.65 * crash), f.now, f.live);
+    this.shore.setBand(corner * (0.6 + 0.4 * crash), 0.6, f.now, f.live);
+    this.shore.setPan(shorePan, f.now, f.live);
 
     // --- the camp fire -----------------------------------------------------------
     const fire = desc.fire;
@@ -368,6 +387,30 @@ export class Island {
     this.shoreZ = desc.z + uz * breakers;
     // The listener on the beach or inland is among the breakers, not past them.
     this.shoreDistance = Math.max(0, r - breakers);
+  }
+
+  /** One recorded wave breaking, at the shore's level, darkness and bearing. */
+  private wave(when: number, level: number, corner: number, pan: number): void {
+    const buffer = this.host.sample('surf', this.random());
+    if (buffer === null || !this.host.acquireAmbient()) return;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = 0.85 + 0.25 * this.random();
+    const tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.Q.value = 0.6;
+    tone.frequency.value = Math.min(ctx.sampleRate * 0.45, corner * 2.5);
+    const gain = ctx.createGain();
+    gain.gain.value = SHORE_REC_LEVEL * level * (0.75 + 0.25 * this.random());
+    src.connect(tone);
+    tone.connect(gain);
+    const panner = createPan(ctx, Math.max(-1, Math.min(1, pan + 0.2 * (this.random() * 2 - 1))));
+    gain.connect(panner ?? this.destination);
+    panner?.connect(this.destination);
+    src.start(when);
+    if (panner !== null) this.host.track(src, tone, gain, panner);
+    else this.host.track(src, tone, gain);
   }
 
   private crackle(when: number, strength: number): void {
