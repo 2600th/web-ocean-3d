@@ -210,6 +210,25 @@ Some slugs floated during planning do not exist on Poly Haven. Verified against
 
 ---
 
+### Recordings (`public/audio/`)
+
+Recorded sound, used where it beats synthesis (roadmap decision 7) and always
+layered with the synthesis it stands beside (`src/audio/Samples.ts`). All CC0
+1.0 from OpenGameArt, downloaded 2026-11-18. Each was converted with ffmpeg to
+mono 48 kHz Opus (40-48 kb/s); 164,512 bytes together. The Sonniss GDC bundle
+was not used: its licence forbids redistributing the files.
+
+| Asset | File path | Source URL | Author | Licence | Modifications |
+| --- | --- | --- | --- | --- | --- |
+| Rain with long thunder (`rain-thunder.ogg`) | `public/audio/thunder-crack.ogg` | https://opengameart.org/content/rain-long-thunder | wuxiascrub | CC0 1.0 | 9 s from 20.85 s (the strike and its first roll), downmixed to mono, 25 Hz high-pass, 10 ms fade in, 3 s fade out. |
+| Solo seagull sound effects (`Seagull Ambient 1.wav` to `7.wav`) | `public/audio/gull-1.ogg` to `gull-7.ogg` | https://opengameart.org/content/solo-seagull-sound-effects | rango-mango | CC0 1.0 | Downmixed to mono, silence trimmed at both ends (-48 dB), 4 ms fade in, 300 Hz high-pass. |
+| Beach ocean waves (`wave_01` to `wave_04`, cut by qubodup from jasinski's Alki Beach recording, freesound 18363, CC0) | `public/audio/surf-1.ogg` to `surf-4.ogg` | https://opengameart.org/content/beach-ocean-waves | jasinski (recording), qubodup (cuts) | CC0 1.0 | Downmixed to mono, 20 ms fade in. |
+
+Surveyed and not used: Wikimedia Commons `Thunder_crack_2B.ogg` (CC BY-SA 4.0,
+not CC0), and Freesound files that need an account to fetch.
+
+---
+
 ### Typefaces (`public/fonts/`)
 
 All three are self-hosted rather than linked from a font CDN. That is a privacy

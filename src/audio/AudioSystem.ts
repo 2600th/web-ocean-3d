@@ -1,9 +1,13 @@
 import type { QualityTier } from '../core/QualityManager';
 import { mulberry32 } from '../core/random';
+import { HdrMix, gainToDb } from './Hdr';
 import { NoiseBed, type NoiseBedOptions } from './NoiseBed';
 import { NOISE_SECONDS, createNoiseBuffer } from './noise';
 import { ParamTarget } from './ParamTarget';
+import { Island, type AudioIsland } from './Island';
 import { Room } from './Room';
+import { DEFAULT_SAMPLES_URL, Samples } from './Samples';
+import { Spatial } from './Spatial';
 import { MusicEngine, type MusicState, type MusicSting } from './music/MusicEngine';
 import { ShipSfx, type ShipMotion, type SfxHost } from './ShipSfx';
 
@@ -170,7 +174,49 @@ export interface AudioSceneParams {
    */
   listenerX?: number;
   listenerZ?: number;
+  /**
+   * The rest of the camera's pose: its height, metres, and the way it looks
+   * (a unit vector; world up is assumed). The Web Audio listener sits there
+   * and positional sources are heard from where they are (`Spatial`).
+   * Optional; without them the listener faces -Z.
+   */
+  listenerY?: number;
+  listenerForwardX?: number;
+  listenerForwardY?: number;
+  listenerForwardZ?: number;
+  /**
+   * The ship's pose: her position (metres) and the way her bow points
+   * (horizontal), and her length and beam (metres). Creaks, blocks, canvas,
+   * slaps, impacts and the anchor chain are placed on her. Optional; without
+   * them she is placed from `shipDistance` and `shipPan`.
+   */
+  shipX?: number;
+  shipY?: number;
+  shipZ?: number;
+  shipBowX?: number;
+  shipBowZ?: number;
+  shipLength?: number;
+  shipBeam?: number;
+  /**
+   * The sun's height, as the y of its unit direction (-1..1). The time of
+   * day for the audio: birds by day, insects by night (A8). Optional; without
+   * it it is day.
+   */
+  sunElevation?: number;
+  /**
+   * Which way the true wind blows, radians, `atan2(z, x)` of where it goes.
+   * With the listener's own motion (from `listenerX/Z` frame to frame) this
+   * is the wind in the ears (A7). Optional.
+   */
+  windToward?: number;
+  /**
+   * The apparent wind on the ship, m/s (`Gameplay.apparentWind.speed`): what
+   * the rigging, the blocks and the canvas feel. Optional; true wind without.
+   */
+  apparentWindSpeed?: number;
 }
+
+export type { AudioIsland };
 
 /** A rock face for the cliff room: where it stands, how far it reaches, how high. */
 export interface AudioReflector {
@@ -252,6 +298,11 @@ export interface AudioMix {
   ambienceMuted: boolean;
   effectsMuted: boolean;
   interfaceMuted: boolean;
+  /**
+   * Less range between quiet and loud, for laptop speakers and noisy rooms.
+   * Optional so a mix without it keeps the full range.
+   */
+  reducedRange?: boolean;
 }
 
 export interface AudioQualitySettings {
@@ -338,6 +389,11 @@ export interface AudioSystemOptions {
    * `update` (e.g. from `suspend()` points) and renders.
    */
   context?: BaseAudioContext;
+  /**
+   * Where the recordings are served from (`Samples`), or null for synthesis
+   * only. Defaults to `/audio/`.
+   */
+  samplesUrl?: string | null;
 }
 
 /**
@@ -386,6 +442,13 @@ const COMPRESSOR_KNEE_DB = 14;
 const COMPRESSOR_RATIO = 4;
 const COMPRESSOR_ATTACK = 0.006;
 const COMPRESSOR_RELEASE = 0.28;
+/**
+ * The reduced range's compressor: lower and firmer. Its makeup gain is larger
+ * too (a `DynamicsCompressorNode` always applies one), which is part of why
+ * the reduced range plays louder.
+ */
+const COMPRESSOR_REDUCED_THRESHOLD_DB = -20;
+const COMPRESSOR_REDUCED_RATIO = 3;
 
 /** Fades applied by the volume, mute and enable controls, seconds. */
 const VOLUME_RAMP = 0.05;
@@ -541,6 +604,23 @@ const RIGGING_LEVEL = 0.1;
 const RIGGING_ONSET = 9;
 const RIGGING_FULL = 20;
 
+/**
+ * Wind in the ears (A7): the low buffeting at the head, from the wind the
+ * listener actually feels (the true wind less their own motion, so at the helm
+ * of a running ship it is her apparent wind). Quiet under a fresh breeze and
+ * climbing steeply above it. Panned to the windward ear.
+ */
+const EAR_WIND_LEVEL = 0.32;
+const EAR_WIND_ONSET = 5;
+const EAR_WIND_FULL = 24;
+const EAR_WIND_REFERENCE = 20;
+const EAR_WIND_HZ = 160;
+const EAR_WIND_PER_SPEED = 9;
+/** Listener speeds above this are a camera cut, not motion. m/s. */
+const LISTENER_CUT_SPEED = 45;
+/** Smoothing of the listener's velocity, seconds. */
+const LISTENER_VELOCITY_TAU = 0.5;
+
 /** Gusting: depth, hold between new targets, and how fast it gets there. */
 const GUST_DEPTH = 0.18;
 const GUST_HOLD_MIN = 1.4;
@@ -579,6 +659,22 @@ const RAIN_HISS_LEVEL = 0.09;
 const RAIN_HISS_EXPONENT = 1.4;
 const RAIN_HISS_HZ = 3400;
 const RAIN_PAN = 0.25;
+/**
+ * Rain on wood and canvas (A9). Aboard, the drops land on the deck (a
+ * brighter knock-band) and on the sails overhead (a low drumming the sea
+ * cannot make), and the sea's own hiss drops back; off the ship it is all sea.
+ * Aboard is the ship within `RAIN_ABOARD_NEAR` metres, none past `FAR`.
+ */
+const RAIN_DECK_LEVEL = 0.3;
+const RAIN_DECK_HZ = 1500;
+const RAIN_CANVAS_LEVEL = 0.34;
+const RAIN_CANVAS_HZ = 380;
+const RAIN_ABOARD_NEAR = 22;
+const RAIN_ABOARD_FAR = 50;
+/** The sea's rain under a deck and sails: this much of it is left. */
+const RAIN_SEA_ABOARD = 0.55;
+/** Height over the hull, metres, under which the canvas is overhead. */
+const RAIN_CANVAS_OVERHEAD = 14;
 
 // --- hull ------------------------------------------------------------------
 
@@ -691,6 +787,25 @@ const SPLASH_BUBBLE_WINDOW = 0.4;
 
 const THUNDER_LEVEL = 0.85;
 /**
+ * Extra level on the crack and the roll. Rendered alone, a strike 600 m off
+ * peaked at -26 LUFS momentary against a storm sea at -17: buried. A close
+ * strike is the loudest thing in a storm, and the window (`HdrMix`) makes room
+ * for it, so it is played at its own level.
+ */
+const THUNDER_CRACK_GAIN = 5;
+const THUNDER_ROLL_GAIN = 2.5;
+/**
+ * The recorded crack (`Samples`), layered over the synthesised one, which
+ * then plays at `THUNDER_SYNTH_UNDER` of its level. Distance closes its
+ * low-pass (`THUNDER_REC_BRIGHT_HZ * crackWeight`) as it does the synthesis.
+ */
+const THUNDER_REC_LEVEL = 2.2;
+const THUNDER_REC_BRIGHT_HZ = 9000;
+const THUNDER_REC_DULL_HZ = 450;
+const THUNDER_SYNTH_UNDER = 0.5;
+/** The recording's momentary loudness at its peak, over `20 log10(level)`. */
+const THUNDER_REC_LOUDNESS_DB = -7;
+/**
  * e-folding distance for the crack, km.
  *
  * Atmospheric absorption is strongly frequency dependent — of order 2 dB/km at
@@ -718,6 +833,8 @@ export const SPEED_OF_SOUND_KM_S = 0.343;
 const THUNDER_LEAD = 0.25;
 /** Strikes waiting to be heard; past this the farthest is dropped. */
 const THUNDER_QUEUE = 6;
+/** Height of a strike's sound over the listener, per metre of distance: about 20 degrees up. */
+const THUNDER_ELEVATION = 0.36;
 /** Thunder's own voices, outside the tier's one-shot cap. Two strikes can overlap. */
 const THUNDER_VOICES = 2;
 
@@ -769,11 +886,18 @@ const CHAIN_LINKS_PER_SECOND = 14;
  * aground impact, a splash and the cargo sting on one sample) it bends about a
  * hundred samples; in every ordinary scenario measured, none.
  */
-const LIMITER_THRESHOLD_DB = -1;
+const LIMITER_THRESHOLD_DB = -3;
 const LIMITER_RATIO = 20;
 const LIMITER_ATTACK = 0.001;
 const LIMITER_RELEASE = 0.12;
-const SOFT_CLIP_KNEE = 0.7;
+/**
+ * The clipper bends from 0.6 and tops out at 0.84 (-1.5 dBFS), so that with
+ * the inter-sample overshoot a bent peak makes, the true peak stays at or
+ * under -1 dBTP (A3). The limiter's threshold came down to -3 dB with it, so
+ * its makeup (+1.7 dB) still leaves its ceiling under the clipper's.
+ */
+const SOFT_CLIP_KNEE = 0.6;
+const SOFT_CLIP_CEILING = 0.84;
 
 // --- the ship ------------------------------------------------------------------
 
@@ -808,11 +932,48 @@ const LUFF_BED_HZ = 520;
 
 // --- ducking --------------------------------------------------------------------
 
-/** How far a close strike pulls the score down, and the ambience beds. */
+/**
+ * How far a close strike pulls the score down, on top of the window (`HdrMix`)
+ * that pulls everything down under it. The beds have no duck of their own any
+ * more: the window is that duck, and it follows the strike's own loudness.
+ */
 const THUNDER_MUSIC_DUCK = 0.55;
-const THUNDER_BED_DUCK = 0.3;
 /** Seconds held before recovering. */
 const THUNDER_DUCK_HOLD = 1.6;
+/** A hard impact pulls the score down too: by this at full strength, for this long. */
+const IMPACT_MUSIC_DUCK = 0.45;
+const IMPACT_DUCK_HOLD = 0.6;
+
+// --- logical loudness ----------------------------------------------------------
+//
+// What `HdrMix` is told, dB on its scale (about LUFS before the master stage).
+// The beds report their own (`NoiseBed.loudnessDb`); these are the rest.
+
+/**
+ * The score, by arrangement, at its nominal level: measured by the bench with
+ * the score alone (`BENCH_DIAG=music`, music 0.5).
+ */
+const MUSIC_LOUDNESS_DB: Readonly<Record<MusicState, number>> = {
+  calm: -30.3,
+  sailing: -27.5,
+  storm: -23.7,
+  underwater: -32.5,
+  tour: -29.5,
+  silent: Number.NEGATIVE_INFINITY,
+};
+/**
+ * A strike's momentary loudness at its peak, from its crack and roll levels:
+ * `20 log10(level) + offset`, power-summed. Fitted against thunder rendered
+ * alone (the roll is mostly under 110 Hz, which loudness weighting discounts).
+ */
+const THUNDER_CRACK_LOUDNESS_DB = -18;
+const THUNDER_ROLL_LOUDNESS_DB = -25;
+/** A hull impact at full strength and presence, and a splash at full intensity. */
+const IMPACT_LOUDNESS_DB = -13;
+const SPLASH_LOUDNESS_DB = -22;
+/** A gull at the reference distance, and a creak or knock aboard at full presence. */
+const GULL_LOUDNESS_DB = -34;
+const SHIP_AMBIENT_LOUDNESS_DB = -28;
 
 // --- crossing the surface ---------------------------------------------------------
 
@@ -983,6 +1144,9 @@ const GULL_NEAR_METRES = 30;
 const GULL_FAR_METRES = 240;
 const GULL_REFERENCE_METRES = 60;
 const GULL_LEVEL = 0.15;
+/** Share of cries that are recorded (`Samples`) once the recordings are in, and their level. */
+const GULL_RECORDED_SHARE = 0.6;
+const GULL_RECORDED_LEVEL = 0.16;
 
 /**
  * Brightness against distance: corner = `BRIGHT * exp(-d / ABSORPTION)`.
@@ -1089,6 +1253,9 @@ const GULL_WIND_SILENT = 22;
  * makes the whole mix repeat on one period. Mutually incommensurate rates and
  * offsets spread across the buffer cost nothing and remove both.
  */
+/** How far each bed's read rate wanders around its base (`NoiseBed.wander`). */
+const BED_RATE_WANDER = 0.03;
+
 const BED_RATES = {
   surfNear: 0.83,
   surfFar: 1.07,
@@ -1100,6 +1267,9 @@ const BED_RATES = {
   bowWash: 1.11,
   luff: 0.94,
   rumble: 0.89,
+  earWind: 0.79,
+  rainDeck: 1.23,
+  rainCanvas: 1.17,
 } as const;
 
 type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
@@ -1121,6 +1291,9 @@ export class AudioSystem {
   private softClip!: WaveShaperNode;
   private compressor!: DynamicsCompressorNode;
   private mix!: GainNode;
+  /** Loudness and priority: the window the loudest sound sets. See `HdrMix`. */
+  private hdr!: HdrMix;
+  private reducedRange = false;
   /** Everything above the waterline, before the muffle. */
   private airBus!: GainNode;
   private airMuffle!: BiquadFilterNode;
@@ -1168,6 +1341,24 @@ export class AudioSystem {
   private shipPanner: StereoPannerNode | null = null;
   private shipGain!: ParamTarget;
   private shipPan: ParamTarget | null = null;
+  /**
+   * The ship's placed sounds (`SfxHost.place`): gained by distance like the
+   * ship bus, but each panned from its own point on the hull, not the bus's.
+   */
+  private shipPoint!: GainNode;
+  private shipPointGain!: ParamTarget;
+  private shipPointSend!: GainNode;
+  /** The listener and where things are. See `Spatial`. */
+  private spatial!: Spatial;
+  /** Surf on the shore, the camp fire, birds and insects. See `Island`. */
+  private island!: Island;
+  private readonly islandFrame = {
+    now: 0, dt: 0, live: false, day: 1, night: 0, waveHeight: 0, swellPeriod: 6, wind: 0, rain: 0, air: 1, clock: 0,
+  };
+  private readonly placeAt = { x: 0, y: 0, z: 0 };
+  /** Recorded thunder, gulls and surf, or null for synthesis only. */
+  private samples: Samples | null = null;
+  private samplesUrl: string | null = DEFAULT_SAMPLES_URL;
 
   private music!: MusicEngine;
   private shipSfx!: ShipSfx;
@@ -1200,6 +1391,14 @@ export class AudioSystem {
   private bowWash!: NoiseBed;
   private luffBed!: NoiseBed;
   private rumble!: NoiseBed;
+  private earWind!: NoiseBed;
+  private rainDeck!: NoiseBed;
+  private rainCanvas!: NoiseBed;
+  /** The listener's smoothed velocity, m/s, from its position frame to frame. */
+  private lastListenerX = Number.NaN;
+  private lastListenerZ = Number.NaN;
+  private listenerVX = 0;
+  private listenerVZ = 0;
   private readonly beds: NoiseBed[] = [];
   private readonly targets: ParamTarget[] = [];
 
@@ -1235,21 +1434,22 @@ export class AudioSystem {
   private oneShotRandom = mulberry32(AUDIO_SEEDS.oneShots);
   private gullRandom = mulberry32(AUDIO_SEEDS.gulls);
 
-  private crackCurve!: Float32Array;
-  private rollCurve!: Float32Array;
+  /** Draws each strike's own envelopes and rumbles (A6). Reset with the clock. */
+  private thunderShape = mulberry32(AUDIO_SEEDS.thunderShape);
 
   /** Live one-shot sources, so a reset or a dispose can silence them. */
   private readonly voices: AudioScheduledSourceNode[] = [];
   /** Thunder among `voices`; it has its own `THUNDER_VOICES`. */
   private thunderLive = 0;
   /** Strikes seen and not yet heard. See `playThunder`. */
-  private readonly thunderQueue: { at: number; km: number }[] = [];
+  private readonly thunderQueue: { at: number; km: number; x: number; z: number }[] = [];
 
   constructor(options: AudioSystemOptions = {}) {
     this.volume = clamp01(finite(options.volume, this.volume));
     this.busVolume.music = clamp01(finite(options.musicVolume, this.busVolume.music));
     if (options.mix !== undefined) this.readMix(options.mix);
     this.muted = options.muted ?? false;
+    if (options.samplesUrl !== undefined) this.samplesUrl = options.samplesUrl;
     this.tier = options.quality ?? 'high';
     this.settings = AUDIO_QUALITY_TIERS[this.tier] ?? AUDIO_QUALITY_TIERS.high;
 
@@ -1259,6 +1459,7 @@ export class AudioSystem {
       this.gestured = true;
       this.build(this.ctx);
       this.available = true;
+      void this.samples?.load();
       return;
     }
 
@@ -1387,6 +1588,8 @@ export class AudioSystem {
     this.startBeds(now);
     this.flushAll(now);
     this.applyMasterGain(this.offline ? 0 : RESUME_RAMP);
+    // The recordings load on the first gesture, not at page load.
+    void this.samples?.load();
     this.startTicker();
     return this.running();
   }
@@ -1520,6 +1723,9 @@ export class AudioSystem {
     if (this.thunderQueue.length > 0) this.serviceThunder(now);
 
     const live = this.enabled && !this.muted && !this.hidden && this.running();
+    this.spatial.update(params, live);
+    // No audible loop (A5): every bed's read rate drifts on its own period.
+    for (let i = 0; i < this.beds.length; i++) this.beds[i].wander(now, BED_RATE_WANDER, live);
 
     const wind = clampNumber(finite(params.windSpeed, 0), 0, 40);
     const waveHeight = clampNumber(finite(params.waveHeight, 0), 0, 20);
@@ -1562,8 +1768,58 @@ export class AudioSystem {
     this.surfFar.setLevel(seaLevel * SURF_FAR_LEVEL * swellFar, now, live);
     this.surfFar.setBand(surfCutoff * SURF_FAR_TILT, SURF_Q, now, live);
 
+    // --- the wind you feel (A7) ----------------------------------------------
+    // The listener's own velocity, from where it was last frame; a jump faster
+    // than a ship or a gull can move is a camera cut and is not motion.
+    const ex0 = finite(params.listenerX, Number.NaN);
+    const ez0 = finite(params.listenerZ, Number.NaN);
+    if (step > 0 && Number.isFinite(ex0) && Number.isFinite(ez0)) {
+      if (Number.isFinite(this.lastListenerX)) {
+        const vx = (ex0 - this.lastListenerX) / step;
+        const vz = (ez0 - this.lastListenerZ) / step;
+        if (Math.hypot(vx, vz) < LISTENER_CUT_SPEED) {
+          const k = 1 - Math.exp(-step / LISTENER_VELOCITY_TAU);
+          this.listenerVX += (vx - this.listenerVX) * k;
+          this.listenerVZ += (vz - this.listenerVZ) * k;
+        }
+      }
+      this.lastListenerX = ex0;
+      this.lastListenerZ = ez0;
+    }
+    // The wind at the head: the true wind less the listener's motion. Without
+    // a direction, the motion simply adds to it.
+    const toward = finite(params.windToward, Number.NaN);
+    let earSpeed: number;
+    let earPan = 0;
+    if (Number.isFinite(toward)) {
+      const ex = Math.cos(toward) * wind - this.listenerVX;
+      const ez = Math.sin(toward) * wind - this.listenerVZ;
+      earSpeed = Math.hypot(ex, ez);
+      // Blowing toward the listener's right means it comes from the left.
+      if (earSpeed > 0.1) earPan = -(ex * this.spatial.rx + ez * this.spatial.rz) / earSpeed;
+    } else {
+      earSpeed = wind + Math.hypot(this.listenerVX, this.listenerVZ);
+    }
+    // The rigging, the blocks and the canvas feel the ship's apparent wind
+    // when she is near enough to hear; far off, the true wind is all there is.
+    const shipNear =
+      params.shipDistance !== undefined && Number.isFinite(params.shipDistance)
+        ? 1 - smoothstepNumber(params.shipDistance, RAIN_ABOARD_NEAR, 60)
+        : 0;
+    const apparent = finite(params.apparentWindSpeed, wind);
+    const rigWind = clampNumber(wind + (apparent - wind) * shipNear, 0, 40);
+    const earDrive = earSpeed / EAR_WIND_REFERENCE;
+    this.earWind.setLevel(
+      EAR_WIND_LEVEL * smoothstepNumber(earSpeed, EAR_WIND_ONSET, EAR_WIND_FULL) * earDrive * earDrive * this.gust,
+      now,
+      live,
+    );
+    this.earWind.setBand(EAR_WIND_HZ + EAR_WIND_PER_SPEED * earSpeed, 0.8, now, live);
+    this.earWind.setPan(0.7 * earPan, now, live);
+
     // --- wind ---------------------------------------------------------------
     const windLoud = Math.pow(Math.min(wind / WIND_REFERENCE_WIND, WIND_MAX_DRIVE), WIND_EXPONENT);
+    this.windBed.setPan(0.3 * earPan, now, live);
     this.windBed.setLevel(WIND_LEVEL * windLoud * this.gust, now, live);
     this.windBed.setBand(
       clampNumber(WIND_BAND_BASE + WIND_BAND_PER_WIND * wind, WIND_BAND_MIN, WIND_BAND_MAX),
@@ -1572,10 +1828,11 @@ export class AudioSystem {
       live,
     );
 
-    const singing = smoothstepNumber(wind, RIGGING_ONSET, RIGGING_FULL);
-    this.rigging.setLevel(RIGGING_LEVEL * windLoud * singing * this.gust, now, live);
+    const singing = smoothstepNumber(rigWind, RIGGING_ONSET, RIGGING_FULL);
+    const rigLoud = Math.pow(Math.min(rigWind / WIND_REFERENCE_WIND, WIND_MAX_DRIVE), WIND_EXPONENT);
+    this.rigging.setLevel(RIGGING_LEVEL * rigLoud * singing * this.gust, now, live);
     this.rigging.setBand(
-      clampNumber((STROUHAL * wind) / RIGGING_DIAMETER, RIGGING_MIN_HZ, RIGGING_MAX_HZ),
+      clampNumber((STROUHAL * rigWind) / RIGGING_DIAMETER, RIGGING_MIN_HZ, RIGGING_MAX_HZ),
       RIGGING_Q,
       now,
       live,
@@ -1585,7 +1842,18 @@ export class AudioSystem {
     // Rain gusts with the wind but less than the wind does: a squall arrives in
     // sheets, and the sheets are the same air movement.
     const rainGust = 0.85 + 0.15 * this.gust;
-    this.rainBed.setLevel(RAIN_LEVEL * Math.pow(rain, RAIN_EXPONENT) * rainGust, now, live);
+    // Where the drops land (A9): aboard, on the deck and the canvas overhead.
+    const aboard =
+      params.shipDistance !== undefined && Number.isFinite(params.shipDistance)
+        ? 1 - smoothstepNumber(params.shipDistance, RAIN_ABOARD_NEAR, RAIN_ABOARD_FAR)
+        : 0;
+    const overhead =
+      this.spatial.y < this.spatial.shipY + RAIN_CANVAS_OVERHEAD ? 1 : 0.45;
+    const canvas = aboard * clamp01(finite(params.sailFill, 0)) * overhead;
+    const rainLevel = Math.pow(rain, RAIN_EXPONENT) * rainGust;
+    this.rainBed.setLevel(RAIN_LEVEL * rainLevel * (1 - (1 - RAIN_SEA_ABOARD) * aboard), now, live);
+    this.rainDeck.setLevel(RAIN_DECK_LEVEL * rainLevel * aboard, now, live);
+    this.rainCanvas.setLevel(RAIN_CANVAS_LEVEL * rainLevel * canvas, now, live);
     this.rainBed.setBand(
       clampNumber(
         RAIN_CUTOFF_BASE - RAIN_CUTOFF_PER_RATE * rain,
@@ -1634,6 +1902,7 @@ export class AudioSystem {
         : Math.min(1, SHIP_REFERENCE_METRES / Math.max(shipDistance, SHIP_REFERENCE_METRES));
     if (presence < SHIP_SILENT_PRESENCE) presence = 0;
     this.shipGain.set(presence, now, live);
+    this.shipPointGain.set(presence, now, live);
     this.shipPan?.set(clampNumber(finite(params.shipPan, 0), -1, 1) * 0.7, now, live);
 
     const luff = clamp01(finite(params.sailLuff, 0));
@@ -1642,7 +1911,7 @@ export class AudioSystem {
     motion.pitch = clampNumber(finite(params.shipPitch, 0), -1.5, 1.5);
     motion.sailFill = clamp01(finite(params.sailFill, 0));
     motion.sailLuff = luff;
-    motion.windSpeed = wind;
+    motion.windSpeed = rigWind;
     motion.presence = presence;
     this.shipSfx.update(step, now, live, motion);
 
@@ -1753,6 +2022,47 @@ export class AudioSystem {
       this.gullTimer = GULL_FLURRY_FLOOR;
     }
 
+    // --- the island ------------------------------------------------------------
+    const sun = finite(params.sunElevation, 1);
+    const f = this.islandFrame;
+    f.now = now;
+    f.dt = step;
+    f.live = live;
+    f.day = smoothstepNumber(sun, -0.04, 0.12);
+    f.night = 1 - smoothstepNumber(sun, -0.14, 0.02);
+    f.waveHeight = waveHeight;
+    f.swellPeriod = swellPeriod;
+    f.wind = wind;
+    f.rain = rain;
+    f.air = 1 - submersion;
+    f.clock = this.clock;
+    this.island.update(f);
+
+    // --- loudness and priority ----------------------------------------------
+    // Each continuous sound's logical loudness, as it is heard: the air beds
+    // through the waterline's duck, the ship's through its distance, the
+    // rumble through the water. The loudest sets the window (`HdrMix`).
+    const hdr = this.hdr;
+    hdr.begin();
+    const air = gainToDb(1 - AIR_DUCK * submersion);
+    hdr.offer(sumDb(this.surfNear.loudnessDb(), this.surfFar.loudnessDb()) + air);
+    hdr.offer(sumDb(sumDb(this.windBed.loudnessDb(), this.rigging.loudnessDb()), this.earWind.loudnessDb()) + air);
+    hdr.offer(
+      sumDb(
+        sumDb(this.rainBed.loudnessDb(), this.rainHiss.loudnessDb()),
+        sumDb(this.rainDeck.loudnessDb(), this.rainCanvas.loudnessDb()),
+      ) + air,
+    );
+    hdr.offer(
+      sumDb(sumDb(this.hull.loudnessDb(), this.bowWash.loudnessDb()), this.luffBed.loudnessDb()) +
+        air +
+        gainToDb(presence),
+    );
+    hdr.offer(this.rumble.loudnessDb() + gainToDb(Math.pow(submersion, UNDER_EXPONENT)));
+    hdr.offer(this.island.loudnessDb() + air);
+    if (this.busLevel('music') > 0) hdr.offer(MUSIC_LOUDNESS_DB[this.music.currentState]);
+    hdr.update(now, step, live);
+
     // --- score --------------------------------------------------------------
     this.music.update(step, now, live);
   }
@@ -1825,6 +2135,35 @@ export class AudioSystem {
     this.readMix(mix);
     this.applyMasterGain(VOLUME_RAMP);
     for (const bus of AUDIO_BUSES) this.applyBus(bus);
+    this.applyRange();
+  }
+
+  /**
+   * Less range, for laptop speakers: a calm and a storm closer together, a
+   * strike rising less over the sea, and a firmer compressor behind them.
+   */
+  setReducedRange(reduced: boolean): void {
+    this.reducedRange = reduced;
+    this.applyRange();
+  }
+
+  isReducedRange(): boolean {
+    return this.reducedRange;
+  }
+
+  /** The window's state, for the bench and tests: its top and the gain it applies, dB. */
+  get hdrDebug(): { top: number; gainDb: number; reduced: boolean } | null {
+    if (this.ctx === null) return null;
+    return { top: this.hdr.windowTop, gainDb: this.hdr.gainDb, reduced: this.hdr.isReduced() };
+  }
+
+  private applyRange(): void {
+    if (this.ctx === null || this.hdr === undefined) return;
+    this.hdr.setReduced(this.reducedRange);
+    const c = this.compressor;
+    const reduced = this.reducedRange;
+    c.threshold.value = reduced ? COMPRESSOR_REDUCED_THRESHOLD_DB : COMPRESSOR_THRESHOLD_DB;
+    c.ratio.value = reduced ? COMPRESSOR_REDUCED_RATIO : COMPRESSOR_RATIO;
   }
 
   private readMix(mix: Readonly<AudioMix>): void {
@@ -1839,6 +2178,7 @@ export class AudioSystem {
     m.ambience = mix.ambienceMuted === true;
     m.effects = mix.effectsMuted === true;
     m.interface = mix.interfaceMuted === true;
+    if (mix.reducedRange !== undefined) this.reducedRange = mix.reducedRange === true;
   }
 
   private busLevel(bus: AudioBus): number {
@@ -1959,7 +2299,7 @@ export class AudioSystem {
    * @param pan       -1 (left) .. 1 (right) from the listener's view; 0, the
    *                  default, is unpanned (the lens itself going under).
    */
-  playSplash(intensity = 1, pan = 0): void {
+  playSplash(intensity = 1, pan = 0, x = Number.NaN, y = Number.NaN, z = Number.NaN): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
     const amount = clamp01(finite(intensity, 0));
@@ -1970,13 +2310,17 @@ export class AudioSystem {
     const now = ctx.currentTime;
     const decay = SPLASH_DECAY_MIN + SPLASH_DECAY_SPAN * amount;
     const level = SPLASH_LEVEL * Math.pow(amount, 0.8);
+    this.hdr.event(now, SPLASH_LOUDNESS_DB + gainToDb(Math.pow(amount, 0.8)), 0.05, 30, true);
 
     // A barrel or a buoy coming down somewhere off to one side.
+    // With a world position it is placed (equal-power); without, panned.
     const side = clampNumber(finite(pan, 0), -1, 1);
-    const panner = side !== 0 ? createStereoPanner(ctx) : null;
+    const placed =
+      Number.isFinite(x) && Number.isFinite(z) ? this.spatial.panner(x, finite(y, 0), z, 'equalpower') : null;
+    const panner: AudioNode | null = placed ?? (side !== 0 ? createStereoPanner(ctx) : null);
     let out: AudioNode = this.effectsBus;
     if (panner !== null) {
-      panner.pan.value = side;
+      if (placed === null) (panner as StereoPannerNode).pan.value = side;
       panner.connect(this.effectsBus);
       out = panner;
     }
@@ -2049,13 +2393,13 @@ export class AudioSystem {
    * (`THUNDER_VOICES`), so a busy deck cannot refuse a strike, nor a strike a
    * splash.
    */
-  playThunder(distanceKm = 3, delaySeconds = 0): void {
+  playThunder(distanceKm = 3, delaySeconds = 0, x = Number.NaN, z = Number.NaN): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
     const distance = clampNumber(finite(distanceKm, 3), 0.05, 40);
     const at = ctx.currentTime + Math.max(0, finite(delaySeconds, 0));
     if (at - ctx.currentTime <= THUNDER_LEAD) {
-      this.strikeThunder(distance, at);
+      this.strikeThunder(distance, at, x, z);
       return;
     }
     // Full: the farthest waiting strike, the quietest, gives way.
@@ -2066,7 +2410,7 @@ export class AudioSystem {
       if (queue[far].km <= distance) return;
       queue.splice(far, 1);
     }
-    queue.push({ at, km: distance });
+    queue.push({ at, km: distance, x, z });
   }
 
   /** Builds the strikes that arrive within `THUNDER_LEAD`. Runs from `update`. */
@@ -2076,21 +2420,41 @@ export class AudioSystem {
       const strike = queue[i];
       if (strike.at - now > THUNDER_LEAD) continue;
       queue.splice(i, 1);
-      if (this.canPlay()) this.strikeThunder(strike.km, Math.max(now, strike.at));
+      if (this.canPlay()) this.strikeThunder(strike.km, Math.max(now, strike.at), strike.x, strike.z);
     }
   }
 
-  private strikeThunder(distance: number, now: number): void {
+  private strikeThunder(distance: number, now: number, x: number, z: number): void {
     const ctx = this.ctx;
     if (ctx === null || this.thunderLive >= THUNDER_VOICES) return;
+    // From the bolt's bearing, head-related, and up in the sky: the channel
+    // runs from the cloud base down, so the sound comes from above the horizon.
+    // Where the listener is when it arrives, not when it flashed.
+    const sp = this.spatial;
+    const placed = Number.isFinite(x) && Number.isFinite(z);
+    const out =
+      placed ? sp.panner(x, sp.y + THUNDER_ELEVATION * distance * 1000, z, 'hrtf') : null;
+    out?.connect(this.ambienceBus);
+    const dest: AudioNode = out ?? this.ambienceBus;
 
     // Everything above a kilohertz is absorbed out of a distant strike, so the
     // crack fades exponentially while the roll only spreads.
     const crackWeight = Math.exp(-distance / THUNDER_ABSORPTION_KM);
     const spread = 1 / (1 + distance * THUNDER_SPREAD_PER_KM);
-    const rollSeconds = Math.min(
-      THUNDER_ROLL_MAX_SECONDS,
-      THUNDER_ROLL_MIN_SECONDS + THUNDER_ROLL_PER_KM * distance,
+    // No two alike (A6): every strike draws its own envelopes, its own
+    // length, and its own train of later rumbles. Two shapes, not one: a
+    // crack and a roll are different envelopes, and a parameter cannot
+    // cross-fade between two curves.
+    const shape = this.thunderShape;
+    const rollSeconds =
+      Math.min(THUNDER_ROLL_MAX_SECONDS, THUNDER_ROLL_MIN_SECONDS + THUNDER_ROLL_PER_KM * distance) *
+      (0.8 + 0.45 * shape());
+    const crackSeconds = THUNDER_CRACK_SECONDS * (0.65 + 0.7 * shape());
+    const crackCurve = buildThunderCurve(
+      CURVE_POINTS, shape, 5 + 4 * shape(), 0.008 + 0.02 * shape(), 2 + Math.floor(3 * shape()), 0.25 + 0.25 * shape(),
+    );
+    const rollCurve = buildThunderCurve(
+      CURVE_POINTS, shape, 1.6 + 1.4 * shape(), 0.05 + 0.08 * shape(), 3 + Math.floor(3 * shape()), 0.4 + 0.3 * shape(),
     );
 
     const source = ctx.createBufferSource();
@@ -2118,10 +2482,11 @@ export class AudioSystem {
     // implies. What holds the path silent before `now` is the source not having
     // started, not the gain being zeroed.
     const crackEnv = ctx.createGain();
-    crackEnv.gain.setValueCurveAtTime(this.crackCurve, now, THUNDER_CRACK_SECONDS);
+    crackEnv.gain.setValueCurveAtTime(crackCurve, now, crackSeconds);
 
     const crackLevel = ctx.createGain();
-    crackLevel.gain.value = THUNDER_LEVEL * spread * crackWeight;
+    const crackGain = THUNDER_LEVEL * THUNDER_CRACK_GAIN * spread * crackWeight;
+    crackLevel.gain.value = crackGain;
 
     const rollLow = ctx.createBiquadFilter();
     rollLow.type = 'lowpass';
@@ -2129,38 +2494,104 @@ export class AudioSystem {
     rollLow.Q.value = 1.2;
 
     const rollEnv = ctx.createGain();
-    rollEnv.gain.setValueCurveAtTime(this.rollCurve, now, rollSeconds);
+    rollEnv.gain.setValueCurveAtTime(rollCurve, now, rollSeconds);
 
     const rollLevel = ctx.createGain();
     // A near strike is mostly crack; a far one is only roll.
-    rollLevel.gain.value = THUNDER_LEVEL * spread * (0.35 + 0.65 * (1 - crackWeight));
+    const rollGain = THUNDER_LEVEL * THUNDER_ROLL_GAIN * spread * (0.35 + 0.65 * (1 - crackWeight));
+    rollLevel.gain.value = rollGain;
 
     source.connect(crackHigh);
     crackHigh.connect(crackLow);
     crackLow.connect(crackEnv);
     crackEnv.connect(crackLevel);
-    crackLevel.connect(this.ambienceBus);
+    crackLevel.connect(dest);
+
+    // The recorded crack over the synthesised one, darkened by the distance.
+    const recording = this.samples?.pick('thunder', 0) ?? null;
+    let recSource: AudioBufferSourceNode | null = null;
+    let recFilter: BiquadFilterNode | null = null;
+    let recGain: GainNode | null = null;
+    let recLevel = 0;
+    if (recording !== null) {
+      crackLevel.gain.value = crackGain * THUNDER_SYNTH_UNDER;
+      recLevel = THUNDER_REC_LEVEL * spread * (0.25 + 0.75 * crackWeight);
+      recSource = ctx.createBufferSource();
+      recSource.buffer = recording;
+      // No two strikes the same size: a bigger channel is a lower, slower one.
+      recSource.playbackRate.value = 0.82 + 0.3 * this.oneShotRandom();
+      recFilter = ctx.createBiquadFilter();
+      recFilter.type = 'lowpass';
+      recFilter.Q.value = 0.6;
+      recFilter.frequency.value = Math.min(ctx.sampleRate * 0.45, THUNDER_REC_DULL_HZ + THUNDER_REC_BRIGHT_HZ * crackWeight);
+      recGain = ctx.createGain();
+      recGain.gain.value = recLevel;
+      recSource.connect(recFilter);
+      recFilter.connect(recGain);
+      recGain.connect(dest);
+      recSource.start(now);
+      // Rides on the synthesis's voice: held until the longer of the two ends.
+      recSource.onended = () => {
+        recSource?.disconnect();
+        recFilter?.disconnect();
+        recGain?.disconnect();
+      };
+    }
 
     source.connect(rollLow);
     rollLow.connect(rollEnv);
     rollEnv.connect(rollLevel);
-    rollLevel.connect(this.ambienceBus);
+    rollLevel.connect(dest);
+
+    // Later rumbles: farther stretches of the channel arriving after the
+    // first, each later, quieter and shorter. A far strike has more of them,
+    // spread wider, because its channel spans more distance difference.
+    const rumbles: AudioNode[] = [];
+    let end = Math.max(crackSeconds, rollSeconds);
+    const count = 1 + Math.floor(shape() * 2.5) + (distance > 2 ? 1 : 0);
+    let delay = 0;
+    for (let i = 0; i < count; i++) {
+      delay += 0.35 + shape() * (0.5 + 0.3 * distance);
+      const seconds = rollSeconds * (0.45 + 0.4 * shape());
+      const env = ctx.createGain();
+      env.gain.setValueCurveAtTime(
+        buildThunderCurve(CURVE_POINTS, shape, 1.8 + 2 * shape(), 0.06 + 0.15 * shape(), 3, 0.5),
+        now + delay,
+        seconds,
+      );
+      const level = ctx.createGain();
+      level.gain.value = rollGain * (0.3 + 0.4 * shape()) * Math.pow(0.8, i);
+      rollLow.connect(env);
+      env.connect(level);
+      level.connect(dest);
+      rumbles.push(env, level);
+      end = Math.max(end, delay + seconds);
+    }
     const wet = this.sendFrom(crackLevel, THUNDER_SEND, this.ambienceWet);
     rollLevel.connect(wet);
+    recGain?.connect(wet);
+    for (let i = 1; i < rumbles.length; i += 2) rumbles[i].connect(wet);
 
-    // Sidechain, by hand: the score and the sea beds make room for the strike,
-    // in proportion to how loud it arrives, at the moment it arrives.
+    // The strike raises the window by its own loudness, at the moment it
+    // arrives, so everything else steps back under it; the score also ducks.
     const loudness = clampNumber(spread * 1.6, 0.25, 1);
     this.music.duck(THUNDER_MUSIC_DUCK * loudness, THUNDER_DUCK_HOLD + rollSeconds * 0.3, now);
-    const bed = this.bedBus.gain;
-    bed.cancelScheduledValues(now);
-    bed.setTargetAtTime(1 - THUNDER_BED_DUCK * loudness, now, 0.04);
-    bed.setTargetAtTime(1, now + THUNDER_DUCK_HOLD, 0.6);
+    this.hdr.event(
+      now,
+      sumDb(
+        sumDb(gainToDb(crackLevel.gain.value) + THUNDER_CRACK_LOUDNESS_DB, gainToDb(rollGain) + THUNDER_ROLL_LOUDNESS_DB),
+        recLevel > 0 ? gainToDb(recLevel) + THUNDER_REC_LOUDNESS_DB : Number.NEGATIVE_INFINITY,
+      ),
+      crackSeconds * 0.4,
+      18 / rollSeconds,
+      true,
+    );
 
     source.start(now, this.oneShotRandom() * this.white.duration);
-    source.stop(now + Math.max(THUNDER_CRACK_SECONDS, rollSeconds) + 0.1);
+    source.stop(now + end + 0.1);
     this.trackVoice(
       source,
+      ...rumbles,
       crackHigh,
       crackLow,
       crackEnv,
@@ -2169,6 +2600,7 @@ export class AudioSystem {
       rollEnv,
       rollLevel,
       wet,
+      ...(out !== null ? [out] : []),
     );
     // Counted against thunder's own voices, not the deck's.
     this.thunderLive++;
@@ -2357,7 +2789,15 @@ export class AudioSystem {
   hullImpact(strength: number, grind = false): void {
     const ctx = this.ctx;
     if (ctx === null || !this.canPlay()) return;
-    this.shipSfx.hullImpact(clamp01(finite(strength, 0)), grind, ctx.currentTime);
+    const s = clamp01(finite(strength, 0));
+    const now = ctx.currentTime;
+    this.shipSfx.hullImpact(s, grind, now);
+    // Heard as loud as it is close: the window and the score make room for it.
+    const presence = this.shipGain.target;
+    if (s < 0.02 || presence <= 0) return;
+    const db = IMPACT_LOUDNESS_DB + gainToDb(Math.pow(s, 0.7) * presence);
+    this.hdr.event(now, db, 0.12, grind ? 10 : 24, true);
+    this.music.duck(IMPACT_MUSIC_DUCK * s * presence, IMPACT_DUCK_HOLD + (grind ? 1 : 0), now);
   }
 
   /**
@@ -2487,11 +2927,18 @@ export class AudioSystem {
 
     source.connect(band);
     band.connect(gate);
-    gate.connect(this.effectsBus);
-    const wet = this.sendFrom(gate, CHAIN_SEND, this.effectsWet);
+    // From the hawse at the bow, head-related, and as far off as the ship is.
+    // Placed, it shares the ship's send; unplaced it has its own.
+    const where = this.placeOnShip(0.88, 1.5, 0.35, 'hrtf');
     source.start(now, random() * this.white.duration);
     source.stop(now + duration + 0.05);
-    this.trackVoice(source, band, gate, wet);
+    if (where !== null) {
+      gate.connect(where);
+      this.trackVoice(source, band, gate, where);
+    } else {
+      gate.connect(this.effectsBus);
+      this.trackVoice(source, band, gate, this.sendFrom(gate, CHAIN_SEND, this.effectsWet));
+    }
   }
 
   /**
@@ -2510,6 +2957,11 @@ export class AudioSystem {
     this.gustRandom = mulberry32(AUDIO_SEEDS.gusts);
     this.oneShotRandom = mulberry32(AUDIO_SEEDS.oneShots);
     this.gullRandom = mulberry32(AUDIO_SEEDS.gulls);
+    this.thunderShape = mulberry32(AUDIO_SEEDS.thunderShape);
+    this.lastListenerX = Number.NaN;
+    this.lastListenerZ = Number.NaN;
+    this.listenerVX = 0;
+    this.listenerVZ = 0;
     this.gust = 1;
     this.gustTarget = 1;
     this.gustTimer = 0;
@@ -2520,6 +2972,8 @@ export class AudioSystem {
     this.wasUnder = false;
     this.plungeCooldown = 0;
     this.thunderQueue.length = 0;
+    this.hdr?.reset();
+    this.island?.reset();
     this.stopVoices();
     this.shipSfx?.reset();
     this.music?.reset();
@@ -2551,6 +3005,8 @@ export class AudioSystem {
     this.ambienceWet.disconnect();
     this.effectsWet.disconnect();
     this.room.dispose();
+    this.island.dispose();
+    this.spatial.dispose();
     this.stopVoices();
     for (const bed of this.beds) bed.dispose();
     this.beds.length = 0;
@@ -2563,6 +3019,7 @@ export class AudioSystem {
     this.mix.disconnect();
     this.master.disconnect();
     this.compressor.disconnect();
+    this.hdr.node.disconnect();
 
     this.music.dispose();
     this.limiter.disconnect();
@@ -2570,6 +3027,8 @@ export class AudioSystem {
     this.bedBus.disconnect();
     this.shipBus.disconnect();
     this.shipPanner?.disconnect();
+    this.shipPoint.disconnect();
+    this.shipPointSend.disconnect();
     if (this.realtime !== null) void this.realtime.close().catch(() => {});
     this.realtime = null;
   }
@@ -2581,12 +3040,6 @@ export class AudioSystem {
     const brown = createNoiseBuffer(ctx, 'brown', AUDIO_SEEDS.brown);
     this.gullWave = buildGullWave(ctx);
 
-    const shape = mulberry32(AUDIO_SEEDS.thunderShape);
-    // Two shapes, not one: a crack and a roll are different envelopes, and a
-    // parameter cannot cross-fade between two curves. They are separate paths,
-    // weighted by distance.
-    this.crackCurve = buildThunderCurve(CURVE_POINTS, shape, 7, 0.015, 2, 0.35);
-    this.rollCurve = buildThunderCurve(CURVE_POINTS, shape, 2.2, 0.08, 4, 0.55);
 
     this.master = ctx.createGain();
     // Pinned at zero until a gesture. Belt and braces against the suspend in the
@@ -2599,7 +3052,7 @@ export class AudioSystem {
     this.limiter.attack.value = LIMITER_ATTACK;
     this.limiter.release.value = LIMITER_RELEASE;
     this.softClip = ctx.createWaveShaper();
-    this.softClip.curve = buildSoftClipCurve(SOFT_CLIP_KNEE);
+    this.softClip.curve = buildSoftClipCurve(SOFT_CLIP_KNEE, SOFT_CLIP_CEILING);
     this.master.connect(this.limiter);
     this.limiter.connect(this.softClip);
     this.softClip.connect(ctx.destination);
@@ -2617,7 +3070,11 @@ export class AudioSystem {
     this.compressor.connect(this.master);
 
     this.mix = ctx.createGain();
-    this.mix.connect(this.compressor);
+    this.hdr = new HdrMix(ctx);
+    this.hdr.setReduced(this.reducedRange);
+    this.mix.connect(this.hdr.node);
+    this.hdr.node.connect(this.compressor);
+    this.applyRange();
 
     // Past the compressor as well as past the muffle: an interface sound should
     // be the same every time it is heard, and routing it through the world bus
@@ -2668,6 +3125,11 @@ export class AudioSystem {
     } else {
       this.shipBus.connect(this.effectsBus);
     }
+    this.shipPoint = ctx.createGain();
+    this.shipPoint.gain.value = 0;
+    this.shipPoint.connect(this.effectsBus);
+    this.shipPointGain = new ParamTarget(this.shipPoint.gain, 0, 0.25, 0.003, 0, 1);
+    this.spatial = new Spatial(ctx);
 
     const nyquist = ctx.sampleRate * 0.45;
     this.airGain = new ParamTarget(this.airBus.gain, 1, 0.2, 0.004, 0, 1);
@@ -2682,7 +3144,7 @@ export class AudioSystem {
       nyquist,
     );
     this.underGain = new ParamTarget(this.underBus.gain, 0, 0.12, 0.004, 0, 1);
-    this.targets.push(this.airGain, this.muffle, this.underGain, this.shipGain);
+    this.targets.push(this.airGain, this.muffle, this.underGain, this.shipGain, this.shipPointGain);
     if (this.shipPan !== null) this.targets.push(this.shipPan);
 
     // Offsets spread across the buffer so no two beds read the same sample of it.
@@ -2798,11 +3260,49 @@ export class AudioSystem {
       pan: 0,
       gainTau: 0.2,
     });
+    this.earWind = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.bedBus,
+      filter: 'lowpass',
+      frequency: EAR_WIND_HZ,
+      q: 0.8,
+      highpass: 35,
+      playbackRate: BED_RATES.earWind,
+      offset: spacing * 2.5,
+      pan: 0,
+      // Fast: buffeting is quick, and the gust walk is slow on its own.
+      gainTau: 0.08,
+    });
+    this.rainDeck = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.bedBus,
+      filter: 'bandpass',
+      frequency: RAIN_DECK_HZ,
+      q: 0.9,
+      highpass: 400,
+      playbackRate: BED_RATES.rainDeck,
+      offset: spacing * 4.5,
+      pan: -0.1,
+      gainTau: 0.3,
+    });
+    this.rainCanvas = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.bedBus,
+      filter: 'bandpass',
+      frequency: RAIN_CANVAS_HZ,
+      q: 1.3,
+      highpass: 140,
+      playbackRate: BED_RATES.rainCanvas,
+      offset: spacing * 5.5,
+      pan: 0.1,
+      gainTau: 0.3,
+    });
     this.rumble = this.addBed(ctx, {
       // Brown, not white: what is left after a hundred metres of water is the
       // bottom of the spectrum, and a low-passed white bed to match would need a
       // filter steep enough to ring.
       buffer: brown,
+      spectrum: 'brown',
       destination: this.underBus,
       filter: 'lowpass',
       frequency: RUMBLE_HZ,
@@ -2813,6 +3313,7 @@ export class AudioSystem {
       pan: 0,
       gainTau: 0.4,
     });
+
 
     const settings = this.settings;
 
@@ -2829,12 +3330,33 @@ export class AudioSystem {
     // Bus-wide sends: the beds, the whole ship, and what is under water.
     this.bedSend = this.sendFrom(this.bedBus, BED_SEND, this.ambienceWet);
     this.shipSend = this.sendFrom(this.shipPanner ?? this.shipBus, SHIP_SEND, this.effectsWet);
+    this.shipPointSend = this.sendFrom(this.shipPoint, SHIP_SEND, this.effectsWet);
     this.underWet = ctx.createGain();
     this.underWet.gain.value = this.busLevel('ambience');
     this.underWet.connect(this.room.underInput);
     this.underFx = ctx.createGain();
     this.underFx.connect(this.underBus);
     this.underSend = this.sendFrom(this.underFx, UNDER_SEND, this.underWet);
+
+    this.samples = this.samplesUrl === null ? null : new Samples(ctx, this.samplesUrl);
+    this.island = new Island(
+      {
+        ctx,
+        sample: (kind, u) => this.samples?.pick(kind, u) ?? null,
+        white: this.white,
+        brown,
+        spatial: this.spatial,
+        acquireAmbient: () => this.acquireGullVoice(),
+        track: (source, ...nodes) => this.trackVoice(source, ...nodes),
+        addBed: (bed) => {
+          this.beds.push(bed);
+          for (const target of bed.targets) this.targets.push(target);
+        },
+      },
+      this.bedBus,
+      this.ambienceWet,
+    );
+    for (const target of this.island.targets) this.targets.push(target);
 
     this.music = new MusicEngine(ctx, this.mix, this.white, {
       voices: settings.musicVoices,
@@ -2845,12 +3367,43 @@ export class AudioSystem {
     const host: SfxHost = {
       ctx,
       acquire: () => this.acquireVoice(),
-      acquireAmbient: () => this.busyVoices() + SHIP_VOICE_RESERVE < this.settings.voices,
+      acquireAmbient: () =>
+        this.busyVoices() + SHIP_VOICE_RESERVE < this.settings.voices &&
+        this.hdr.audible(SHIP_AMBIENT_LOUDNESS_DB + gainToDb(this.shipGain.target)),
       track: (source, ...nodes) => this.trackVoice(source, ...nodes),
+      place: (along, up, across, mode) => this.placeOnShip(along, up, across, mode),
     };
     this.shipSfx = new ShipSfx(host, this.white, this.shipBus);
 
     this.applyQuality();
+  }
+
+  /**
+   * The island: where it is, its coast (from a ground-height function), and
+   * the camp fire. Null for none. Call once the geology is placed.
+   */
+  setIsland(island: Readonly<AudioIsland> | null): void {
+    if (this.ctx === null) return;
+    this.island.set(island);
+  }
+
+  /** Resolves once the recordings have loaded or failed (never rejects). For the bench. */
+  get samplesReady(): Promise<void> {
+    return this.samples?.load() ?? Promise.resolve();
+  }
+
+  /** Metres from the listener to the island's breakers, for tests. */
+  get shoreDistance(): number {
+    return this.ctx === null ? Number.POSITIVE_INFINITY : this.island.distanceToShore;
+  }
+
+  /** A panner at a point on the ship, into the ship's placed bus. See `SfxHost.place`. */
+  private placeOnShip(along: number, up: number, across: number, mode: 'hrtf' | 'equalpower'): AudioNode | null {
+    const at = this.placeAt;
+    this.spatial.shipPoint(along, up, across, at);
+    const panner = this.spatial.panner(at.x, at.y, at.z, mode);
+    panner?.connect(this.shipPoint);
+    return panner;
   }
 
   /** A send of `amount` from `node` into a wet feed. The caller disconnects it. */
@@ -2910,6 +3463,8 @@ export class AudioSystem {
   private flushAll(now: number): void {
     for (const target of this.targets) target.flush(now);
     this.room.flush(now);
+    this.hdr.flush(now);
+    this.spatial.flush();
   }
 
   /**
@@ -2922,6 +3477,7 @@ export class AudioSystem {
    */
   private startBeds(now: number): void {
     for (const bed of this.beds) bed.start(now);
+    this.island.start(now);
   }
 
   /** Whether a one-shot should be built at all. */
@@ -3072,6 +3628,37 @@ export class AudioSystem {
     this.trackVoice(osc, gain);
   }
 
+  /** A recorded cry, placed and filtered as a synthesised one is. */
+  private playRecordedGull(buffer: AudioBuffer, when: number, distanceMetres: number, pan: number, cutoff: number): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    const random = this.gullRandom;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    // A flock has members: a little larger or smaller, a little lower or higher.
+    src.playbackRate.value = 0.9 + 0.2 * random();
+    const tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.Q.value = 0.7;
+    tone.frequency.value = cutoff;
+    const gain = ctx.createGain();
+    gain.gain.value = GULL_RECORDED_LEVEL * (GULL_REFERENCE_METRES / distanceMetres);
+    src.connect(tone);
+    tone.connect(gain);
+    const panner = createStereoPanner(ctx);
+    if (panner !== null) {
+      panner.pan.value = pan;
+      gain.connect(panner);
+      panner.connect(this.ambienceBus);
+    } else {
+      gain.connect(this.ambienceBus);
+    }
+    const wet = this.sendFrom(panner ?? gain, GULL_SEND, this.ambienceWet);
+    src.start(when);
+    if (panner === null) this.trackVoice(src, tone, gain, wet);
+    else this.trackVoice(src, tone, gain, panner, wet);
+  }
+
   /**
    * One cluster of cries, placed around the listener.
    *
@@ -3127,6 +3714,8 @@ export class AudioSystem {
   private spawnGullCall(when: number, distanceMetres: number, pan: number): void {
     const ctx = this.ctx;
     if (ctx === null || !this.acquireGullVoice()) return;
+    // Below the window: a gull a storm would bury is not worth a voice.
+    if (!this.hdr.audible(GULL_LOUDNESS_DB + gainToDb(GULL_REFERENCE_METRES / distanceMetres))) return;
 
     const random = this.gullRandom;
 
@@ -3142,6 +3731,16 @@ export class AudioSystem {
       // at half the sample rate is unstable rather than transparent.
       Math.min(GULL_BRIGHT_HZ, ctx.sampleRate * 0.45),
     );
+
+    // A recorded cry, most of the time once the recordings are in: the same
+    // distance, filter and placement, a real bird's gesture.
+    const recorded = this.samples !== null && this.samples.count('gull') > 0 && random() < GULL_RECORDED_SHARE
+      ? this.samples.pick('gull', random())
+      : null;
+    if (recorded !== null) {
+      this.playRecordedGull(recorded, when, distanceMetres, pan, cutoff);
+      return;
+    }
 
     const osc = ctx.createOscillator();
     osc.setPeriodicWave(this.gullWave);
@@ -3395,10 +3994,19 @@ function buildThunderCurve(
  * Linear to `knee`, then a tanh shoulder. A `WaveShaperNode` holds its end
  * values for input beyond [-1, 1], so the curve's last point is the ceiling.
  */
-function buildSoftClipCurve(knee: number): Float32Array<ArrayBuffer> {
+function buildSoftClipCurve(knee: number, ceiling: number): Float32Array<ArrayBuffer> {
   const n = 2049;
   const curve = new Float32Array(new ArrayBuffer(n * 4));
-  const span = 1 - knee;
+  // The shoulder's width, so that full-scale input lands on the ceiling:
+  // knee + span * tanh((1 - knee) / span) = ceiling, solved by bisection.
+  let lo = 1e-3;
+  let hi = 1;
+  for (let i = 0; i < 40; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (knee + mid * Math.tanh((1 - knee) / mid) > ceiling) hi = mid;
+    else lo = mid;
+  }
+  const span = 0.5 * (lo + hi);
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
     const a = Math.abs(x);
@@ -3435,4 +4043,13 @@ function clamp01(v: number): number {
 function smoothstepNumber(x: number, edge0: number, edge1: number): number {
   const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+/** Power sum of two levels in dB. */
+function sumDb(a: number, b: number): number {
+  if (a === Number.NEGATIVE_INFINITY) return b;
+  if (b === Number.NEGATIVE_INFINITY) return a;
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  return hi + 10 * Math.log10(1 + Math.pow(10, (lo - hi) / 10));
 }

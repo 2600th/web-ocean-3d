@@ -8,6 +8,7 @@
 *.glb   -text -diff
 *.ktx2  -text -diff
 *.exr   -text -diff
+*.ogg   -text -diff
 
 # .gltf is JSON; keep it text but pin LF so the MD5 check in
 # scripts/fetch-assets.mjs stays reproducible across platforms.

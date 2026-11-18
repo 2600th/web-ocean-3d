@@ -57,6 +57,19 @@ const DEACTIVATE_SECONDS = 0.4;
 const PARK_LEVEL = 1e-4;
 const PARK_TAUS = 10;
 const PARK_MIN_SECONDS = 1;
+/**
+ * From a bed's estimated output power to the logical loudness scale: the
+ * LUFS offset (-0.691) plus the master compressor's makeup, fitted against
+ * the bench's world-only renders.
+ */
+const LOUDNESS_OFFSET_DB = 8;
+/**
+ * Loudness weighting on a brown bed: nearly all of its power is under 100 Hz,
+ * where BS.1770's high-pass discounts it. Fitted against the underwater render.
+ */
+const BROWN_WEIGHTING_DB = -7;
+/** The brown buffer's corner, Hz (`noise.ts`). */
+const BROWN_CORNER_HZ = 20;
 
 export interface NoiseBedOptions {
   /** Shared looping noise. Not owned — several beds read the same buffer. */
@@ -81,6 +94,11 @@ export interface NoiseBedOptions {
   gainTau?: number;
   /** Time constant for filter moves. */
   filterTau?: number;
+  /**
+   * The buffer's spectrum, for `loudnessDb`: white (the default) or brown
+   * (a one-pole at `BROWN_CORNER_HZ`, as `noise.ts` makes it).
+   */
+  spectrum?: 'white' | 'brown';
 }
 
 export class NoiseBed {
@@ -116,6 +134,16 @@ export class NoiseBed {
   /** When the level was last asked to be silence, or null while it is not. */
   private quietSince: number | null = null;
   private readonly parkAfter: number;
+  private readonly filterType: BiquadFilterType;
+  private readonly nyquist: number;
+  /** Mean square of the buffer, for `loudnessDb`. */
+  private readonly power: number;
+  private readonly brown: boolean;
+  /** The read rate's own wander (A5): base, period and phase. */
+  private readonly baseRate: number;
+  private readonly wanderPeriod: number;
+  private readonly wanderPhase: number;
+  private readonly rate: ParamTarget;
 
   constructor(ctx: BaseAudioContext, options: NoiseBedOptions) {
     // Ceiling on any filter corner: nine tenths of Nyquist, not Nyquist. A
@@ -126,6 +154,14 @@ export class NoiseBed {
     const maxFrequency = ctx.sampleRate * 0.45;
 
     this.destination = options.destination;
+    this.filterType = options.filter;
+    this.nyquist = ctx.sampleRate / 2;
+    this.power = bufferPower(options.buffer);
+    this.brown = options.spectrum === 'brown';
+    this.baseRate = options.playbackRate;
+    // Incommensurate per bed, from its own base rate and offset: 23 to 37 s.
+    this.wanderPeriod = 23 + ((options.playbackRate * 97.13 + options.offset * 13.7) % 14);
+    this.wanderPhase = (options.offset * 2.399) % (2 * Math.PI);
 
     this.source = ctx.createBufferSource();
     this.source.buffer = options.buffer;
@@ -183,6 +219,7 @@ export class NoiseBed {
       20,
       maxFrequency,
     );
+    this.rate = new ParamTarget(this.source.playbackRate, options.playbackRate, 0.5, 0.002, 0.25, 4);
     this.pan =
       this.panNode === null
         ? null
@@ -197,6 +234,17 @@ export class NoiseBed {
     // wrap.
     const duration = options.buffer.duration;
     this.startOffset = duration > 0 ? options.offset % duration : 0;
+  }
+
+  /**
+   * Lets the read rate drift a few per cent around its base, on this bed's
+   * own period, so its loop through the buffer is never exact (A5). Called
+   * every frame; writes only when the rate has moved.
+   */
+  wander(now: number, depth: number, live: boolean): void {
+    if (!this.started || !this.connected) return;
+    const w = Math.sin((2 * Math.PI * now) / this.wanderPeriod + this.wanderPhase);
+    this.rate.set(this.baseRate * (1 + depth * w), now, live);
   }
 
   /** Begins playback. Idempotent — a second call is a no-op, not an exception. */
@@ -235,6 +283,44 @@ export class NoiseBed {
       }
     }
     this.level.set(wanted, now, live);
+  }
+
+  /**
+   * Logical loudness of what this bed is being asked to play, dB on the scale
+   * `HdrMix` uses (roughly LUFS before the master stage, `LOUDNESS_OFFSET_DB`
+   * fitted by the bench). Estimated from the level and the band: white noise's
+   * power through a filter is its power per hertz times the filter's
+   * equivalent noise bandwidth, less what the fixed high-pass takes away.
+   * K-weighting is left out; the beds that matter sit in its flat middle.
+   */
+  loudnessDb(): number {
+    const level = this.active ? this.level.target : 0;
+    if (level <= 1e-5) return -Infinity;
+    const f = this.frequency.target;
+    const q = Math.max(0.05, this.resonance.target);
+    const hp = this.highpassFrequency.target;
+    if (this.brown) {
+      // Power of a one-pole spectrum between the high-pass and the corner,
+      // as a fraction of all of it: (atan(f/fc) - atan(hp/fc)) / (pi/2).
+      const top = this.filterType === 'lowpass' ? f : this.nyquist;
+      const share = Math.max(0.02, (Math.atan(top / BROWN_CORNER_HZ) - Math.atan(hp / BROWN_CORNER_HZ)) / (Math.PI / 2));
+      return 10 * Math.log10(Math.max(1e-12, level * level * this.power * share)) + LOUDNESS_OFFSET_DB + BROWN_WEIGHTING_DB;
+    }
+    let band: number;
+    switch (this.filterType) {
+      case 'lowpass':
+        band = Math.max(0.15 * f, 1.11 * f - hp);
+        break;
+      case 'highpass':
+        band = Math.max(1, this.nyquist - Math.max(f, hp));
+        break;
+      default:
+        // A band-pass's equivalent noise bandwidth is pi/2 of its -3 dB width.
+        band = Math.max(1, (Math.PI / 2) * (f / q) - Math.max(0, hp - f / 2) * 0.5);
+        break;
+    }
+    const power = level * level * this.power * (band / this.nyquist);
+    return 10 * Math.log10(Math.max(1e-12, power)) + LOUDNESS_OFFSET_DB;
   }
 
   /** Whether this bed is hooked up and therefore being rendered. */
@@ -323,4 +409,16 @@ export class NoiseBed {
     this.gainNode.disconnect();
     this.panNode?.disconnect();
   }
+}
+
+/** Mean square of a buffer's first channel, sampled sparsely. */
+function bufferPower(buffer: AudioBuffer): number {
+  const data = buffer.getChannelData(0);
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < data.length; i += 7) {
+    sum += data[i] * data[i];
+    n++;
+  }
+  return n > 0 ? sum / n : 0;
 }

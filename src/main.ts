@@ -1763,7 +1763,7 @@ class App {
       _impactOffset.copy(p).sub(this.camera.position);
       const far = Math.max(1, _impactOffset.length());
       const loud = 0.6 * s * Math.min(1, r / 0.5) * Math.min(1, 20 / far);
-      if (loud > 0.03) this.audio.playSplash(loud, _impactOffset.dot(_impactRight) / far);
+      if (loud > 0.03) this.audio.playSplash(loud, _impactOffset.dot(_impactRight) / far, p.x, p.y, p.z);
       return;
     }
 
@@ -2433,6 +2433,8 @@ class App {
       applySpecularAATo(props.object);
       this.lighting.local.setIsland(props.lightAnchors(), props.object);
       props.setFireDetail(QUALITY_TIERS[this.state.quality].weatherDetail);
+      // The island heard (A8): its coast from the ground height, and the camp fire.
+      this.audio.setIsland({ x: ISLAND.x, z: ISLAND.z, radius: ISLAND.radius, fire: props.lightAnchors().fire, height: (x, z) => seafloorHeight(x, z) });
       // Everything placed on the ground learns about the ground: contact
       // darkening at its base, the caustic pattern if it is under water, and the
       // island's own shadow and the cloud deck's if it is not. See
@@ -2663,6 +2665,14 @@ class App {
     audio.shipHeel = -Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
     _audioAxis.set(1, 0, 0).applyQuaternion(hull.quaternion);
     audio.shipPitch = Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+    // Her pose, so creaks, blocks and slaps come from points on her (A4).
+    audio.shipX = hull.position.x;
+    audio.shipY = hull.position.y;
+    audio.shipZ = hull.position.z;
+    audio.shipBowX = _audioAxis.x;
+    audio.shipBowZ = _audioAxis.z;
+    audio.shipLength = ship.hullLength;
+    audio.shipBeam = ship.hullBeam;
 
     const sails = this.gameplay?.audioState(this.sailAudio) ?? null;
     audio.sailFill = sails?.sailFill ?? 0;
@@ -2670,6 +2680,9 @@ class App {
     // The same setting drawn: furled, half or full at the helm; chosen by the
     // wind when nobody is (`fill: null`). Cloth or analytic by tier.
     const windToward = getPreset(this.state.preset).sea.windDirection;
+    // The wind in the ears and on the rigging (A7).
+    audio.windToward = windToward;
+    audio.apparentWindSpeed = sails?.active ? this.gameplay?.apparentWind.speed : undefined;
     ship.setSailState({
       fill: sails?.active && !this.scriptedUnderWay ? sails.sailFill : null,
       trueWind: _sailWind.set(Math.cos(windToward), 0, Math.sin(windToward)).multiplyScalar(this.state.windSpeed),
@@ -2885,6 +2898,7 @@ class App {
       case 'ambienceMuted':
       case 'effectsMuted':
       case 'interfaceMuted':
+      case 'reducedRange':
         this.audio.applyMix(this.state);
         saveSoundPrefs(this.state);
         break;
@@ -3672,7 +3686,7 @@ class App {
         !this.captureOwnsClock && this.director.submersion() < 0.5,
       );
       if (strike) {
-        this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+        this.audio.playThunder(strike.distance / 1000, strike.distance / 343, strike.x, strike.z); // speed of sound, m/s
         this.gameplay?.reportThunder(strike.distance);
       }
       // Less of the flash as a grade lift now the strike lights the scene for
@@ -4020,6 +4034,13 @@ class App {
     audio.birdCount = this.birds.getCount();
     audio.listenerX = this.camera.position.x;
     audio.listenerZ = this.camera.position.z;
+    // The listener's pose, for sound in space (A4).
+    this.camera.getWorldDirection(_impactForward);
+    audio.listenerY = this.camera.position.y;
+    audio.listenerForwardX = _impactForward.x;
+    audio.listenerForwardY = _impactForward.y;
+    audio.listenerForwardZ = _impactForward.z;
+    audio.sunElevation = this.atmosphere.sunDirection.y;
     this.updateShipAudio(dt, audio);
     this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);

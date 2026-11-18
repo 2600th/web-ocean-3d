@@ -76,7 +76,9 @@ const STEP_FRAMES = 128 * 12;
 // thunder from the lightning (delayed by distance at 343 m/s).
 
 const hs = (u) => (0.22 * u * u) / 9.81;
-const thunder = (t, km) => ({ t, type: 'thunder', km, delay: (km * 1000) / 343 });
+// Each strike on its own bearing (the listener faces -Z), so the placed
+// thunder (A4) is exercised; code without placement ignores x and z.
+const thunder = (t, km) => ({ t, type: 'thunder', km, delay: (km * 1000) / 343, x: km * 1000 * Math.sin(t * 1.3), z: -km * 1000 * Math.cos(t * 1.3) });
 
 /** Slaps every `every` seconds with a little irregularity, alternating sides. */
 function slaps(every, strength, from = 1, to = 60) {
@@ -98,13 +100,13 @@ const STATES = {
   },
   sailing: {
     music: 'sailing', energy: 0.73,
-    params: { windSpeed: 11, waveHeight: hs(11), peakWavelength: 40, rain: 0, submersion: 0, hullSpeed: 5.5, birdCount: 40, shipDistance: 18, shipPan: 0.1, sailFill: 0.9, sailLuff: 0 },
+    params: { windSpeed: 11, waveHeight: hs(11), peakWavelength: 40, rain: 0, submersion: 0, hullSpeed: 5.5, birdCount: 40, shipDistance: 18, shipPan: 0.1, sailFill: 0.9, sailLuff: 0, windToward: 0.5, apparentWindSpeed: 13 },
     motion: { heel: 0.12, heelPeriod: 7, pitch: 0.05, pitchPeriod: 5.2, heelBias: 0.1 },
     events: [...slaps(2.6, 0.45), { t: 17, type: 'impact', strength: 0.3 }, { t: 41, type: 'impact', strength: 0.22 }, { t: 30, type: 'chime' }],
   },
   storm: {
     music: 'storm', energy: 0.8,
-    params: { windSpeed: 22, waveHeight: hs(22), peakWavelength: 110, rain: 0.9, submersion: 0, hullSpeed: 6, birdCount: 40, shipDistance: 18, shipPan: -0.1, sailFill: 0.6, sailLuff: 0.15 },
+    params: { windSpeed: 22, waveHeight: hs(22), peakWavelength: 110, rain: 0.9, submersion: 0, hullSpeed: 6, birdCount: 40, shipDistance: 18, shipPan: -0.1, sailFill: 0.6, sailLuff: 0.15, windToward: 0.6, apparentWindSpeed: 24 },
     motion: { heel: 0.3, heelPeriod: 9, pitch: 0.12, pitchPeriod: 6.3, heelBias: 0.15 },
     events: [
       ...slaps(1.4, 0.8),
@@ -130,7 +132,7 @@ const STATES = {
     music: 'calm', energy: 0,
     // The moonlit look's weather. The audio has no time-of-day input, so this
     // differs from `calm` only by what the game feeds it.
-    params: { windSpeed: 6, waveHeight: hs(6), peakWavelength: 80, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 40, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0 },
+    params: { windSpeed: 6, waveHeight: hs(6), peakWavelength: 80, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 40, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0, sunElevation: -0.3 },
     motion: { heel: 0.05, heelPeriod: 9.5, pitch: 0.02, pitchPeriod: 6.1 },
     events: [...slaps(6, 0.2)],
   },
@@ -143,6 +145,26 @@ const STATES = {
     listenerX: (t) => -270 + 9 * t,
     events: [...slaps(2.8, 0.4), { t: 29, type: 'impact', strength: 0.35 }],
   },
+  islandDay: {
+    // Running in toward a beach by day (A8): the listener closes from 675 m off
+    // the breakers to 15 m, the camp fire 100 m up the beach. A round island
+    // 500 m across centred at x = -1000; its ground falls 1 m per metre.
+    music: 'calm', energy: 0,
+    params: { windSpeed: 7, waveHeight: hs(7), peakWavelength: 50, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 40, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0, listenerZ: 0, sunElevation: 0.6 },
+    motion: { heel: 0.05, heelPeriod: 7, pitch: 0.02, pitchPeriod: 5.2 },
+    island: { x: -1000, z: 0, radius: 500, fire: { x: -560, y: 3, z: 10 } },
+    listenerX: (t) => 200 - 11 * t,
+    events: [...slaps(5, 0.2)],
+  },
+  islandNight: {
+    // The same run in at night: insects instead of birds.
+    music: 'calm', energy: 0,
+    params: { windSpeed: 5, waveHeight: hs(5), peakWavelength: 50, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 0, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0, listenerZ: 0, sunElevation: -0.3 },
+    motion: { heel: 0.05, heelPeriod: 7, pitch: 0.02, pitchPeriod: 5.2 },
+    island: { x: -1000, z: 0, radius: 500, fire: { x: -560, y: 3, z: 10 } },
+    listenerX: (t) => 200 - 11 * t,
+    events: [...slaps(5, 0.2)],
+  },
   tierChange: {
     // Not a game state: sailing with the adaptive quality dropping to Low at
     // 20 s and back to High at 40 s, which swaps the rooms and the beds.
@@ -153,12 +175,12 @@ const STATES = {
   },
 };
 
-const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'nightCalm', 'nearCliffs', 'tierChange'];
+const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'nightCalm', 'nearCliffs', 'islandDay', 'islandNight', 'tierChange'];
 
 // --- arguments ---------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { states: DEFAULT_STATES, seconds: 60, tier: 'high', volume: 1, music: 0.5, saveBaseline: false, wav: true, src: ROOT };
+  const args = { states: DEFAULT_STATES, seconds: 60, tier: 'high', volume: 1, music: 0.5, saveBaseline: false, wav: true, src: ROOT, reduced: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--states') args.states = argv[++i].split(',');
@@ -171,6 +193,8 @@ function parseArgs(argv) {
     // re-record the baseline: git archive <rev> src/audio src/core | tar -x -C <dir>
     else if (a === '--src') args.src = resolve(argv[++i]);
     else if (a === '--no-wav') args.wav = false;
+    // The reduced dynamic range (laptop speakers), as the sound settings offer it.
+    else if (a === '--reduced') args.reduced = true;
     else throw new Error(`audio-bench: unknown argument ${a}`);
   }
   for (const s of args.states) if (!STATES[s]) throw new Error(`audio-bench: unknown state ${s}`);
@@ -257,6 +281,9 @@ async function renderInPage(cfg) {
   };
 
   const sys = new AudioSystem({ context: ctx, volume: cfg.volume, musicVolume: cfg.music, quality: cfg.tier });
+  if (cfg.reduced && typeof sys.setReducedRange === 'function') sys.setReducedRange(true);
+  // The recordings decode before the render starts, so every run hears them.
+  if (sys.samplesReady) await sys.samplesReady;
   // Events refused for want of a voice (the deck's, and the gulls' share of it).
   let refused = 0;
   for (const name of ['acquireVoice', 'acquireGullVoice']) {
@@ -283,6 +310,10 @@ async function renderInPage(cfg) {
   sys.setMusicState(st.music, st.energy);
   sys.resetClock(0);
   if (st.reflectors && typeof sys.setReflectors === 'function') sys.setReflectors(st.reflectors);
+  if (st.island && typeof sys.setIsland === 'function') {
+    const isl = st.island;
+    sys.setIsland({ ...isl, height: (x, z) => isl.radius - Math.hypot(x - isl.x, z - isl.z) });
+  }
   await sys.resume();
   if (cfg.diag === 'wet') {
     // Diagnosis only (BENCH_DIAG=wet): the room's return alone, every dry path
@@ -313,6 +344,8 @@ async function renderInPage(cfg) {
   let lastOrder = null;
   const fxCap = () => sys.settings?.voices ?? null;
   let peakFxCap = fxCap();
+  // The loudness window (A3), where the code has one: its gain, dB.
+  let hdrMin = Infinity, hdrMax = -Infinity, hdrSum = 0, hdrN = 0;
 
   const tick = (i) => {
     const t = i * dt;
@@ -324,7 +357,7 @@ async function renderInPage(cfg) {
     while (nextEvent < events.length && events[nextEvent].t <= t) {
       const e = events[nextEvent++];
       switch (e.type) {
-        case 'thunder': sys.playThunder(e.km, e.delay); break;
+        case 'thunder': sys.playThunder(e.km, e.delay, e.x, e.z); break;
         case 'slap': sys.waveSlap(e.strength, e.pan); break;
         case 'impact': sys.hullImpact(e.strength, false); break;
         case 'splash': sys.playSplash(e.strength, e.pan ?? 0); break;
@@ -345,6 +378,13 @@ async function renderInPage(cfg) {
     if (live > peakLive) peakLive = live;
     const cap = fxCap();
     if (cap !== null && (peakFxCap === null || cap > peakFxCap)) peakFxCap = cap;
+    const hdr = sys.hdrDebug;
+    if (hdr && i > 0) {
+      hdrMin = Math.min(hdrMin, hdr.gainDb);
+      hdrMax = Math.max(hdrMax, hdr.gainDb);
+      hdrSum += hdr.gainDb;
+      hdrN++;
+    }
 
     const pos = music?.position;
     if (pos) {
@@ -406,6 +446,7 @@ async function renderInPage(cfg) {
     bedsAtZero: bedsZero,
     repeatMeasured,
     repeatProjected,
+    hdrGainDb: hdrN > 0 ? { min: +hdrMin.toFixed(1), max: +hdrMax.toFixed(1), mean: +(hdrSum / hdrN).toFixed(1) } : null,
     wav,
   };
 
@@ -709,6 +750,12 @@ async function main() {
         if (url.pathname === '/bench.js') {
           return route.fulfill({ status: 200, contentType: 'text/javascript', body: code });
         }
+        // The recordings (`public/audio`), as the site serves them.
+        if (url.pathname.startsWith('/audio/')) {
+          const file = join(args.src, 'public', 'audio', url.pathname.slice('/audio/'.length).replace(/[^a-z0-9._-]/gi, ''));
+          if (existsSync(file)) return route.fulfill({ status: 200, contentType: 'audio/ogg', body: readFileSync(file) });
+          return route.fulfill({ status: 404, body: '' });
+        }
         return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>audio bench</title>' });
       });
       const page = await context.newPage();
@@ -745,6 +792,7 @@ async function main() {
               clickRatio: CLICK_RATIO,
               clickFloor: CLICK_FLOOR,
               diag: process.env.BENCH_DIAG ?? null,
+              reduced: args.reduced,
             },
           },
         );
@@ -761,7 +809,9 @@ async function main() {
           `[audio-bench] ${name.padEnd(10)} ${fmt.lufs(r.integratedLufs).padStart(6)} LUFS  ` +
             `TP ${fmt.db(r.truePeakDb).padStart(5)} dBTP  clicks ${String(r.clicks).padStart(3)}  ` +
             `fx ${r.peakFxVoices}/${r.fxVoiceCap} refused ${r.refused}  notes ${r.peakMusicNotes}  nodes ${r.peakLiveNodes} (${r.peakNodesPerSecond}/s)  ` +
-            `beds@0 ${r.bedsAtZero}/${r.bedsRendering}  repeat ${fmt.repeat(r)}  (${((Date.now() - started) / 1000).toFixed(1)} s)`,
+            `beds@0 ${r.bedsAtZero}/${r.bedsRendering}  repeat ${fmt.repeat(r)}` +
+            (r.hdrGainDb ? `  hdr ${r.hdrGainDb.min}..${r.hdrGainDb.max} (mean ${r.hdrGainDb.mean}) dB` : '') +
+            `  (${((Date.now() - started) / 1000).toFixed(1)} s)`,
         );
       }
       await page.close();
@@ -776,7 +826,7 @@ async function main() {
   writeFileSync(join(OUT_DIR, 'bench.json'), JSON.stringify(current, null, 2));
   if (args.saveBaseline) writeFileSync(BASELINE, JSON.stringify(current, null, 2) + '\n');
   const full =
-    args.seconds === 60 && args.tier === 'high' && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS && !process.env.BENCH_PARAMS &&
+    args.seconds === 60 && args.tier === 'high' && !args.reduced && !process.env.BENCH_DIAG && !process.env.BENCH_EVENTS && !process.env.BENCH_PARAMS &&
     DEFAULT_STATES.every((s) => args.states.includes(s));
   if (full) {
     const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : null;

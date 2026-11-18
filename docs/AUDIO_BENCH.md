@@ -8,32 +8,36 @@ P0.6, A1 and A2 changes); "now" is the latest run. The WAV files are in `test-re
 | State | Run | Integrated LUFS | Max short-term LUFS | True peak dBTP | Clicks | Peak voices | Peak nodes | Beds rendering at zero | Music repeats after |
 |---|---|---|---|---|---|---|---|---|---|
 | calm | before | -27.6 | -22.6 | -7.3 | 0 | 4/12 fx (0 refused), 18 notes | 193 live, 180/s | 6 of 10 | ~111 s (projected) |
-|  | now | -27.6 | -22.6 | -7.2 | 0 | 4/12 fx (0 refused), 18 notes | 209 live, 201/s | 0 of 3 | ~111 s (projected) |
+|  | now | -19.7 | -16.7 | -4.1 | 2 | 4/12 fx (0 refused), 18 notes | 250 live, 243/s | 0 of 3 | ~111 s (projected) |
 | sailing | before | -22.7 | -19.4 | -5.5 | 2 | 5/12 fx (0 refused), 20 notes | 251 live, 264/s | 3 of 10 | ~61 s (projected) |
-|  | now | -22.7 | -19.4 | -5.1 | 2 | 5/12 fx (0 refused), 20 notes | 267 live, 285/s | 0 of 6 | ~61 s (projected) |
+|  | now | -18.8 | -17.3 | -2.8 | 4 | 5/12 fx (0 refused), 20 notes | 302 live, 315/s | 0 of 7 | ~61 s (projected) |
 | storm | before | -16.2 | -15.0 | -2.3 | 0 | 8/12 fx (0 refused), 24 notes | 298 live, 287/s | 0 of 10 | 47 s |
-|  | now | -16.2 | -15.0 | -2.8 | 0 | 6/12 fx (0 refused), 24 notes | 317 live, 308/s | 0 of 9 | 47 s |
+|  | now | -16.5 | -15.2 | -1.7 | 0 | 6/12 fx (0 refused), 24 notes | 356 live, 356/s | 0 of 12 | 47 s |
 | underwater | before | -23.5 | -21.9 | -8.1 | 0 | 11/12 fx (0 refused), 8 notes | 169 live, 153/s | 5 of 10 | ~107 s (projected) |
-|  | now | -23.5 | -21.9 | -8.1 | 0 | 11/12 fx (0 refused), 8 notes | 185 live, 174/s | 0 of 5 | ~107 s (projected) |
+|  | now | -18.1 | -17.3 | -3.5 | 0 | 11/12 fx (0 refused), 8 notes | 223 live, 216/s | 0 of 6 | ~107 s (projected) |
 | tour | before | -24.5 | -21.2 | -7.3 | 1 | 4/12 fx (0 refused), 25 notes | 230 live, 207/s | 3 of 10 | 55 s |
-|  | now | -24.5 | -21.2 | -7.0 | 1 | 4/12 fx (0 refused), 25 notes | 249 live, 228/s | 0 of 6 | 55 s |
+|  | now | -19.3 | -17.9 | -5.9 | 0 | 4/12 fx (0 refused), 25 notes | 279 live, 264/s | 0 of 7 | 55 s |
 | nightCalm | before | -27.2 | -22.5 | -7.3 | 0 | 5/12 fx (0 refused), 18 notes | 195 live, 180/s | 6 of 10 | ~111 s (projected) |
-|  | now | -27.2 | -22.5 | -7.2 | 0 | 5/12 fx (0 refused), 18 notes | 211 live, 201/s | 0 of 3 | ~111 s (projected) |
+|  | now | -19.7 | -17.0 | -4.3 | 2 | 4/12 fx (0 refused), 18 notes | 245 live, 243/s | 0 of 4 | ~111 s (projected) |
 | nearCliffs | before | -24.0 | -21.2 | -6.7 | 2 | 4/12 fx (0 refused), 19 notes | 220 live, 234/s | 4 of 10 | ~63 s (projected) |
-|  | now | -24.0 | -21.2 | -6.4 | 2 | 4/12 fx (0 refused), 19 notes | 238 live, 255/s | 0 of 5 | ~63 s (projected) |
+|  | now | -19.0 | -17.7 | -2.7 | 1 | 4/12 fx (0 refused), 19 notes | 272 live, 291/s | 0 of 6 | ~63 s (projected) |
 | tierChange | before | -23.1 | -21.2 | -7.6 | 3 | 5/12 fx (1 refused), 19 notes | 215 live, 264/s | 3 of 10 | ~61 s (projected) |
-|  | now | -23.1 | -21.2 | -7.5 | 3 | 5/12 fx (1 refused), 19 notes | 237 live, 285/s | 0 of 6 | ~61 s (projected) |
+|  | now | -18.9 | -18.0 | -4.8 | 1 | 4/12 fx (0 refused), 19 notes | 273 live, 315/s | 0 of 7 | ~61 s (projected) |
+| islandDay | now | -19.4 | -16.8 | -3.8 | 3 | 5/12 fx (0 refused), 18 notes | 250 live, 247/s | 0 of 6 | ~111 s (projected) |
+| islandNight | now | -19.7 | -16.4 | -2.9 | 2 | 3/12 fx (0 refused), 18 notes | 239 live, 247/s | 0 of 7 | ~111 s (projected) |
 
 Click times in the latest run (first twelve per state, seconds, ratio to the local level):
 
-- calm: none
-- sailing: 41.785 (10.6x), 57.189 (11.5x)
+- calm: 44.173 (14.5x), 44.275 (10.3x)
+- sailing: 40.21 (11.5x), 41.233 (11.6x), 57.996 (10.3x), 59.952 (10.1x)
 - storm: none
 - underwater: none
-- tour: 53.99 (10x)
-- nightCalm: none
-- nearCliffs: 42.354 (10.4x), 48.542 (12.9x)
-- tierChange: 42.543 (11.6x), 42.946 (10.7x), 43.991 (10.8x)
+- tour: none
+- nightCalm: 36.817 (13.4x), 36.931 (14.6x)
+- nearCliffs: 24.575 (12.9x)
+- islandDay: 31.94 (10.9x), 49.985 (13.4x), 50.036 (13.8x)
+- islandNight: 44.173 (14.5x), 44.275 (10.4x)
+- tierChange: 28.826 (10.1x)
 
 Detector self-test: a 440 Hz sine cut to zero mid-cycle gives 1 click(s);
 the clean sine 0, low-passed noise 0.

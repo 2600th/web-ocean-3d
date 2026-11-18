@@ -16,7 +16,7 @@ import type { UiState } from './types.ts';
 const STORAGE_KEY = 'web-ocean-3d:sound';
 
 const LEVELS = ['volume', 'musicVolume', 'ambienceVolume', 'effectsVolume', 'interfaceVolume'] as const;
-const MUTES = ['musicMuted', 'ambienceMuted', 'effectsMuted', 'interfaceMuted'] as const;
+const MUTES = ['musicMuted', 'ambienceMuted', 'effectsMuted', 'interfaceMuted', 'reducedRange'] as const;
 
 export type SoundKey = (typeof LEVELS)[number] | (typeof MUTES)[number];
 

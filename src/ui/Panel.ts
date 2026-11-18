@@ -44,7 +44,7 @@ type SliderKey =
   | 'effectsVolume'
   | 'interfaceVolume'
   | 'pixelRatio';
-type ToggleKey = 'buoyancyProbes' | 'wakeProbes';
+type ToggleKey = 'buoyancyProbes' | 'wakeProbes' | 'reducedRange';
 type MuteKey = 'musicMuted' | 'ambienceMuted' | 'effectsMuted' | 'interfaceMuted';
 
 interface SliderSpec {
@@ -422,6 +422,8 @@ export class Panel {
     for (const key of HELM_SLIDERS) {
       this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
     }
+    // Laptop speakers: a calm and a storm closer together, thunder less sudden.
+    this.buildToggle(cabin, 'reducedRange', 'Laptop speakers (less range)');
 
     // ---- Shipwright (debug) ------------------------------------------------
     const tools = el('details', 'ledger-tools');

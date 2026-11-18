@@ -68,6 +68,8 @@ export interface UiState {
   ambienceMuted: boolean;
   effectsMuted: boolean;
   interfaceMuted: boolean;
+  /** Less range between quiet and loud sound, for laptop speakers. */
+  reducedRange: boolean;
   buoyancyProbes: boolean;
   wakeProbes: boolean;
   /** Device pixel ratio multiplier, 0.5..2. */
@@ -172,6 +174,7 @@ export const DEFAULT_UI_STATE: UiState = {
   ambienceMuted: false,
   effectsMuted: false,
   interfaceMuted: false,
+  reducedRange: false,
   buoyancyProbes: false,
   wakeProbes: false,
   pixelRatio: 1,

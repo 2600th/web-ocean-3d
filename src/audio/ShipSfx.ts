@@ -37,6 +37,14 @@ export interface SfxHost {
   /** Voice for ambience, held short of the cap so it cannot starve an event. */
   acquireAmbient(): boolean;
   track(source: AudioScheduledSourceNode, ...nodes: AudioNode[]): void;
+  /**
+   * A panner at a point on the ship, already connected to where the ship's
+   * placed sounds go: `along` and `across` in fractions of her half-length
+   * (+ bow) and half-beam (+ starboard), `up` in metres from the waterline.
+   * Optional; without it (or when it returns null) a sound is panned in the
+   * ship's own stereo image as before.
+   */
+  place?(along: number, up: number, across: number, mode: 'hrtf' | 'equalpower'): AudioNode | null;
 }
 
 /** Hull state, per frame. Angles in radians. */
@@ -284,9 +292,11 @@ export class ShipSfx {
     bp2.connect(upper);
     bp1.connect(env);
     upper.connect(env);
-    const pan = this.panner((random() * 2 - 1) * 0.5);
+    // A creak is somewhere in the frame; a groan is the whole hull, low down.
+    const pan = groan
+      ? this.at((random() * 2 - 1) * 0.5, -0.5, 0, 'equalpower', 0)
+      : this.at((random() * 2 - 1) * 0.85, 0.5 + 1.5 * random(), (random() * 2 - 1) * 0.8, 'equalpower', (random() * 2 - 1) * 0.5);
     env.connect(pan ?? this.out);
-    if (pan !== null) pan.connect(this.out);
 
     osc.start(when);
     osc.stop(when + dur + 0.02);
@@ -301,9 +311,9 @@ export class ShipSfx {
     const random = this.random;
     const out = ctx.createGain();
     out.gain.value = BLOCK_LEVEL * clamp(strength, 0, 1);
-    const pan = this.panner((random() * 2 - 1) * 0.6);
+    // Aloft, on a mast.
+    const pan = this.at((random() * 2 - 1) * 0.4, 8 + 8 * random(), (random() * 2 - 1) * 0.3, 'equalpower', (random() * 2 - 1) * 0.6);
     out.connect(pan ?? this.out);
-    if (pan !== null) pan.connect(this.out);
 
     const count = 2 + Math.floor(random() * 3);
     const nodes: AudioNode[] = [out];
@@ -358,9 +368,9 @@ export class ShipSfx {
 
     src.connect(band);
     band.connect(env);
-    const pan = this.panner((random() * 2 - 1) * 0.35);
+    // In the canvas.
+    const pan = this.at((random() * 2 - 1) * 0.5, 6 + 8 * random(), (random() * 2 - 1) * 0.4, 'equalpower', (random() * 2 - 1) * 0.35);
     env.connect(pan ?? this.out);
-    if (pan !== null) pan.connect(this.out);
     src.start(when, random() * (this.white.duration - 0.5));
     src.stop(when + dur + 0.02);
     if (pan !== null) this.host.track(src, band, env, pan);
@@ -386,10 +396,12 @@ export class ShipSfx {
     env.gain.exponentialRampToValueAtTime(level * 1e-3, when + 0.45);
     src.connect(low);
     low.connect(env);
-    env.connect(this.out);
+    const where = this.at(0, 9, 0, 'equalpower', 0);
+    env.connect(where ?? this.out);
     src.start(when, this.random() * (this.white.duration - 1));
     src.stop(when + 0.5);
-    this.host.track(src, low, env);
+    if (where !== null) this.host.track(src, low, env, where);
+    else this.host.track(src, low, env);
     this.flap(s, when + 0.03, true);
   }
 
@@ -428,14 +440,15 @@ export class ShipSfx {
     boomGain.gain.linearRampToValueAtTime(Math.max(1e-4, boomLevel), when + 0.006);
     boomGain.gain.exponentialRampToValueAtTime(Math.max(1e-7, boomLevel * 1e-3), when + 0.22);
 
-    const panner = this.panner(clamp(pan, -1, 1) * 0.8);
+    // On the planking, on the side the water hit.
+    const side = clamp(pan, -1, 1);
+    const panner = this.at((random() * 2 - 1) * 0.7, 0.3, side >= 0 ? 1 : -1, 'equalpower', side * 0.8);
     const dest = panner ?? this.out;
     src.connect(band);
     band.connect(smack);
     smack.connect(dest);
     boom.connect(boomGain);
     boomGain.connect(dest);
-    if (panner !== null) panner.connect(this.out);
 
     src.start(when, random() * (this.white.duration - 0.5));
     src.stop(when + dur + 0.02);
@@ -476,11 +489,14 @@ export class ShipSfx {
     body.gain.linearRampToValueAtTime(level * 0.7, when + 0.004);
     body.gain.exponentialRampToValueAtTime(level * 7e-4, when + 0.4);
 
+    // At the bow, head-related: the blow should come from where she struck.
+    const where = this.at(0.8, 0.5, 0, 'hrtf', 0);
+    const dest = where ?? this.out;
     thud.connect(thudGain);
-    thudGain.connect(this.out);
+    thudGain.connect(dest);
     src.connect(low);
     low.connect(body);
-    body.connect(this.out);
+    body.connect(dest);
 
     let end = when + 0.75;
     let grindGate: GainNode | null = null;
@@ -504,7 +520,7 @@ export class ShipSfx {
       gg.linearRampToValueAtTime(0, when + seconds + 0.05);
       src.connect(grindBand);
       grindBand.connect(grindGate);
-      grindGate.connect(this.out);
+      grindGate.connect(dest);
       end = Math.max(end, when + seconds + 0.1);
     }
 
@@ -514,10 +530,23 @@ export class ShipSfx {
     thud.stop(end);
     const nodes: AudioNode[] = [thudGain, src, low, body];
     if (grindGate !== null && grindBand !== null) nodes.push(grindBand, grindGate);
+    if (where !== null) nodes.push(where);
     this.host.track(thud, ...nodes);
 
     // The frame answers the blow.
     this.creak(Math.min(1, s * 1.2), when + 0.06, true);
+  }
+
+  /**
+   * A point on the ship to play from (`SfxHost.place`), or, without one, a
+   * stereo pan in the ship's image. Either way connected; the caller tracks it.
+   */
+  private at(along: number, up: number, across: number, mode: 'hrtf' | 'equalpower', pan: number): AudioNode | null {
+    const placed = this.host.place?.(along, up, across, mode) ?? null;
+    if (placed !== null) return placed;
+    const stereo = this.panner(pan);
+    stereo?.connect(this.out);
+    return stereo;
   }
 
   private panner(pan: number): StereoPannerNode | null {
