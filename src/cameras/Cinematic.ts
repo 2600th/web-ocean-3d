@@ -621,7 +621,7 @@ const HOUR_SLOPES = (() => {
 })();
 
 /** Hour of the day at a loop time, 0..24. */
-function tourHours(time: number): number {
+export function tourHours(time: number): number {
   const t = wrapTime(time);
   let i = 0;
   while (i < HOUR_KEYS.length - 2 && HOUR_KEYS[i + 1][0] <= t) i++;

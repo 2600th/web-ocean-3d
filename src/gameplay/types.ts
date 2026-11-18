@@ -27,6 +27,32 @@ export interface GameObjective {
   bearingDeg: number | null;
   /** Horizontal distance from the ship to the target, metres. */
   distanceM: number | null;
+  /** What is coming, said plainly under the target: "Squall coming: half sail when it hits". */
+  warning?: string;
+}
+
+/** The close of a voyage, shown on the parchment when she anchors off the cove. */
+export interface VoyageTally {
+  /** Which voyage this was, counting every one this browser has brought home. */
+  voyage: number;
+  cargo: number;
+  /** Casks the voyage laid out. */
+  casks: number;
+  /** Gold landed this voyage. */
+  gold: number;
+  /** Gold landed across every voyage, this one included. */
+  purse: number;
+  /** Seconds from the opening log line to the anchor. */
+  seconds: number;
+  /** Fastest full-cargo voyage, seconds, this one included; null until there is one. */
+  bestSeconds: number | null;
+  newBest: boolean;
+}
+
+/** Extra for a toast: a second line and how long it stays. */
+export interface GameToastOptions {
+  detail?: string;
+  durationMs?: number;
 }
 
 export interface ShipTelemetry {
@@ -54,7 +80,7 @@ export interface ShipTelemetry {
  */
 export interface GameUiSink {
   /** A transient message. `reward` for a pickup, `warning` for a hazard. */
-  toast(text: string, kind?: ToastKind): void;
+  toast(text: string, kind?: ToastKind, options?: GameToastOptions): void;
   /** The current objective, or null to clear it (e.g. on leaving the helm). */
   setObjective(objective: GameObjective | null): void;
   /** A named running total, e.g. ("Cargo", 3) or ("Gold", 420). */
@@ -63,6 +89,11 @@ export interface GameUiSink {
   setShipTelemetry(telemetry: ShipTelemetry | null): void;
   /** True while she is stalled head to wind with canvas set; false once she is free. */
   setStalled?(stalled: boolean): void;
+  /**
+   * The voyage's tally, or null to put it away. `onSailAgain` is what its
+   * "sail again" choice calls.
+   */
+  setTally?(tally: VoyageTally | null, onSailAgain?: () => void): void;
 }
 
 /** The audio the gameplay layer asks for. `AudioSystem` satisfies it. */

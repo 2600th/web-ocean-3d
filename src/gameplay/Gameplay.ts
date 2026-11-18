@@ -4,6 +4,8 @@ import type { ShipController } from '../physics/ShipController';
 import type { SprayLanding } from '../physics/Spray';
 import type { OceanSampler } from '../ocean/Sampler';
 import { mulberry32 } from '../core/random';
+import type { WeatherKind } from '../presets';
+import { ISLAND } from '../scene/Seafloor';
 import { BowSpray, Burst, CargoGlint, ObjectiveBeacon } from './effects';
 import {
   FLOOR_DRIVE,
@@ -32,7 +34,19 @@ import {
   type GameObjective,
   type GameUiSink,
   type SailSetting,
+  type VoyageTally,
 } from './types';
+import {
+  ANCHORAGE_RADIUS,
+  VOYAGE_CASKS,
+  Voyage,
+  findAnchorage,
+  freshVoyageSeed,
+  type VoyageEvent,
+  type VoyagePhase,
+  type VoyageSky,
+} from './Voyage';
+import { readVoyageSave, recordVoyage } from './voyageSave';
 
 /**
  * Helm-mode gameplay: sails that answer to the wind, an anchor, and cargo to
@@ -236,6 +250,34 @@ const HAUL_ARC = 4.5;
 const LOOT_BEAT = 0.8;
 const LOOT_FADE_IN = 1;
 
+/**
+ * The voyage (`Voyage.ts`). Casks after the first are laid within these bands
+ * of the anchorage, metres, so a run makes a loop that ends near home instead
+ * of a random walk that can strand her a mile out: the middle casks anywhere
+ * reasonable, the last one a short sail from the cove.
+ */
+const CASK_BAND: readonly [number, number] = [250, 700];
+const LAST_CASK_BAND: readonly [number, number] = [200, 420];
+/**
+ * How much a squall's gusts add to the wind on the canvas at its height: 55%,
+ * so the default 11 m/s gusts to 17. Full sail then overpresses (slower, heeled
+ * hard), half sail draws about as well as full did before it: taking in canvas
+ * is the right call and the faster one. Only the sails feel it; the sea state
+ * is the preset's.
+ */
+const SQUALL_GUST = 0.55;
+/**
+ * A cask goes over the side when she is driven this hard (canvas pressure,
+ * see `sailing.sailPressure`) for this many seconds, with the squall at least
+ * this strong. Once per squall, and it floats where it fell, so the cost is the
+ * time to turn back for it, or the cask if she sails on.
+ */
+const OVERBOARD_PRESSURE = 1.6;
+const OVERBOARD_SECONDS = 3;
+const OVERBOARD_SQUALL = 0.6;
+/** Metres astern of the stern where the lost cask is put in the water. */
+const OVERBOARD_ASTERN = 12;
+
 export type AnchorState = 'up' | 'down' | 'weighing';
 
 export interface GameplayOptions {
@@ -301,6 +343,21 @@ export interface GameplaySnapshot {
   gold: number;
   target: { x: number; z: number; name: string; bearingDeg: number; distanceM: number } | null;
   trauma: number;
+  voyage: {
+    phase: VoyagePhase;
+    number: number;
+    seed: number;
+    frozen: boolean;
+    seconds: number;
+    casks: number;
+    squall: 'none' | 'coming' | 'here' | 'past';
+    squallRain: number;
+    /** Seconds until this voyage's squall builds, or null once it has. */
+    squallIn: number | null;
+    hours: number;
+    anchorage: { x: number; z: number };
+    tally: VoyageTally | null;
+  };
 }
 
 export class Gameplay {
@@ -362,6 +419,26 @@ export class Gameplay {
   private readonly sandPlume = new Burst();
   private readonly bowSpray = new BowSpray();
 
+  // --- voyage -------------------------------------------------------------
+  private readonly voyage = new Voyage();
+  /** Where dropping anchor lands the cargo, found from the seabed at construction. */
+  private readonly homeAnchorage: { x: number; z: number };
+  private readonly anchorage = { x: 0, z: 0 };
+  /** Casks of this voyage's plan laid in the water so far. */
+  private laid = 1;
+  /** Gold each cask aboard was worth, so the one that goes over the side takes its own. */
+  private readonly hold: number[] = [];
+  /** The current target is a cask that went over the side. */
+  private recovering = false;
+  /** The planned cask the lost one displaced as the target, put back once it is recovered. */
+  private stashed: { x: number; z: number; name: string; value: number } | null = null;
+  private overboardTimer = 0;
+  private lostThisSquall = false;
+  /** The sun has been said to be going down this voyage. */
+  private duskSaid = false;
+  private tally: VoyageTally | null = null;
+  private readonly events: VoyageEvent[] = [];
+
   // --- feel ---------------------------------------------------------------
   private trauma = 0;
   /** Seconds until an impact may add trauma again; see `IMPACT_COOLDOWN`. */
@@ -393,6 +470,7 @@ export class Gameplay {
   private readonly tmp2 = new THREE.Vector3();
   private readonly bow = new THREE.Vector3();
   private readonly shakeOffset = new THREE.Vector3();
+  private readonly beaconAt = new THREE.Vector3();
   private readonly quat = new THREE.Quaternion();
   private readonly euler = new THREE.Euler();
 
@@ -414,6 +492,7 @@ export class Gameplay {
     this.haulCask.name = 'gameplay-cargo-haul';
     this.haulCask.visible = false;
     this.object.add(this.loot, this.haulCask, this.glint.mesh, this.beacon.object, this.burst.mesh, this.sandPlume.mesh, this.bowSpray.mesh);
+    this.homeAnchorage = findAnchorage(options.floorHeight, ISLAND);
 
     this.motionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -438,6 +517,9 @@ export class Gameplay {
     }
 
     this.reset();
+    // Live play: the first voyage draws a fresh seed when the helm is taken.
+    // `reset` (a capture's rewind) freezes it again on the fixed one.
+    this.voyage.frozen = false;
   }
 
   /** Points the reports somewhere else, e.g. once the real HUD exists. */
@@ -498,6 +580,14 @@ export class Gameplay {
     this.lootWait = 0;
     this.lootReveal = 1;
     this.clearShake();
+    this.voyage.reset();
+    this.anchorage.x = this.homeAnchorage.x;
+    this.anchorage.z = this.homeAnchorage.z;
+    this.clearVoyageCargo();
+    if (this.tally !== null) {
+      this.tally = null;
+      this.ui.setTally?.(null);
+    }
 
     const ship = this.o.body.object.position;
     this.spawnLoot(ship.x, ship.z);
@@ -521,17 +611,23 @@ export class Gameplay {
       if (!this.object.visible) return;
       this.armed = true;
     }
-    this.loot.visible = active && this.lootReveal > 0;
+    this.loot.visible = active && this.lootReveal > 0 && this.voyage.phase === 'gather';
     this.glint.mesh.visible = this.loot.visible;
     if (!active) this.haulCask.visible = false;
-    this.beacon.object.visible = active;
+    this.beacon.object.visible = active && this.voyage.phase !== 'landed';
     this.burst.mesh.visible = active && this.burst.alive;
     this.sandPlume.mesh.visible = active && this.sandPlume.alive;
     if (!active) return;
 
     this.clock += dt;
+    if (!this.voyage.begun) this.beginVoyage();
+    this.events.length = 0;
+    this.voyage.advance(dt, this.events);
+    for (const event of this.events) this.onVoyageEvent(event);
     const body = this.o.body;
     const wind = this.o.wind();
+    // A squall's gusts, on the canvas only.
+    const gusting = wind.speed * (1 + SQUALL_GUST * this.voyage.squallStrength());
 
     // --- sails ------------------------------------------------------------
     this.sailFill = approach(this.sailFill, SAIL_FILL[this.sail], SAIL_RATE * dt);
@@ -543,8 +639,8 @@ export class Gameplay {
     if (trimRate !== 0) this.trim = Math.min(1, Math.max(0, this.trim + trimRate * TRIM_RATE * dt));
 
     // The wind on the canvas: true wind less the ship's own way.
-    apparentWind(wind.towardRad, wind.speed, body.velocity.x, body.velocity.z, body.heading, this.apparent);
-    this.pressure = sailPressure(this.apparent.speed, wind.speed, this.sailFill);
+    apparentWind(wind.towardRad, gusting, body.velocity.x, body.velocity.z, body.heading, this.apparent);
+    this.pressure = sailPressure(this.apparent.speed, gusting, this.sailFill);
     let drive =
       overpress(this.pressure) *
       polarDrive(this.apparent.angleDeg) *
@@ -565,6 +661,7 @@ export class Gameplay {
 
     this.applyHeel();
     this.applyAnchor(dt, wind);
+    this.updateOverboard(dt);
     this.updateLoot(dt);
     this.updateFeel(dt);
     this.updateMessages(dt);
@@ -708,7 +805,11 @@ export class Gameplay {
     } else {
       this.burst.fire(this.tmp, 0.45, false);
     }
-    this.ui.toast("Anchor down. She'll swing to the wind", 'info');
+    if (this.atAnchorage() && this.cargo > 0 && this.voyage.phase !== 'landed') {
+      this.land();
+    } else {
+      this.ui.toast("Anchor down. She'll swing to the wind", 'info');
+    }
     this.pushTelemetry();
   }
 
@@ -796,6 +897,20 @@ export class Gameplay {
         distanceM: Math.hypot(lp.x - sp.x, lp.z - sp.z),
       },
       trauma: this.trauma,
+      voyage: {
+        phase: this.voyage.phase,
+        number: this.voyage.number,
+        seed: this.voyage.seed,
+        frozen: this.voyage.frozen,
+        seconds: this.voyage.clock,
+        casks: VOYAGE_CASKS,
+        squall: this.voyage.squallState,
+        squallRain: this.voyage.squallRain(),
+        squallIn: this.voyage.squallIn(),
+        hours: this.voyage.hours(),
+        anchorage: { x: this.anchorage.x, z: this.anchorage.z },
+        tally: this.tally,
+      },
     };
   }
 
@@ -819,6 +934,31 @@ export class Gameplay {
       /** Test hooks: the events the sea and the bottom would raise. */
       strikeBottom: (speed = 4) => this.onGrounded(speed),
       thunder: (distanceM: number) => this.reportThunder(distanceM),
+      /** The voyage: start one live from a seed, skip its clocks, land it. */
+      voyage: {
+        /** Unfreezes and starts a voyage from `seed`, as a visit would. */
+        begin: (seed: number) => {
+          this.voyage.frozen = false;
+          this.startVoyage(seed);
+        },
+        /** Runs the voyage and day clocks on by `seconds` without moving the ship, raising what they raise. */
+        skip: (seconds: number) => {
+          for (let left = seconds; left > 0; left -= 0.5) {
+            this.events.length = 0;
+            this.voyage.advance(Math.min(0.5, left), this.events);
+            for (const event of this.events) this.onVoyageEvent(event);
+          }
+          this.pushObjective();
+        },
+        /** Moves the anchorage under the ship, so the next anchor dropped lands her. */
+        anchorHere: () => {
+          this.anchorage.x = this.o.body.object.position.x;
+          this.anchorage.z = this.o.body.object.position.z;
+        },
+        /** Puts a cask over the side as a squall would. */
+        loseCask: () => this.loseCask(),
+        sailAgain: () => this.sailAgain(),
+      },
     };
   }
 
@@ -849,6 +989,7 @@ export class Gameplay {
       this.clearShake();
       this.ui.setObjective(null);
       this.ui.setShipTelemetry(null);
+      this.ui.setTally?.(null);
       return;
     }
     this.pushAllUi();
@@ -980,11 +1121,19 @@ export class Gameplay {
     const ship = this.o.body.object.position;
     const lp = this.loot.position;
     this.updateHaul(dt);
-    this.beacon.visibility = this.lootReveal;
-    this.beacon.update(dt, lp, this.o.camera.position, this.reducedMotion);
+    // Homeward, the beacon stands over the anchorage instead of a cask.
+    const homeward = this.voyage.phase === 'homeward';
+    this.beacon.visibility = homeward ? 1 : this.lootReveal;
+    this.beacon.update(
+      dt,
+      homeward ? this.beaconAt.set(this.anchorage.x, 0, this.anchorage.z) : lp,
+      this.o.camera.position,
+      this.reducedMotion,
+    );
     this.glint.update(dt, lp, this.o.camera, this.reducedMotion, this.lootReveal);
-    // The next cask is not there to be taken until it has appeared.
-    if (this.lootWait > 0) return;
+    // The next cask is not there to be taken until it has appeared, and none
+    // is out there once the voyage is homeward.
+    if (this.lootWait > 0 || this.voyage.phase !== 'gather') return;
 
     // Distance to the hull's centreline, so a target alongside the quarter is
     // taken as readily as one dead ahead.
@@ -1029,8 +1178,234 @@ export class Gameplay {
     this.ui.toast(`${haul}: ${this.lootName} · +${this.lootValue} gold`, 'reward');
     this.ui.setScore('Cargo', this.cargo);
     this.ui.setScore('Gold', this.gold);
-    this.spawnLoot(lp.x, lp.z);
+    this.hold.push(this.lootValue);
+    this.nextTarget(lp.x, lp.z);
     this.pushObjective();
+  }
+
+  /**
+   * What she sails for after a cask comes aboard: the planned cask a lost one
+   * displaced, the next of the voyage's casks, or home.
+   */
+  private nextTarget(fromX: number, fromZ: number): void {
+    if (this.recovering) {
+      this.recovering = false;
+      const stashed = this.stashed;
+      if (stashed !== null) {
+        this.stashed = null;
+        this.lootName = stashed.name;
+        this.lootValue = stashed.value;
+        this.placeLoot(stashed.x, stashed.z);
+        return;
+      }
+    }
+    if (this.laid < VOYAGE_CASKS) {
+      this.laid += 1;
+      this.spawnLoot(fromX, fromZ, this.laid === VOYAGE_CASKS ? LAST_CASK_BAND : CASK_BAND);
+      return;
+    }
+    this.voyage.phase = 'homeward';
+    this.ui.toast('All cargo aboard', 'info', { detail: 'Make for the cove and drop anchor' });
+  }
+
+  /* --------------------------------------------------------------- voyage */
+
+  /**
+   * The sky the voyage wants while the helm is taken (`Voyage.skyFor`): the
+   * day's hour and the squall over the preset's weather. Null leaves the
+   * preset's sky, as under a capture.
+   */
+  voyageSky(
+    base: { coverage: number; kind: WeatherKind; intensity: number },
+    fixedHour: number | null,
+  ): Readonly<VoyageSky> | null {
+    return this.active ? this.voyage.skyFor(base, fixedHour) : null;
+  }
+
+  /** The first time the helm is taken: a live voyage on a fresh seed, or the fixed one under a capture. */
+  private beginVoyage(): void {
+    if (this.voyage.frozen) {
+      // The cask `reset` laid is the one captures were taken with: keep it.
+      this.voyage.begin(this.voyage.seed, readVoyageSave().voyages + 1);
+      this.logVoyage();
+    } else {
+      this.startVoyage(freshVoyageSeed());
+    }
+  }
+
+  /** A new voyage from where she lies: a seed, its first cask, the log line. */
+  private startVoyage(seed: number): void {
+    this.voyage.begin(seed, readVoyageSave().voyages + 1);
+    this.random = mulberry32(this.voyage.seed);
+    this.cargo = 0;
+    this.gold = 0;
+    this.clearVoyageCargo();
+    if (this.tally !== null) {
+      this.tally = null;
+      this.ui.setTally?.(null);
+    }
+    const ship = this.o.body.object.position;
+    this.spawnLoot(ship.x, ship.z);
+    this.lootWait = 0;
+    this.lootReveal = 0;
+    this.logVoyage();
+    if (this.active) this.pushAllUi();
+  }
+
+  private clearVoyageCargo(): void {
+    this.laid = 1;
+    this.hold.length = 0;
+    this.recovering = false;
+    this.stashed = null;
+    this.overboardTimer = 0;
+    this.lostThisSquall = false;
+    this.duskSaid = false;
+  }
+
+  /** The ship's log: the task, once, as the voyage opens. */
+  private logVoyage(): void {
+    const casks = COUNT_WORDS[VOYAGE_CASKS] ?? String(VOYAGE_CASKS);
+    this.ui.toast(`Ship's log, voyage ${this.voyage.number}`, 'info', {
+      detail: `${casks} casks adrift. Haul them aboard, then anchor off the cove before dark`,
+      durationMs: 8000,
+    });
+  }
+
+  /** "Sail again" on the tally. */
+  private sailAgain(): void {
+    if (this.voyage.phase !== 'landed') return;
+    this.startVoyage(this.voyage.frozen ? this.voyage.seed : freshVoyageSeed());
+  }
+
+  private readonly onSailAgain = (): void => this.sailAgain();
+
+  private atAnchorage(): boolean {
+    const p = this.o.body.object.position;
+    return Math.hypot(p.x - this.anchorage.x, p.z - this.anchorage.z) <= ANCHORAGE_RADIUS;
+  }
+
+  /** The anchor is down off the cove with cargo aboard: the voyage ends and the tally comes up. */
+  private land(): void {
+    this.voyage.phase = 'landed';
+    const seconds = this.voyage.clock;
+    let purse: number;
+    let best: number | null;
+    let newBest = false;
+    let number: number;
+    if (this.voyage.frozen) {
+      // A capture's run is never kept.
+      const save = readVoyageSave();
+      purse = save.gold + this.gold;
+      best = save.bestTimeS;
+      number = this.voyage.number;
+    } else {
+      const kept = recordVoyage({ gold: this.gold, seconds, fullCargo: this.cargo >= VOYAGE_CASKS });
+      purse = kept.save.gold;
+      best = kept.save.bestTimeS;
+      newBest = kept.newBest;
+      number = kept.save.voyages;
+    }
+    this.tally = {
+      voyage: number,
+      cargo: this.cargo,
+      casks: VOYAGE_CASKS,
+      gold: this.gold,
+      purse,
+      seconds,
+      bestSeconds: best,
+      newBest,
+    };
+    this.o.audio?.playChime();
+    this.ui.setObjective(null);
+    this.ui.setTally?.(this.tally, this.onSailAgain);
+  }
+
+  private onVoyageEvent(event: VoyageEvent): void {
+    const underway = this.voyage.phase !== 'landed';
+    switch (event) {
+      case 'squallWarning':
+        this.ui.toast('A squall is coming', 'warning', { detail: 'Take in to half sail when the rain arrives' });
+        break;
+      case 'squallArrived':
+        if (this.sail === 'full') {
+          this.ui.toast('Squall! Take in to half sail', 'warning', {
+            detail: 'Full sail in this wind can put a cask over the side',
+          });
+        }
+        break;
+      case 'squallPassed':
+        if (underway) this.ui.toast("The squall's passed", 'info', { detail: 'Set full sail again' });
+        break;
+      case 'dusk':
+        this.duskSaid = true;
+        this.ui.toast("The sun's going down", 'warning', { detail: 'Make for the cove before dark' });
+        break;
+    }
+    this.pushObjective();
+  }
+
+  /** Driven too hard in a squall for too long: a cask goes over the side. */
+  private updateOverboard(dt: number): void {
+    const strength = this.voyage.squallStrength();
+    if (strength <= 0) this.lostThisSquall = false;
+    const pressed =
+      strength >= OVERBOARD_SQUALL &&
+      this.pressure > OVERBOARD_PRESSURE &&
+      this.anchor === 'up' &&
+      this.cargo > 0 &&
+      !this.lostThisSquall &&
+      this.voyage.phase !== 'landed';
+    this.overboardTimer = pressed ? this.overboardTimer + dt : 0;
+    if (this.overboardTimer > OVERBOARD_SECONDS) this.loseCask();
+  }
+
+  /**
+   * The last cask stowed goes over the side and floats astern, where it
+   * becomes the target until it is hauled in again. Losing it costs the time
+   * to turn back; sailing home without it costs the cask.
+   */
+  private loseCask(): void {
+    if (this.cargo <= 0 || this.voyage.phase === 'landed') return;
+    this.lostThisSquall = true;
+    this.overboardTimer = 0;
+    const value = this.hold.pop() ?? this.lootValue;
+    this.cargo -= 1;
+    this.gold = Math.max(0, this.gold - value);
+    // The cask already in the water waits its turn.
+    if (this.voyage.phase === 'gather' && !this.recovering) {
+      const lp = this.loot.position;
+      this.stashed = { x: lp.x, z: lp.z, name: this.lootName, value: this.lootValue };
+    }
+    const ship = this.o.body.object;
+    this.forward.set(1, 0, 0).applyQuaternion(ship.quaternion).setY(0).normalize();
+    const back = this.o.hullLength * 0.5 + OVERBOARD_ASTERN;
+    const x = ship.position.x - this.forward.x * back;
+    const z = ship.position.z - this.forward.z * back;
+    this.lootName = 'the cask that went over the side';
+    this.lootValue = value;
+    this.placeLoot(x, z);
+    this.recovering = true;
+    this.voyage.phase = 'gather';
+    this.lootWait = 0;
+    this.lootReveal = 1;
+    const surface = this.o.sampler.ready ? this.o.sampler.height(x, z) : 0;
+    this.o.splash?.(x, surface, z, { radius: 0.35, speed: 4, mass: 40 });
+    this.o.audio?.playSplash(0.8);
+    this.ui.toast('A cask went over the side', 'danger', {
+      detail: "It's floating astern. Take in sail and turn back for it",
+    });
+    this.ui.setScore('Cargo', this.cargo);
+    this.ui.setScore('Gold', this.gold);
+    this.pushObjective();
+  }
+
+  /** What is coming, for the objective's last line. */
+  private voyageWarning(): string | undefined {
+    const squall = this.voyage.squallState;
+    if (squall === 'coming') return 'Squall coming. Half sail when it hits';
+    if (squall === 'here') return this.sail === 'full' ? 'Squall: take in to half sail' : 'Squall: hold her steady, it will pass';
+    if (this.duskSaid && this.voyage.phase === 'gather') return "Light's going. Leave time to make the cove";
+    return undefined;
   }
 
   /**
@@ -1064,19 +1439,29 @@ export class Gameplay {
     }
   }
 
-  /** Picks the next cargo position from the seeded sequence, in navigable water. */
-  private spawnLoot(fromX: number, fromZ: number): void {
+  /**
+   * Picks the next cargo position from the seeded sequence, in navigable water.
+   * With a `band`, the first 48 tries must also land that many metres from the
+   * anchorage; without one (a voyage's first cask) the draws are the ones the
+   * cargo sequence always made, so the fixed seed lays the same first cask.
+   */
+  private spawnLoot(fromX: number, fromZ: number, band: readonly [number, number] | null = null): void {
     const random = this.random;
     let x = fromX;
     let z = fromZ;
     let found = false;
-    for (let attempt = 0; attempt < 48 && !found; attempt++) {
+    const tries = band === null ? 48 : 96;
+    for (let attempt = 0; attempt < tries && !found; attempt++) {
       const angle = random() * Math.PI * 2;
       // Widen the search if the first rings keep landing on the reef.
-      const radius = SPAWN_MIN + random() * SPAWN_SPAN * (1 + attempt / 16);
+      const radius = SPAWN_MIN + random() * SPAWN_SPAN * (1 + (attempt % 48) / 16);
       const cx = fromX + Math.cos(angle) * radius;
       const cz = fromZ + Math.sin(angle) * radius;
       if (Math.hypot(cx, cz) > SPAWN_LIMIT) continue;
+      if (band !== null && attempt < 48) {
+        const home = Math.hypot(cx - this.anchorage.x, cz - this.anchorage.z);
+        if (home < band[0] || home > band[1]) continue;
+      }
       if (!this.navigable(cx, cz)) continue;
       x = cx;
       z = cz;
@@ -1206,6 +1591,7 @@ export class Gameplay {
     this.ui.setScore('Gold', this.gold);
     this.pushTelemetry();
     this.pushObjective();
+    if (this.tally !== null) this.ui.setTally?.(this.tally, this.onSailAgain);
   }
 
   private pushTelemetry(): void {
@@ -1224,14 +1610,34 @@ export class Gameplay {
 
   private pushObjective(): void {
     if (!this.active) return;
+    const phase = this.voyage.phase;
+    if (phase === 'landed') {
+      this.ui.setObjective(null);
+      return;
+    }
     const ship = this.o.body.object.position;
     const lp = this.loot.position;
-    const objective: GameObjective = {
-      title: 'Haul in the drifting cargo',
-      detail: capitalise(this.lootName) + ` · ${this.lootValue} gold`,
-      bearingDeg: compassFromVector(lp.x - ship.x, lp.z - ship.z),
-      distanceM: Math.hypot(lp.x - ship.x, lp.z - ship.z),
-    };
+    let objective: GameObjective;
+    if (phase === 'homeward') {
+      const a = this.anchorage;
+      objective = {
+        title: 'Bring the cargo home',
+        detail: `Drop anchor off the cove · ${this.cargo} ${this.cargo === 1 ? 'cask' : 'casks'} aboard`,
+        bearingDeg: compassFromVector(a.x - ship.x, a.z - ship.z),
+        distanceM: Math.hypot(a.x - ship.x, a.z - ship.z),
+      };
+    } else {
+      // The count leads, so a narrow scroll wraps the name rather than the count.
+      const name = this.recovering ? capitalise(this.lootName) : `${this.laid} of ${VOYAGE_CASKS}: ${this.lootName}`;
+      objective = {
+        title: 'Haul in the drifting cargo',
+        detail: `${name} · ${this.lootValue} gold`,
+        bearingDeg: compassFromVector(lp.x - ship.x, lp.z - ship.z),
+        distanceM: Math.hypot(lp.x - ship.x, lp.z - ship.z),
+      };
+    }
+    const warning = this.voyageWarning();
+    if (warning !== undefined) objective.warning = warning;
     this.ui.setObjective(objective);
   }
 
@@ -1336,6 +1742,8 @@ export class Gameplay {
 }
 
 /* ---------------------------------------------------------------- helpers */
+
+const COUNT_WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six'] as const;
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
