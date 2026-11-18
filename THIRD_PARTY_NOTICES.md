@@ -430,3 +430,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+## three.js examples: webgpu_skinning_instancing
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_skinning_instancing.html
+
+The crew on deck are drawn the way three.js r187's `webgpu_skinning_instancing`
+example draws its dancers: a `SkinnedMesh` flagged as instanced and given an
+`instanceMatrix`, so one skeleton poses every instance. Here there is one such
+mesh per pose group, each with its own clip and phase. MIT, three.js authors,
+under the licence text given in the section above. Affected files:
+
+- `src/scene/crew/Crew.ts`
