@@ -287,6 +287,46 @@ Found along the way, and carried forward:
 A one-minute film of the build is in `promo/` (not committed); see
 `promo/REVIEW.md`.
 
+## After wave 2: three faults reported from the film (2026-11-18)
+
+A one-minute film of the build was cut and watched; three faults were reported
+and fixed on `aaa-roadmap-m1`.
+
+- **The Tour's reef dive flew through a rock.** The path now passes about
+  5.6 m from the rock, and `tests/cinematic.spec.ts` samples the dive against
+  every reef outcrop.
+- **The sea off the beach showed torn, ghost-like blotches.** They were not
+  reflections: the thin surf foam between the breakers was cut by patterns
+  that jumped at seabed contours and crest lines. Thin foam is now a soft,
+  faint, patchy wash; dense foam at the breaker fronts and the swash is
+  unchanged. Screen-space reflections no longer hit the seabed in the
+  shallows and hand over to the mirror beyond 90 to 180 m. The mirror now
+  reaches far water in a calm sea and fades out by about 10 m/s of wind.
+  Cost at High, 1920x1080, in the beach flyover: 7.27 ms before, 7.26 ms
+  after.
+- **The crew were two recoloured low-poly figures.** They are now nine
+  toy-style pirates in five roles (captain, helmsman, bosun, lookout, hands),
+  built from the KayKit Adventurers pack (CC0) with modelled pirate gear:
+  378 KB, five draw calls as before. Original figures, not any toy brand's.
+
+Still open from this pass:
+
+- **The island's reflection in a calm sea is faint.** The mirror holds the
+  island, but turning it off changes the water under the island by only 10 to
+  15 levels in 255. The likely causes are low reflectance at grazing angles
+  over the shallow lagoon, and the mirrored island being drawn lit and without
+  haze. Fixing it changes the overall look of the water.
+- **The crew's hauling** reads weakly from above; the old hand, the mate and
+  the bosun's eye patch were not checked close up; the crew's frame cost was
+  not measured.
+- **A jagged dark edge** shows for a frame or two as the reef dive's lens
+  crosses the surface.
+- **The pale blob on the hull side** is still there and shows in the film's
+  second shot.
+- **Baselines** with the ship, the beach or the island in them are out of
+  date. One ocean test ("quality tiers apply cleanly") was reported failing
+  with a destroyed shadow texture, with and without this pass's changes.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system
