@@ -422,6 +422,13 @@ export interface QualitySettings {
    * small dispatches a frame at 60 Hz; budgeted at 0.5 ms.
    */
   sailCloth: boolean;
+  /**
+   * Figures on deck (`scene/crew`): instanced skinned figures, one draw per
+   * pose group (five at most) and their shadow draws. 0 draws none. Only the
+   * instance counts move, so a tier change compiles nothing. About 10k skinned
+   * vertices and five 23-bone mixers at 9; expected well under 0.1 ms.
+   */
+  crew: number;
 }
 
 export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
@@ -470,6 +477,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 0,
     canopy: 4000,
     sailCloth: false,
+    crew: 0,
   },
   medium: {
     fftSize: 128,
@@ -516,6 +524,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 18000,
     canopy: 9000,
     sailCloth: false,
+    crew: 5,
   },
   high: {
     fftSize: 256,
@@ -561,6 +570,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 38000,
     canopy: 15000,
     sailCloth: true,
+    crew: 9,
   },
   ultra: {
     fftSize: 256,
@@ -606,6 +616,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 62000,
     canopy: 20000,
     sailCloth: true,
+    crew: 9,
   },
   max: {
     fftSize: 512,
@@ -653,6 +664,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     meadow: 90000,
     canopy: 24000,
     sailCloth: true,
+    crew: 9,
   },
 };
 

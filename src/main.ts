@@ -20,6 +20,7 @@ import { prefetch } from './scene/AssetLoader';
 import { SHIP_URL } from './scene/Ship';
 import { ShipLights } from './scene/ship/ShipLights';
 import { ShipFittings } from './scene/ship/Fittings';
+import { Crew } from './scene/crew/Crew';
 import { REEF_FISH_URL } from './scene/Fish';
 import { dressingUrls } from './scene/Props';
 import {
@@ -548,6 +549,8 @@ class App {
   /** Deck lanterns and stern windows; the anchor cable. See `src/scene/ship`. */
   private shipLights: ShipLights | null = null;
   private shipFittings: ShipFittings | null = null;
+  /** Figures on deck. See `src/scene/crew`. */
+  private crew: Crew | null = null;
   /** Rain wetting for the ship and the floating props. */
   private readonly wetness = new SurfaceWetness();
 
@@ -2333,6 +2336,11 @@ class App {
       this.lighting.local.setShipLanterns(this.shipLights.lanternPositions);
       this.shipFittings = new ShipFittings(ship.object, ship.hullLength, ship.hullBeam, (x, z) => seafloorHeight(x, z));
       this.scene.add(this.shipFittings.object);
+      // Aboard before the ship's compile below, so their pipeline is built with hers.
+      this.crew = await Crew.load(ship.object, ship.hullBeam, QUALITY_TIERS[this.state.quality].crew).catch((e) => {
+        console.error('[ocean] crew failed to load', e);
+        return null;
+      });
       this.wetness.trackWaterline(ship.object, ship.hullLength, ship.hullBeam, (x, z) => this.sampler.height(x, z));
 
       this.shipBody = new BuoyantBody({
@@ -3005,6 +3013,7 @@ class App {
     this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
+    this.crew?.setCount(quality.crew);
     this.audio.setQuality(tier);
 
     // Low takes the analytic path (`refraction: 0`): a coherent simpler image
@@ -4144,6 +4153,7 @@ class App {
       ship.update(dt);
       this.shipLights?.update(dt, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
       this.shipFittings?.update(this.gameplay?.anchorCable(this.shipFittings.anchorState) ?? null);
+      this.crew?.update(dt);
 
       const position = ship.object.position;
       // Speed along the bow, from the body, rather than frame-to-frame distance.
@@ -4584,6 +4594,7 @@ class App {
           this.scriptedUnderWay = (shipInput?.throttle ?? 0) > 0;
           this.ship?.resetClock(start);
           this.shipLights?.reset(start);
+          this.crew?.reset(start);
           this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);
           // The resets above write each body's position and quaternion, not its
           // world matrix, which only refreshes when a frame renders — and the
@@ -4824,6 +4835,7 @@ class App {
     this.wake?.dispose();
     this.shipLights?.dispose();
     this.shipFittings?.dispose();
+    this.crew?.dispose();
     this.ship?.dispose();
     this.props?.dispose();
     this.seafloor?.dispose();
