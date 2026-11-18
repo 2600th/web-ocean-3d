@@ -3745,14 +3745,15 @@ export class OceanMaterial {
             .toVar();
           const inward = d.div(surfBreak.max(0.05)).oneMinus().clamp(0, 1).toVar();
           const peelAt = mix(float(0.62), float(0.47), inward.smoothstep(0, 0.55)).toVar();
-          const crestSection = valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(waveNumber)))
-            .mul(0.65)
-            .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(waveNumber.add(7)))).mul(0.35))
-            .add(heightRatio.sub(1).mul(0.15))
-            .smoothstep(peelAt.sub(0.1), peelAt.add(0.1))
-            // A rip channel's waves mostly do not break.
-            .mul(rip.mul(-0.85).add(1))
-            .toVar();
+          const crestSectionOf = (wave: any): any =>
+            valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(wave)))
+              .mul(0.65)
+              .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(wave.add(7)))).mul(0.35))
+              .add(heightRatio.sub(1).mul(0.15))
+              .smoothstep(peelAt.sub(0.1), peelAt.add(0.1))
+              // A rip channel's waves mostly do not break.
+              .mul(rip.mul(-0.85).add(1));
+          const crestSection = crestSectionOf(waveNumber).toVar();
           // And the broken stretches are not one width: the roll is thicker
           // where the section broke hardest, on top of the set's own scale.
           const sectionWidth = valueNoise(fieldXZ.mul(1 / 26).add(waveOffset(waveNumber.add(3))))
@@ -3862,16 +3863,6 @@ export class OceanMaterial {
           const lastBroke = smoothstepDownClamped(d, surfBreakLast.mul(0.82), surfBreakLast.mul(1.06)).toVar();
           const previousBroke = smoothstepDownClamped(d, surfBreakPrevious.mul(0.82), surfBreakPrevious.mul(1.06)).toVar();
           const olderBroke = smoothstepDownClamped(d, surfBreakOlder.mul(0.82), surfBreakOlder.mul(1.06)).toVar();
-          // Age, in periods, of the youngest broken water at this point: the
-          // last crest if it broke here, else the one before, else the one
-          // before that.
-          const laceAge = lastBroke
-            .greaterThan(0.5)
-            .select(
-              age,
-              previousBroke.greaterThan(0.5).select(age.add(1), olderBroke.greaterThan(0.5).select(age.add(2), float(9))),
-            )
-            .toVar();
           // Not every section of a crest breaks equally hard. Horizon Forbidden
           // West fades its breakers along the wavefront with a strength texture
           // so the break has gaps; this is that in closed form, at about twenty
@@ -3880,11 +3871,22 @@ export class OceanMaterial {
           //
           // The range reaches down to a tenth, so a wave's lace has real holes
           // in it. At 0.6 to 1.1 every band stayed continuous.
-          const sections = valueNoise(fieldXZ.mul(1 / 21).add(waveOffset(surfPhaseValue.floor()).add(vec2(11.3, 1.9))))
-            .smoothstep(0.3, 0.7)
-            .mul(1.0)
-            .add(0.1)
-            .toVar();
+          //
+          // [island-reflection, foam] Keyed to the wave that laid the foam,
+          // not to the wave that passed last. One `sections` read at
+          // `floor(phase)` multiplied the whole field, so every time a crest
+          // went by, the lace the two waves before it had left was re-cut by
+          // a new section pattern, and inside a band of old foam the cut
+          // changed at every crest line: the beach-flyover's torn edges in
+          // the middle of the veil. Each age's foam keeps its own.
+          const sectionsOf = (wave: any): any =>
+            valueNoise(fieldXZ.mul(1 / 21).add(waveOffset(wave).add(vec2(11.3, 1.9))))
+              .smoothstep(0.3, 0.7)
+              .add(0.1);
+          const waveLast = surfPhaseValue.floor().toVar();
+          const sections = sectionsOf(waveLast).toVar();
+          const sectionsPrevious = sectionsOf(waveLast.sub(1)).toVar();
+          const sectionsOlder = sectionsOf(waveLast.sub(2)).toVar();
           // Two stages, the way a surf zone's foam ages (Monahan's stage A and
           // B whitecaps, and NeuralSpecOcean's long-tail roller wake): the dense
           // white right behind the roller, gone within half a period; and the
@@ -3914,7 +3916,12 @@ export class OceanMaterial {
           // clear sheet: `sheetClear` below still takes the white off the last
           // half metre of depth.
           const denseAt = (a: any) => a.mul(-3.4).exp().mul(0.92);
-          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3));
+          // [island-reflection, foam] Grown in over the first few tenths of
+          // a period rather than present at full strength the instant the
+          // crest passes: where a crest did not break (no roller, no dense
+          // white to stand in front of it) the lace began on the crest line
+          // itself as a hard ruled edge across the veil.
+          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3)).mul(a.smoothstep(0, 0.3));
 
           // **Foam lines.** The white a bore leaves is not a sheet: it is torn
           // into streaks lying *along* the crest that made them, a metre or two
@@ -3932,14 +3939,28 @@ export class OceanMaterial {
           // contours do. Static in the world: the lanes are where the foam was
           // left, and `surfAdvect` already carries the bubbles shoreward.
           const contourPhase = surfPhaseValue.sub(surfUniforms.time.div(surfUniforms.period)).toVar();
-          const lanes = valueNoise(vec2(contourPhase.mul(13), 0).add(fieldXZ.mul(0.045)).add(vec2(1.7, 3.1)))
+          //
+          // [island-reflection, foam] Stretched along the shore, not along
+          // world z. The slow term was `fieldXZ * 0.045`: a value-noise cell
+          // 22 m long on the world's axes, and the lanes' cells were cut
+          // square to them wherever a crest did not happen to run along x.
+          // Seen from the beach-flyover, that cut every lane into a row of
+          // short blocks, the comb teeth in the veil (30-33). The point on
+          // the shoreline circle (`alongShore`, below, which has no seam)
+          // moves only along the coast, so the cells now lie along the
+          // crests the way the lanes do. And a softer contrast, so what is
+          // left of a cell's outline does not stand as a step.
+          const laneShore = fieldXZ.sub(vec2(ISLAND.x, ISLAND.z)).toVar();
+          const laneAlong = laneShore.div(laneShore.length().max(1)).mul(ISLAND.radius).toVar();
+          const lanes = valueNoise(vec2(contourPhase.mul(13), 0).add(laneAlong.mul(0.045)).add(vec2(1.7, 3.1)))
             .mul(0.6)
-            .add(valueNoise(vec2(contourPhase.mul(37), 0).add(fieldXZ.mul(0.13)).add(vec2(8.3, 0.4))).mul(0.4))
-            .smoothstep(0.32, 0.7)
+            .add(valueNoise(vec2(contourPhase.mul(37), 0).add(laneAlong.mul(0.13)).add(vec2(8.3, 0.4))).mul(0.4))
+            .smoothstep(0.24, 0.78)
             .toVar();
           // Dense where it is fresh, lanes as it ages: a bore's first second is
           // white all through, and only then tears.
           const tearing = age.smoothstep(0.02, 0.16).toVar();
+
           // **Froth.** White water is clumped, not banded: thick heaps of
           // froth with thinner, bubblier water between, at a few metres. Torn
           // along the crest-parallel `lanes` alone, every bore's wake was a set
@@ -3989,18 +4010,28 @@ export class OceanMaterial {
             .mul(lastBroke)
             // The sections the bore broke in stay in its wake: the gaps fill
             // only slowly, as the foam spreads, over the next period.
-            .mul(mix(crestSection, float(1), age.smoothstep(0.35, 1).mul(0.3)).mul(heightRatio.sqrt().clamp(0.85, 1.25)))
-            .max(denseAt(age.add(1)).mul(previousBroke))
-            .max(chopDense);
+            // Those of the crest that laid it: `crestSection` is the *nearest*
+            // crest's, which past mid-trough is the next one, and the wake
+            // was re-cut there by a wave that had not yet arrived.
+            .mul(mix(crestSectionOf(surfPhaseValue.floor()), float(1), age.smoothstep(0.35, 1).mul(0.3)).mul(heightRatio.sqrt().clamp(0.85, 1.25)))
+            .mul(sections)
+            .max(denseAt(age.add(1)).mul(previousBroke).mul(sectionsPrevious))
+            .max(chopDense.mul(sections));
           // The lace is the foam lines and nothing else: aged foam has torn all
           // the way into them, with clear water between.
           const lace = laceAt(age)
             .mul(lastBroke)
-            .max(laceAt(age.add(1)).mul(previousBroke))
-            .max(laceAt(age.add(2)).mul(olderBroke))
+            .mul(sections)
+            .max(laceAt(age.add(1)).mul(previousBroke).mul(sectionsPrevious))
+            .max(laceAt(age.add(2)).mul(olderBroke).mul(sectionsOlder))
             .mul(mix(float(0.15), float(1.3), lanes.mul(0.6).add(surfFroth.mul(0.4))))
             // Combed across the bands, and carried out through the rips.
-            .mul(mix(float(0.4), float(1.45), streak))
+            //
+            // [island-reflection, foam] Lightly. At 0.4 to 1.45 the comb
+            // (2.6 m streaks running cross-shore) multiplied into the lanes
+            // that run along the crests cut the lace into a plaid of short
+            // blocks, the vertical comb teeth in the beach-flyover's veil.
+            .mul(mix(float(0.8), float(1.15), streak))
             .mul(rip.mul(0.5).add(1));
           // Over the last half metre the bore has become the swash sheet, which
           // stays clear: its foam is the lip at its leading edge (`thin` and
@@ -4009,9 +4040,8 @@ export class OceanMaterial {
           const whitewater = dense
             // Torn, not cleared: between the clumps the churned water is
             // still about half white (round 10's "thin white strips").
-            .mul(mix(float(1), mix(float(0.46), float(1.12), torn).mul(mix(float(0.75), float(1.15), streak)), tearing))
+            .mul(mix(float(1), mix(float(0.46), float(1.12), torn).mul(mix(float(0.9), float(1.06), streak)), tearing))
             .max(lace)
-            .mul(sections)
             .mul(sheetClear)
             .min(0.95)
             .toVar();
@@ -4072,8 +4102,23 @@ export class OceanMaterial {
           // What is left of a bore is still being carried up the beach by the
           // next, so the pattern drifts shoreward as it ages — and stops doing so
           // at the waterline, where the ground draws the same pattern unmoved.
+          //
+          // [island-reflection, foam] By the age of the *current* wave only,
+          // so the carry is continuous everywhere except along the bore's own
+          // front, where new white water arrives anyway. It used to run on
+          // the age of the youngest wave that had broken here, picked by a
+          // hard test of the depth against each of the last three break
+          // depths (0, 1, 2 periods added, or 3 where none had). On an uneven
+          // shelf those tests cut the water into islands that follow the
+          // seabed's contours, and the carry jumped by one to three periods,
+          // three to ten metres, at every one of their edges: the foam
+          // pattern, its lace and the pillow were all read torn along those
+          // outlines. That is the beach-flyover's dark, silhouette-shaped
+          // ghosts with comb-toothed edges (`.claude/progress/
+          // 17-island-reflection`, 30-33). A wave older than one period has
+          // long since carried its foam up the beach.
           surfAdvect.assign(
-            shoreward.mul(laceAge.min(3).mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
+            shoreward.mul(age.mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
           );
 
           // **The pillow.** White water is a heap of churned foam, not a

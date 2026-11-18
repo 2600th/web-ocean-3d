@@ -22,10 +22,22 @@ const SHOTS = {
   reveal: { kind: 'tour', t: 46.5 },
   beach: { kind: 'tour', t: 57.5 },
   beach2: { kind: 'tour', t: 51.5 },
+  // The Tour's reef dive: the lens crosses the surface about cinematicTime 18.5-19.5.
+  dive: { kind: 'tour', t: 18.2 },
   sunset: {
     kind: 'boat',
     state: { cameraMode: 'boat', windSpeed: 6, peakWavelength: 40, cloudCoverage: 0.35, preset: 'sunset' },
     time: 31.25, lens: 30, camera: { position: [70, 3, 44], target: [-4, 11.6, 0] },
+  },
+  storm: {
+    kind: 'boat',
+    state: { cameraMode: 'boat', windSpeed: 21, peakWavelength: 60, cloudCoverage: 0.95, preset: 'storm' },
+    time: 41, lens: 44, camera: { position: [36, 3, 30], target: [-6, 11, 0] },
+  },
+  wake: {
+    kind: 'boat',
+    state: { cameraMode: 'boat', windSpeed: 13, peakWavelength: 40, cloudCoverage: 0.4, preset: 'seaOfThieves' },
+    time: 55.5, lens: 40, camera: { position: [-8, 10, 12], target: [-60, 0, -4] },
   },
   moonlit: {
     kind: 'boat',
