@@ -8,32 +8,36 @@ P0.6, A1 and A2 changes); "now" is the latest run. The WAV files are in `test-re
 | State | Run | Integrated LUFS | Max short-term LUFS | True peak dBTP | Clicks | Peak voices | Peak nodes | Beds rendering at zero | Music repeats after |
 |---|---|---|---|---|---|---|---|---|---|
 | calm | before | -27.6 | -22.6 | -7.3 | 0 | 4/12 fx (0 refused), 18 notes | 193 live, 180/s | 6 of 10 | ~111 s (projected) |
-|  | now | -19.1 | -14.9 | -1.8 | 0 | 4/12 fx (0 refused), 18 notes | 210 live, 202/s | 0 of 3 | ~111 s (projected) |
+|  | now | -19.1 | -14.9 | -1.8 | 2 | 4/12 fx (0 refused), 18 notes | 236 live, 228/s | 0 of 3 | ~111 s (projected) |
 | sailing | before | -22.7 | -19.4 | -5.5 | 2 | 5/12 fx (0 refused), 20 notes | 251 live, 264/s | 3 of 10 | ~61 s (projected) |
-|  | now | -18.6 | -15.9 | -2.1 | 2 | 5/12 fx (0 refused), 20 notes | 268 live, 286/s | 0 of 6 | ~61 s (projected) |
+|  | now | -18.6 | -15.8 | -3.0 | 0 | 6/12 fx (0 refused), 20 notes | 289 live, 300/s | 0 of 6 | ~61 s (projected) |
 | storm | before | -16.2 | -15.0 | -2.3 | 0 | 8/12 fx (0 refused), 24 notes | 298 live, 287/s | 0 of 10 | 47 s |
-|  | now | -16.3 | -15.7 | -1.8 | 0 | 6/12 fx (0 refused), 24 notes | 318 live, 309/s | 0 of 9 | 47 s |
+|  | now | -16.3 | -15.8 | -1.8 | 0 | 6/12 fx (0 refused), 24 notes | 334 live, 341/s | 0 of 9 | 47 s |
 | underwater | before | -23.5 | -21.9 | -8.1 | 0 | 11/12 fx (0 refused), 8 notes | 169 live, 153/s | 5 of 10 | ~107 s (projected) |
-|  | now | -18.1 | -17.4 | -4.4 | 0 | 11/12 fx (0 refused), 8 notes | 186 live, 175/s | 0 of 5 | ~107 s (projected) |
+|  | now | -18.1 | -17.4 | -4.4 | 0 | 11/12 fx (0 refused), 8 notes | 208 live, 201/s | 0 of 5 | ~107 s (projected) |
 | tour | before | -24.5 | -21.2 | -7.3 | 1 | 4/12 fx (0 refused), 25 notes | 230 live, 207/s | 3 of 10 | 55 s |
-|  | now | -19.0 | -16.6 | -3.0 | 1 | 4/12 fx (0 refused), 25 notes | 250 live, 229/s | 0 of 6 | 55 s |
+|  | now | -19.0 | -16.7 | -3.0 | 0 | 6/12 fx (0 refused), 25 notes | 272 live, 249/s | 0 of 6 | 55 s |
 | nightCalm | before | -27.2 | -22.5 | -7.3 | 0 | 5/12 fx (0 refused), 18 notes | 195 live, 180/s | 6 of 10 | ~111 s (projected) |
-|  | now | -19.2 | -15.0 | -1.8 | 0 | 5/12 fx (0 refused), 18 notes | 212 live, 202/s | 0 of 3 | ~111 s (projected) |
+|  | now | -19.2 | -15.0 | -1.8 | 2 | 4/12 fx (0 refused), 18 notes | 231 live, 228/s | 0 of 3 | ~111 s (projected) |
 | nearCliffs | before | -24.0 | -21.2 | -6.7 | 2 | 4/12 fx (0 refused), 19 notes | 220 live, 234/s | 4 of 10 | ~63 s (projected) |
-|  | now | -18.7 | -16.4 | -2.6 | 2 | 4/12 fx (0 refused), 19 notes | 239 live, 256/s | 0 of 5 | ~63 s (projected) |
+|  | now | -18.8 | -16.5 | -2.8 | 2 | 5/12 fx (0 refused), 19 notes | 260 live, 276/s | 0 of 5 | ~63 s (projected) |
 | tierChange | before | -23.1 | -21.2 | -7.6 | 3 | 5/12 fx (1 refused), 19 notes | 215 live, 264/s | 3 of 10 | ~61 s (projected) |
-|  | now | -18.7 | -17.0 | -3.3 | 3 | 5/12 fx (1 refused), 19 notes | 238 live, 286/s | 0 of 6 | ~61 s (projected) |
+|  | now | -18.7 | -17.1 | -3.5 | 0 | 4/12 fx (0 refused), 19 notes | 256 live, 300/s | 0 of 6 | ~61 s (projected) |
+| islandDay | now | -19.2 | -15.2 | -1.9 | 2 | 5/12 fx (0 refused), 18 notes | 238 live, 228/s | 0 of 5 | ~111 s (projected) |
+| islandNight | now | -20.0 | -18.3 | -6.6 | 2 | 3/12 fx (0 refused), 18 notes | 222 live, 228/s | 0 of 6 | ~111 s (projected) |
 
 Click times in the latest run (first twelve per state, seconds, ratio to the local level):
 
-- calm: none
-- sailing: 41.785 (10.7x), 57.189 (11.5x)
+- calm: 44.173 (14.7x), 44.275 (10.4x)
+- sailing: none
 - storm: none
 - underwater: none
-- tour: 53.99 (10x)
-- nightCalm: none
-- nearCliffs: 42.354 (10.4x), 48.542 (12.9x)
-- tierChange: 42.543 (11.6x), 42.946 (10.7x), 43.991 (10.8x)
+- tour: none
+- nightCalm: 36.817 (13.5x), 36.931 (14.6x)
+- nearCliffs: 24.575 (13.5x), 43.04 (10.2x)
+- islandDay: 49.985 (13.6x), 50.036 (13.9x)
+- islandNight: 44.173 (14.5x), 44.275 (10.6x)
+- tierChange: none
 
 Detector self-test: a 440 Hz sine cut to zero mid-cycle gives 1 click(s);
 the clean sine 0, low-passed noise 0.

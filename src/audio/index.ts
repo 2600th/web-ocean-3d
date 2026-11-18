@@ -7,6 +7,7 @@ export {
 } from './AudioSystem';
 export type {
   AudioBus,
+  AudioIsland,
   AudioMix,
   AudioQualitySettings,
   AudioReflector,

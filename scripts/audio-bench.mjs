@@ -76,7 +76,9 @@ const STEP_FRAMES = 128 * 12;
 // thunder from the lightning (delayed by distance at 343 m/s).
 
 const hs = (u) => (0.22 * u * u) / 9.81;
-const thunder = (t, km) => ({ t, type: 'thunder', km, delay: (km * 1000) / 343 });
+// Each strike on its own bearing (the listener faces -Z), so the placed
+// thunder (A4) is exercised; code without placement ignores x and z.
+const thunder = (t, km) => ({ t, type: 'thunder', km, delay: (km * 1000) / 343, x: km * 1000 * Math.sin(t * 1.3), z: -km * 1000 * Math.cos(t * 1.3) });
 
 /** Slaps every `every` seconds with a little irregularity, alternating sides. */
 function slaps(every, strength, from = 1, to = 60) {
@@ -130,7 +132,7 @@ const STATES = {
     music: 'calm', energy: 0,
     // The moonlit look's weather. The audio has no time-of-day input, so this
     // differs from `calm` only by what the game feeds it.
-    params: { windSpeed: 6, waveHeight: hs(6), peakWavelength: 80, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 40, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0 },
+    params: { windSpeed: 6, waveHeight: hs(6), peakWavelength: 80, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 40, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0, sunElevation: -0.3 },
     motion: { heel: 0.05, heelPeriod: 9.5, pitch: 0.02, pitchPeriod: 6.1 },
     events: [...slaps(6, 0.2)],
   },
@@ -143,6 +145,26 @@ const STATES = {
     listenerX: (t) => -270 + 9 * t,
     events: [...slaps(2.8, 0.4), { t: 29, type: 'impact', strength: 0.35 }],
   },
+  islandDay: {
+    // Running in toward a beach by day (A8): the listener closes from 675 m off
+    // the breakers to 15 m, the camp fire 100 m up the beach. A round island
+    // 500 m across centred at x = -1000; its ground falls 1 m per metre.
+    music: 'calm', energy: 0,
+    params: { windSpeed: 7, waveHeight: hs(7), peakWavelength: 50, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 40, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0, listenerZ: 0, sunElevation: 0.6 },
+    motion: { heel: 0.05, heelPeriod: 7, pitch: 0.02, pitchPeriod: 5.2 },
+    island: { x: -1000, z: 0, radius: 500, fire: { x: -560, y: 3, z: 10 } },
+    listenerX: (t) => 200 - 11 * t,
+    events: [...slaps(5, 0.2)],
+  },
+  islandNight: {
+    // The same run in at night: insects instead of birds.
+    music: 'calm', energy: 0,
+    params: { windSpeed: 5, waveHeight: hs(5), peakWavelength: 50, rain: 0, submersion: 0, hullSpeed: 0, birdCount: 0, shipDistance: 22, shipPan: 0.2, sailFill: 0, sailLuff: 0, listenerZ: 0, sunElevation: -0.3 },
+    motion: { heel: 0.05, heelPeriod: 7, pitch: 0.02, pitchPeriod: 5.2 },
+    island: { x: -1000, z: 0, radius: 500, fire: { x: -560, y: 3, z: 10 } },
+    listenerX: (t) => 200 - 11 * t,
+    events: [...slaps(5, 0.2)],
+  },
   tierChange: {
     // Not a game state: sailing with the adaptive quality dropping to Low at
     // 20 s and back to High at 40 s, which swaps the rooms and the beds.
@@ -153,7 +175,7 @@ const STATES = {
   },
 };
 
-const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'nightCalm', 'nearCliffs', 'tierChange'];
+const DEFAULT_STATES = ['calm', 'sailing', 'storm', 'underwater', 'tour', 'nightCalm', 'nearCliffs', 'islandDay', 'islandNight', 'tierChange'];
 
 // --- arguments ---------------------------------------------------------------
 
@@ -286,6 +308,10 @@ async function renderInPage(cfg) {
   sys.setMusicState(st.music, st.energy);
   sys.resetClock(0);
   if (st.reflectors && typeof sys.setReflectors === 'function') sys.setReflectors(st.reflectors);
+  if (st.island && typeof sys.setIsland === 'function') {
+    const isl = st.island;
+    sys.setIsland({ ...isl, height: (x, z) => isl.radius - Math.hypot(x - isl.x, z - isl.z) });
+  }
   await sys.resume();
   if (cfg.diag === 'wet') {
     // Diagnosis only (BENCH_DIAG=wet): the room's return alone, every dry path
@@ -329,7 +355,7 @@ async function renderInPage(cfg) {
     while (nextEvent < events.length && events[nextEvent].t <= t) {
       const e = events[nextEvent++];
       switch (e.type) {
-        case 'thunder': sys.playThunder(e.km, e.delay); break;
+        case 'thunder': sys.playThunder(e.km, e.delay, e.x, e.z); break;
         case 'slap': sys.waveSlap(e.strength, e.pan); break;
         case 'impact': sys.hullImpact(e.strength, false); break;
         case 'splash': sys.playSplash(e.strength, e.pan ?? 0); break;

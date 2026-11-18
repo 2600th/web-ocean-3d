@@ -39,9 +39,9 @@ const REF_DB = -24;
 const TARGET_DB = -18.8;
 /** How much of the world's own range survives: 0 none, 1 all of it. */
 const SLOPE_FULL = 0.34;
-const SLOPE_REDUCED = 0.12;
-/** The reduced range also plays a little louder: small speakers, a noisy room. */
-const REDUCED_LIFT_DB = 1.5;
+const SLOPE_REDUCED = 0.2;
+/** The reduced range: its firmer compressor adds makeup, which this takes back. */
+const REDUCED_LIFT_DB = -1.5;
 /** How far an event may push the window above the beds, scaled down when reduced. */
 const EVENT_SPAN_REDUCED = 0.5;
 /** Limits on the gain this stage applies, dB. */
