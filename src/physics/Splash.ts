@@ -741,6 +741,8 @@ function sheetMaterial(vertex: () => any, fragment: () => any, depthOnly = false
   material.fog = false;
   // The depth pass takes only the dense sheet, as `sprayMaterial`'s does.
   material.alphaTest = depthOnly ? 0.3 : SPRAY_ALPHA_FLOOR;
+  // No contact shadows or AO on the sheet; see `sceneMrt`'s surface flag.
+  if (!depthOnly) material.userData.airborneWater = true;
   material.positionNode = Fn(() => vertex())() as any;
   material.colorNode = Fn(() => fragment())() as any;
   return material;

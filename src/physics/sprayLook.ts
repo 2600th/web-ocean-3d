@@ -271,6 +271,8 @@ export function sprayMaterial(vertex: () => any, depthOnly: boolean): THREE.Mesh
     // resolve and GTAO then drew as hard-edged translucent rectangles laid over
     // the water (round 10c). The threshold is below one 8-bit step of colour.
     material.alphaTest = SPRAY_ALPHA_FLOOR;
+    // No contact shadows or AO on droplets; see `sceneMrt`'s surface flag.
+    material.userData.airborneWater = true;
   }
   return material;
 }

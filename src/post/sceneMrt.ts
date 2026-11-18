@@ -10,6 +10,15 @@ import { Fn, diffuseColor, float, mrt, normalView, output, vec3, vec4, velocity 
 export const THIN_SHEET_FLAG = -1;
 
 /**
+ * Velocity `.z` of airborne water: spray, spindrift, splashes, the bow sheet.
+ * The water's own flag is 1; this is well above it because spray is blended,
+ * and the flag arrives multiplied by the fragment's coverage. Spray writes its
+ * dense cores into depth from an alpha of 0.3 (so the fog sees them), and at
+ * 4 every such pixel already decodes as fully water (`z.saturate()`).
+ */
+export const AIRBORNE_WATER_FLAG = 4;
+
+/**
  * The scene pass's MRT — colour, motion vector, view normal, and albedo when
  * asked for — with the data targets blended by each material's own coverage.
  *
@@ -61,11 +70,19 @@ export const THIN_SHEET_FLAG = -1;
  * ### The surface flag
  *
  * Velocity `.z` says what kind of surface a pixel is, for the screen-space
- * lighting: 0 a solid, 1 water (the ocean's own `mrtNode`), and
+ * lighting: 0 a solid, 1 water (the ocean's own `mrtNode`),
  * `THIN_SHEET_FLAG` for a material marked `userData.thinSheet` — canvas and
- * bunting. Read from the material here rather than set by a material
- * `mrtNode`, because that would replace the sail's output in every render
- * without MRT, the planar mirror among them (see `Clouds`).
+ * bunting — and `AIRBORNE_WATER_FLAG` for one marked
+ * `userData.airborneWater`. Read from the material here rather than set by a
+ * material `mrtNode`, because that would replace the sail's output in every
+ * render without MRT, the planar mirror among them (see `Clouds`).
+ *
+ * Why spray counts as water: its cores are in the depth buffer, so to the
+ * contact-shadow march and to GTAO a droplet is a centimetre of solid a hand's
+ * breadth off the hull. The march found each one shadowed by its neighbours
+ * and by the hull, and the composite took the sun out of it: white droplets
+ * drawn as black specks along the waterline. Spray, like the sea, is lit in
+ * its own shader and takes neither term.
  */
 export function sceneMrt({ albedo = false }: { albedo?: boolean } = {}): any {
   const coverage = Fn((builder: any) => {
@@ -96,7 +113,9 @@ export function sceneMrt({ albedo = false }: { albedo?: boolean } = {}): any {
   });
   const surfaceFlag = Fn((builder: any) => {
     const material = builder.material as THREE.Material | null;
-    return float(material?.userData?.thinSheet === true ? THIN_SHEET_FLAG : 0);
+    if (material?.userData?.thinSheet === true) return float(THIN_SHEET_FLAG);
+    if (material?.userData?.airborneWater === true) return float(AIRBORNE_WATER_FLAG);
+    return float(0);
   });
   const node: any = mrt({
     output,
