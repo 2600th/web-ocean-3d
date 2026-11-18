@@ -15,6 +15,12 @@ None of them modify anything. They read models and print or draw. The build
 pipeline is `scripts/fetch-assets.mjs` (get the authoritative source) and
 `scripts/optimize-assets.mjs` (decimate, LOD, encode, ship).
 
+The one exception is `split-hero.mjs`, a build step: it cuts the hero ship's
+rudder, whipstaff and four square yards out of their joined meshes into pivot
+nodes and writes `public/models/hero/dutch_ship_medium.glb` back (KTX2 kept,
+Meshopt re-encoded). Run it after `optimize-assets.mjs --force` rebuilds the
+hero; it refuses a file that is already split.
+
 ---
 
 ## Why these exist

@@ -50,13 +50,23 @@ type Node = any;
  * wind from astern is eased and full. With the wind ahead it stops drawing and
  * shakes.
  *
- * **The yards do not brace.** They are not separate nodes: all four sit inside
- * the one joined rigging mesh with their lifts, footropes and braces as separate
- * islands that end at the yardarms, and `Birds` perches gulls on fixed yardarm
- * points. Turning a yard means bending those ropes with it (a vertex skin on the
- * rigging) and moving the perches, which is S2's territory. Until then the
- * sails keep the model's own brace, about 15 degrees with the starboard arm
- * forward, and the point of sail is expressed through trim, pressure and luff.
+ * **The yards brace.** `scripts/modelkit/split-hero.mjs` cut the four square
+ * yards out of the rigging into pivot nodes (`yard_fore`, `yard_fore_top`,
+ * `yard_main`, `yard_main_top`), each turning about the vertical through its
+ * middle and carrying its slings and yardarm blocks. They come round to the
+ * apparent wind at a crew's pace: square before it, sharp up to `BRACE_LIMIT`
+ * as it comes forward, the weather arm forward (hauling the lee brace takes
+ * the lee arm aft). Each sail turns with its yard: the head on its own yard,
+ * the clews about the yard they are sheeted to (a topsail's are on the course
+ * yardarms below), so the cloth's pins, the analytic table and the furled
+ * topsail bundles (re-parented onto their yards) all follow.
+ *
+ * What does not follow: the braces, lifts and sheets that end at the yardarms
+ * are still islands of the joined rigging mesh, so they keep the model's own
+ * brace (about 15 degrees, starboard arm forward) and their ends part from a
+ * yard braced the other way by up to a metre or so at the arm. Bending them is
+ * S2's catenary work. `Birds`' perches are likewise fixed points, measured on
+ * the model's brace.
  */
 
 export type SailSetting = 'furled' | 'half' | 'full';
@@ -101,9 +111,29 @@ const MAX_STEPS_PER_FRAME = 8;
 const PRESSURE_WIND_CAP = 14;
 /** How sharp a square-rigger's yards brace before they foul the shrouds. */
 const BRACE_LIMIT = THREE.MathUtils.degToRad(40);
+/** How fast the crew brace the yards round, radians per second (about 9 degrees). */
+const BRACE_RATE = 0.16;
+/** The yard pivot nodes `split-hero.mjs` writes. */
+const YARD_NODES = ['yard_fore', 'yard_fore_top', 'yard_main', 'yard_main_top'];
 
 interface SailRuntime {
   spec: SailSpec;
+  /** The yard the head is bent to, its turning axis, and the pivot of the clews' yard; model space. */
+  yard: THREE.Object3D | null;
+  yardAxis: THREE.Vector3;
+  headPivot: THREE.Vector3;
+  clewPivot: THREE.Vector3;
+  /** Corners and forward normal at the current brace. */
+  headL: THREE.Vector3;
+  headR: THREE.Vector3;
+  clewL: THREE.Vector3;
+  clewR: THREE.Vector3;
+  forwardNow: THREE.Vector3;
+  /** Cloth start pose at the model's brace, nx*ny*3, and the first vertex in the solver. */
+  start: Float32Array | null;
+  offset: number;
+  /** Yard turn the pins were last written for, radians. */
+  pinnedTurn: number;
   /** Arc length head to foot over the straight distance: the cut-in slack. */
   slack: number;
   height: number;
@@ -137,6 +167,8 @@ export class ShipSails {
   private time = 0;
   private stepAccumulator = 0;
   private fill = 0;
+  /** The yards' brace, radians about +Y from square, positive turning the canvas's face to port. */
+  private brace = 0;
   private pendingReset = true;
   private inputsFresh = false;
   private warmPending = true;
@@ -182,7 +214,59 @@ export class ShipSails {
       const along = spec.headR.clone().sub(spec.headL).setY(0).normalize();
       const forward = new THREE.Vector3(0, 1, 0).cross(along).normalize();
       const braceBaked = Math.atan2(-forward.z, forward.x);
-      this.sails.push({ spec, slack, height: straight * slack, forward, braceBaked, drop: 0, trim: 0, bundle: null });
+      this.sails.push({
+        spec,
+        slack,
+        height: straight * slack,
+        forward,
+        braceBaked,
+        drop: 0,
+        trim: 0,
+        bundle: null,
+        yard: null,
+        yardAxis: new THREE.Vector3(0, 1, 0),
+        headPivot: headMid.clone(),
+        clewPivot: headMid.clone(),
+        headL: spec.headL.clone(),
+        headR: spec.headR.clone(),
+        clewL: spec.clewL.clone(),
+        clewR: spec.clewR.clone(),
+        forwardNow: forward.clone(),
+        start: null,
+        offset: 0,
+        pinnedTurn: 0,
+      });
+    }
+
+    // The yards, if the model was split: each sail's head to its nearest yard,
+    // its clews to the yard nearest them.
+    model.updateMatrixWorld(true);
+    const toModel = new THREE.Matrix4().copy(model.matrixWorld).invert();
+    const yards = YARD_NODES.map((name) => model.getObjectByName(name)).filter((y): y is THREE.Object3D => !!y);
+    const pivots = yards.map((y) => new THREE.Vector3().setFromMatrixPosition(y.matrixWorld).applyMatrix4(toModel));
+    const nearest = (p: THREE.Vector3) => {
+      let best = -1;
+      let bestD = Infinity;
+      pivots.forEach((q, i) => {
+        const d = q.distanceToSquared(p);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      });
+      return best;
+    };
+    if (yards.length === YARD_NODES.length) {
+      for (const sail of this.sails) {
+        const head = nearest(sail.headPivot);
+        const clew = nearest(sail.spec.clewL.clone().add(sail.spec.clewR).multiplyScalar(0.5));
+        sail.yard = yards[head];
+        const axis = sail.yard.userData.axis as number[] | undefined;
+        if (Array.isArray(axis) && axis.length === 3) sail.yardAxis.fromArray(axis).normalize();
+        sail.headPivot.copy(pivots[head]);
+        // A course's clews are sheeted to the side, and come round with its own yard.
+        sail.clewPivot.copy(sail.spec.kind === 'course' ? pivots[head] : pivots[clew]);
+      }
     }
 
     // The furled topsail bundles stay the model's own meshes; the courses and
@@ -204,6 +288,8 @@ export class ShipSails {
       m.castShadow = true;
       m.receiveShadow = true;
       src.parent.add(m);
+      // Hangs from its yard, so it comes round with it.
+      sail.yard?.attach(m);
       sail.bundle = m;
     }
 
@@ -256,6 +342,8 @@ export class ShipSails {
           }
         }
       }
+      sail.start = start;
+      sail.offset = si * vertsPerSail;
       patches.push({
         nx: NX,
         ny: NY,
@@ -364,12 +452,16 @@ export class ShipSails {
     // A slow gust envelope; pure in time so a reset reproduces it.
     const t = this.time;
     const gust = 1 + 0.18 * Math.sin(t * 0.41) + 0.09 * Math.sin(t * 1.37 + 1.1);
-    // Where the yards would be braced for this wind: square before it, sharp up
-    // to BRACE_LIMIT as it comes forward, the lee arm forward. Angles here are
-    // about +Y, positive toward port, from the bow.
+    // Where the yards are braced for this wind: square before it, sharp up to
+    // BRACE_LIMIT as it comes forward, the weather arm forward. Angles here are
+    // about +Y, positive toward port, from the bow. The crew take time over it.
     const fromAngle = Math.atan2(Math.abs(this.windModel.z), -this.windModel.x);
     const braceSide = this.windModel.z <= 0 ? 1 : -1;
-    const brace = braceSide * Math.min(BRACE_LIMIT, (Math.PI - fromAngle) * 0.35);
+    const braceTarget = braceSide * Math.min(BRACE_LIMIT, (Math.PI - fromAngle) * 0.35);
+    this.brace = snap ? braceTarget : approach(this.brace, braceTarget, BRACE_RATE * dt);
+    const brace = this.brace;
+    const warming = this.warmPending || snap;
+    let pinsMoved = false;
 
     for (let i = 0; i < this.sails.length; i++) {
       const sail = this.sails[i];
@@ -379,16 +471,31 @@ export class ShipSails {
           : clamp01((this.fill - HALF_FILL) / (1 - HALF_FILL));
       sail.drop = dropTarget;
 
-      // The yards stay at the model's brace (see the header), so the canvas is
-      // shown the wind as a yard braced to `brace` would meet it: rotated by
-      // the difference into the model's yard frame.
-      const turn = sail.braceBaked - brace;
-      const c = Math.cos(turn);
-      const sn = Math.sin(turn);
+      // The yard comes round from the model's brace to `brace`, and the sail
+      // with it. Without a yard node (an unsplit model) the canvas stays at
+      // the model's brace and is shown the wind as a braced yard would meet
+      // it, rotated by the difference.
+      const turn = sail.yard ? brace - sail.braceBaked : 0;
+      if (sail.yard) sail.yard.quaternion.setFromAxisAngle(sail.yardAxis, turn);
+      _turn.setFromAxisAngle(sail.yardAxis, turn);
+      turnAbout(sail.spec.headL, sail.headPivot, _turn, sail.headL);
+      turnAbout(sail.spec.headR, sail.headPivot, _turn, sail.headR);
+      turnAbout(sail.spec.clewL, sail.clewPivot, _turn, sail.clewL);
+      turnAbout(sail.spec.clewR, sail.clewPivot, _turn, sail.clewR);
+      sail.forwardNow.copy(sail.forward).applyQuaternion(_turn);
+      if (sail.start && (warming || Math.abs(turn - sail.pinnedTurn) > 1e-4)) {
+        this.pinSail(solver, sail, _turn, warming);
+        sail.pinnedTurn = turn;
+        pinsMoved = true;
+      }
+
+      const residual = brace - sail.braceBaked - turn;
+      const c = Math.cos(-residual);
+      const sn = Math.sin(-residual);
       const felt = SCRATCH_FELT.set(capped.x * c + capped.z * sn, capped.y, capped.z * c - capped.x * sn);
       // Angle of attack: 1 with the wind square on the canvas from aft, 0 along
       // it, negative when it is aback.
-      const sinA = cappedSpeed > 1e-3 ? felt.dot(sail.forward) / cappedSpeed : 0;
+      const sinA = cappedSpeed > 1e-3 ? felt.dot(sail.forwardNow) / cappedSpeed : 0;
       const windy = smooth(0.5, 3.5, speed);
       const draw = smooth(0.08, 0.45, sinA) * windy;
       const luffWind = (1 - smooth(0.1, 0.4, sinA)) * smooth(1.5, 4, speed);
@@ -405,16 +512,17 @@ export class ShipSails {
       const full = sail.height * (0.36 - 0.24 * sail.trim);
       const depth = full * draw * Math.min(1, cappedSpeed / 6) * gust - sail.height * 0.06 * (sinA < 0 ? windy : 0);
       const luffAmp = luff * motion * sail.height * 0.07 * Math.min(1, speed / 7);
-      const s = sail.spec;
       const o = i * SAIL_STRIDE;
-      this.sailValues[o].set(s.headL.x, s.headL.y, s.headL.z, sail.drop);
-      this.sailValues[o + 1].set(s.headR.x, s.headR.y, s.headR.z, sail.drop > 0.005 ? 1 : 0);
-      this.sailValues[o + 2].set(s.clewL.x, s.clewL.y, s.clewL.z, Math.max(depth, -sail.height * 0.08));
-      this.sailValues[o + 3].set(s.clewR.x, s.clewR.y, s.clewR.z, luffAmp);
-      this.sailValues[o + 4].set(sail.forward.x, sail.forward.y, sail.forward.z, 0.3);
+      const f = sail.forwardNow;
+      this.sailValues[o].set(sail.headL.x, sail.headL.y, sail.headL.z, sail.drop);
+      this.sailValues[o + 1].set(sail.headR.x, sail.headR.y, sail.headR.z, sail.drop > 0.005 ? 1 : 0);
+      this.sailValues[o + 2].set(sail.clewL.x, sail.clewL.y, sail.clewL.z, Math.max(depth, -sail.height * 0.08));
+      this.sailValues[o + 3].set(sail.clewR.x, sail.clewR.y, sail.clewR.z, luffAmp);
+      this.sailValues[o + 4].set(f.x, f.y, f.z, 0.3);
       this.sailValues[o + 5].set(i * 1.7, 0, 0, 0);
       if (sail.bundle) sail.bundle.visible = sail.drop <= 0.005;
     }
+    if (pinsMoved) solver.commitPins();
 
     this.pennant?.update(this.windModel, motion, this.time);
     if (this.pennant) solver.setGroup(this.sails.length, this.windModel, 1, 0.7 * motion, 1, 1);
@@ -460,6 +568,30 @@ export class ShipSails {
   }
 
   // ------------------------------------------------------------------ internals
+
+  /**
+   * Writes a sail's pins (the head along its yard, the clews) for the yard
+   * turned by `turn`, and with `restart` its whole start pose too, so the next
+   * warm-up begins from canvas already hanging from the braced yard.
+   */
+  private pinSail(solver: ClothSolver, sail: SailRuntime, turn: THREE.Quaternion, restart: boolean): void {
+    const start = sail.start;
+    if (!start) return;
+    for (let r = 0; r < NY; r++) {
+      const head = r === 0;
+      const foot = r === NY - 1;
+      for (let c = 0; c < NX; c++) {
+        const corner = foot && (c === 0 || c === NX - 1);
+        if (!head && !corner && !restart) continue;
+        const k = r * NX + c;
+        _point.set(start[k * 3], start[k * 3 + 1], start[k * 3 + 2]);
+        turnAbout(_point, corner ? sail.clewPivot : sail.headPivot, turn, _point);
+        const v = sail.offset + k;
+        if (head || corner) solver.setPin(v, _point.x, _point.y, _point.z);
+        if (restart) solver.setStart(v, _point.x, _point.y, _point.z);
+      }
+    }
+  }
 
   private dispatch(steps: number): void {
     if (!this.solver || !this.renderer || steps <= 0) return;
@@ -541,6 +673,13 @@ export class ShipSails {
 
 const SCRATCH_WIND = /*@__PURE__*/ new THREE.Vector3();
 const SCRATCH_FELT = /*@__PURE__*/ new THREE.Vector3();
+const _turn = /*@__PURE__*/ new THREE.Quaternion();
+const _point = /*@__PURE__*/ new THREE.Vector3();
+
+/** `p` turned by `q` about `pivot`, into `out` (which may be `p`). */
+function turnAbout(p: THREE.Vector3, pivot: THREE.Vector3, q: THREE.Quaternion, out: THREE.Vector3): THREE.Vector3 {
+  return out.copy(p).sub(pivot).applyQuaternion(q).add(pivot);
+}
 
 function bilinear(spec: SailSpec, u: number, v: number, out: THREE.Vector3): THREE.Vector3 {
   const top = SCRATCH_A.copy(spec.headL).lerp(spec.headR, u);

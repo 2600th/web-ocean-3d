@@ -2309,6 +2309,7 @@ class App {
       this.ship = ship;
       // Gulls work the ship and sit on her yards; see `Birds.setShip`.
       this.birds.setShip(ship.object);
+      ship.setKeyLight(this.atmosphere.sunLight);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);
@@ -4172,6 +4173,7 @@ class App {
 
     const ship = this.ship;
     if (ship) {
+      ship.setHelm(this.shipControls?.getState(this.shipStateOut).rudder ?? 0);
       ship.update(dt);
       this.shipLights?.update(dt, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
       this.shipFittings?.update(this.gameplay?.anchorCable(this.shipFittings.anchorState) ?? null);
