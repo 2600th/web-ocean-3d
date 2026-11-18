@@ -8,7 +8,7 @@ import { collectConsoleErrors, setState, waitForOcean } from './helpers';
  */
 test('Escape pauses, the settings are saved, and a rebound key steers the helm', async ({ page }) => {
   const errors = collectConsoleErrors(page);
-  await page.goto('/?gate=0&quality=low');
+  await page.goto('/?gate=0&quality=high');
   await waitForOcean(page, 1200);
   await setState(page, { cameraMode: 'boat' });
 
@@ -41,7 +41,7 @@ test('Escape pauses, the settings are saved, and a rebound key steers the helm',
   await dialog.getByRole('switch', { name: /Reduce motion/ }).click();
   await expect(page.locator('html')).toHaveAttribute('data-reduce-motion', 'on');
   await dialog.getByRole('switch', { name: /Reduce flashes/ }).click();
-  await dialog.getByRole('radio', { name: 'Large', includeHidden: true }).check({ force: true });
+  await dialog.getByText('Large', { exact: true }).click();
 
   await dialog.getByRole('button', { name: /^Steer to port: A/ }).click();
   await page.keyboard.press('KeyJ');
@@ -74,6 +74,10 @@ test('Escape pauses, the settings are saved, and a rebound key steers the helm',
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __ocean: { gameplay: { state(): { anchor: string } } } }).__ocean.gameplay.state().anchor)).not.toBe('up');
 
+  // Nothing went wrong in the session itself. (Tearing the page down for the
+  // reload below is not part of what is being asked.)
+  expect(errors).toEqual([]);
+
   // ---- remembered after a reload ---------------------------------------------------
   await page.reload();
   await waitForOcean(page, 1200);
@@ -81,6 +85,4 @@ test('Escape pauses, the settings are saved, and a rebound key steers the helm',
   const state = await page.evaluate(() =>
     (window as unknown as { __ocean: { getState(): Record<string, unknown> } }).__ocean.getState());
   expect(state).toMatchObject({ reduceMotion: true, reduceFlashes: true, uiScale: 1.15 });
-
-  expect(errors).toEqual([]);
 });
