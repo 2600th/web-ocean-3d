@@ -354,7 +354,7 @@ function renderGate(
     resume?.addEventListener('click', () => go('continue'), { once: true });
     fresh.addEventListener('click', () => go('new'), { once: true });
     // The first control takes focus, so a keyboard needs no Tab to begin.
-    (resume ?? fresh).focus({ preventScroll: true });
+    if (window.matchMedia('(pointer: fine)').matches) (resume ?? fresh).focus({ preventScroll: true });
   });
 }
 

@@ -113,7 +113,7 @@ export class PauseMenu {
     flourish.setAttribute('aria-hidden', 'true');
     flourish.append(el('span'));
     const list = el('div', 'shell__menu');
-    this.resumeButton = this.button('Resume', 'shell__btn shell__btn--primary', 'anchor', () => this.close());
+    this.resumeButton = this.button('Resume', 'shell__btn shell__btn--primary', 'helm', () => this.close());
     this.settingsButton = this.button('Settings', 'shell__btn', 'ledger', () => this.show('settings'));
     const restart = this.button('Restart voyage', 'shell__btn', 'mark', () => {
       this.close();
@@ -121,7 +121,7 @@ export class PauseMenu {
     });
     // No close: the page is about to reload, and a resumed frame in between
     // would only flicker.
-    const quit = this.button('Quit to title', 'shell__btn shell__btn--quiet', 'close', () => {
+    const quit = this.button('Quit to title', 'shell__btn shell__btn--quiet', 'anchor', () => {
       hooks.quitToTitle();
     });
     list.append(this.resumeButton, this.settingsButton, restart, quit);
@@ -244,7 +244,7 @@ export class PauseMenu {
   private button(
     label: string,
     className: string,
-    iconName: 'anchor' | 'ledger' | 'mark' | 'close' | 'chevron',
+    iconName: 'anchor' | 'ledger' | 'mark' | 'helm' | 'chevron',
     onClick: () => void,
   ): HTMLButtonElement {
     const button = el('button', className);

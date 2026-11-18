@@ -3525,7 +3525,7 @@ body {
 
 /* The graphics choice, demoted: smaller plaques under the call to start. */
 .boot__gate-label--quiet {
-  margin: 22px 0 8px;
+  margin: 26px 0 16px;
   font-size: 11px;
   opacity: 0.85;
 }
@@ -4077,7 +4077,7 @@ html[data-shape-cues='on'] .toast--danger::after {
 
 /* ---- Small screens and touch ------------------------------------------------------ */
 
-@media (max-width: 900px) {
+@media (max-width: 900px) and (orientation: portrait), (max-width: 699px) {
   .settings {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -4085,7 +4085,9 @@ html[data-shape-cues='on'] .toast--danger::after {
   .settings__col + .settings__col > .settings__section:first-child {
     border-top: 1px solid rgba(143, 113, 77, 0.55);
   }
+}
 
+@media (max-width: 900px) {
   .shell__sheet {
     padding: 28px 22px 26px;
   }
@@ -4157,7 +4159,8 @@ html[data-shape-cues='on'] .toast--danger::after {
 
   .shell__btn {
     min-height: 46px;
-    font-size: 22px;
+    font-size: 21px;
+    white-space: nowrap;
   }
 
   .shell__sheet--wide {

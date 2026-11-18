@@ -84,6 +84,29 @@ export function canScaleInterface(): boolean {
 }
 
 /**
+ * The size actually applied. The interface is laid out for a smallest viewport
+ * in each of its three layouts, and scaling it up shrinks the room it has, so
+ * a step is held back where it would push the instruments into each other: on
+ * a 720p laptop "Larger" becomes the most that still fits. Never below 1.
+ */
+export function effectiveScale(step: number): number {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const [minW, minH] = h <= 520 && w > h ? [700, 360] : w < 900 ? [340, 560] : [1100, 640];
+  return Math.max(1, Math.min(step, w / minW, h / minH));
+}
+
+let scaleStep = 1;
+let resizeWatched = false;
+
+function paintScale(): void {
+  document.documentElement.style.setProperty(
+    '--ui-scale',
+    canScaleInterface() ? effectiveScale(scaleStep).toFixed(3) : '1',
+  );
+}
+
+/**
  * Puts the display-side settings on the page. Safe to call before the app
  * exists (the start gate does, so the menu honours them) and on every change.
  */
@@ -97,7 +120,12 @@ export function applyDisplayPrefs(
     else html.removeAttribute('data-reduce-motion');
   }
   if (prefs.uiScale !== undefined) {
-    html.style.setProperty('--ui-scale', canScaleInterface() ? String(prefs.uiScale) : '1');
+    scaleStep = prefs.uiScale;
+    paintScale();
+    if (!resizeWatched) {
+      resizeWatched = true;
+      window.addEventListener('resize', paintScale, { passive: true });
+    }
   }
   if (prefs.shapeCues !== undefined) {
     if (prefs.shapeCues) html.setAttribute('data-shape-cues', 'on');
