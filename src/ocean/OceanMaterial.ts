@@ -881,6 +881,14 @@ function surfPitchHold(groundDistance: any): any {
 const SURF_VERTEX_REACH = 220;
 
 /**
+ * Ground distance, metres, inside which the vertex stage hands the open sea's
+ * swell over to the surf (`surfFftFade`). Wider than the breakers' reach: the
+ * swell still displaces the mesh out to about this range, and over shallows it
+ * must not. One heightfield evaluation per vertex in the extra ring.
+ */
+const SURF_SWELL_REACH = 1500;
+
+/**
  * How much of the FFT field survives into the surf, per band, at seabed depth
  * `depth`: `vec2(swell, chop)`, each 0..1.
  *
@@ -1718,38 +1726,52 @@ export class OceanMaterial {
       // surf), so open water pays two compares and no heightfield.
       if (floorDepth !== null) {
         If(
-          surfUniforms.active.greaterThan(0.5).and(groundDistance.lessThan(SURF_VERTEX_REACH)),
+          surfUniforms.active.greaterThan(0.5).and(groundDistance.lessThan(SURF_SWELL_REACH)),
           () => {
             const depth = floorDepth(vec3(worldXZ.x, 0, worldXZ.y)).toVar();
             If(depth.lessThan(surfReachDepth()), () => {
+              // The swell is handed to the surf at any range the mesh still
+              // carries it, not only inside the breakers' reach. Cut off at
+              // `SURF_VERTEX_REACH`, the open sea's 5 m swell stood on the
+              // shallows and the sand past it, and ended in a straight wall
+              // along that circle: the ruled white ridge in `landfall`.
               const fade = surfFftFade(depth).toVar();
               displacement.assign(
                 displacement.sub(swellDisplacement).mul(fade.y).add(swellDisplacement.mul(fade.x)),
               );
-              // The pitch needs to know which way is up the beach and how steep
-              // the bottom is, which costs two more heightfield evaluations — the
-              // same forward differences the fragment stage takes, at the same
-              // undisplaced point, so the two agree on every lean exactly. Low
-              // skips both and the breakers only rise. See `Surf.breaker`.
-              const shoreward = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
-              const beachSlope = float(0.1).toVar();
-              const pitch = float(0).toVar();
-              If(foamUniforms.detail.greaterThan(0.5), () => {
-                const bearing = shoreBearing(floorDepth, worldXZ, depth, shoreward);
-                shoreward.assign(bearing.xy);
-                beachSlope.assign(bearing.z);
-                pitch.assign(surfPitchHold(groundDistance));
+              If(groundDistance.lessThan(SURF_VERTEX_REACH), () => {
+                // The pitch needs to know which way is up the beach and how steep
+                // the bottom is, which costs two more heightfield evaluations — the
+                // same forward differences the fragment stage takes, at the same
+                // undisplaced point, so the two agree on every lean exactly. Low
+                // skips both and the breakers only rise. See `Surf.breaker`.
+                const shoreward = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
+                const beachSlope = float(0.1).toVar();
+                const pitch = float(0).toVar();
+                If(foamUniforms.detail.greaterThan(0.5), () => {
+                  const bearing = shoreBearing(floorDepth, worldXZ, depth, shoreward);
+                  shoreward.assign(bearing.xy);
+                  beachSlope.assign(bearing.z);
+                  pitch.assign(surfPitchHold(groundDistance));
+                });
+                // Band-limited to the mesh: see Surf.breaker's footprint. Eased
+                // out over the last fifth of the reach rather than stopping on
+                // its circle, where it drew a step across every breaker.
+                const wave = breaker(depth, worldXZ, beachSlope, pitch, footprint);
+                const rise = smoothstepDownClamped(groundDistance, SURF_VERTEX_REACH * 0.8, SURF_VERTEX_REACH);
+                displacement.y.addAssign(wave.eta.mul(rise));
+                displacement.x.addAssign(shoreward.x.mul(wave.lean));
+                displacement.z.addAssign(shoreward.y.mul(wave.lean));
+                // Held only where the mesh can carry a sheet this thin on a slope
+                // this shallow: vertices under ~1.2 m apart (about 50 m from the
+                // eye on High). The run-up spans 5 to 10 m of sand; on the 3.4 m
+                // grid at 150 m it drew as single flat triangles stood over the
+                // sand and the beachrock, the dark wedge by the pinnace in
+                // `landfall`. Past here the ground's swash hook draws it alone.
+                const sheet = swashSheetHeight(depth, worldXZ).toVar();
+                const hold = smoothstepDownClamped(groundDistance.mul(this.uVertexSpacing), 1.2, 2.4);
+                displacement.y.assign(mix(displacement.y, displacement.y.max(sheet), hold));
               });
-              // Band-limited to the mesh: see Surf.breaker's footprint.
-              const wave = breaker(depth, worldXZ, beachSlope, pitch, footprint);
-              displacement.y.addAssign(wave.eta);
-              displacement.x.addAssign(shoreward.x.mul(wave.lean));
-              displacement.z.addAssign(shoreward.y.mul(wave.lean));
-              // Faded out toward the edge of the vertex reach, where the mesh can
-              // no longer hold a sheet this thin on a slope this shallow.
-              const sheet = swashSheetHeight(depth, worldXZ).toVar();
-              const hold = smoothstepDownClamped(groundDistance, SURF_VERTEX_REACH * 0.7, SURF_VERTEX_REACH);
-              displacement.y.assign(mix(displacement.y, displacement.y.max(sheet), hold));
             });
           },
         );
