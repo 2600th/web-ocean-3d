@@ -84,8 +84,9 @@ combat. Copy must not describe it as more than it is. The plan to grow it is in
 Desktop browser, one tab, mouse and keyboard, a single sitting of five to twenty
 minutes. There is no account and no back end the app talks to. Two small things
 are kept in the player's own browser (localStorage, and the app works without
-it): the menu choice of graphics and quality, and which first-minute lessons
-have been learned, so a returning player is not taught to drag the camera twice.
+it): the menu choice of graphics and quality, which first-minute lessons have
+been learned, so a returning player is not taught to drag the camera twice, and
+the player's own settings (sound levels, keys, comfort and access options).
 The one exception to "no data" is Vercel Web Analytics, injected at boot from
 `main.ts` — aggregate page traffic, no account and nothing the player enters,
 because there is nothing to enter. Touch and coarse-pointer use is real but
@@ -125,8 +126,9 @@ Stated so that copy and the interface do not imply them. Each is a task in
   quality choice and learned lessons are kept.
 - No other ships, crew, enemies or combat, and nothing on the island can be
   interacted with.
-- No gamepad, pause, key rebinding or accessibility options beyond reduced
-  motion.
+- No photo mode and no per-button gamepad rebinding. Pause, key rebinding,
+  look speed and invert, rumble, shake, reduced motion, reduced flashes,
+  interface size and shape cues are in (the shell, G8).
 
 **What the interface must report**
 

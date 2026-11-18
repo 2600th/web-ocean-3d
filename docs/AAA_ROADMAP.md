@@ -483,7 +483,7 @@ different files, so they can run side by side.
 - [ ] **F7 Sound of a crewed ship** (M). An original shanty layer and short
   calls as the crew's voice, sung from where the figures stand (A4, S7), and
   a switch to keep the crew quiet. Stings and silence are Mu3 and Mu4.
-- [ ] **G8 The shell** (M). A title screen with continue and new voyage, pause
+- [x] **G8 The shell** (M). A title screen with continue and new voyage, pause
   on Escape, and settings: key rebinding, sensitivity, separate volumes, a
   haptics switch, motion reduction, markers that do not rely on colour alone,
   and interface scale.
