@@ -380,6 +380,8 @@ export class ShipSails {
     const material = sourceMaterial.clone();
     material.side = THREE.DoubleSide;
     material.shadowSide = THREE.DoubleSide;
+    // No screen-space contact shadows on the canvas; see `SurfaceLighting`.
+    material.userData.thinSheet = true;
     (material as unknown as { positionNode: Node }).positionNode = this.buildPositionNode(solver);
     this.material = material;
 

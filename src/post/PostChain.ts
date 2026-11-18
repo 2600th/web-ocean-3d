@@ -433,9 +433,10 @@ export class PostChain {
     }
     // Built at boot, at every tier with the temporal path, and switched by
     // uniform and by skipping their passes; see the header.
-    const lighting = (p: any, rgb: any, mask: { solid: any; field: any }): any => {
+    const lighting = (p: any, rgb: any, mask: { solid: any; field: any; contact: any }): any => {
       // The contact shadow takes only the sun's share; see `ContactShadows`.
-      const shadowed = rgb.mul(mix(float(1), contact.factor(p, normal), mask.solid));
+      // Not on cloth: see `SurfaceLighting`.
+      const shadowed = rgb.mul(mix(float(1), contact.factor(p, normal), mask.contact));
       if (gi === null) return shadowed;
       // `colour·AO + albedo·GI`, three's composite for the node.
       const occlusion = mix(float(1), gi.ao.sample(p).r, gi.uAoStrength.mul(mask.field));

@@ -89,6 +89,8 @@ export class Pennant {
 
     const material = new THREE.MeshStandardNodeMaterial({ color: 0x8e1d17, roughness: 0.85, side: THREE.DoubleSide });
     material.name = 'ship-pennant';
+    // No screen-space contact shadows on bunting; see `SurfaceLighting`.
+    material.userData.thinSheet = true;
     const du = 1 / (NU - 1);
     const L = this.length;
     const hoist = this.hoist;

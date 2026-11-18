@@ -16,6 +16,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { uniform } from '../core/uniform';
+import { THIN_SHEET_FLAG } from './sceneMrt';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -134,9 +135,19 @@ export interface AoSettings {
  * Screen-space lighting composited alongside the AO, ahead of it. `solid` is
  * 1 on opaque scene surfaces and 0 on water and sky; `field` is that times the
  * AO's own near-field, facing and silhouette fades, for terms that share the
- * AO's failure modes (a horizon search on a terraced depth buffer).
+ * AO's failure modes (a horizon search on a terraced depth buffer); `contact`
+ * is `solid` without the thin sheets (sails, the pennant), for the contact
+ * shadows.
+ *
+ * Why cloth takes no contact shadow: a working sail is creased a cell or two
+ * wide, a few centimetres deep, and the march is exactly a detector of
+ * centimetre relief. Under a grazing sun it found the lee side of every crease
+ * and took the sun's whole share out of it: black, dithered lozenges all over
+ * the canvas, moving with each flutter. The cloth's own shading already
+ * darkens a crease by its normal; the cascades still shadow the sails, and the
+ * sails still occlude the march for whatever is next to them.
  */
-export type SurfaceLighting = (p: any, rgb: any, mask: { solid: any; field: any }) => any;
+export type SurfaceLighting = (p: any, rgb: any, mask: { solid: any; field: any; contact: any }) => any;
 
 /** [underwater-look-3] GTAO with the eye under water; see `setSubmerged`. */
 const UW_AO = { radius: 1.8, thickness: 3, strength: 1 };
@@ -207,7 +218,10 @@ export class AmbientOcclusion {
     return Fn(() => {
       const p = uv();
       const c = (unjitter === null ? color.sample(p) : sampleCatmullRom(color, p.sub(unjitter))).toVar('aoColor');
-      const water = velocity.sample(p).z.saturate();
+      const flag = velocity.sample(p).z.toVar('aoSurfaceFlag');
+      const water = flag.saturate();
+      // Halfway to the flag, so a pixel blended across a sail's edge decides one way.
+      const sheet = flag.lessThan(THIN_SHEET_FLAG * 0.5).select(float(1), float(0));
       const a = aoTexture.sample(p).r;
       // Near field only. A half-metre occluder is sub-pixel past a hundred
       // metres anyway, and beyond that the normals GTAO rebuilds from a
@@ -237,7 +251,10 @@ export class AmbientOcclusion {
       const k: any = this.uStrength.mul(surface).mul(fade).mul(facing).mul(relief);
       // Sky has no depth: nothing screen-space lands on it.
       const solid = surface.mul(depth.sample(p).r.lessThan(1).select(float(1), float(0)));
-      const lit: any = lighting === null ? c.rgb : lighting(p, c.rgb, { solid, field: solid.mul(fade).mul(facing).mul(relief) });
+      const lit: any =
+        lighting === null
+          ? c.rgb
+          : lighting(p, c.rgb, { solid, field: solid.mul(fade).mul(facing).mul(relief), contact: solid.mul(float(1).sub(sheet)) });
       return vec4(lit.mul(mix(float(1), a, k)), c.a);
     })();
   }

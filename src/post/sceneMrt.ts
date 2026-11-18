@@ -4,6 +4,12 @@ import { Fn, diffuseColor, float, mrt, normalView, output, vec3, vec4, velocity 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
+ * Velocity `.z` of a thin, two-sided, wrinkling sheet. Negative, so the water
+ * test (`z.saturate()`) still reads it as not water.
+ */
+export const THIN_SHEET_FLAG = -1;
+
+/**
  * The scene pass's MRT — colour, motion vector, view normal, and albedo when
  * asked for — with the data targets blended by each material's own coverage.
  *
@@ -51,6 +57,15 @@ import { Fn, diffuseColor, float, mrt, normalView, output, vec3, vec4, velocity 
  * Three r185 merges a material's `mrtNode` into this one per draw, but the
  * pipeline's blend state comes from the renderer's MRT — this node — so the
  * blend modes below hold for every draw into the scene pass.
+ *
+ * ### The surface flag
+ *
+ * Velocity `.z` says what kind of surface a pixel is, for the screen-space
+ * lighting: 0 a solid, 1 water (the ocean's own `mrtNode`), and
+ * `THIN_SHEET_FLAG` for a material marked `userData.thinSheet` — canvas and
+ * bunting. Read from the material here rather than set by a material
+ * `mrtNode`, because that would replace the sail's output in every render
+ * without MRT, the planar mirror among them (see `Clouds`).
  */
 export function sceneMrt({ albedo = false }: { albedo?: boolean } = {}): any {
   const coverage = Fn((builder: any) => {
@@ -79,10 +94,14 @@ export function sceneMrt({ albedo = false }: { albedo?: boolean } = {}): any {
     const v: any = material?.premultipliedAlpha === true ? value.mul(a) : value;
     return vec4(v, a);
   });
+  const surfaceFlag = Fn((builder: any) => {
+    const material = builder.material as THREE.Material | null;
+    return float(material?.userData?.thinSheet === true ? THIN_SHEET_FLAG : 0);
+  });
   const node: any = mrt({
     output,
-    // `.z = 0`: not water, for the AO mask (`AmbientOcclusion`).
-    velocity: weighted(vec3((velocity as any).xy, 0)),
+    // `.z`: the surface flag, 0 for a solid (`AmbientOcclusion` decodes it).
+    velocity: weighted(vec3((velocity as any).xy, surfaceFlag())),
     normal: weighted(normalView),
     ...(albedo ? { albedo: weighted((diffuseColor as any).rgb) } : {}),
   });
