@@ -306,8 +306,14 @@ export const ISLAND = {
    * rock above the treeline rather than as more hillside. That silhouette
    * (green flanks, pale crown) is what a tropical high island actually reads
    * as, and it is what the reference frame in `docs/ref/` shows.
+   *
+   * 225 since the spine replaced the dome's top (see `SPINE_PEAKS`). The dome
+   * still rises to 150 at the coast's reckoning; the summit is now a peak on a
+   * ridge, standing over the sea cliffs, and this is its height. Approximate:
+   * it is the sum of the dome, the spine and the relief at one point, and
+   * nothing solves for it any more.
    */
-  peak: 150,
+  peak: 225,
 } as const;
 
 /**
@@ -434,7 +440,23 @@ const SHORE_LIFT = -PLATEAU_Y / smoothstepDown(1, APRON_IN, APRON_OUT);
 const CREST_IN = 0;
 const CREST_OUT = 0.94;
 const CREST_SPAN = 0.9;
-const CREST_LIFT = ISLAND.peak - PLATEAU_Y - SHORE_LIFT;
+/**
+ * The dome is now the island's body rather than its outline: the spine
+ * (`SPINE_*` below) stands on it and carries the summit up to `ISLAND.peak`.
+ *
+ * Its lift is still solved against the height the dome used to reach,
+ * `DOME_SHORE_TOP`, because near the coast the dome's tail is part of what puts
+ * the waterline where it is, and the cove, the surf and the shoreline props
+ * are all laid out against that waterline. Inland of `DOME_CUT_OUT` the dome is
+ * cut down to `DOME_TOP`, which is where the spine takes over; at the coast it
+ * is the dome it was, to the centimetre.
+ */
+const DOME_SHORE_TOP = 150;
+const DOME_TOP = 82;
+const CREST_LIFT = DOME_SHORE_TOP - PLATEAU_Y - SHORE_LIFT;
+const DOME_CUT = (DOME_SHORE_TOP - DOME_TOP) / CREST_LIFT;
+const DOME_CUT_IN = 0.68;
+const DOME_CUT_OUT = 0.9;
 const SUMMIT_DRIFT = 0.16;
 const SUMMIT_OFFSET: Dir = {
   x: Math.cos(3.9) * ISLAND.radius * SUMMIT_DRIFT,
@@ -622,13 +644,83 @@ const PEAKS: readonly Peak[] = [
 const PEAK_SHORE_IN = 0.7;
 const PEAK_SHORE_OUT = 0.9;
 
-/** Sea cliffs on the weather side, away from the cove, the fort and the bay. */
-const CLIFF = sector(-1.05, 0.55);
-const CLIFF_LIFT = 20;
-const CLIFF_RISE_IN = 0.74;
-const CLIFF_RISE_OUT = 0.9;
-const CLIFF_BROW = 0.935;
-const CLIFF_FOOT = 0.975;
+/**
+ * Sea cliffs on the weather side, away from the cove, the fort and the bay.
+ *
+ * A shelf of high ground that runs out to the brow and stops: the land behind
+ * the brow is raised as a tableland and drops to the water over the last few
+ * percent of the radius. At 20 m it was a lip nobody could see from the sea;
+ * at this height it is the end of the island's outline from the play area,
+ * where the spine comes down from the summit and falls into the sea.
+ */
+const CLIFF = sector(-1.05, 0.5);
+const CLIFF_LIFT = 60;
+const CLIFF_RISE_IN = 0.45;
+const CLIFF_RISE_OUT = 0.75;
+const CLIFF_BROW = 0.925;
+const CLIFF_FOOT = 0.985;
+
+/**
+ * The spine: a ridge line in place of the dome's round top.
+ *
+ * What the island lacked from the play area was an outline. A dome is the same
+ * curve from every bearing and a ridge is not: seen broadside it is a skyline
+ * with a summit, a saddle and a second peak; seen end-on it is a steep cone.
+ * The axis runs from the cliff coast (`SPINE_A`, bearing -1.0) across the
+ * centre to the bay (`SPINE_B`, bearing 2.2), which puts it broadside to the
+ * play area: the summit stands over the sea cliffs at the right of the view
+ * from the start and the ridge runs down to the left in steps.
+ *
+ * Height along the axis is a sum of bumps at fractions `at` of its length, so
+ * the skyline reads as named peaks rather than as a level crest. Across it the
+ * profile is `(1 - d / W)^2`: a sharp crest with hollow flanks, the shape a
+ * weathered volcanic ridge has, and a crest steep enough that the canopy's
+ * soil test leaves it bare rock. The side facing the play area (`q < 0`) is
+ * narrower, so it is the steeper one and its faces show from the sea.
+ *
+ * Windowed in `t` like the rest of the relief, so the coastline does not move.
+ */
+const SPINE_A: Dir = { x: Math.cos(-1.0) * 360, z: Math.sin(-1.0) * 360 };
+const SPINE_B: Dir = { x: Math.cos(2.2) * 235, z: Math.sin(2.2) * 235 };
+const SPINE_LENGTH = Math.hypot(SPINE_B.x - SPINE_A.x, SPINE_B.z - SPINE_A.z);
+const SPINE_AXIS: Dir = {
+  x: (SPINE_B.x - SPINE_A.x) / SPINE_LENGTH,
+  z: (SPINE_B.z - SPINE_A.z) / SPINE_LENGTH,
+};
+/** Half-width on the steep (play-area) side and on the back, metres. */
+const SPINE_WIDTH_FRONT = 210;
+const SPINE_WIDTH_BACK = 300;
+/** Metres either side of the axis the two widths blend over. */
+const SPINE_WIDTH_BLEND = 40;
+/**
+ * Rounding of the crest across the axis (metres) and of each peak along it
+ * (fraction of the axis). Both profiles are `(1 - d / w)^2`, which has a kink
+ * at `d = 0`; seen end-on that kink is a needle. A hyperbola in place of `|d|`
+ * keeps the hollow flanks and gives the crest and the summits a rounded top a
+ * few mesh cells across.
+ */
+const SPINE_CREST_ROUND = 24;
+const SPINE_PEAK_ROUND = 0.035;
+const SPINE_SHORE_IN = 0.84;
+const SPINE_SHORE_OUT = 0.97;
+interface SpinePeak {
+  /** Fraction of the axis from `SPINE_A`. */
+  at: number;
+  /** Half-width of the bump, in the same fraction. */
+  reach: number;
+  lift: number;
+}
+/** The summit, a saddle-forming second peak, and the ridge's shoulders. */
+const SPINE_PEAKS: readonly SpinePeak[] = [
+  { at: 0.12, reach: 0.44, lift: 160 },
+  { at: 0.62, reach: 0.32, lift: 66 },
+  { at: 0.5, reach: 0.9, lift: 14 },
+];
+/** The summit, as an offset from the island centre: the spine's first peak. For the crags on it. */
+export const ISLAND_SUMMIT: { readonly x: number; readonly z: number } = {
+  x: SPINE_A.x + SPINE_PEAKS[0].at * (SPINE_B.x - SPINE_A.x),
+  z: SPINE_A.z + SPINE_PEAKS[0].at * (SPINE_B.z - SPINE_A.z),
+};
 
 /**
  * Shoreline radius on the bearing `(ux, uz)`, as a multiple of `ISLAND.radius`.
@@ -716,7 +808,10 @@ function floorField(x: number, z: number, withTerrace: number): number {
   let y = DEEP_Y + (PLATEAU_Y - DEEP_Y) * shallowness;
   y += (n - 0.5) * RELIEF * (0.35 + 0.65 * shallowness);
   y += SHORE_LIFT * smoothstepDown(t, APRON_IN, APRON_OUT);
-  y += CREST_LIFT * smoothstepDown(tCrest, CREST_IN, CREST_OUT);
+  y +=
+    CREST_LIFT *
+    smoothstepDown(tCrest, CREST_IN, CREST_OUT) *
+    (1 - DOME_CUT * smoothstepDown(t, DOME_CUT_IN, DOME_CUT_OUT));
   y +=
     HEADLAND_LIFT *
     sectorMask(ux, uz, HEADLAND) *
@@ -787,7 +882,32 @@ function islandRelief(dx: number, dz: number, ux: number, uz: number, t: number)
     sectorMask(ux, uz, CLIFF) *
     smoothstep(CLIFF_RISE_IN, CLIFF_RISE_OUT, t) *
     smoothstepDown(t, CLIFF_BROW, CLIFF_FOOT);
+
+  y += spineLift(dx, dz, t);
   return y;
+}
+
+/** The spine's lift at offset `(dx, dz)` from the island centre. Mirrored by `spineNode`. */
+function spineLift(dx: number, dz: number, t: number): number {
+  const px = dx - SPINE_A.x;
+  const pz = dz - SPINE_A.z;
+  const s = px * SPINE_AXIS.x + pz * SPINE_AXIS.z;
+  const q = SPINE_AXIS.x * pz - SPINE_AXIS.z * px;
+  const u = Math.min(Math.max(s / SPINE_LENGTH, 0), 1);
+  const ds = s - u * SPINE_LENGTH;
+  const d = Math.sqrt(ds * ds + q * q + SPINE_CREST_ROUND * SPINE_CREST_ROUND) - SPINE_CREST_ROUND;
+  const width =
+    SPINE_WIDTH_FRONT +
+    (SPINE_WIDTH_BACK - SPINE_WIDTH_FRONT) * smoothstep(-SPINE_WIDTH_BLEND, SPINE_WIDTH_BLEND, q);
+  const x = Math.max(1 - d / width, 0);
+  let height = 0;
+  for (const peak of SPINE_PEAKS) {
+    const du = u - peak.at;
+    const along = Math.sqrt(du * du + SPINE_PEAK_ROUND * SPINE_PEAK_ROUND) - SPINE_PEAK_ROUND;
+    const k = Math.max(1 - along / peak.reach, 0);
+    height += peak.lift * k * k;
+  }
+  return height * x * x * smoothstepDown(t, SPINE_SHORE_IN, SPINE_SHORE_OUT);
 }
 
 /**
@@ -1709,19 +1829,25 @@ export class Seafloor {
       const steep: Node = float(1).sub(normalize(normalWorldGeometry).y).toVar();
       // Thinner soil higher up: the same slope exposes rock sooner near the
       // crest than on the lower flanks.
+      //
+      // The threshold matches the canopy's soil test (about 45 degrees), so
+      // ground is rock where the forest stops rather than a slope steeper
+      // than its trees.
       const rockExposure: Node = steep
         .add(patch.sub(0.5).mul(0.12))
         .add(wp.y.smoothstep(ISLAND.peak * 0.45, ISLAND.peak * 1.2).mul(0.07))
-        .smoothstep(0.1, 0.2)
+        .smoothstep(0.19, 0.3)
         .toVar();
 
       // Strata: banded by elevation, the bands warped by the stand noise so
       // they dip and pinch rather than ruling the cliff with level lines.
-      const layer: Node = wp.y.mul(0.42).add(stand.mul(14)).add(patch.mul(3)).sin().mul(0.5).add(0.5);
+      // Faint and well warped: on the sea cliffs and the summit faces, which
+      // run to sixty metres of bare rock, stronger bands read as contour lines.
+      const layer: Node = wp.y.mul(0.3).add(stand.mul(30)).add(patch.mul(8)).sin().mul(0.5).add(0.5);
       const strata: Node = mix(
         rockDark,
         rockLight,
-        layer.smoothstep(0.2, 0.8).mul(0.45).add(patch.mul(0.3)).add(grain.mul(0.25)),
+        layer.smoothstep(0.2, 0.8).mul(0.22).add(patch.mul(0.42)).add(grain.mul(0.3)),
       );
       // Moss and lichen on the upper faces of the rock.
       const rock: Node = mix(strata, moss, normalize(normalWorldGeometry).y.smoothstep(0.75, 0.9).mul(0.55)).toVar();
@@ -1730,7 +1856,12 @@ export class Seafloor {
       // Grass on the low flats behind the beach and in clearings; jungle
       // everywhere else, in stands of two greens. No cap: the forest runs to
       // the summit, and the summit is only rock where it is steep.
-      const lowland: Node = smoothstepDownNode(wp.y, 6, 20).mul(smoothstepDownNode(steep, 0.03, 0.08)).mul(0.7);
+      //
+      // The grass band is the strip right behind the sand, not the lower
+      // twenty metres: the canopy now comes down to the beach along most of
+      // the coast (`Canopy`'s wandering edge), and a grass albedo under the
+      // forest's edge read as a lawn wherever the crowns parted.
+      const lowland: Node = smoothstepDownNode(wp.y, 3.5, 10).mul(smoothstepDownNode(steep, 0.03, 0.08)).mul(0.7);
       const clearing: Node = patch.smoothstep(0.66, 0.82).mul(0.45);
       const openness: Node = lowland.max(clearing).mul(stand.smoothstep(0.25, 0.7)).toVar();
       const forest: Node = mix(jungle, jungleLush, stand.smoothstep(0.3, 0.75)).toVar();
@@ -2034,7 +2165,43 @@ function buildNoiseNodes(map: THREE.Texture): NoiseNodes {
         .mul(smoothstepDownNode(t, CLIFF_BROW, CLIFF_FOOT))
         .mul(CLIFF_LIFT),
     );
+
+    y.addAssign(spineNode(dv, t));
     return y;
+  };
+
+  /** `spineLift()` above, term for term and in the same order. */
+  const spineNode = (dv: Node, t: Node): Node => {
+    const p = dv.sub(vec2(SPINE_A.x, SPINE_A.z)).toVar();
+    const s = p.dot(vec2(SPINE_AXIS.x, SPINE_AXIS.z)).toVar();
+    const q = p.y.mul(SPINE_AXIS.x).sub(p.x.mul(SPINE_AXIS.z)).toVar();
+    const u = s.div(SPINE_LENGTH).clamp(0, 1).toVar();
+    const ds = s.sub(u.mul(SPINE_LENGTH)).toVar();
+    const d = ds
+      .mul(ds)
+      .add(q.mul(q))
+      .add(SPINE_CREST_ROUND * SPINE_CREST_ROUND)
+      .sqrt()
+      .sub(SPINE_CREST_ROUND)
+      .toVar();
+    const width = q
+      .smoothstep(-SPINE_WIDTH_BLEND, SPINE_WIDTH_BLEND)
+      .mul(SPINE_WIDTH_BACK - SPINE_WIDTH_FRONT)
+      .add(SPINE_WIDTH_FRONT)
+      .toVar();
+    const x = float(1).sub(d.div(width)).max(0).toVar();
+    const height = float(0).toVar();
+    for (const peak of SPINE_PEAKS) {
+      const du = u.sub(peak.at);
+      const along = du
+        .mul(du)
+        .add(SPINE_PEAK_ROUND * SPINE_PEAK_ROUND)
+        .sqrt()
+        .sub(SPINE_PEAK_ROUND);
+      const k = float(1).sub(along.div(peak.reach)).max(0).toVar();
+      height.addAssign(k.mul(k).mul(peak.lift));
+    }
+    return height.mul(x).mul(x).mul(smoothstepDownNode(t, SPINE_SHORE_IN, SPINE_SHORE_OUT));
   };
 
   /** `shoreFraction()` above, term for term and in the same order. */
@@ -2106,7 +2273,11 @@ function buildNoiseNodes(map: THREE.Texture): NoiseNodes {
       const y = float(DEEP_Y).add(float(PLATEAU_Y - DEEP_Y).mul(shallowness)).toVar();
       y.addAssign(n.sub(0.5).mul(RELIEF).mul(shallowness.mul(0.65).add(0.35)));
       y.addAssign(smoothstepDownNode(t, APRON_IN, APRON_OUT).mul(SHORE_LIFT));
-      y.addAssign(smoothstepDownNode(tCrest, CREST_IN, CREST_OUT).mul(CREST_LIFT));
+      y.addAssign(
+        smoothstepDownNode(tCrest, CREST_IN, CREST_OUT)
+          .mul(CREST_LIFT)
+          .mul(float(1).sub(smoothstepDownNode(t, DOME_CUT_IN, DOME_CUT_OUT).mul(DOME_CUT))),
+      );
       y.addAssign(
         sectorMaskNode(u, HEADLAND)
           .mul(t.smoothstep(HEADLAND_TOE, HEADLAND_CROWN))
