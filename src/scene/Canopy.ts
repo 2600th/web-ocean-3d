@@ -762,7 +762,11 @@ function plantForest(seed: number, sunDir: THREE.Vector3): Forest {
     const east = seafloorHeight(x + SLOPE_SAMPLE_METRES, z);
     const north = seafloorHeight(x, z + SLOPE_SAMPLE_METRES);
     const n = new THREE.Vector3(ground - east, SLOPE_SAMPLE_METRES, ground - north).normalize();
-    const holdsSoil = smoothstep(0.8, 0.88, n.y);
+    // Up to about 45 degrees: the spine's flanks are that steep, and forest
+    // clinging to them is what a high tropical island looks like (the Pitons
+    // are wooded to the top). Only the crest, the summit and the sea cliffs
+    // are steeper, and they stay rock.
+    const holdsSoil = smoothstep(0.68, 0.78, n.y);
     const presence = band * onIsland * holdsSoil;
     if (presence <= 0 || keep > Math.sqrt(presence)) continue;
     // After every draw, so clearing the site moves no other tree. A crown is

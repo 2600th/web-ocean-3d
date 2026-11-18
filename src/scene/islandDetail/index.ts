@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { mulberry32 } from '../../core/random';
-import { ISLAND, seafloorHeight, seafloorMeshHeight } from '../Seafloor';
+import { ISLAND, ISLAND_SUMMIT, seafloorHeight, seafloorMeshHeight } from '../Seafloor';
 import {
   DetailClock,
   PartBuilder,
@@ -243,16 +243,18 @@ export class IslandDetail {
     }
 
     // Crags on the summit and on the shoulder peak, so the crest is a broken
-    // skyline rather than the top of a dome: a plug of tall spires at the top
-    // and a smaller cluster on the shoulder.
-    const summit = new THREE.Vector3(ISLAND.x + Math.cos(3.9) * 80, 0, ISLAND.z + Math.sin(3.9) * 80);
+    // skyline rather than a smooth top: a plug of spires on the summit and a
+    // smaller cluster on the shoulder. The summit is the spine's peak over the
+    // sea cliffs now, and already pointed, so the plug is shorter than the one
+    // that had to make a dome read as a summit.
+    const summit = new THREE.Vector3(ISLAND.x + ISLAND_SUMMIT.x, 0, ISLAND.z + ISLAND_SUMMIT.z);
     const shoulder = new THREE.Vector3(
       ISLAND.x + Math.cos(1.25) * ISLAND.radius * 0.46,
       0,
       ISLAND.z + Math.sin(1.25) * ISLAND.radius * 0.46,
     );
     const crags: [THREE.Vector3, number, number, number][] = [
-      [summit, 6, 66, 34],
+      [summit, 5, 36, 26],
       [shoulder, 4, 38, 22],
     ];
     for (const [centre, n, tall, spread] of crags) {
