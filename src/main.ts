@@ -883,6 +883,8 @@ class App {
     this.clouds.setAerialPerspective(this.aerial);
     // The dome's sun disc goes behind the deck: see `Clouds.sunTransmittanceNode`.
     this.atmosphere.setSunOccluder((dir) => this.clouds.sunTransmittanceNode(dir));
+    // And the stars, the Milky Way and the moon: `Clouds.nightTransmittanceNode`.
+    this.atmosphere.setNightOccluder((dir) => this.clouds.nightTransmittanceNode(dir));
 
     this.scene.add(this.clouds.mesh);
     // Clouds stay out of the planar mirror. Through a roughness-blurred, half-
