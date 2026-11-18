@@ -253,6 +253,12 @@ export function sprayMaterial(vertex: () => any, depthOnly: boolean): THREE.Mesh
   // depth, like everything else in the scene; vertex fog would double it.
   material.fog = false;
   material.transparent = true;
+  // One draw, not two. Three draws a transparent double-sided material as a
+  // back-face pass and then a front-face pass, and every quad here is built
+  // facing the eye, so the first of those was a full draw of the buffer that
+  // culled every triangle: at High, 60 000 spindrift quads through the vertex
+  // stage for nothing, four times a frame (colour and depth, view and mirror).
+  material.forceSinglePass = true;
   // One flow for the whole vertex stage, writing its varyings as it goes. A TSL
   // variable belongs to the flow that declared it, so building the graph twice
   // (once for position, once for a varying) is a trap with no upside.

@@ -738,6 +738,10 @@ function sheetMaterial(vertex: () => any, fragment: () => any, depthOnly = false
   material.transparent = true;
   material.depthWrite = depthOnly;
   material.colorWrite = !depthOnly;
+  // The depth pass in one draw: nothing blends, so back faces before front
+  // faces buys nothing. The colour keeps three's two passes, which draw the
+  // far wall of a crown before the near one.
+  material.forceSinglePass = depthOnly;
   material.fog = false;
   // The depth pass takes only the dense sheet, as `sprayMaterial`'s does.
   material.alphaTest = depthOnly ? 0.3 : SPRAY_ALPHA_FLOOR;

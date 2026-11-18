@@ -1321,6 +1321,13 @@ export class OceanMaterial {
     // it the shafts would run straight through the surface to the sky.
     this.material.transparent = true;
     this.material.depthWrite = true;
+    // And in one draw. Transparent and double-sided, three would draw the
+    // surface twice, back faces and then front faces, which is for blending:
+    // this surface is opaque (alpha 1) and writes depth, so the nearest face
+    // wins whichever is drawn first and the picture is the same. The back-face
+    // pass put the whole mesh through the vertex stage a second time and shaded
+    // every far slope that faces away from the eye, to be drawn over.
+    this.material.forceSinglePass = true;
 
     this.build(inputs);
   }
