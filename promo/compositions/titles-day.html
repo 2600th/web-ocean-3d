@@ -1,0 +1,98 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Pirata One";
+      src: url("assets/fonts/pirata-one.woff2") format("woff2");
+      font-weight: 400;
+    }
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    /* One voice for every line: the game's display face in its parchment white. */
+    .tl-line {
+      position: absolute;
+      font-family: "Pirata One", serif;
+      font-weight: 400;
+      line-height: 1;
+      color: #f6ead0;
+      white-space: pre;
+      /* Daylight shots are bright behind the type, so the shade is denser than at night. */
+      text-shadow:
+        0 0 22px rgba(6, 12, 18, 0.6),
+        0 0 64px rgba(6, 12, 18, 0.66),
+        0 4px 10px rgba(6, 12, 18, 0.62);
+    }
+    .tl-line span {
+      display: inline-block;
+      white-space: pre;
+    }
+    /* Each timed line is a full-frame clip; the line inside it carries the position. */
+    .tl-clip {
+      position: absolute;
+      inset: 0;
+    }
+    #tl-ship-line {
+      font-size: 190px;
+      left: 192px;
+      top: 548px;
+    }
+    #tl-helm-line {
+      font-size: 132px;
+      right: 192px;
+      top: 580px;
+    }
+    #tl-island-line {
+      font-size: 190px;
+      right: 192px;
+      bottom: 150px;
+    }
+  </style>
+
+  <div id="root" data-composition-id="titles-day" data-width="1920" data-height="1080">
+    <!-- 01: the tagline's first words, per letter. -->
+    <div id="tl-ship" class="clip tl-clip" data-start="0.45" data-duration="3.35" data-track-index="1">
+      <div id="tl-ship-line" class="tl-line"><span>A</span><span> </span><span>s</span><span>h</span><span>i</span><span>p</span></div>
+    </div>
+
+    <!-- 03: over the real interface, clear of every panel. -->
+    <div id="tl-helm" class="clip tl-clip" data-start="8.2" data-duration="3.9" data-track-index="1">
+      <div id="tl-helm-line" class="tl-line"><span>Take</span><span> </span><span>the</span><span> </span><span>helm</span></div>
+    </div>
+
+    <!-- 05: the second tagline beat, the whole line at once. -->
+    <div id="tl-island" class="clip tl-clip" data-start="18.6" data-duration="3.5" data-track-index="1">
+      <div id="tl-island-line" class="tl-line"><span id="tl-island-in">An island</span></div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const hidden = { opacity: 0, filter: "blur(8px)" };
+    const shown = { opacity: 1, filter: "blur(0px)" };
+
+    // Each piece arrives once and then holds dead still; the picture does the moving.
+    function arrive(selector, at, each, duration) {
+      tl.fromTo(selector, hidden, { ...shown, duration, ease: "power3.out", stagger: each }, at);
+    }
+    function leave(selector, at) {
+      tl.fromTo(
+        selector,
+        shown,
+        { opacity: 0, filter: "blur(8px)", duration: 0.2, ease: "power2.in", immediateRender: false },
+        at,
+      );
+    }
+
+    arrive("#tl-ship span", 0.5, 0.07, 0.22);
+    leave("#tl-ship span", 3.55);
+
+    arrive("#tl-helm span", 8.3, 0.09, 0.2);
+    leave("#tl-helm span", 11.85);
+
+    arrive("#tl-island-in", 18.7, 0, 0.26);
+    leave("#tl-island-in", 21.85);
+
+    window.__timelines["titles-day"] = tl;
+  </script>
+</template>

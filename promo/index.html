@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #0b1a20;
+      }
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+      }
+      .shot {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        object-fit: cover;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="60"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- Footage: stepped out of the running game by tools/capture.mjs. -->
+      <video id="v01" class="clip shot" src="assets/footage/quarterp.mp4" muted playsinline
+        data-start="0" data-duration="4" data-media-start="3.2" data-track-index="1" style="z-index: 1"></video>
+      <video id="v02" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="4" data-duration="3.5" data-media-start="13.3" data-track-index="1" style="z-index: 2"></video>
+      <video id="v03" class="clip shot" src="assets/footage/helm.mp4" muted playsinline
+        data-start="7.5" data-duration="5" data-media-start="1.6" data-track-index="1" style="z-index: 3"></video>
+      <video id="v04" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="12.5" data-duration="5.5" data-media-start="22.3" data-track-index="1" style="z-index: 4"></video>
+      <video id="v05" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="18" data-duration="4.5" data-media-start="44" data-track-index="1" style="z-index: 5"></video>
+      <video id="v06" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="22.5" data-duration="4" data-media-start="52.5" data-track-index="1" style="z-index: 6"></video>
+      <video id="v07" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="26.5" data-duration="4.5" data-media-start="65.8" data-track-index="1" style="z-index: 7"></video>
+      <video id="v08" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="31" data-duration="2.5" data-media-start="70.55" data-track-index="1" style="z-index: 8"></video>
+      <video id="v09" class="clip shot" src="assets/footage/storm.mp4" muted playsinline
+        data-start="33.5" data-duration="6" data-media-start="1" data-track-index="1" style="z-index: 9"></video>
+      <video id="v10" class="clip shot" src="assets/footage/stormhelm.mp4" muted playsinline
+        data-start="39.5" data-duration="5" data-media-start="1" data-track-index="1" style="z-index: 10"></video>
+      <video id="v11" class="clip shot" src="assets/footage/moonlit.mp4" muted playsinline
+        data-start="44.5" data-duration="9.1" data-media-start="0.6" data-track-index="1" style="z-index: 11"></video>
+      <video id="v12" class="clip shot" src="assets/footage/tour.mp4" muted playsinline
+        data-start="53.6" data-duration="6.4" data-media-start="82.4" data-track-index="1" style="z-index: 12"></video>
+
+      <!-- Titles over the footage (the night scene also carries the dip cut into the squall), then the end card. -->
+      <div
+        id="titles-day"
+        data-composition-id="titles-day"
+        data-composition-src="compositions/titles-day.html"
+        data-start="0"
+        data-duration="31.3"
+        data-track-index="3"
+        data-track-kind="graphics"
+        data-width="1920"
+        data-height="1080"
+        style="z-index: 30"
+      ></div>
+      <div
+        id="titles-night"
+        data-composition-id="titles-night"
+        data-composition-src="compositions/titles-night.html"
+        data-start="31.3"
+        data-duration="22.3"
+        data-track-index="3"
+        data-track-kind="graphics"
+        data-width="1920"
+        data-height="1080"
+        style="z-index: 30"
+      ></div>
+      <div
+        id="endcard"
+        data-composition-id="endcard"
+        data-composition-src="compositions/endcard.html"
+        data-start="53.6"
+        data-duration="6.4"
+        data-track-index="3"
+        data-track-kind="graphics"
+        data-width="1920"
+        data-height="1080"
+        style="z-index: 31"
+      ></div>
+
+      <!-- The game's own score and sea, rendered on this cut's timeline by tools/film-audio.mjs. -->
+      <audio id="score" src="assets/audio/score.wav" data-start="0" data-duration="60" data-volume="1"
+        data-fade-in="0.3" data-fade-out="2.2" data-track-index="4"></audio>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

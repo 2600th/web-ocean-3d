@@ -1,0 +1,15 @@
+# The film's source is tracked; its media is not. Footage is stepped out of the
+# running game by tools/capture.mjs, the soundtrack is rendered by
+# tools/film-audio.mjs, and both are far too large for git (about 4.6 GB with
+# the earlier cuts).
+assets/footage*/
+assets/audio/
+renders/
+.audio-build/
+.hyperframes/
+.thumbnails/
+.transcode-cache/
+.waveform-cache/
+node_modules/
+# One-off probe with a hard-coded port.
+tools/probe.mjs
