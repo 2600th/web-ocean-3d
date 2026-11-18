@@ -18,7 +18,7 @@ import {
 } from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
-import { particleVertex, sprayMaterial } from './sprayLook';
+import { particleFragment, particleVertex, sprayMaterial } from './sprayLook';
 
 /**
  * Spindrift: spray the wind tears off breaking crests and streams downwind.
@@ -58,10 +58,13 @@ import { particleVertex, sprayMaterial } from './sprayLook';
  * for High's 60,000. Nothing at all is dispatched or drawn below the wind
  * threshold once the last particle has expired, nor at Low and Medium.
  *
- * Not written into depth: spindrift rides within a couple of metres of the
- * water, so the volumetric fog, which fogs it as the sea just behind it, is
- * within a few metres of right. The hull spray's depth pre-pass exists for
- * sheets thrown metres up in front of the camera.
+ * **Depth.** The dense classes (drops and clusters) are drawn a second time
+ * into depth only, before the colour, as the hull spray's are: without it the
+ * volumetric fog fogged spindrift as whatever lay behind it, a crest's spray
+ * 150 m off as the sea at the horizon or the sky past it, and a dense patch of
+ * breaking crests in daylight came out a grey smudge. The mist never clears
+ * the depth pass's alpha test and still soft-fades into the sea. The second
+ * draw is vertex work over the same slots, about a fifth of the colour pass.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -92,6 +95,23 @@ const GRAVITY = 9.81;
 
 /** Marks a slot dead: any age past every lifespan. */
 const DEAD_AGE = 1e4;
+
+/**
+ * The spray's brightness against the display's white, as the water's foam is
+ * drawn: `sprayLook` lights in scene units, and under a daylight exposure of
+ * 0.42 its whitest cluster sat at sRGB 140 beside a whitecap at 240, so the
+ * spray off a crest read grey against the crest it came from. Scaled by
+ * `1 / exposure`, it is white in daylight and as dim as the sea at night.
+ */
+const DISPLAY_WHITE = 0.9;
+
+/**
+ * Distance from the eye over which mist and clusters fade in, metres. A crest
+ * breaking beside the camera threw quads metres wide across the lens, and in
+ * the storm the nearest crest stood as a white wall over a third of the frame.
+ */
+const MIST_NEAR: readonly [number, number] = [5, 16];
+const CLUSTER_NEAR: readonly [number, number] = [2, 7];
 
 /** Fragment classes, as `sprayLook` numbers them. */
 const CLS_MIST = 2;
@@ -128,6 +148,9 @@ export class Spindrift {
 
   /** Draw-side wind gate, so a dying gale's last spray thins as it goes. */
   private readonly uGate = uniform(0);
+  /** `DISPLAY_WHITE / exposure`; see there. */
+  private readonly uDisplayGain = uniform(DISPLAY_WHITE / 0.42);
+  private readonly depthMaterial: THREE.MeshBasicNodeMaterial;
 
   private count = 0;
   private frame = 0;
@@ -173,6 +196,11 @@ export class Spindrift {
     this.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Number.POSITIVE_INFINITY);
 
     this.material = sprayMaterial(() => this.buildVertex(), false);
+    // Display-referred, as the foam it comes off (DISPLAY_WHITE).
+    this.material.colorNode = Fn(() => {
+      const c: any = particleFragment();
+      return vec4(c.xyz.mul(this.uDisplayGain), c.w);
+    })() as any;
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.name = 'spindrift';
     this.mesh.frustumCulled = false;
@@ -180,6 +208,16 @@ export class Spindrift {
     this.mesh.renderOrder = 6;
     this.mesh.castShadow = false;
     this.mesh.receiveShadow = false;
+
+    // The dense classes into depth, before the colour (see the header).
+    this.depthMaterial = sprayMaterial(() => this.buildVertex(), true);
+    const depth = new THREE.Mesh(this.geometry, this.depthMaterial);
+    depth.name = 'spindrift-depth';
+    depth.frustumCulled = false;
+    depth.renderOrder = 5;
+    depth.castShadow = false;
+    depth.receiveShadow = false;
+    this.mesh.add(depth);
   }
 
   /** Slots in use, from the quality tier (0 at Low and Medium). */
@@ -211,6 +249,7 @@ export class Spindrift {
     const t = Math.min(1, Math.max(0, (windSpeed - WIND_ONSET) / (WIND_FULL - WIND_ONSET)));
     const gate = t * t * (3 - 2 * t);
     this.uGate.value = gate;
+    this.uDisplayGain.value = DISPLAY_WHITE / Math.max(0.05, renderer.toneMappingExposure);
     if (gate > 0) this.quiet = 0;
     else this.quiet += Math.max(0, dt);
     const live = this.count > 0 && this.quiet < MAX_LIFE + 0.25;
@@ -253,6 +292,7 @@ export class Spindrift {
     this.disposed = true;
     this.geometry.dispose();
     this.material.dispose();
+    this.depthMaterial.dispose();
     this.updateNode.dispose?.();
     this.resetNode.dispose?.();
   }
@@ -358,8 +398,8 @@ export class Spindrift {
     // above the eye stood against the sky as a grey smear.
     const distance: any = cameraPosition.distance(pa.xyz);
     const farFade: any = k.drop
-      .add(k.cluster.mul(smoothstepDown(distance, 90, 200)))
-      .add(k.mist.mul(smoothstepDown(distance, 45, 140)));
+      .add(k.cluster.mul(smoothstepDown(distance, 90, 200)).mul(smoothstep(CLUSTER_NEAR[0], CLUSTER_NEAR[1], distance)))
+      .add(k.mist.mul(smoothstepDown(distance, 45, 140)).mul(smoothstep(MIST_NEAR[0], MIST_NEAR[1], distance)));
     const opacity: any = density
       .mul(fadeIn)
       .mul(fadeOut)
