@@ -375,6 +375,24 @@ black until the tier was changed again.
 The visual baselines (16 canonical shots) are still out of date and still
 fail; they predate the crew, the surf and the reflection changes.
 
+## After wave 2: black specks in the spray along the hull (2026-11-18)
+
+Reported from the film's hull pass: black dots scattered over the lower hull
+wherever spray flew.
+
+- **Cause.** The contact shadows again, from the other side. Every spray
+  system draws its dense cores a second time into depth only, so the fog sees
+  spray at its own distance. To the contact-shadow march and to GTAO those
+  cores were centimetre-sized solids a hand's breadth off the hull; each one
+  was found in shadow and had the sun's share taken out of it, so white
+  droplets were drawn as black specks.
+- **Fix.** Spray, spindrift, splashes and the bow sheet are marked
+  `userData.airborneWater`; the scene pass writes that into the surface flag
+  as water (at 4, not 1, because spray is blended and the flag arrives scaled
+  by coverage), and both screen-space terms skip water already. Hull seen
+  through thin mist keeps its own contact shadows and occlusion in proportion
+  to what shows through.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system
