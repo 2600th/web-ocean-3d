@@ -38,6 +38,12 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * The build to measure. `OCEAN_DIST=<folder>` measures a build made elsewhere
+ * (`npx vite build --outDir <folder>`) and leaves `dist/` alone, which matters
+ * when another preview server is serving `dist/`.
+ */
+const DIST = process.env.OCEAN_DIST ? resolve(process.env.OCEAN_DIST) : join(ROOT, 'dist');
 const RESULTS_DIR = join(ROOT, 'bench-results');
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
@@ -144,7 +150,7 @@ async function startPreview() {
   const child = spawn(
     process.execPath,
     [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'preview',
-      '--port', String(port), '--strictPort', '--host', '127.0.0.1'],
+      '--port', String(port), '--strictPort', '--host', '127.0.0.1', '--outDir', DIST],
     { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   child.stdout.on('data', () => {});
@@ -157,7 +163,7 @@ async function startPreview() {
 function serveBinariesFromDisk(page) {
   return page.route('**/*.bin', async (route) => {
     const pathname = new URL(route.request().url()).pathname;
-    const file = join(ROOT, 'dist', decodeURIComponent(pathname).replace(/^\/+/, ''));
+    const file = join(DIST, decodeURIComponent(pathname).replace(/^\/+/, ''));
     if (!existsSync(file) || !statSync(file).isFile()) return route.continue();
     return route.fulfill({
       status: 200,
@@ -920,9 +926,13 @@ async function measureScenarios(page, options) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
-  const build = spawn('npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit', shell: true });
-  const buildCode = await new Promise((done) => build.on('exit', done));
-  if (buildCode !== 0) throw new Error(`build failed with code ${buildCode}`);
+  if (process.env.OCEAN_DIST) {
+    if (!existsSync(join(DIST, 'index.html'))) throw new Error(`no build at ${DIST}`);
+  } else {
+    const build = spawn('npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit', shell: true });
+    const buildCode = await new Promise((done) => build.on('exit', done));
+    if (buildCode !== 0) throw new Error(`build failed with code ${buildCode}`);
+  }
 
   const preview = await startPreview();
   const browser = await chromium.launch({
@@ -957,7 +967,7 @@ async function main() {
       const ocean = window.__ocean;
       await ocean.setState({ quality: tier, preset, pixelRatio: 1, cameraMode: 'orbit' });
       ocean.setCamera(...cam.position, ...cam.target);
-      await ocean.renderer.compileAsync(ocean.scene, ocean.camera);
+      // No compileAsync against the canvas: see scripts/benchmark.mjs.
     }, [options.tier, options.preset, camera]);
     await page.waitForTimeout(options.settleSeconds * 1000);
 

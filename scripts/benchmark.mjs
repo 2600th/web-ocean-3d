@@ -54,6 +54,12 @@ const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * The build to measure. `OCEAN_DIST=<folder>` measures a build made elsewhere
+ * (`npx vite build --outDir <folder>`) and leaves `dist/` alone, which matters
+ * when another preview server is serving `dist/`.
+ */
+const DIST = process.env.OCEAN_DIST ? resolve(process.env.OCEAN_DIST) : join(ROOT, 'dist');
 const RESULTS_DIR = join(ROOT, 'bench-results');
 
 /** Version of the JSON result shape. Documented in docs/PERFORMANCE.md. */
@@ -266,7 +272,7 @@ async function startPreview() {
   const child = spawn(
     process.execPath,
     [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'preview',
-      '--port', String(port), '--strictPort', '--host', '127.0.0.1'],
+      '--port', String(port), '--strictPort', '--host', '127.0.0.1', '--outDir', DIST],
     { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let log = '';
@@ -403,7 +409,7 @@ async function collectEnvironment(page) {
 function serveBinariesFromDisk(page, served) {
   return page.route('**/*.bin', async (route) => {
     const pathname = new URL(route.request().url()).pathname;
-    const file = join(ROOT, 'dist', decodeURIComponent(pathname).replace(/^\/+/, ''));
+    const file = join(DIST, decodeURIComponent(pathname).replace(/^\/+/, ''));
     if (!existsSync(file) || !statSync(file).isFile()) return route.continue();
     served.push(pathname);
     return route.fulfill({
@@ -879,10 +885,14 @@ async function runConfiguration(browser, baseUrl, config, options) {
       const ocean = window.__ocean;
       ocean.setState({ preset, pixelRatio: 1, cameraMode: 'orbit' });
       ocean.setCamera(...camera.position, ...camera.target);
-      // A tier change rebuilds the water material and the ocean mesh, so the
-      // pipelines prewarmed at boot no longer cover the scene. Compile the new
-      // ones here instead of letting the first sampled frame pay for them.
-      await ocean.renderer.compileAsync(ocean.scene, ocean.camera);
+      // No `renderer.compileAsync(scene, camera)` here. It compiles the scene
+      // as a render straight to the canvas, which the app never does (the scene
+      // is drawn by the post chain's MRT pass). On three r187 that left the
+      // canvas depth buffer destroyed and rebuilt on every frame after it, and
+      // every frame's batched submit rejected ("Destroyed texture depthBuffer
+      // used in a submit"): the sample then timed frames the GPU never ran.
+      // The app compiles what a preset change needs on its own, and the settle
+      // and the warm-up frames below absorb it.
     }, [PRESET, camera]);
 
     // Settle: mip chains, the first sampler readback after the rebuild, and the
@@ -998,7 +1008,7 @@ async function main() {
   const configs = MATRIX.filter((c) => !options.only || options.only.has(c.id));
   if (configs.length === 0) throw new Error('--only matched no configurations');
 
-  if (!existsSync(join(ROOT, 'dist', 'index.html'))) {
+  if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/ is missing — run `npm run build` first, or use `npm run bench`');
   }
 
