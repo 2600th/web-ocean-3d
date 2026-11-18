@@ -407,6 +407,17 @@ Affected files:
 - `src/scene/ship/Sails.ts`
 - `src/scene/ship/Pennant.ts`
 
+## three.js examples: webgpu_tsl_vfx_flames
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_tsl_vfx_flames.html
+
+The camp fire and torch flames follow this example's technique: a noise field
+scrolled upward through a tapered mask and mapped through a fire colour ramp,
+drawn additively. The sheet shape, ramp, wind lean and embers are this
+project's own. Affected files:
+
+- `src/scene/islandDetail/parts.ts`
+
 ```
 The MIT License
 

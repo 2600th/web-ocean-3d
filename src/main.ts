@@ -2419,6 +2419,7 @@ class App {
       sanitizeDielectrics(props.object);
       applySpecularAATo(props.object);
       this.lighting.local.setIsland(props.lightAnchors(), props.object);
+      props.setFireDetail(QUALITY_TIERS[this.state.quality].weatherDetail);
       // Everything placed on the ground learns about the ground: contact
       // darkening at its base, the caustic pattern if it is under water, and the
       // island's own shadow and the cloud deck's if it is not. See
@@ -3001,6 +3002,7 @@ class App {
     // Rain share and deck splashes, lightning forks, fire embers: counts only.
     this.weather.setDetail(quality.weatherDetail);
     this.lightning.setDetail(quality.weatherDetail);
+    this.props?.setFireDetail(quality.weatherDetail);
     this.spindrift.setCount(this.spindriftOverride ?? quality.spindrift);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
