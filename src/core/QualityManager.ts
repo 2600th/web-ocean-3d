@@ -433,8 +433,10 @@ export interface QualitySettings {
   /**
    * Figures on deck (`scene/crew`): instanced skinned figures, one draw per
    * pose group (five at most) and their shadow draws. 0 draws none. Only the
-   * instance counts move, so a tier change compiles nothing. About 10k skinned
-   * vertices and five 23-bone mixers at 9; expected well under 0.1 ms.
+   * instance counts move, so a tier change compiles nothing. At 9: about 76k
+   * triangles submitted per pass (each group draws the parts any of its figures
+   * wears; a figure's unworn parts collapse to a point), about 40k of them
+   * visible, and five 23-bone mixers.
    */
   crew: number;
 }
