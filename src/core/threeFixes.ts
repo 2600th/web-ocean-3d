@@ -229,6 +229,16 @@ export function installShadowCasterSharing(renderer: THREE.WebGPURenderer): void
  *   source material's `alphaTest` really does cross zero, which still sends
  *   that caster's render object through the rebuild it needs.
  *
+ * - **Empty instanced meshes are not prepared.** A level-of-detail mesh
+ *   holding no instances this frame draws nothing, and three finds that out at
+ *   the very end (`RenderObject.getDrawParameters` returns null) after it has
+ *   looked up the render object, compared its cache keys and refreshed its
+ *   bindings. At High, 69 of the scene pass's 225 objects were such levels of
+ *   reef and seabed rock. They are now dropped on the way in. Each is still let
+ *   through the first time a render context meets it, so its render object and
+ *   pipeline are built when they were before and are there when the level
+ *   fills; and a compile (`compileAsync`) is never filtered.
+ *
  * - **One uniform write per buffer (WebGPU).** A uniforms group records each
  *   changed uniform as a range, and the backend writes each run of contiguous
  *   ranges with its own `queue.writeBuffer`: about 2 150 writes a frame, most
@@ -244,16 +254,27 @@ export function installSubmissionFixes(renderer: THREE.WebGPURenderer, options: 
 
   // Last `alphaTest > 0` seen per source material in a shadow pass.
   const alphaTested = new WeakMap<object, boolean>();
+  // Render contexts that have already met each instanced mesh while empty.
+  const metEmpty = new WeakMap<object, WeakSet<object>>();
   const renderObject = r.renderObject;
   r.renderObject = function (
     this: any,
-    object: unknown,
+    object: any,
     scene: any,
     camera: unknown,
     geometry: unknown,
     material: any,
     ...rest: unknown[]
   ): unknown {
+    if (object.count === 0 && object.isInstancedMesh === true && this._compilationPromises === null) {
+      const context = this._currentRenderContext as object | null;
+      if (context) {
+        let met = metEmpty.get(object);
+        if (met === undefined) metEmpty.set(object, (met = new WeakSet()));
+        if (met.has(context)) return undefined;
+        met.add(context);
+      }
+    }
     const override = scene.overrideMaterial;
     if (override !== null && override !== undefined && override.isShadowPassMaterial === true && material.allowOverride === true) {
       const tested = material.alphaTest > 0;
