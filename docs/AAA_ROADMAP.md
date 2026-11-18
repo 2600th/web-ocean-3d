@@ -372,8 +372,8 @@ black until the tier was changed again.
   no GPU error; both tests pass (shimmer figures at Medium are measured again:
   far temporal 0.520, high-frequency 0.704, near detail 0.594).
 
-The visual baselines (16 canonical shots) are still out of date and still
-fail; they predate the crew, the surf and the reflection changes.
+The visual baselines (16 canonical shots) were out of date at this point
+and failed; they were recaptured afterwards (below).
 
 ## After wave 2: black specks in the spray along the hull (2026-11-18)
 
@@ -392,6 +392,24 @@ wherever spray flew.
   by coverage), and both screen-space terms skip water already. Hull seen
   through thin mist keeps its own contact shadows and occlusion in proportion
   to what shows through.
+
+## After wave 2: visual baselines recaptured (2026-11-18)
+
+All 16 canonical shots in `tests/baselines/` were recaptured on the build
+with the sail, spray and tier fixes in, each new image was read next to the
+old one, and a second run compares clean against them (21 of 21 visual tests
+pass). Noise thresholds were not re-measured; every shot passed on the
+existing ones.
+
+What the new baselines carry that is a matter of look, not a fault fixed:
+
+- **`ship-underway` looks along the yards.** The sails now brace to the
+  wind, and from this shot's camera off the port bow they are edge-on, so the
+  canvas reads as two bellied ribbons. The shot's camera or wind wants
+  re-authoring so it shows the sails it was meant to.
+- **Storm spindrift** (`storm`, `cinematic-squall`) is large soft puffs with
+  streaks in front of them; close to the lens the puffs are blobby.
+- **A pale puff of mist on the hull side** is still there in `ship-underway`.
 
 ## Milestones
 
