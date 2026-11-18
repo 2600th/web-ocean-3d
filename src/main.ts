@@ -4023,6 +4023,12 @@ class App {
     const surface = this.sampler.height(this.camera.position.x, this.camera.position.z);
     const preset = getPreset(this.state.preset);
     this.water.setEyeSubmerged(this.camera.position.y < surface);
+    // Reef rock and kelp cast sun shadows only once the eye is at or under the
+    // surface; from above they are a hundred draws for nothing seen. The band
+    // is `submersion`'s, plus a margin so they are back before the lens dips.
+    const wetEye = submersion > 0 || this.camera.position.y < surface + 0.75;
+    const casterLayers = this.camera.layers.mask;
+    this.lighting.shadows.setCasterLayers(wetEye ? casterLayers : casterLayers & ~(1 << UNDERWATER_LAYER));
 
     this.underwater.setParams({
       submersion,

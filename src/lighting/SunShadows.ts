@@ -290,6 +290,23 @@ export class SunShadows {
     return this.uRefractShift.value as THREE.Vector2;
   }
 
+  /**
+   * Which render layers cast into the cascades.
+   *
+   * Three gives a shadow camera the mask of the camera it is drawing for unless
+   * it has one of its own (any layer above 0 set), so a mask set here is the
+   * one used. `App` leaves the underwater layer out while the eye is above the
+   * surface: at High that is about a hundred caster draws a frame (reef rock,
+   * kelp) for shadows on a seabed seen through the surface, where they changed
+   * no canonical shot by more than 0.013 mean Delta E.
+   */
+  setCasterLayers(mask: number): void {
+    for (const cascade of this.node.lights) {
+      const camera = cascade.shadow?.camera;
+      if (camera && camera.layers.mask !== mask) camera.layers.mask = mask;
+    }
+  }
+
   /** The tier's map size and reach. Map size is read live; no recompile. */
   configure(distance: number, mapSize: number): void {
     const side = Math.max(256, Math.round(mapSize));
