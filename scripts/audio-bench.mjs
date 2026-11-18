@@ -100,13 +100,13 @@ const STATES = {
   },
   sailing: {
     music: 'sailing', energy: 0.73,
-    params: { windSpeed: 11, waveHeight: hs(11), peakWavelength: 40, rain: 0, submersion: 0, hullSpeed: 5.5, birdCount: 40, shipDistance: 18, shipPan: 0.1, sailFill: 0.9, sailLuff: 0 },
+    params: { windSpeed: 11, waveHeight: hs(11), peakWavelength: 40, rain: 0, submersion: 0, hullSpeed: 5.5, birdCount: 40, shipDistance: 18, shipPan: 0.1, sailFill: 0.9, sailLuff: 0, windToward: 0.5, apparentWindSpeed: 13 },
     motion: { heel: 0.12, heelPeriod: 7, pitch: 0.05, pitchPeriod: 5.2, heelBias: 0.1 },
     events: [...slaps(2.6, 0.45), { t: 17, type: 'impact', strength: 0.3 }, { t: 41, type: 'impact', strength: 0.22 }, { t: 30, type: 'chime' }],
   },
   storm: {
     music: 'storm', energy: 0.8,
-    params: { windSpeed: 22, waveHeight: hs(22), peakWavelength: 110, rain: 0.9, submersion: 0, hullSpeed: 6, birdCount: 40, shipDistance: 18, shipPan: -0.1, sailFill: 0.6, sailLuff: 0.15 },
+    params: { windSpeed: 22, waveHeight: hs(22), peakWavelength: 110, rain: 0.9, submersion: 0, hullSpeed: 6, birdCount: 40, shipDistance: 18, shipPan: -0.1, sailFill: 0.6, sailLuff: 0.15, windToward: 0.6, apparentWindSpeed: 24 },
     motion: { heel: 0.3, heelPeriod: 9, pitch: 0.12, pitchPeriod: 6.3, heelBias: 0.15 },
     events: [
       ...slaps(1.4, 0.8),

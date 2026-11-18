@@ -2660,6 +2660,9 @@ class App {
     // The same setting drawn: furled, half or full at the helm; chosen by the
     // wind when nobody is (`fill: null`). Cloth or analytic by tier.
     const windToward = getPreset(this.state.preset).sea.windDirection;
+    // The wind in the ears and on the rigging (A7).
+    audio.windToward = windToward;
+    audio.apparentWindSpeed = sails?.active ? this.gameplay?.apparentWind.speed : undefined;
     ship.setSailState({
       fill: sails?.active && !this.scriptedUnderWay ? sails.sailFill : null,
       trueWind: _sailWind.set(Math.cos(windToward), 0, Math.sin(windToward)).multiplyScalar(this.state.windSpeed),

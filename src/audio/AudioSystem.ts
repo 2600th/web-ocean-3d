@@ -203,6 +203,17 @@ export interface AudioSceneParams {
    * it it is day.
    */
   sunElevation?: number;
+  /**
+   * Which way the true wind blows, radians, `atan2(z, x)` of where it goes.
+   * With the listener's own motion (from `listenerX/Z` frame to frame) this
+   * is the wind in the ears (A7). Optional.
+   */
+  windToward?: number;
+  /**
+   * The apparent wind on the ship, m/s (`Gameplay.apparentWind.speed`): what
+   * the rigging, the blocks and the canvas feel. Optional; true wind without.
+   */
+  apparentWindSpeed?: number;
 }
 
 export type { AudioIsland };
@@ -593,6 +604,23 @@ const RIGGING_LEVEL = 0.1;
 const RIGGING_ONSET = 9;
 const RIGGING_FULL = 20;
 
+/**
+ * Wind in the ears (A7): the low buffeting at the head, from the wind the
+ * listener actually feels (the true wind less their own motion, so at the helm
+ * of a running ship it is her apparent wind). Quiet under a fresh breeze and
+ * climbing steeply above it. Panned to the windward ear.
+ */
+const EAR_WIND_LEVEL = 0.32;
+const EAR_WIND_ONSET = 5;
+const EAR_WIND_FULL = 24;
+const EAR_WIND_REFERENCE = 20;
+const EAR_WIND_HZ = 160;
+const EAR_WIND_PER_SPEED = 9;
+/** Listener speeds above this are a camera cut, not motion. m/s. */
+const LISTENER_CUT_SPEED = 45;
+/** Smoothing of the listener's velocity, seconds. */
+const LISTENER_VELOCITY_TAU = 0.5;
+
 /** Gusting: depth, hold between new targets, and how fast it gets there. */
 const GUST_DEPTH = 0.18;
 const GUST_HOLD_MIN = 1.4;
@@ -631,6 +659,22 @@ const RAIN_HISS_LEVEL = 0.09;
 const RAIN_HISS_EXPONENT = 1.4;
 const RAIN_HISS_HZ = 3400;
 const RAIN_PAN = 0.25;
+/**
+ * Rain on wood and canvas (A9). Aboard, the drops land on the deck (a
+ * brighter knock-band) and on the sails overhead (a low drumming the sea
+ * cannot make), and the sea's own hiss drops back; off the ship it is all sea.
+ * Aboard is the ship within `RAIN_ABOARD_NEAR` metres, none past `FAR`.
+ */
+const RAIN_DECK_LEVEL = 0.3;
+const RAIN_DECK_HZ = 1500;
+const RAIN_CANVAS_LEVEL = 0.34;
+const RAIN_CANVAS_HZ = 380;
+const RAIN_ABOARD_NEAR = 22;
+const RAIN_ABOARD_FAR = 50;
+/** The sea's rain under a deck and sails: this much of it is left. */
+const RAIN_SEA_ABOARD = 0.55;
+/** Height over the hull, metres, under which the canvas is overhead. */
+const RAIN_CANVAS_OVERHEAD = 14;
 
 // --- hull ------------------------------------------------------------------
 
@@ -1223,6 +1267,9 @@ const BED_RATES = {
   bowWash: 1.11,
   luff: 0.94,
   rumble: 0.89,
+  earWind: 0.79,
+  rainDeck: 1.23,
+  rainCanvas: 1.17,
 } as const;
 
 type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
@@ -1344,6 +1391,14 @@ export class AudioSystem {
   private bowWash!: NoiseBed;
   private luffBed!: NoiseBed;
   private rumble!: NoiseBed;
+  private earWind!: NoiseBed;
+  private rainDeck!: NoiseBed;
+  private rainCanvas!: NoiseBed;
+  /** The listener's smoothed velocity, m/s, from its position frame to frame. */
+  private lastListenerX = Number.NaN;
+  private lastListenerZ = Number.NaN;
+  private listenerVX = 0;
+  private listenerVZ = 0;
   private readonly beds: NoiseBed[] = [];
   private readonly targets: ParamTarget[] = [];
 
@@ -1713,8 +1768,58 @@ export class AudioSystem {
     this.surfFar.setLevel(seaLevel * SURF_FAR_LEVEL * swellFar, now, live);
     this.surfFar.setBand(surfCutoff * SURF_FAR_TILT, SURF_Q, now, live);
 
+    // --- the wind you feel (A7) ----------------------------------------------
+    // The listener's own velocity, from where it was last frame; a jump faster
+    // than a ship or a gull can move is a camera cut and is not motion.
+    const ex0 = finite(params.listenerX, Number.NaN);
+    const ez0 = finite(params.listenerZ, Number.NaN);
+    if (step > 0 && Number.isFinite(ex0) && Number.isFinite(ez0)) {
+      if (Number.isFinite(this.lastListenerX)) {
+        const vx = (ex0 - this.lastListenerX) / step;
+        const vz = (ez0 - this.lastListenerZ) / step;
+        if (Math.hypot(vx, vz) < LISTENER_CUT_SPEED) {
+          const k = 1 - Math.exp(-step / LISTENER_VELOCITY_TAU);
+          this.listenerVX += (vx - this.listenerVX) * k;
+          this.listenerVZ += (vz - this.listenerVZ) * k;
+        }
+      }
+      this.lastListenerX = ex0;
+      this.lastListenerZ = ez0;
+    }
+    // The wind at the head: the true wind less the listener's motion. Without
+    // a direction, the motion simply adds to it.
+    const toward = finite(params.windToward, Number.NaN);
+    let earSpeed: number;
+    let earPan = 0;
+    if (Number.isFinite(toward)) {
+      const ex = Math.cos(toward) * wind - this.listenerVX;
+      const ez = Math.sin(toward) * wind - this.listenerVZ;
+      earSpeed = Math.hypot(ex, ez);
+      // Blowing toward the listener's right means it comes from the left.
+      if (earSpeed > 0.1) earPan = -(ex * this.spatial.rx + ez * this.spatial.rz) / earSpeed;
+    } else {
+      earSpeed = wind + Math.hypot(this.listenerVX, this.listenerVZ);
+    }
+    // The rigging, the blocks and the canvas feel the ship's apparent wind
+    // when she is near enough to hear; far off, the true wind is all there is.
+    const shipNear =
+      params.shipDistance !== undefined && Number.isFinite(params.shipDistance)
+        ? 1 - smoothstepNumber(params.shipDistance, RAIN_ABOARD_NEAR, 60)
+        : 0;
+    const apparent = finite(params.apparentWindSpeed, wind);
+    const rigWind = clampNumber(wind + (apparent - wind) * shipNear, 0, 40);
+    const earDrive = earSpeed / EAR_WIND_REFERENCE;
+    this.earWind.setLevel(
+      EAR_WIND_LEVEL * smoothstepNumber(earSpeed, EAR_WIND_ONSET, EAR_WIND_FULL) * earDrive * earDrive * this.gust,
+      now,
+      live,
+    );
+    this.earWind.setBand(EAR_WIND_HZ + EAR_WIND_PER_SPEED * earSpeed, 0.8, now, live);
+    this.earWind.setPan(0.7 * earPan, now, live);
+
     // --- wind ---------------------------------------------------------------
     const windLoud = Math.pow(Math.min(wind / WIND_REFERENCE_WIND, WIND_MAX_DRIVE), WIND_EXPONENT);
+    this.windBed.setPan(0.3 * earPan, now, live);
     this.windBed.setLevel(WIND_LEVEL * windLoud * this.gust, now, live);
     this.windBed.setBand(
       clampNumber(WIND_BAND_BASE + WIND_BAND_PER_WIND * wind, WIND_BAND_MIN, WIND_BAND_MAX),
@@ -1723,10 +1828,11 @@ export class AudioSystem {
       live,
     );
 
-    const singing = smoothstepNumber(wind, RIGGING_ONSET, RIGGING_FULL);
-    this.rigging.setLevel(RIGGING_LEVEL * windLoud * singing * this.gust, now, live);
+    const singing = smoothstepNumber(rigWind, RIGGING_ONSET, RIGGING_FULL);
+    const rigLoud = Math.pow(Math.min(rigWind / WIND_REFERENCE_WIND, WIND_MAX_DRIVE), WIND_EXPONENT);
+    this.rigging.setLevel(RIGGING_LEVEL * rigLoud * singing * this.gust, now, live);
     this.rigging.setBand(
-      clampNumber((STROUHAL * wind) / RIGGING_DIAMETER, RIGGING_MIN_HZ, RIGGING_MAX_HZ),
+      clampNumber((STROUHAL * rigWind) / RIGGING_DIAMETER, RIGGING_MIN_HZ, RIGGING_MAX_HZ),
       RIGGING_Q,
       now,
       live,
@@ -1736,7 +1842,18 @@ export class AudioSystem {
     // Rain gusts with the wind but less than the wind does: a squall arrives in
     // sheets, and the sheets are the same air movement.
     const rainGust = 0.85 + 0.15 * this.gust;
-    this.rainBed.setLevel(RAIN_LEVEL * Math.pow(rain, RAIN_EXPONENT) * rainGust, now, live);
+    // Where the drops land (A9): aboard, on the deck and the canvas overhead.
+    const aboard =
+      params.shipDistance !== undefined && Number.isFinite(params.shipDistance)
+        ? 1 - smoothstepNumber(params.shipDistance, RAIN_ABOARD_NEAR, RAIN_ABOARD_FAR)
+        : 0;
+    const overhead =
+      this.spatial.y < this.spatial.shipY + RAIN_CANVAS_OVERHEAD ? 1 : 0.45;
+    const canvas = aboard * clamp01(finite(params.sailFill, 0)) * overhead;
+    const rainLevel = Math.pow(rain, RAIN_EXPONENT) * rainGust;
+    this.rainBed.setLevel(RAIN_LEVEL * rainLevel * (1 - (1 - RAIN_SEA_ABOARD) * aboard), now, live);
+    this.rainDeck.setLevel(RAIN_DECK_LEVEL * rainLevel * aboard, now, live);
+    this.rainCanvas.setLevel(RAIN_CANVAS_LEVEL * rainLevel * canvas, now, live);
     this.rainBed.setBand(
       clampNumber(
         RAIN_CUTOFF_BASE - RAIN_CUTOFF_PER_RATE * rain,
@@ -1794,7 +1911,7 @@ export class AudioSystem {
     motion.pitch = clampNumber(finite(params.shipPitch, 0), -1.5, 1.5);
     motion.sailFill = clamp01(finite(params.sailFill, 0));
     motion.sailLuff = luff;
-    motion.windSpeed = wind;
+    motion.windSpeed = rigWind;
     motion.presence = presence;
     this.shipSfx.update(step, now, live, motion);
 
@@ -1929,8 +2046,13 @@ export class AudioSystem {
     hdr.begin();
     const air = gainToDb(1 - AIR_DUCK * submersion);
     hdr.offer(sumDb(this.surfNear.loudnessDb(), this.surfFar.loudnessDb()) + air);
-    hdr.offer(sumDb(this.windBed.loudnessDb(), this.rigging.loudnessDb()) + air);
-    hdr.offer(sumDb(this.rainBed.loudnessDb(), this.rainHiss.loudnessDb()) + air);
+    hdr.offer(sumDb(sumDb(this.windBed.loudnessDb(), this.rigging.loudnessDb()), this.earWind.loudnessDb()) + air);
+    hdr.offer(
+      sumDb(
+        sumDb(this.rainBed.loudnessDb(), this.rainHiss.loudnessDb()),
+        sumDb(this.rainDeck.loudnessDb(), this.rainCanvas.loudnessDb()),
+      ) + air,
+    );
     hdr.offer(
       sumDb(sumDb(this.hull.loudnessDb(), this.bowWash.loudnessDb()), this.luffBed.loudnessDb()) +
         air +
@@ -2836,6 +2958,10 @@ export class AudioSystem {
     this.oneShotRandom = mulberry32(AUDIO_SEEDS.oneShots);
     this.gullRandom = mulberry32(AUDIO_SEEDS.gulls);
     this.thunderShape = mulberry32(AUDIO_SEEDS.thunderShape);
+    this.lastListenerX = Number.NaN;
+    this.lastListenerZ = Number.NaN;
+    this.listenerVX = 0;
+    this.listenerVZ = 0;
     this.gust = 1;
     this.gustTarget = 1;
     this.gustTimer = 0;
@@ -3133,6 +3259,43 @@ export class AudioSystem {
       offset: spacing * 7.5,
       pan: 0,
       gainTau: 0.2,
+    });
+    this.earWind = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.bedBus,
+      filter: 'lowpass',
+      frequency: EAR_WIND_HZ,
+      q: 0.8,
+      highpass: 35,
+      playbackRate: BED_RATES.earWind,
+      offset: spacing * 2.5,
+      pan: 0,
+      // Fast: buffeting is quick, and the gust walk is slow on its own.
+      gainTau: 0.08,
+    });
+    this.rainDeck = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.bedBus,
+      filter: 'bandpass',
+      frequency: RAIN_DECK_HZ,
+      q: 0.9,
+      highpass: 400,
+      playbackRate: BED_RATES.rainDeck,
+      offset: spacing * 4.5,
+      pan: -0.1,
+      gainTau: 0.3,
+    });
+    this.rainCanvas = this.addBed(ctx, {
+      buffer: this.white,
+      destination: this.bedBus,
+      filter: 'bandpass',
+      frequency: RAIN_CANVAS_HZ,
+      q: 1.3,
+      highpass: 140,
+      playbackRate: BED_RATES.rainCanvas,
+      offset: spacing * 5.5,
+      pan: 0.1,
+      gainTau: 0.3,
     });
     this.rumble = this.addBed(ctx, {
       // Brown, not white: what is left after a hundred metres of water is the
