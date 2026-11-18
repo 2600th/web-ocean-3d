@@ -104,8 +104,11 @@ import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
 import { GamepadInput } from './input/Gamepad';
-import { DEFAULT_UI_STATE, type UiState } from './ui/types';
+import { DEFAULT_UI_STATE, type UiCallbacks, type UiState } from './ui/types';
 import { loadSoundPrefs, saveSoundPrefs } from './ui/soundPrefs';
+import { applyDisplayPrefs, loadSettingsPrefs, saveSettingsPrefs } from './ui/prefs';
+import { installReducedMotionOverride } from './ui/motion';
+import { PauseMenu } from './ui/PauseMenu';
 import { openStartGate, showWebGPURequired, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
@@ -575,6 +578,11 @@ class App {
   private panel!: Panel;
   private hud!: Hud;
   private stormQuote!: StormQuote;
+  /** Pause, settings and the way back to the title; see `buildPauseMenu`. */
+  private pauseMenu: PauseMenu | null = null;
+  private pauseRelease: (() => void) | null = null;
+  /** The title screen's choice. The voyage code reads it to continue or begin afresh. */
+  readonly voyageIntent: StartSelection['voyage'];
   /** On-screen throttle/rudder. Null on devices with a fine pointer. */
   private touchControls: TouchControls | null = null;
   private gamepad: GamepadInput | null = null;
@@ -668,9 +676,11 @@ class App {
     this.canvas = canvas;
     this.uiRoot = uiRoot;
     this.adapter = options.adapter;
+    this.voyageIntent = options.voyage;
     this.state = {
       ...DEFAULT_UI_STATE,
       ...loadSoundPrefs(),
+      ...loadSettingsPrefs(),
       quality: options.quality,
     };
   }
@@ -2766,6 +2776,8 @@ class App {
         this.onStateChange(key);
       },
     };
+    installReducedMotionOverride();
+    applyDisplayPrefs(this.state);
     this.panel = new Panel(this.uiRoot, this.state, callbacks);
     this.hud = new Hud(this.uiRoot, this.state.cameraMode, callbacks);
     // Clicks, ticks and rustles for the ledger and the HUD. The UI reports
@@ -2773,6 +2785,7 @@ class App {
     this.detachUiSounds = attachUiSounds(this.uiRoot, (cue, value) => this.audio.uiTick(cue, value));
     this.stormQuote = new StormQuote(this.uiRoot);
     this.hud.setBackend(this.backend);
+    this.buildPauseMenu(callbacks);
 
     // Built only where it will be used. A mouse user has better controls and a
     // stick over the frame would only be in the way; constructing it anyway and
@@ -2801,7 +2814,39 @@ class App {
       onAnchor: () => this.gameplay?.toggleAnchor(),
       onLook: (x, y) => this.director.setChaseLook(x, y),
       onActive: () => this.hud.setPadInUse(),
+      onMenu: () => this.pauseMenu?.open(),
     });
+  }
+
+  /**
+   * Pause, settings and quitting. Escape and the pad's menu button open it; it
+   * holds the loop (a counted hold, so a capture's own pause is not undone) and
+   * ducks the sound while it is up.
+   */
+  private buildPauseMenu(callbacks: { onChange: UiCallbacks['onChange'] }): void {
+    this.pauseMenu = new PauseMenu(this.uiRoot, this.state, callbacks, {
+      onPause: (paused) => {
+        this.pauseRelease?.();
+        this.pauseRelease = paused ? this.loop.hold() : null;
+        this.audio.applyMix(paused ? { ...this.state, volume: this.state.volume * 0.25 } : this.state);
+      },
+      restartVoyage: () => this.restartVoyage(),
+      // Reloading is the clean way back to the title: the quality is chosen
+      // there, before the renderer is built.
+      quitToTitle: () => window.location.reload(),
+      openSound: () => this.panel.showSound(),
+    });
+    this.panel.setSettingsHandler(() => this.pauseMenu?.open('settings'));
+    this.hud.setPauseHandler(() => this.pauseMenu?.open());
+    this.director.setLookPrefs(this.state.lookSensitivity, this.state.invertLook);
+  }
+
+  /** Back to the start: the hull at her berth, the sails furled, the voyage reset. */
+  private restartVoyage(): void {
+    this.buoyancy?.resetToHome();
+    this.shipControls?.resetInput();
+    this.gameplay?.reset();
+    this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);
   }
 
   private onStateChange(key: keyof UiState): Promise<void> | void {
@@ -2901,6 +2946,22 @@ class App {
       case 'reducedRange':
         this.audio.applyMix(this.state);
         saveSoundPrefs(this.state);
+        break;
+      case 'lookSensitivity':
+      case 'invertLook':
+        this.director.setLookPrefs(this.state.lookSensitivity, this.state.invertLook);
+        saveSettingsPrefs(this.state);
+        break;
+      case 'reduceMotion':
+      case 'uiScale':
+      case 'shapeCues':
+        applyDisplayPrefs(this.state);
+        saveSettingsPrefs(this.state);
+        break;
+      case 'shake':
+      case 'haptics':
+      case 'reduceFlashes':
+        saveSettingsPrefs(this.state);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
@@ -4462,6 +4523,7 @@ class App {
             this.onStateChange(key as keyof UiState);
           }
           this.panel.setState(partial);
+          this.pauseMenu?.setState(partial);
         },
         /**
          * Places the camera exactly, for reproducible screenshots.
@@ -4862,6 +4924,8 @@ class App {
     this.disposed = true;
     window.removeEventListener('resize', this.onResize);
     this.loop?.stop();
+    this.pauseMenu?.dispose();
+    this.pauseRelease?.();
     this.panel?.dispose();
     this.detachUiSounds?.();
     this.detachUiSounds = null;

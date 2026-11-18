@@ -12,6 +12,7 @@
  *   left bumper            haul the sheets in (held)
  *   A (bottom face)        drop or raise the anchor
  *   right stick            look around the ship
+ *   menu (start) button    pause, in any mode
  *
  * Polled once a frame, because the Gamepad API has no events for buttons or
  * axes. Nothing is polled until a pad has connected: browsers only expose one
@@ -44,6 +45,8 @@ export interface GamepadCallbacks {
   onLook(x: number, y: number): void;
   /** The pad was used this frame: prompts should show pad glyphs. */
   onActive?(): void;
+  /** The menu button went down: pause, whether or not the viewer has the helm. */
+  onMenu?(): void;
 }
 
 /** Standard-mapping button indices. */
@@ -55,6 +58,7 @@ const BUTTON = {
   rt: 7,
   up: 12,
   down: 13,
+  menu: 9,
 } as const;
 
 /** Stick dead zone, rescaled past so the usable range still starts at zero. */
@@ -141,6 +145,12 @@ export class GamepadInput {
     if (!pad) return;
 
     if (atHelm && rise > RUMBLE_THRESHOLD) this.rumble(pad, rise);
+
+    // The menu button works in every mode, so it is read before the helm gate.
+    if (this.edge(pad, BUTTON.menu)) {
+      this.callbacks.onMenu?.();
+      this.callbacks.onActive?.();
+    }
 
     if (atHelm !== this.enabled) {
       this.enabled = atHelm;

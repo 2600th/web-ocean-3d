@@ -4,6 +4,7 @@ import type { ShipController } from '../physics/ShipController';
 import type { SprayLanding } from '../physics/Spray';
 import type { OceanSampler } from '../ocean/Sampler';
 import { mulberry32 } from '../core/random';
+import { keybinds } from '../input/keybinds';
 import type { WeatherKind } from '../presets';
 import { ISLAND } from '../scene/Seafloor';
 import { BowSpray, Burst, CargoGlint, ObjectiveBeacon } from './effects';
@@ -634,7 +635,9 @@ export class Gameplay {
     this.offWind = angleOffWind(body.heading, wind.towardRad);
 
     // Sheets: keys and the held stick or pad rate together, clamped.
-    const keyTrim = (this.trimKeys.has('KeyE') ? 1 : 0) - (this.trimKeys.has('KeyQ') ? 1 : 0);
+    const keyTrim =
+      (this.trimKeys.has(keybinds.codeOf('trimOut')) ? 1 : 0)
+      - (this.trimKeys.has(keybinds.codeOf('trimIn')) ? 1 : 0);
     const trimRate = Math.max(-1, Math.min(1, keyTrim + this.trimInput));
     if (trimRate !== 0) this.trim = Math.min(1, Math.max(0, this.trim + trimRate * TRIM_RATE * dt));
 
@@ -1715,19 +1718,20 @@ export class Gameplay {
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (!this.active || event.repeat || isTypingTarget(event.target)) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    switch (event.code) {
-      case 'KeyW':
+    // The keys are the player's to rebind; see `input/keybinds`.
+    switch (keybinds.actionFor(event.code)) {
+      case 'sailMore':
         this.stepSail(1);
         break;
-      case 'KeyS':
+      case 'sailLess':
         this.stepSail(-1);
         break;
-      case 'KeyR':
+      case 'anchor':
         this.toggleAnchor();
         break;
       // Sheets: held, so the key's up event ends the haul.
-      case 'KeyQ':
-      case 'KeyE':
+      case 'trimIn':
+      case 'trimOut':
         this.trimKeys.add(event.code);
         break;
       default:

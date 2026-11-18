@@ -22,6 +22,7 @@
  * reports the actions.
  */
 
+import { keybinds } from '../input/keybinds.ts';
 import type { CameraMode } from './types.ts';
 
 /**
@@ -62,27 +63,39 @@ const LESSONS: readonly LessonSpec[] = [
   {
     id: 'helm',
     modes: ['orbit', 'fly'],
-    keyboard: { key: '3', text: 'Take the helm' },
+    // Read when shown, not when loaded: the keys are the player's to rebind.
+    get keyboard() {
+      return { key: keybinds.labelOf('modeHelm'), text: 'Take the helm' };
+    },
     touch: { text: 'Tap the wheel below to take the helm' },
   },
   {
     id: 'sail',
     modes: ['boat'],
-    keyboard: { key: 'W', text: 'Set sail' },
+    get keyboard() {
+      return { key: keybinds.labelOf('sailMore'), text: 'Set sail' };
+    },
     touch: { key: 'More', text: 'Set sail' },
     pad: { key: 'RT', text: 'Set sail' },
   },
   {
     id: 'steer',
     modes: ['boat'],
-    keyboard: { key: 'A D', text: 'Steer her round' },
+    get keyboard() {
+      return { key: keybinds.labelsOf('steerPort', 'steerStarboard'), text: 'Steer her round' };
+    },
     touch: { text: 'Push the stick left or right to steer' },
     pad: { key: 'Left stick', text: 'Steer her round' },
   },
   {
     id: 'trim',
     modes: ['boat'],
-    keyboard: { key: 'Q E', text: 'Trim the sails: in toward the wind, out away from it' },
+    get keyboard() {
+      return {
+        key: keybinds.labelsOf('trimIn', 'trimOut'),
+        text: 'Trim the sails: in toward the wind, out away from it',
+      };
+    },
     touch: { text: 'Push the stick up to haul the sails in, down to ease them out' },
     pad: { key: 'LB RB', text: 'Trim the sails: in toward the wind, out away from it' },
   },
@@ -95,7 +108,9 @@ const LESSONS: readonly LessonSpec[] = [
   {
     id: 'anchor',
     modes: ['boat'],
-    keyboard: { key: 'R', text: 'Drop anchor to stop' },
+    get keyboard() {
+      return { key: keybinds.labelOf('anchor'), text: 'Drop anchor to stop' };
+    },
     touch: { key: 'Anchor', text: 'Drop anchor to stop' },
     pad: { key: 'A', text: 'Drop anchor to stop' },
   },

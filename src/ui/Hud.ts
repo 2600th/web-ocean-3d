@@ -19,6 +19,7 @@
  * opt back into hit-testing, so nothing here can swallow a camera drag.
  */
 
+import { keybinds, type KeyAction } from '../input/keybinds.ts';
 import { Coach, type InputKind, type LessonId } from './Coach.ts';
 import { compassRose, icon, type IconName } from './icons.ts';
 import {
@@ -45,12 +46,17 @@ const MODE_LABELS: Record<CameraMode, string> = {
   cinematic: 'Tour',
 };
 
-const MODE_DIGITS: Record<CameraMode, string> = {
-  orbit: '1',
-  fly: '2',
-  boat: '3',
-  cinematic: '4',
+/** The key bound to each mode, which the player may have changed. */
+const MODE_ACTIONS: Record<CameraMode, KeyAction> = {
+  orbit: 'modeOrbit',
+  fly: 'modeFly',
+  boat: 'modeHelm',
+  cinematic: 'modeTour',
 };
+
+function modeKey(mode: CameraMode): string {
+  return keybinds.labelOf(MODE_ACTIONS[mode]);
+}
 
 /** What each mode is for, in a sentence a first-time visitor can choose by. Tab tooltips. */
 const MODE_TIPS: Record<CameraMode, string> = {
@@ -67,34 +73,41 @@ const MODE_ICONS: Record<CameraMode, IconName> = {
   cinematic: 'tour',
 };
 
-const HINTS: Record<CameraMode, readonly Hint[]> = {
-  orbit: [
-    { action: 'Look around', key: 'Drag' },
-    { action: 'Slide', key: 'Right drag' },
-    { action: 'Zoom', key: 'Scroll' },
-  ],
-  fly: [
-    { action: 'Fly', key: 'WASD' },
-    { action: 'Look', key: 'Click, then mouse' },
-    { action: 'Set speed', key: 'Scroll' },
-    { action: 'Boost', key: 'Shift' },
-  ],
-  // W/S step the canvas (furled, half, full) and R lets go or weighs the
-  // anchor — see `src/gameplay`.
-  boat: [
-    { action: 'More or less sail', key: 'W S' },
-    { action: 'Steer', key: 'A D' },
-    { action: 'Trim sails', key: 'Q E' },
-    { action: 'Anchor', key: 'R' },
-    { action: 'Look', key: 'Drag' },
-  ],
-  // Nothing to drive — the tour holds the wheel. The hint names what the viewer
-  // *can* do, which is leave.
-  cinematic: [
-    { action: 'Take the helm', key: '3' },
-    { action: 'Fly free', key: '2' },
-  ],
-};
+/** The key list for a mode. The helm's and the tour's follow the player's bindings. */
+function hintsFor(mode: CameraMode): readonly Hint[] {
+  switch (mode) {
+    case 'orbit':
+      return [
+        { action: 'Look around', key: 'Drag' },
+        { action: 'Slide', key: 'Right drag' },
+        { action: 'Zoom', key: 'Scroll' },
+      ];
+    case 'fly':
+      return [
+        { action: 'Fly', key: 'WASD' },
+        { action: 'Look', key: 'Click, then mouse' },
+        { action: 'Set speed', key: 'Scroll' },
+        { action: 'Boost', key: 'Shift' },
+      ];
+    // More and less sail step the canvas (furled, half, full) and the anchor
+    // key lets go or weighs it; see `src/gameplay`.
+    case 'boat':
+      return [
+        { action: 'More or less sail', key: keybinds.labelsOf('sailMore', 'sailLess') },
+        { action: 'Steer', key: keybinds.labelsOf('steerPort', 'steerStarboard') },
+        { action: 'Trim sails', key: keybinds.labelsOf('trimIn', 'trimOut') },
+        { action: 'Anchor', key: keybinds.labelOf('anchor') },
+        { action: 'Look', key: 'Drag' },
+      ];
+    // Nothing to drive: the tour holds the wheel. The hint names what the
+    // viewer *can* do, which is leave.
+    case 'cinematic':
+      return [
+        { action: 'Take the helm', key: modeKey('boat') },
+        { action: 'Fly free', key: modeKey('fly') },
+      ];
+  }
+}
 
 /** The helm's hints once a gamepad is in use (standard mapping, Xbox names). */
 const PAD_BOAT_HINTS: readonly Hint[] = [
@@ -110,9 +123,6 @@ const PAD_BOAT_HINTS: readonly Hint[] = [
  * `IRONS_DEG` in `gameplay/sailing.ts`, repeated because `src/ui` stands alone.
  */
 const NO_GO_DEG = 35;
-
-/** Keyboard digits, in mode order. */
-const MODE_DIGITS_ORDER: readonly string[] = CAMERA_MODES.map((mode) => MODE_DIGITS[mode]);
 
 /** Minimum ms between FPS text writes (~4 per second). */
 const FPS_WRITE_INTERVAL = 250;
@@ -252,10 +262,13 @@ export class Hud {
   // instrument corner
   private readonly fpsValue: HTMLElement;
   private readonly backendBadge: HTMLElement;
+  private readonly pauseButton: HTMLButtonElement;
 
   // modes
   private readonly hintList: HTMLElement;
   private readonly modeButtons = new Map<CameraMode, HTMLButtonElement>();
+  private readonly modeKeys = new Map<CameraMode, HTMLElement>();
+  private stopKeyWatch: (() => void) | null = null;
 
   // compass
   private readonly compassWindow: HTMLElement;
@@ -503,14 +516,14 @@ export class Hud {
       const button = el('button', 'tab');
       button.type = 'button';
       button.setAttribute('aria-pressed', mode === this.mode ? 'true' : 'false');
-      button.setAttribute('aria-label', `${MODE_LABELS[mode]}: ${MODE_TIPS[mode]} (key ${MODE_DIGITS[mode]})`);
-      button.title = `${MODE_TIPS[mode]} (${MODE_DIGITS[mode]})`;
       button.classList.toggle('is-active', mode === this.mode);
+      const keycap = el('kbd', 'tab__key');
       button.append(
         icon(MODE_ICONS[mode], 'tab__icon'),
         el('span', 'tab__name', MODE_LABELS[mode]),
-        el('kbd', 'tab__key', MODE_DIGITS[mode]),
+        keycap,
       );
+      this.modeKeys.set(mode, keycap);
       button.addEventListener('click', () => this.selectMode(mode), { signal });
       this.modeButtons.set(mode, button);
       modes.append(button);
@@ -525,7 +538,15 @@ export class Hud {
     fpsValue.setAttribute('aria-label', 'Frames per second');
     const backendBadge = el('span', 'hud-corner__backend', 'WebGPU');
     backendBadge.setAttribute('aria-label', 'Renderer backend: WebGPU');
-    corner.append(fpsValue, el('span', 'hud-corner__unit', 'fps'), backendBadge);
+    // Pause, for hands with no Escape key. Shown once the host says what pausing does.
+    const pauseButton = el('button', 'hud-corner__pause');
+    pauseButton.type = 'button';
+    pauseButton.hidden = true;
+    pauseButton.setAttribute('aria-label', 'Pause and settings');
+    pauseButton.title = 'Pause and settings (Esc)';
+    pauseButton.append(icon('pause', 'hud-corner__pause-icon'));
+    corner.append(pauseButton, fpsValue, el('span', 'hud-corner__unit', 'fps'), backendBadge);
+    this.pauseButton = pauseButton;
 
     hud.append(compass, toastStack, quest, instruments, helm, corner);
 
@@ -571,6 +592,12 @@ export class Hud {
         ? 'touch'
         : 'keyboard';
     this.coach = new Coach(this.baseInput);
+    this.paintModeKeys();
+    // A key rebound in the settings is the key the tabs and the lessons name.
+    this.stopKeyWatch = keybinds.onChange(() => {
+      this.paintModeKeys();
+      this.renderHints(this.mode);
+    });
     this.renderHints(this.mode);
     this.root.append(hud);
     this.measureCompass();
@@ -621,6 +648,13 @@ export class Hud {
         FPS_WRITE_INTERVAL - elapsed,
       );
     }
+  }
+
+  /** Gives the corner's pause button something to do, and shows it. */
+  setPauseHandler(open: () => void): void {
+    if (this.disposed) return;
+    this.pauseButton.hidden = false;
+    this.pauseButton.addEventListener('click', open, { signal: this.controller.signal });
   }
 
   /**
@@ -988,6 +1022,8 @@ export class Hud {
       this.fpsTimer = 0;
     }
     this.controller.abort();
+    this.stopKeyWatch?.();
+    this.stopKeyWatch = null;
     window.clearInterval(this.idleTimer);
     window.clearTimeout(this.hintTimer);
     window.clearTimeout(this.objectiveChipTimer);
@@ -995,6 +1031,7 @@ export class Hud {
     delete this.root.dataset.mode;
     this.hudEl.remove();
     this.modeButtons.clear();
+    this.modeKeys.clear();
     for (const entry of this.scoreRows.values()) window.cancelAnimationFrame(entry.frame);
     this.scoreRows.clear();
   }
@@ -1008,24 +1045,34 @@ export class Hud {
 
     // The helm's orders, as lessons done. Pressing the key is knowing it; the
     // gameplay layer carries out the order itself.
+    const action = keybinds.actionFor(event.code);
     if (this.mode === 'boat') {
       const lesson: LessonId | null =
-        event.code === 'KeyW' ? 'sail'
-          : event.code === 'KeyA' || event.code === 'KeyD' ? 'steer'
-            : event.code === 'KeyR' ? 'anchor'
-              : event.code === 'KeyQ' || event.code === 'KeyE' ? 'trim'
+        action === 'sailMore' ? 'sail'
+          : action === 'steerPort' || action === 'steerStarboard' ? 'steer'
+            : action === 'anchor' ? 'anchor'
+              : action === 'trimIn' || action === 'trimOut' ? 'trim'
                 : null;
       if (lesson !== null) this.learn(lesson);
     }
 
-    const index = MODE_DIGITS_ORDER.indexOf(event.key);
-    if (index < 0) return;
-    const mode = CAMERA_MODES[index];
+    const mode = CAMERA_MODES.find((candidate) => MODE_ACTIONS[candidate] === action);
     if (mode === undefined) return;
 
     event.preventDefault();
     this.selectMode(mode);
   };
+
+  /** Writes each tab's key, and the words that name it, from the bindings in force. */
+  private paintModeKeys(): void {
+    for (const [mode, button] of this.modeButtons) {
+      const key = modeKey(mode);
+      const keycap = this.modeKeys.get(mode);
+      if (keycap) setText(keycap, key);
+      button.setAttribute('aria-label', `${MODE_LABELS[mode]}: ${MODE_TIPS[mode]} (key ${key})`);
+      button.title = `${MODE_TIPS[mode]} (${key})`;
+    }
+  }
 
   private selectMode(mode: CameraMode): void {
     if (mode === this.mode) return;
@@ -1198,7 +1245,7 @@ export class Hud {
       this.hudEl.classList.add('hud--hints');
       return;
     }
-    const hints = mode === 'boat' && this.coach.inputKind === 'pad' ? PAD_BOAT_HINTS : HINTS[mode];
+    const hints = mode === 'boat' && this.coach.inputKind === 'pad' ? PAD_BOAT_HINTS : hintsFor(mode);
     for (const hint of hints) {
       const row = el('li', 'hud-hints__item');
       row.append(el('kbd', 'keycap', hint.key), el('span', 'hud-hints__action', hint.action));

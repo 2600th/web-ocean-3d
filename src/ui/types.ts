@@ -20,6 +20,11 @@ export type PresetId =
 
 export type CameraMode = 'orbit' | 'fly' | 'boat' | 'cinematic';
 
+/** The three interface sizes. */
+export type UiScale = 1 | 1.15 | 1.3;
+
+export const UI_SCALES: readonly UiScale[] = [1, 1.15, 1.3];
+
 export interface UiState {
   quality: QualityTier;
   preset: PresetId;
@@ -57,6 +62,19 @@ export interface UiState {
    * motion turns them off whatever this says.
    */
   shake: number;
+  /** Look speed, 0.4..2, for the mouse and the right stick. 1 is the usual. */
+  lookSensitivity: number;
+  /** Pull back to look up, for the mouse at the helm and in Fly and for the right stick. */
+  invertLook: boolean;
+  /**
+   * Reduced motion on top of the system setting: on, the game behaves as if the
+   * system asked for it, whatever the system says. Off defers to the system.
+   */
+  reduceMotion: boolean;
+  /** Interface size: 1, 1.15 or 1.3 times. */
+  uiScale: UiScale;
+  /** Cues that use colour also carry a shape or a pattern. */
+  shapeCues: boolean;
   /** Sea, wind, rain, thunder and gulls, 0..1, under the master volume. */
   ambienceVolume: number;
   /** The ship, splashes and impacts, 0..1, under the master volume. */
@@ -167,6 +185,11 @@ export const DEFAULT_UI_STATE: UiState = {
   volume: 0.4,
   musicVolume: 0.5,
   shake: 1,
+  lookSensitivity: 1,
+  invertLook: false,
+  reduceMotion: false,
+  uiScale: 1,
+  shapeCues: false,
   ambienceVolume: 1,
   effectsVolume: 1,
   interfaceVolume: 1,

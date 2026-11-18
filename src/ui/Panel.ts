@@ -39,7 +39,6 @@ type SliderKey =
   | 'fogDensity'
   | 'volume'
   | 'musicVolume'
-  | 'shake'
   | 'ambienceVolume'
   | 'effectsVolume'
   | 'interfaceVolume'
@@ -90,9 +89,6 @@ const CABIN_SLIDERS = [
   'interfaceVolume',
   'pixelRatio',
 ] as const satisfies readonly SliderKey[];
-
-/** The helm's own comfort setting, placed after the cabin's. */
-const HELM_SLIDERS = ['shake'] as const satisfies readonly SliderKey[];
 
 const SLIDERS: readonly SliderSpec[] = [
   {
@@ -196,15 +192,6 @@ const SLIDERS: readonly SliderSpec[] = [
     format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
   },
   {
-    key: 'shake',
-    label: 'Camera shake',
-    tip: 'How hard the camera jolts when you strike a shoal, a wave slams or thunder rolls. Zero holds it steady',
-    min: 0,
-    max: 1,
-    step: 0.01,
-    format: (v) => (v === 0 ? 'Steady' : `${Math.round(v * 100)}%`),
-  },
-  {
     key: 'pixelRatio',
     label: 'Sharpness',
     tip: 'How many pixels are drawn. Lower runs smoother on a slow device; higher is crisper',
@@ -279,7 +266,7 @@ function sliderSpec(key: SliderKey): SliderSpec {
 
 /** Every declared slider must be placed exactly once. */
 function assertSlidersPlaced(): void {
-  const placed = [...SEA_SKY_SLIDERS, ...CABIN_SLIDERS, ...HELM_SLIDERS] as readonly SliderKey[];
+  const placed = [...SEA_SKY_SLIDERS, ...CABIN_SLIDERS] as readonly SliderKey[];
   for (const spec of SLIDERS) {
     const count = placed.filter((key) => key === spec.key).length;
     if (count !== 1) {
@@ -324,6 +311,7 @@ export class Panel {
   private readonly bodyEl: HTMLElement;
   private readonly collapseButton: HTMLButtonElement;
   private readonly sheetButton: HTMLButtonElement;
+  private readonly settingsButton!: HTMLButtonElement;
   private disposed = false;
   private sheetOpen = false;
   private collapsed = false;
@@ -419,11 +407,9 @@ export class Panel {
     for (const key of CABIN_SLIDERS) {
       this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
     }
-    for (const key of HELM_SLIDERS) {
-      this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
-    }
     // Laptop speakers: a calm and a storm closer together, thunder less sudden.
     this.buildToggle(cabin, 'reducedRange', 'Laptop speakers (less range)');
+    cabin.id = `${uid}-sound`;
 
     // ---- Shipwright (debug) ------------------------------------------------
     const tools = el('details', 'ledger-tools');
@@ -447,6 +433,14 @@ export class Panel {
 
     // ---- Actions -----------------------------------------------------------
     const actions = el('div', 'panel__actions');
+    // Pause, keys and comfort settings live in their own screen; the host says
+    // how to open it (`setSettingsHandler`) and the button appears then.
+    const settingsButton = el('button', 'btn btn--brass panel__settings', 'Pause & settings');
+    settingsButton.type = 'button';
+    settingsButton.hidden = true;
+    settingsButton.title = 'Pause the sea, rebind keys, and comfort options';
+    actions.append(settingsButton);
+    this.settingsButton = settingsButton;
     const source = el('a', 'btn btn--brass', 'View Source');
     source.title = 'The code, on GitHub';
     source.href = SOURCE_URL;
@@ -480,6 +474,27 @@ export class Panel {
   setOpen(open: boolean): void {
     if (this.disposed) return;
     this.setCollapsed(!open);
+  }
+
+  /** Gives the ledger's settings button something to do, and shows it. */
+  setSettingsHandler(open: () => void): void {
+    if (this.disposed) return;
+    this.settingsButton.hidden = false;
+    this.settingsButton.addEventListener('click', open, { signal: this.controller.signal });
+  }
+
+  /**
+   * Shows the sound controls: unfolds the ledger (or raises the sheet on a
+   * phone), scrolls the volume into view and puts focus on it.
+   */
+  showSound(): void {
+    if (this.disposed) return;
+    if (window.matchMedia('(max-width: 900px)').matches) this.setSheetOpen(true);
+    else this.setCollapsed(false);
+    const volume = this.sliders.get('volume')?.input;
+    if (volume === undefined) return;
+    volume.scrollIntoView({ block: 'center' });
+    volume.focus({ preventScroll: true });
   }
 
   /** Push values in from the host without re-emitting change callbacks. */

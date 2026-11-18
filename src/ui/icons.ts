@@ -62,6 +62,8 @@ const ICONS = {
     '<path d="M11 8h5M11 11.5h5M11 15h3"/>',
   /** Objective marker: the cross that marks the spot. */
   mark: '<path d="M6 6l12 12M18 6L6 18" stroke-width="3"/>',
+  /** Pause: two bars. */
+  pause: '<path d="M8.5 5.5v13M15.5 5.5v13" stroke-width="3"/>',
   /** Close. */
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
   /** Sound on a slider: a speaker, its waves, and a stroke through it shown when muted. */

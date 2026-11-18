@@ -1853,7 +1853,6 @@ test.describe('responsiveness', () => {
         'musicVolume',
         'peakWavelength',
         'pixelRatio',
-        'shake',
         'timeOfDay',
         'volume',
         'windSpeed',
