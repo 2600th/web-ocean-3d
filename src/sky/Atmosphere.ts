@@ -1693,8 +1693,10 @@ export class Atmosphere {
     // highland and fine crater mottling over them. Fixed to the face.
     const basins = smoothstep(0.05, 0.35, mx_fractal_noise_float(vec3(face.mul(1.3), 4.2), 2, 2.1, 0.5, 1.0));
     const mottle = mx_noise_float(vec3(face.mul(7.5), 1.3)).mul(0.08);
-    const albedo = float(1).sub(basins.mul(0.38)).add(mottle);
-    const moonBody = vec3(1.0, 0.98, 0.92).mul(disc.mul(albedo).mul(sunlit.mul(0.97).add(0.03)).mul(9.0));
+    const albedo = float(1).sub(basins.mul(0.42)).add(mottle);
+    // 3.2, from 9: at 9 the disc went through the tone curve's shoulder to a
+    // flat white and took the maria and the terminator with it.
+    const moonBody = vec3(1.0, 0.98, 0.92).mul(disc.mul(albedo).mul(sunlit.mul(0.97).add(0.03)).mul(3.2));
 
     const halo = saturate(cosMoon);
     const glow = vec3(0.55, 0.68, 1.0).mul(
