@@ -753,7 +753,33 @@ interface ScatterSpec {
   /** Metres from the camera beyond which no level of this kind is drawn. */
   cullDistance?: number;
   bake?: BakeOptions;
+  /** Kept off the cove's set pieces; see `inCoveSetPiece`. */
+  clearCove?: boolean;
 }
+
+/**
+ * The shoreline rock kinds that stay off the cove's beach.
+ *
+ * Every island scatter draws from one seeded sequence by rejection, so any
+ * change to the terrain reshuffles all of them; the cove's beach was clear of
+ * boulders by luck of the draw, and the reshaped island put two beside the
+ * beached pinnace. Kept out by rule instead, so the next change to the land
+ * cannot pile rock on the camp, the jetty or the wreck.
+ */
+const COVE_CLEAR_KINDS = new Set([
+  'island-headland-rock',
+  'island-shore-outcrop',
+  'island-shore-boulders',
+  'island-coast-line-wide',
+  'island-coast-line-narrow',
+  'island-coast-rocks-wide',
+  'island-coast-rocks-tall',
+  'island-land-rocks',
+]);
+/** The cove's clearing: its centre against the cove's shore point, and its radius, metres. */
+const COVE_CLEAR_INLAND = 18;
+const COVE_CLEAR_ALONGSHORE = -16;
+const COVE_CLEAR_RADIUS = 62;
 
 export class Props {
   readonly object: THREE.Object3D;
@@ -964,6 +990,11 @@ export class Props {
   /** Light on the camp smoke: what the sky gives it, and the fire under it. See `IslandDetail.setLighting`. */
   setDetailLighting(ambient: THREE.Color, fire: number): void {
     this.islandDetail.setLighting(ambient, fire);
+  }
+
+  /** The tier's share of the camp fire's embers and sparks, 0..1. See `IslandDetail.setFireDetail`. */
+  setFireDetail(detail: number): void {
+    this.islandDetail.setFireDetail(detail);
   }
 
   /** Aligns the animated dressing with a scene clock after a reset or seek. */
@@ -2420,6 +2451,7 @@ export class Props {
     random: () => number,
     spec: ScatterSpec,
   ): void {
+    if (COVE_CLEAR_KINDS.has(name)) spec = { ...spec, clearCove: true };
     const meshes = this.buildScatter(this.bakeParts(source.base, spec.bake), count, name);
     if (!meshes) return;
 
@@ -3191,9 +3223,25 @@ function recentreShift(box: THREE.Box3, out: THREE.Vector3): THREE.Vector3 {
 }
 
 /** True if a candidate point clears the spec's elevation and slope bands. */
+let coveClearCentre: { x: number; z: number } | null = null;
+
+/** Whether `(x, z)` is on the cove's set pieces: the jetty, the beached pinnace and the camp. */
+function inCoveSetPiece(x: number, z: number): boolean {
+  if (coveClearCentre === null) {
+    const radius = shorelineRadius(COVE_BEARING) - COVE_CLEAR_INLAND;
+    const bearing = COVE_BEARING + COVE_CLEAR_ALONGSHORE / radius;
+    coveClearCentre = {
+      x: ISLAND.x + Math.cos(bearing) * radius,
+      z: ISLAND.z + Math.sin(bearing) * radius,
+    };
+  }
+  return Math.hypot(x - coveClearCentre.x, z - coveClearCentre.z) < COVE_CLEAR_RADIUS;
+}
+
 function acceptPoint(x: number, z: number, spec: ScatterSpec, out: THREE.Vector3): boolean {
   // Nothing grows through the lighthouse or its cottage.
   if (inLighthouseClearing(x, z)) return false;
+  if (spec.clearCove && inCoveSetPiece(x, z)) return false;
   const y = seafloorPlacementHeight(x, z);
   if (y < spec.minHeight || y > spec.maxHeight) return false;
   if (spec.maxSlope !== undefined) {

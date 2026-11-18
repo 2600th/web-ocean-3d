@@ -1,11 +1,16 @@
 export {
   AudioSystem,
+  AUDIO_BUSES,
   AUDIO_QUALITY_TIERS,
   DEFAULT_AUDIO_SCENE_PARAMS,
   SPEED_OF_SOUND_KM_S,
 } from './AudioSystem';
 export type {
+  AudioBus,
+  AudioIsland,
+  AudioMix,
   AudioQualitySettings,
+  AudioReflector,
   AudioSceneParams,
   AudioSystemOptions,
   GullFix,

@@ -62,8 +62,15 @@ const ICONS = {
     '<path d="M11 8h5M11 11.5h5M11 15h3"/>',
   /** Objective marker: the cross that marks the spot. */
   mark: '<path d="M6 6l12 12M18 6L6 18" stroke-width="3"/>',
+  /** Pause: two bars. */
+  pause: '<path d="M8.5 5.5v13M15.5 5.5v13" stroke-width="3"/>',
   /** Close. */
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  /** Sound on a slider: a speaker, its waves, and a stroke through it shown when muted. */
+  sound:
+    '<path d="M4 9.5h3.2L11.5 5.5v13L7.2 14.5H4z"/>' +
+    '<path class="icon-sound__waves" d="M15 9.2a4 4 0 0 1 0 5.6M17.6 6.6a7.6 7.6 0 0 1 0 10.8"/>' +
+    '<path class="icon-sound__off" d="M15.2 9.4l5.2 5.2M20.4 9.4l-5.2 5.2"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -2,11 +2,16 @@ import * as THREE from 'three/webgpu';
 import {
   Fn,
   attribute,
+  cameraFar,
+  cameraPosition,
+  cameraNear,
   cameraViewMatrix,
   float,
   mix,
   mx_noise_float,
+  perspectiveDepthToViewZ,
   positionGeometry,
+  positionView,
   sin,
   vec3,
   vec4,
@@ -15,6 +20,7 @@ import {
 import { uniform } from '../../core/uniform';
 import { getLeafAtlas, tileUv, type TileName } from '../flora/leafAtlas';
 import { mulberry32 } from '../../core/random';
+import { sharedSceneDepth } from '../../physics/sprayLook';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Node = any;
@@ -246,7 +252,19 @@ export class DetailClock {
   readonly uSmokeLight: any = uniform(new THREE.Color(1, 1, 1));
   /** 0..1, the fire's glow on the plume's underside after dark. */
   readonly uFireGlow = uniform(0);
+  /** 1, or 0 under reduced motion: the flames hold a steady shape and the embers stop. */
+  readonly uMotion = uniform(1);
   private time = 0;
+
+  constructor() {
+    try {
+      const query = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+      this.uMotion.value = query?.matches ? 0 : 1;
+      query?.addEventListener?.('change', (e) => (this.uMotion.value = e.matches ? 0 : 1));
+    } catch {
+      this.uMotion.value = 1;
+    }
+  }
 
   update(dt: number): void {
     this.time = (this.time + dt) % 3600;
@@ -283,6 +301,188 @@ export function createEmberMaterial(clock: DetailClock): THREE.MeshStandardNodeM
   })();
   m.userData.noGroundShading = true;
   return m;
+}
+
+/** One flame sheet: where it stands, its size and its own noise seed. */
+export interface FlameSheet {
+  base: THREE.Vector3;
+  height: number;
+  width: number;
+  seed: number;
+}
+
+/**
+ * Flames as sheets turned to the viewer about the vertical, each a tongue cut
+ * from scrolling noise: hot white-yellow at the root, orange through the body,
+ * red and ragged at the tips, leaning downwind. Additive HDR, so the bloom
+ * gives them their glow. The shape is a function of the shared clock times
+ * `uMotion`, so under reduced motion every tongue holds still, and a capture
+ * lands on the same frame every time.
+ *
+ * The technique — a noise field scrolled up through a tapered mask and mapped
+ * through a fire ramp — is the one three.js's `webgpu_tsl_vfx_flames` example
+ * uses (MIT); the shape and ramp here are this project's own.
+ */
+export function buildFlames(clock: DetailClock, sheets: readonly FlameSheet[]): THREE.Mesh {
+  const pos: number[] = [];
+  const corner: number[] = [];
+  const params: number[] = [];
+  const idx: number[] = [];
+  const bounds = new THREE.Box3();
+  for (const s of sheets) {
+    const base = pos.length / 3;
+    for (const [cx, cy] of [
+      [-0.5, 0],
+      [0.5, 0],
+      [0.5, 1],
+      [-0.5, 1],
+    ]) {
+      pos.push(s.base.x, s.base.y, s.base.z);
+      corner.push(cx, cy);
+      params.push(s.seed, s.height, s.width, 0);
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    bounds.expandByPoint(s.base);
+    bounds.expandByPoint(s.base.clone().add(new THREE.Vector3(0, s.height * 1.5, 0)));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('corner', new THREE.Float32BufferAttribute(corner, 2));
+  g.setAttribute('flame', new THREE.Float32BufferAttribute(params, 4));
+  g.setIndex(idx);
+  g.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
+  g.boundingSphere.radius += 1;
+
+  const m = new THREE.MeshBasicNodeMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  m.name = 'island-flames';
+  m.fog = false;
+  m.userData.noGroundShading = true;
+  const c = attribute('corner', 'vec2') as Node;
+  const f = attribute('flame', 'vec4') as Node;
+  const t = clock.uTime.mul(clock.uMotion) as Node;
+  m.positionNode = Fn(() => {
+    const o = positionGeometry as Node;
+    // Turned to the eye about the vertical, so the tongue stays upright.
+    const toEye = (cameraPosition as Node).sub(o);
+    const right = vec3n(toEye.z.negate(), 0, toEye.x).normalize();
+    const v = c.y;
+    const w = clock.uWind as Node;
+    // Leans downwind, more toward the tip, and sways a little on its own.
+    const sway = sin(t.mul(3.1).add(f.x.mul(17))).mul(0.06).mul(clock.uMotion);
+    const lean = v.mul(v).mul(f.y).mul(clock.uWindStrength.mul(0.45).add(0.08).add(sway));
+    return o
+      .add(right.mul(c.x.mul(f.z)))
+      .add(vec3n(0, v.mul(f.y), 0))
+      .add(vec3n(w.x.mul(lean), 0, w.y.mul(lean)));
+  })();
+  m.colorNode = Fn(() => {
+    const u = c.x;
+    const v = c.y;
+    const n = mx_noise_float(vec3n(u.mul(2.6), v.mul(2.2).sub(t.mul(2.4)), f.x.mul(7.3))) as Node;
+    const n2 = mx_noise_float(vec3n(u.mul(5.5), v.mul(4.5).sub(t.mul(4.1)), f.x.mul(3.1).add(5))) as Node;
+    const ragged = n.mul(0.7).add(n2.mul(0.3));
+    // A teardrop: full at the root, pinched to the tip, wandering sideways
+    // with the noise more the higher it goes.
+    const halfWidth = float(1).sub(v).pow(0.7).mul(v.smoothstep(0, 0.12)).mul(0.5);
+    const x = u.add(ragged.mul(0.16).mul(v)).abs();
+    const body = float(1).sub(x.smoothstep(halfWidth.mul(0.45), halfWidth));
+    const top = float(1).sub(v.add(ragged.mul(0.35)).smoothstep(0.55, 0.95));
+    const mask = body.mul(top).clamp(0, 1);
+    const heat = mask.mul(float(1).sub(v.mul(0.75)));
+    const red: Node = vec3n(1.1, 0.22, 0.03);
+    const orange: Node = vec3n(3.2, 1.15, 0.2);
+    const core: Node = vec3n(5.0, 3.3, 1.3);
+    const ramp: Node = mix(mix(red, orange, heat.smoothstep(0.15, 0.5)), core, heat.smoothstep(0.55, 0.9));
+    return vec4(ramp.mul(mask), 1);
+  })();
+  const mesh = new THREE.Mesh(g, m);
+  mesh.name = 'camp-flames';
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.renderOrder = 3;
+  return mesh;
+}
+
+/**
+ * Embers and sparks off the camp fire, carried up and downwind. Stateless like
+ * the smoke: each sprite's age is a fraction of the shared clock, so a reset
+ * reproduces a frame. One in five is a spark: smaller, brighter, faster and
+ * shorter-lived. Under reduced motion they are hidden. `setDrawRange` sets how
+ * many the tier draws (`IslandDetail.setFireDetail`).
+ */
+export function buildEmbers(clock: DetailClock, origin: THREE.Vector3, count: number): THREE.Mesh {
+  const pos: number[] = [];
+  const corner: number[] = [];
+  const seed: number[] = [];
+  const idx: number[] = [];
+  const rng = mulberry32(0xe4b3);
+  for (let i = 0; i < count; i++) {
+    const s = [rng(), rng(), rng(), rng()];
+    const base = pos.length / 3;
+    for (const [cx, cy] of [
+      [-0.5, -0.5],
+      [0.5, -0.5],
+      [0.5, 0.5],
+      [-0.5, 0.5],
+    ]) {
+      pos.push(origin.x, origin.y, origin.z);
+      corner.push(cx, cy);
+      seed.push(...s);
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('corner', new THREE.Float32BufferAttribute(corner, 2));
+  g.setAttribute('emberSeed', new THREE.Float32BufferAttribute(seed, 4));
+  g.setIndex(idx);
+  g.boundingSphere = new THREE.Sphere(origin.clone().add(new THREE.Vector3(0, 4, 0)), 10);
+
+  const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  m.name = 'island-fire-embers';
+  m.fog = false;
+  m.userData.noGroundShading = true;
+  const c = attribute('corner', 'vec2') as Node;
+  const sd = attribute('emberSeed', 'vec4') as Node;
+  const spark = sd.w.greaterThan(0.8);
+  const life = mix(float(2.6), float(1.1), spark.select(float(1), float(0)));
+  const age = clock.uTime.div(life).add(sd.x.mul(7.13)).fract().toVar('emberAge') as Node;
+  m.positionNode = Fn(() => {
+    const o = positionGeometry as Node;
+    const w = clock.uWind as Node;
+    const rise = age.mul(mix(float(2.2), float(4.5), sd.w));
+    const carry = age.mul(age).mul(clock.uWindStrength.mul(3.5).add(0.4));
+    const phase = sd.y.mul(6.28);
+    const curl = sin(clock.uTime.mul(2.3).add(phase)).mul(age).mul(0.35);
+    const start = vec3n(sd.y.sub(0.5).mul(0.7), 0, sd.z.sub(0.5).mul(0.7));
+    const centre = o
+      .add(start)
+      .add(vec3n(w.x.mul(carry).add(curl.mul(w.y)), rise, w.y.mul(carry).sub(curl.mul(w.x))));
+    const size = mix(float(0.045), float(0.025), sd.w).mul(float(1).sub(age.mul(0.6))).mul(clock.uMotion);
+    const view = cameraViewMatrix as Node;
+    const right = vec3n(view.element(0).x, view.element(1).x, view.element(2).x);
+    const up = vec3n(view.element(0).y, view.element(1).y, view.element(2).y);
+    return centre.add(right.mul(c.x.mul(size))).add(up.mul(c.y.mul(size)));
+  })();
+  m.colorNode = Fn(() => {
+    const r = c.length().mul(2);
+    const dot = float(1).sub(r.smoothstep(0.2, 1));
+    const cool = float(1).sub(age).pow(1.5);
+    const twinkle = sin(clock.uTime.mul(19).add(sd.z.mul(40))).mul(0.25).add(0.75);
+    const hot: Node = mix(vec3n(2.4, 0.6, 0.08), vec3n(6, 2.6, 0.7), sd.w.smoothstep(0.75, 1));
+    return vec4(hot.mul(dot).mul(cool).mul(twinkle), 1);
+  })();
+  const mesh = new THREE.Mesh(g, m);
+  mesh.name = 'camp-fire-embers';
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.renderOrder = 3;
+  return mesh;
 }
 
 /**
@@ -356,7 +556,12 @@ export function buildSmoke(clock: DetailClock, origin: THREE.Vector3, count: num
     // grey all night and was the brightest thing on the beach.
     const firelight: Node = vec3n(1.0, 0.45, 0.16).mul(clock.uFireGlow).mul(float(1).sub(age.smoothstep(0.05, 0.35)).mul(1.0));
     const lit: Node = grey.mul(vec3n(clock.uSmokeLight)).add(grey.mul(firelight));
-    return vec4(lit, puff.mul(fade).mul(0.13));
+    // Soft against what is behind it, as spray is (`sprayLook`): a puff that
+    // meets the sand, a palm or the hill fades into it over a couple of metres
+    // instead of cutting a straight quad edge across it.
+    const sceneZ = perspectiveDepthToViewZ(sharedSceneDepth().x, cameraNear, cameraFar) as Node;
+    const soft = (positionView as Node).z.sub(sceneZ).div(2.5).clamp(0, 1);
+    return vec4(lit, puff.mul(fade).mul(soft).mul(0.13));
   })();
   const mesh = new THREE.Mesh(g, m);
   mesh.name = 'camp-smoke';

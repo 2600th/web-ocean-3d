@@ -280,21 +280,26 @@ const SHOTS: readonly Shot[] = [
     duration: 12,
     throttle: 0.5,
     space: { kind: 'world' },
+    // The rock is a mesa 7 m east and 2 m north of the patch centre
+    // (`Rocks.outcropCentres()`: 11.5 m reach, standing from 19 m down to 6 m
+    // down). The lens swims along its near face about 17 m from the rock's
+    // centre, the rock to one side of frame throughout and never inside it. A
+    // test holds the path to the rock's own bounds.
     eye: [
       [DIVE_REEF.x + 40, 5, DIVE_REEF.z + 22],
-      [DIVE_REEF.x + 26, 0.3, DIVE_REEF.z + 14],
-      [DIVE_REEF.x + 14, -10, DIVE_REEF.z + 6],
-      [DIVE_REEF.x + 4, -13, DIVE_REEF.z + 1],
-      [DIVE_REEF.x - 10, -12, DIVE_REEF.z - 3],
-      [DIVE_REEF.x - 26, -5, DIVE_REEF.z - 6],
+      [DIVE_REEF.x + 28, 0.3, DIVE_REEF.z + 17],
+      [DIVE_REEF.x + 20, -9, DIVE_REEF.z + 16],
+      [DIVE_REEF.x + 8, -12, DIVE_REEF.z + 15.5],
+      [DIVE_REEF.x - 6, -12, DIVE_REEF.z + 12],
+      [DIVE_REEF.x - 22, -6, DIVE_REEF.z + 2],
       [DIVE_REEF.x - 34, -0.3, DIVE_REEF.z - 9],
       [DIVE_REEF.x - 40, 3.5, DIVE_REEF.z - 11],
     ],
     look: [
-      [DIVE_REEF.x + 8, -10, DIVE_REEF.z + 4],
-      [DIVE_REEF.x - 2, -16, DIVE_REEF.z],
-      [DIVE_REEF.x - 10, -16, DIVE_REEF.z - 3],
-      [DIVE_REEF.x - 20, -14, DIVE_REEF.z - 6],
+      [DIVE_REEF.x + 7, -9, DIVE_REEF.z - 2],
+      [DIVE_REEF.x + 5, -12, DIVE_REEF.z - 2],
+      [DIVE_REEF.x + 2, -12, DIVE_REEF.z - 3],
+      [DIVE_REEF.x - 8, -11, DIVE_REEF.z - 5],
       [DIVE_REEF.x - 40, -5, DIVE_REEF.z - 12],
       [DIVE_REEF.x - 70, 2, DIVE_REEF.z - 20],
     ],
@@ -621,7 +626,7 @@ const HOUR_SLOPES = (() => {
 })();
 
 /** Hour of the day at a loop time, 0..24. */
-function tourHours(time: number): number {
+export function tourHours(time: number): number {
   const t = wrapTime(time);
   let i = 0;
   while (i < HOUR_KEYS.length - 2 && HOUR_KEYS[i + 1][0] <= t) i++;

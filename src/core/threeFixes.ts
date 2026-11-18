@@ -41,6 +41,59 @@ export function installInstanceCopySync(renderer: THREE.WebGPURenderer): void {
   };
 }
 
+/**
+ * A destroyed texture left bound, and every frame after it rejected.
+ *
+ * When a texture is destroyed (a render target resized, a map disposed), three
+ * marks the bind groups that sampled it: their bindings are reset and
+ * released, to be rebuilt on the object's next refresh. The GPU bind group
+ * itself stays in place until then. But a render object only gets a *full*
+ * refresh when `NodeMaterialObserver` finds something changed; one with a
+ * stock material, a still transform and the same lights gets the shared
+ * buffers only, in any render without a velocity target (r187's
+ * `RenderObjectRefreshType.SHARED`). Such an object never rebuilds the bind
+ * group, goes on drawing with the destroyed texture, and WebGPU rejects the
+ * whole submission, frame after frame: a black canvas.
+ *
+ * That was the idle anchor cable in the planar mirror. Stepping the quality
+ * from High to Medium resized the shadow cascades, the cable kept the 2048
+ * depth textures bound, and the picture stayed black until the next tier
+ * change happened to swap the mirror's target ("Destroyed texture
+ * [ShadowDepthTexture] used in a submit"). Three already forces the full
+ * refresh for disposed *attributes* (`attributesDisposeVersion`); this is the
+ * same for textures: after any texture is destroyed, each render object's
+ * next refresh that would not have been full is made full, once.
+ */
+export function installDestroyedTextureRefresh(renderer: THREE.WebGPURenderer): void {
+  if (!VERIFIED_PERF_REVISIONS.has(THREE.REVISION)) return;
+  const textures = (renderer as any)._textures;
+  const nodes = (renderer as any)._nodes;
+  if (!textures || !nodes) return;
+  if (typeof textures._destroyTexture !== 'function' || typeof nodes.needsRefresh !== 'function') return;
+  if (nodes.__destroyedTextureRefresh) return;
+  nodes.__destroyedTextureRefresh = true;
+
+  const FULL: number = (THREE as any).RenderObjectRefreshType?.FULL ?? 2;
+  // Counts destroyed textures; a render object is current once it has had a
+  // full refresh at this count.
+  let destroyed = 0;
+  const destroyTexture = textures._destroyTexture.bind(textures);
+  textures._destroyTexture = (texture: unknown): void => {
+    destroyed++;
+    destroyTexture(texture);
+  };
+  const refreshedAt = new WeakMap<object, number>();
+  const needsRefresh = nodes.needsRefresh.bind(nodes);
+  nodes.needsRefresh = (renderObject: object): number => {
+    const type: number = needsRefresh(renderObject);
+    // The common case pays nothing: the scene pass is always a full refresh.
+    if (type === FULL || destroyed === 0) return type;
+    if (refreshedAt.get(renderObject) === destroyed) return type;
+    refreshedAt.set(renderObject, destroyed);
+    return FULL;
+  };
+}
+
 function syncInstanceCopies(mesh: THREE.InstancedMesh, attributes: readonly any[]): void {
   const matrices = mesh.instanceMatrix;
   const colors = mesh.instanceColor;

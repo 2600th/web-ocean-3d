@@ -1,12 +1,15 @@
 import * as THREE from 'three/webgpu';
 import { mulberry32 } from '../../core/random';
-import { ISLAND, seafloorHeight, seafloorMeshHeight } from '../Seafloor';
+import { ISLAND, ISLAND_SUMMIT, seafloorHeight, seafloorMeshHeight } from '../Seafloor';
 import {
   DetailClock,
   PartBuilder,
   buildCrate,
   buildLog,
   buildSmoke,
+  buildEmbers,
+  buildFlames,
+  type FlameSheet,
   createClothMaterial,
   createDecalMaterial,
   createEmberMaterial,
@@ -82,11 +85,17 @@ function onBearing(bearing: number, radius: number): THREE.Vector3 {
   return new THREE.Vector3(x, seafloorHeight(x, z), z);
 }
 
+/** Embers and sparks off the camp fire at full detail. */
+const EMBER_COUNT = 90;
+
 export class IslandDetail {
   readonly object = new THREE.Group();
   private readonly clock = new DetailClock();
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly materials: THREE.Material[] = [];
+  /** The camp fire's and the torches' flame sheets, collected by `camp`. */
+  private readonly flameSheets: FlameSheet[] = [];
+  private embers: THREE.Mesh | null = null;
 
   constructor(cove: CoveFrame, seed = 0x1d7a11) {
     this.object.name = 'island-detail';
@@ -116,6 +125,12 @@ export class IslandDetail {
     this.mesh(woodParts, wood, 'camp-wood', true);
     this.mesh(clothParts, cloth, 'camp-canvas', true);
     this.mesh(emberParts, ember, 'camp-embers', false);
+    if (this.flameSheets.length > 0) {
+      const flames = buildFlames(this.clock, this.flameSheets);
+      this.geometries.push(flames.geometry);
+      this.materials.push(flames.material as THREE.Material);
+      this.object.add(flames);
+    }
 
     const decals = new PartBuilder();
     this.beachDecals(decals, rng);
@@ -123,6 +138,17 @@ export class IslandDetail {
     if (decalMesh) decalMesh.receiveShadow = true;
 
     this.driftwood(wood, rng);
+  }
+
+  /**
+   * The tier's share of the camp fire's embers and sparks, 0..1
+   * (`QualitySettings.weatherDetail`). A draw range, so nothing recompiles.
+   */
+  setFireDetail(detail: number): void {
+    if (!this.embers) return;
+    const n = Math.round(EMBER_COUNT * Math.min(1, Math.max(0, detail)));
+    this.embers.geometry.setDrawRange(0, n * 6);
+    this.embers.visible = n > 0;
   }
 
   /** Smoke and flicker run on this; call beside `FoliageWind.update`. */
@@ -243,16 +269,18 @@ export class IslandDetail {
     }
 
     // Crags on the summit and on the shoulder peak, so the crest is a broken
-    // skyline rather than the top of a dome: a plug of tall spires at the top
-    // and a smaller cluster on the shoulder.
-    const summit = new THREE.Vector3(ISLAND.x + Math.cos(3.9) * 80, 0, ISLAND.z + Math.sin(3.9) * 80);
+    // skyline rather than a smooth top: a plug of spires on the summit and a
+    // smaller cluster on the shoulder. The summit is the spine's peak over the
+    // sea cliffs now, and already pointed, so the plug is shorter than the one
+    // that had to make a dome read as a summit.
+    const summit = new THREE.Vector3(ISLAND.x + ISLAND_SUMMIT.x, 0, ISLAND.z + ISLAND_SUMMIT.z);
     const shoulder = new THREE.Vector3(
       ISLAND.x + Math.cos(1.25) * ISLAND.radius * 0.46,
       0,
       ISLAND.z + Math.sin(1.25) * ISLAND.radius * 0.46,
     );
     const crags: [THREE.Vector3, number, number, number][] = [
-      [summit, 6, 66, 34],
+      [summit, 5, 36, 26],
       [shoulder, 4, 38, 22],
     ];
     for (const [centre, n, tall, spread] of crags) {
@@ -506,17 +534,27 @@ export class IslandDetail {
     m.compose(new THREE.Vector3(fire.x, fireY - 0.02, fire.z), q.identity(), new THREE.Vector3(1, 0.28, 1));
     ember.add(coals, m, [0.35, 0, 0]);
     coals.dispose();
+    // Flame sheets in place of the old static cones. The same draws from `rng`
+    // as the cones took, so nothing placed after the fire moves.
     for (let i = 0; i < 5; i++) {
-      const cone = new THREE.ConeGeometry(0.16 + rng() * 0.08, 0.7 + rng() * 0.5, 6);
-      cone.translate(0, 0.35, 0);
+      const radius = 0.16 + rng() * 0.08;
+      const height = 0.7 + rng() * 0.5;
       const a = rng() * 6.28;
-      m.compose(
-        new THREE.Vector3(fire.x + Math.cos(a) * 0.22, fireY + 0.02, fire.z + Math.sin(a) * 0.22),
-        q.setFromEuler(new THREE.Euler((rng() - 0.5) * 0.4, 0, (rng() - 0.5) * 0.4)),
-        one,
-      );
-      ember.add(cone, m, [0.95, 0, 0]);
-      cone.dispose();
+      rng();
+      rng();
+      this.flameSheets.push({
+        base: new THREE.Vector3(fire.x + Math.cos(a) * 0.22, fireY + 0.02, fire.z + Math.sin(a) * 0.22),
+        height: height * 1.25,
+        width: radius * 4,
+        seed: i * 0.173 + 0.11,
+      });
+    }
+    {
+      const embers = buildEmbers(this.clock, new THREE.Vector3(fire.x, fireY + 0.35, fire.z), EMBER_COUNT);
+      this.geometries.push(embers.geometry);
+      this.materials.push(embers.material as THREE.Material);
+      this.object.add(embers);
+      this.embers = embers;
     }
     this.object.add(buildSmoke(this.clock, new THREE.Vector3(fire.x, fireY + 1.0, fire.z), 34, 26));
 
@@ -645,11 +683,13 @@ export class IslandDetail {
       const top = base.clone().add(new THREE.Vector3(0, 2.6, 0));
       this.lightAnchors.torches.push(top.clone().add(new THREE.Vector3(0, 0.2, 0)));
       polePlace(base, top, [0.45, 0.36, 0.28]);
-      const flame = new THREE.ConeGeometry(0.1, 0.34, 6);
-      flame.translate(0, 0.17, 0);
+      // A pitch-soaked head that glows, and a flame sheet off it.
+      const head = new THREE.CylinderGeometry(0.08, 0.06, 0.16, 6);
+      head.translate(0, 0.02, 0);
       m.compose(top, q.identity(), one);
-      ember.add(flame, m, [0.9, 0, 0]);
-      flame.dispose();
+      ember.add(head, m, [0.5, 0, 0]);
+      head.dispose();
+      this.flameSheets.push({ base: top.clone().add(new THREE.Vector3(0, 0.08, 0)), height: 0.55, width: 0.34, seed: 0.61 + along * 0.05 });
     }
     pole.dispose();
     logG.dispose();

@@ -308,6 +308,8 @@ export class BowSheet {
     // sea's velocity, normal and AO mask under the whole sheet (see
     // `sprayMaterial`).
     material.alphaTest = SPRAY_ALPHA_FLOOR;
+    // No contact shadows or AO on the sheet; see `sceneMrt`'s surface flag.
+    material.userData.airborneWater = true;
     // Aerial perspective comes from the volumetric pass, as for the spray.
     material.fog = false;
     material.positionNode = Fn(() => this.vertex())() as any;

@@ -11,6 +11,7 @@ import {
 import { uniform } from './core/uniform';
 import { createRenderer, clampPixelRatio, WebGPUUnavailableError, type Backend } from './core/Renderer';
 import {
+  installDestroyedTextureRefresh,
   installInstanceCopySync,
   installShadowCasterSharing,
   installSubmissionFixes,
@@ -18,6 +19,9 @@ import {
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
 import { prefetch } from './scene/AssetLoader';
 import { SHIP_URL } from './scene/Ship';
+import { ShipLights } from './scene/ship/ShipLights';
+import { ShipFittings } from './scene/ship/Fittings';
+import { Crew } from './scene/crew/Crew';
 import { REEF_FISH_URL } from './scene/Fish';
 import { dressingUrls } from './scene/Props';
 import {
@@ -77,6 +81,7 @@ import { OceanSampler } from './ocean/Sampler';
 import { DEFAULT_SPECTRUM, significantWaveHeight } from './ocean/Spectrum';
 import { AerialPerspective, Atmosphere, Clouds, Weather } from './sky';
 import { Lightning } from './sky/Lightning';
+import { Spindrift } from './physics/Spindrift';
 import { BatchedLighting, LightingRig, applySpecularAATo, applyThinTransmissionTo, sanitizeDielectrics } from './lighting';
 import { DEFAULT_VOLUMETRIC_FOG_PARAMS, VolumetricFog } from './post/VolumetricFog';
 import { LensRain } from './post/LensRain';
@@ -99,7 +104,12 @@ import { Panel } from './ui/Panel';
 import { Hud } from './ui/Hud';
 import { StormQuote } from './ui/Quote';
 import { TouchControls } from './ui/TouchControls';
-import { DEFAULT_UI_STATE, type UiState } from './ui/types';
+import { GamepadInput } from './input/Gamepad';
+import { DEFAULT_UI_STATE, type UiCallbacks, type UiState } from './ui/types';
+import { loadSoundPrefs, saveSoundPrefs } from './ui/soundPrefs';
+import { applyDisplayPrefs, loadSettingsPrefs, saveSettingsPrefs } from './ui/prefs';
+import { installReducedMotionOverride } from './ui/motion';
+import { PauseMenu } from './ui/PauseMenu';
 import { openStartGate, showWebGPURequired, type StartSelection } from './ui/StartGate';
 import { inject } from '@vercel/analytics';
 
@@ -158,6 +168,9 @@ const _vegKey = new THREE.Color();
 const _vegAmbient = new THREE.Color();
 const _smokeLight = new THREE.Color();
 const _smokeSky = new THREE.Color();
+/** Scratch for the strike point on the cloud base and the spray's sky under a flash. */
+const _flashAt = new THREE.Vector3();
+const _spraySky = new THREE.Color();
 /** How much of a lightning flash still goes to the grade as a frame-wide lift. */
 const FLASH_GRADE_SHARE = 0.55;
 /** Night multiplier on the sea's key-light glint, so the moon path reads (see `water.setSun`). */
@@ -303,6 +316,9 @@ const _audioRight = new THREE.Vector3();
 const _audioRel = new THREE.Vector3();
 const _audioBird = new THREE.Vector3();
 const _audioProbe = new THREE.Vector3();
+// Sails: the true wind, and a hull at rest when there is no body yet.
+const _sailWind = new THREE.Vector3();
+const _sailStill = new THREE.Vector3();
 
 /**
  * Hull probes for wave slaps, in the hull's frame as fractions of (half length,
@@ -449,6 +465,9 @@ class App {
   /** Gulls over the play area. Owns no simulation state — see `Birds`. */
   private birds!: Birds;
   private spray!: Spray;
+  /** Spray torn off breaking crests in a gale; `spindriftOverride` (test) replaces the tier's count. */
+  private spindrift!: Spindrift;
+  private spindriftOverride: number | null = null;
   /** Things hitting the water: crown, jet, drops, foam and ring wave. See `Splash`. */
   private splash!: Splash;
   /** Reef school. Parented to the scene root: its vertex stage emits world space. */
@@ -474,6 +493,8 @@ class App {
   /** Hoisted: `update` reads these every frame and must not allocate. */
   private readonly audioParams = { ...DEFAULT_AUDIO_SCENE_PARAMS };
   /** Sail state for the audio, polled from gameplay without allocating. */
+  /** True while a deterministic shot is driving the ship by scripted input. */
+  private scriptedUnderWay = false;
   private readonly sailAudio = { active: false, sailFill: 0, sailLuff: 0 };
   private readonly slaps = new SlapDetector(SLAP_PROBES.length);
   /** Weather hysteresis for the score, so a squall at the threshold does not flip it. */
@@ -532,6 +553,13 @@ class App {
   private shipControls: ShipController | null = null;
   /** Helm-mode sailing, anchor and cargo. See `src/gameplay`. */
   private gameplay: Gameplay | null = null;
+  /** True while the voyage's day and squall drive the sky at the helm; see `helmSky`. */
+  private helmSkyDriven = false;
+  /** Deck lanterns and stern windows; the anchor cable. See `src/scene/ship`. */
+  private shipLights: ShipLights | null = null;
+  private shipFittings: ShipFittings | null = null;
+  /** Figures on deck. See `src/scene/crew`. */
+  private crew: Crew | null = null;
   /** Rain wetting for the ship and the floating props. */
   private readonly wetness = new SurfaceWetness();
 
@@ -551,8 +579,14 @@ class App {
   private panel!: Panel;
   private hud!: Hud;
   private stormQuote!: StormQuote;
+  /** Pause, settings and the way back to the title; see `buildPauseMenu`. */
+  private pauseMenu: PauseMenu | null = null;
+  private pauseRelease: (() => void) | null = null;
+  /** The title screen's choice. The voyage code reads it to continue or begin afresh. */
+  readonly voyageIntent: StartSelection['voyage'];
   /** On-screen throttle/rudder. Null on devices with a fine pointer. */
   private touchControls: TouchControls | null = null;
+  private gamepad: GamepadInput | null = null;
   private loop!: Loop;
   private adaptive!: AdaptiveQuality;
 
@@ -643,8 +677,11 @@ class App {
     this.canvas = canvas;
     this.uiRoot = uiRoot;
     this.adapter = options.adapter;
+    this.voyageIntent = options.voyage;
     this.state = {
       ...DEFAULT_UI_STATE,
+      ...loadSoundPrefs(),
+      ...loadSettingsPrefs(),
       quality: options.quality,
     };
   }
@@ -666,6 +703,7 @@ class App {
     const bootstrap = await createRenderer(rendererOptions);
     this.renderer = bootstrap.renderer;
     installInstanceCopySync(this.renderer);
+    installDestroyedTextureRefresh(this.renderer);
     installShadowCasterSharing(this.renderer);
     // `?batch=0`: submit every render call on its own, as three does. For A/B
     // measurements of `installSubmitBatching`.
@@ -862,6 +900,8 @@ class App {
     this.clouds.setAerialPerspective(this.aerial);
     // The dome's sun disc goes behind the deck: see `Clouds.sunTransmittanceNode`.
     this.atmosphere.setSunOccluder((dir) => this.clouds.sunTransmittanceNode(dir));
+    // And the stars, the Milky Way and the moon: `Clouds.nightTransmittanceNode`.
+    this.atmosphere.setNightOccluder((dir) => this.clouds.nightTransmittanceNode(dir));
 
     this.scene.add(this.clouds.mesh);
     // Clouds stay out of the planar mirror. Through a roughness-blurred, half-
@@ -894,9 +934,13 @@ class App {
     // Floats coming down off a swell splash through `Splash`, like the anchor,
     // rather than as a fan of slam spray.
     this.spray.floatParticles = false;
+    this.spindrift = new Spindrift(this.wake.texture, this.simulation.displacementNode());
+    this.spindrift.setCount(quality.spindrift);
+    this.scene.add(this.spindrift.mesh);
     this.splash = new Splash();
     this.splash.setWake(this.wake);
     this.splash.setSurface((x, z) => this.sampler.height(x, z));
+    this.spray.setLanding(this.splash);
     this.scene.add(this.splash.object);
 
     this.fish = new FishSchool(quality.fish);
@@ -960,6 +1004,7 @@ class App {
     this.audio = new AudioSystem({
       volume: this.state.volume,
       musicVolume: this.state.musicVolume,
+      mix: this.state,
       quality: this.state.quality,
     });
     this.audio.resumeOnGesture();
@@ -1005,6 +1050,7 @@ class App {
     // The geology first: the reef grows on its outcrops, and the sand reads
     // its map. Same ground treatment as the reef.
     this.rocks = new Rocks(quality.reefRocks, { shading: seabedShading });
+    this.audio.setReflectors(this.rocks.outcropCentres());
     this.scene.add(this.rocks.object);
     this.seafloor.setRockInfluence(this.rocks.influence);
     this.reefLife = new ReefLife(quality.reefLife, { shading: seabedShading, gardens: this.rocks.gardens });
@@ -1723,23 +1769,29 @@ class App {
         speed: 0.75 + 3.6 * s,
         mass: 500 * (4 / 3) * Math.PI * r * r * r,
       });
+      // And heard: sized by the body, quieter with distance, placed by bearing.
+      this.camera.getWorldDirection(_impactForward);
+      _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
+      _impactOffset.copy(p).sub(this.camera.position);
+      const far = Math.max(1, _impactOffset.length());
+      const loud = 0.6 * s * Math.min(1, r / 0.5) * Math.min(1, 20 / far);
+      if (loud > 0.03) this.audio.playSplash(loud, _impactOffset.dot(_impactRight) / far, p.x, p.y, p.z);
       return;
     }
 
     this.gameplay?.reportImpact(impact.kind, s);
 
-    // Stereo position of the impact relative to the listener's view, -1..1.
-    this.camera.getWorldDirection(_impactForward);
-    _impactRight.set(-_impactForward.z, 0, _impactForward.x).normalize();
-    _impactOffset.copy(p).sub(this.camera.position);
-    const distance = Math.max(1, _impactOffset.length());
-    const pan = Math.max(-1, Math.min(1, _impactOffset.dot(_impactRight) / distance));
-    // Heard less the further away it is, not at all past a few hundred metres.
-    const audible = s * Math.min(1, 30 / distance);
+    // A side slap is heard from the hull probes in `updateShipAudio`, which sit
+    // beside these spray probes and fire on the same crest; playing both made
+    // every beam sea slap twice. Slams and green water go in at their own
+    // strength: the ship bus already gains by distance and pans by bearing.
     const audio = this.audio as unknown as ImpactAudio | undefined;
-    if (audible > 0.02) {
-      if (impact.kind === 'slap') audio?.waveSlap?.(audible, pan);
-      else audio?.hullImpact?.(audible);
+    if (impact.kind !== 'slap' && s > 0.02) audio?.hullImpact?.(s);
+    // A slam or green water close to the eye throws water onto the lens: all of
+    // it inside 8 m, none past 22 m.
+    if (impact.kind !== 'slap') {
+      const distance = p.distanceTo(this.camera.position);
+      this.lensRain.douse(s * THREE.MathUtils.clamp((22 - distance) / 14, 0, 1));
     }
 
     // White water where it hit, and water on the deck when it came aboard.
@@ -1748,6 +1800,7 @@ class App {
     // The ship's channel only: green water on the deck does not wet the island.
     if (impact.kind === 'wash') this.wetness.douse(0.55 * s, 'ship');
     else if (impact.kind === 'slam' && s > 0.5) this.wetness.douse(0.08 * s, 'ship');
+    this.wetness.spray(p, s);
   }
 
   /**
@@ -2002,6 +2055,8 @@ class App {
     // too; see `installAsyncPipelines`.
     this.compilesInFlight++;
     const run = async (): Promise<void> => {
+      // The sail cloth's compute pipelines, which no scene compile reaches.
+      await this.ship?.compileSails(this.renderer);
       if (!scenePass) {
         await this.renderer.compileAsync(this.scene, this.camera);
         // Started, not built: see `installAsyncPipelines`. Same wait as below.
@@ -2145,6 +2200,8 @@ class App {
     );
     let timer = 0;
     try {
+      // The spindrift's compute passes, which no scene compile reaches.
+      await this.renderer.compileComputeAsync(this.spindrift.computeNodes);
       compile = this.compileForFrame();
       const timeout = new Promise<never>((_, reject) => {
         timer = window.setTimeout(() => reject(timeoutError), timeoutMs);
@@ -2266,6 +2323,7 @@ class App {
       this.ship = ship;
       // Gulls work the ship and sit on her yards; see `Birds.setShip`.
       this.birds.setShip(ship.object);
+      ship.setKeyLight(this.atmosphere.sunLight);
       // Hidden until compiled — see the reveal at the end of this function.
       ship.object.visible = false;
       loaded.push(ship.object);
@@ -2280,6 +2338,8 @@ class App {
         occlusion: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
       });
       this.lighting.local.setShip(ship.object);
+      // Rain is sheltered by her deck and courses and splashes on her planks.
+      this.weather.setShip(ship.object);
       // The hull gets the same treatment the dressing does, and the part of it
       // that matters here is the caustics: `underwater.png` shows the submerged
       // hull as a flat black cutout, because the one thing lighting a shape down
@@ -2293,6 +2353,17 @@ class App {
         causticFacing: (normal) => this.caustics.facingNode(normal),
         groundHeight: (worldPosition) => this.seafloor.heightNode(worldPosition),
       });
+      // Light aboard, the anchor cable and the hull's own water. See `src/scene/ship`.
+      this.shipLights = new ShipLights(ship.object);
+      this.lighting.local.setShipLanterns(this.shipLights.lanternPositions);
+      this.shipFittings = new ShipFittings(ship.object, ship.hullLength, ship.hullBeam, (x, z) => seafloorHeight(x, z));
+      this.scene.add(this.shipFittings.object);
+      // Aboard before the ship's compile below, so their pipeline is built with hers.
+      this.crew = await Crew.load(ship.object, ship.hullBeam, QUALITY_TIERS[this.state.quality].crew).catch((e) => {
+        console.error('[ocean] crew failed to load', e);
+        return null;
+      });
+      this.wetness.trackWaterline(ship.object, ship.hullLength, ship.hullBeam, (x, z) => this.sampler.height(x, z));
 
       this.shipBody = new BuoyantBody({
         object: ship.object,
@@ -2373,6 +2444,9 @@ class App {
       sanitizeDielectrics(props.object);
       applySpecularAATo(props.object);
       this.lighting.local.setIsland(props.lightAnchors(), props.object);
+      props.setFireDetail(QUALITY_TIERS[this.state.quality].weatherDetail);
+      // The island heard (A8): its coast from the ground height, and the camp fire.
+      this.audio.setIsland({ x: ISLAND.x, z: ISLAND.z, radius: ISLAND.radius, fire: props.lightAnchors().fire, height: (x, z) => seafloorHeight(x, z) });
       // Everything placed on the ground learns about the ground: contact
       // darkening at its base, the caustic pattern if it is under water, and the
       // island's own shadow and the cloud deck's if it is not. See
@@ -2431,14 +2505,16 @@ class App {
       // the sail set and the anchor — as plaque lines, and leaving the helm
       // clears the plaque the gameplay filled.
       const ui: GameUiSink = {
-        toast: (text, kind) => {
-          this.hud.toast(text, kind);
+        toast: (text, kind, options) => {
+          this.hud.toast(text, kind, options);
           // The reward toast has its chime already; the others get a cue of their own.
-          if (kind === 'warning') this.audio.uiTick('warn');
+          if (kind === 'warning' || kind === 'danger') this.audio.uiTick('warn');
           else if (kind !== 'reward') this.audio.uiTick('info');
         },
         setObjective: (objective) => this.hud.setObjective(objective),
         setScore: (label, value) => this.hud.setScore(label, value),
+        setStalled: (stalled) => this.hud.setStalled(stalled),
+        setTally: (tally, onSailAgain) => this.hud.setTally(tally, onSailAgain),
         setShipTelemetry: (telemetry) => {
           if (telemetry === null) {
             this.hud.clearScore();
@@ -2468,8 +2544,13 @@ class App {
         ui,
         shake: this.director,
         splash: (x, y, z, options) => this.splash.fire(x, y, z, options),
+        shakeScale: () => this.state.shake,
+        hitStop: (ms) => {
+          if (!this.captureOwnsClock) this.loop.hitStop(ms);
+        },
       });
       this.gameplay.object.visible = false;
+      this.gameplay.setSprayLanding(this.splash);
       loaded.push(this.gameplay.object);
       this.scene.add(this.gameplay.object);
       const hooks = (window as unknown as { __ocean?: Record<string, unknown> }).__ocean;
@@ -2596,10 +2677,31 @@ class App {
     audio.shipHeel = -Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
     _audioAxis.set(1, 0, 0).applyQuaternion(hull.quaternion);
     audio.shipPitch = Math.asin(THREE.MathUtils.clamp(_audioAxis.y, -1, 1));
+    // Her pose, so creaks, blocks and slaps come from points on her (A4).
+    audio.shipX = hull.position.x;
+    audio.shipY = hull.position.y;
+    audio.shipZ = hull.position.z;
+    audio.shipBowX = _audioAxis.x;
+    audio.shipBowZ = _audioAxis.z;
+    audio.shipLength = ship.hullLength;
+    audio.shipBeam = ship.hullBeam;
 
     const sails = this.gameplay?.audioState(this.sailAudio) ?? null;
     audio.sailFill = sails?.sailFill ?? 0;
     audio.sailLuff = sails?.sailLuff ?? 0;
+    // The same setting drawn: furled, half or full at the helm; chosen by the
+    // wind when nobody is (`fill: null`). Cloth or analytic by tier.
+    const windToward = getPreset(this.state.preset).sea.windDirection;
+    // The wind in the ears and on the rigging (A7).
+    audio.windToward = windToward;
+    audio.apparentWindSpeed = sails?.active ? this.gameplay?.apparentWind.speed : undefined;
+    ship.setSailState({
+      fill: sails?.active && !this.scriptedUnderWay ? sails.sailFill : null,
+      trueWind: _sailWind.set(Math.cos(windToward), 0, Math.sin(windToward)).multiplyScalar(this.state.windSpeed),
+      velocity: this.shipBody?.velocity ?? _sailStill,
+      luff: audio.sailLuff,
+      cloth: QUALITY_TIERS[this.state.quality].sailCloth,
+    });
 
     // Wave slaps: water climbing past a point on the planking, fast. Only
     // within earshot, since each probe is a sea-surface sample.
@@ -2676,6 +2778,8 @@ class App {
         this.onStateChange(key);
       },
     };
+    installReducedMotionOverride();
+    applyDisplayPrefs(this.state);
     this.panel = new Panel(this.uiRoot, this.state, callbacks);
     this.hud = new Hud(this.uiRoot, this.state.cameraMode, callbacks);
     // Clicks, ticks and rustles for the ledger and the HUD. The UI reports
@@ -2683,6 +2787,7 @@ class App {
     this.detachUiSounds = attachUiSounds(this.uiRoot, (cue, value) => this.audio.uiTick(cue, value));
     this.stormQuote = new StormQuote(this.uiRoot);
     this.hud.setBackend(this.backend);
+    this.buildPauseMenu(callbacks);
 
     // Built only where it will be used. A mouse user has better controls and a
     // stick over the frame would only be in the way; constructing it anyway and
@@ -2690,12 +2795,60 @@ class App {
     // viewer to discover by accident.
     if (TouchControls.isTouchDevice()) {
       this.touchControls = new TouchControls(this.uiRoot, {
-        onInput: (throttle, rudder) => this.shipControls?.setInput(throttle, rudder),
+        onSteer: (rudder) => this.shipControls?.setRudderInput(rudder),
+        onTrim: (rate) => {
+          this.gameplay?.setTrimInput(rate);
+          if (rate !== 0) this.hud.noteLesson('trim');
+        },
         onSail: (direction) => this.gameplay?.stepSail(direction),
         onAnchor: () => this.gameplay?.toggleAnchor(),
       });
       this.touchControls.setVisible(this.state.cameraMode === 'boat');
     }
+    // Gamepad at the helm; see `src/input/Gamepad`. Inert until a pad connects.
+    this.gamepad = new GamepadInput({
+      onSteer: (rudder) => this.shipControls?.setRudderInput(rudder),
+      onTrim: (rate) => {
+        this.gameplay?.setTrimInput(rate);
+        if (rate !== 0) this.hud.noteLesson('trim');
+      },
+      onSail: (direction) => this.gameplay?.stepSail(direction),
+      onAnchor: () => this.gameplay?.toggleAnchor(),
+      onLook: (x, y) => this.director.setChaseLook(x, y),
+      onActive: () => this.hud.setPadInUse(),
+      onMenu: () => this.pauseMenu?.open(),
+    });
+  }
+
+  /**
+   * Pause, settings and quitting. Escape and the pad's menu button open it; it
+   * holds the loop (a counted hold, so a capture's own pause is not undone) and
+   * ducks the sound while it is up.
+   */
+  private buildPauseMenu(callbacks: { onChange: UiCallbacks['onChange'] }): void {
+    this.pauseMenu = new PauseMenu(this.uiRoot, this.state, callbacks, {
+      onPause: (paused) => {
+        this.pauseRelease?.();
+        this.pauseRelease = paused ? this.loop.hold() : null;
+        this.audio.applyMix(paused ? { ...this.state, volume: this.state.volume * 0.25 } : this.state);
+      },
+      restartVoyage: () => this.restartVoyage(),
+      // Reloading is the clean way back to the title: the quality is chosen
+      // there, before the renderer is built.
+      quitToTitle: () => window.location.reload(),
+      openSound: () => this.panel.showSound(),
+    });
+    this.panel.setSettingsHandler(() => this.pauseMenu?.open('settings'));
+    this.hud.setPauseHandler(() => this.pauseMenu?.open());
+    this.director.setLookPrefs(this.state.lookSensitivity, this.state.invertLook);
+  }
+
+  /** Back to the start: the hull at her berth, the sails furled, the voyage reset. */
+  private restartVoyage(): void {
+    this.buoyancy?.resetToHome();
+    this.shipControls?.resetInput();
+    this.gameplay?.reset();
+    this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);
   }
 
   private onStateChange(key: keyof UiState): Promise<void> | void {
@@ -2784,10 +2937,33 @@ class App {
         break;
       }
       case 'volume':
-        this.audio.setVolume(this.state.volume);
-        break;
       case 'musicVolume':
-        this.audio.setMusicVolume(this.state.musicVolume);
+      case 'ambienceVolume':
+      case 'effectsVolume':
+      case 'interfaceVolume':
+      case 'musicMuted':
+      case 'ambienceMuted':
+      case 'effectsMuted':
+      case 'interfaceMuted':
+      case 'reducedRange':
+        this.audio.applyMix(this.state);
+        saveSoundPrefs(this.state);
+        break;
+      case 'lookSensitivity':
+      case 'invertLook':
+        this.director.setLookPrefs(this.state.lookSensitivity, this.state.invertLook);
+        saveSettingsPrefs(this.state);
+        break;
+      case 'reduceMotion':
+      case 'uiScale':
+      case 'shapeCues':
+        applyDisplayPrefs(this.state);
+        saveSettingsPrefs(this.state);
+        break;
+      case 'shake':
+      case 'haptics':
+      case 'reduceFlashes':
+        saveSettingsPrefs(this.state);
         break;
       case 'buoyancyProbes':
         this.ship?.setDebugProbesVisible(this.state.buoyancyProbes);
@@ -2914,6 +3090,11 @@ class App {
     // at every tier and only the master scale moves, so changing tier cannot
     // compile anything.
     this.spray.setStrength(quality.spray);
+    // Rain share and deck splashes, lightning forks, fire embers: counts only.
+    this.weather.setDetail(quality.weatherDetail);
+    this.lightning.setDetail(quality.weatherDetail);
+    this.props?.setFireDetail(quality.weatherDetail);
+    this.spindrift.setCount(this.spindriftOverride ?? quality.spindrift);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
     this.kelp.setRange(quality.vegetationRange);
@@ -2925,6 +3106,7 @@ class App {
     this.creatures.setDetail(quality.seaCreatures);
     this.meadow.setCount(quality.meadow);
     this.canopy.setCount(quality.canopy);
+    this.crew?.setCount(quality.crew);
     this.audio.setQuality(tier);
 
     // Low takes the analytic path (`refraction: 0`): a coherent simpler image
@@ -2973,6 +3155,28 @@ class App {
       ...this.sunFromClock(hours),
       overcast: Math.max(floor, Math.min(TOUR_RAIN_OVERCAST_MAX, rain * TOUR_RAIN_OVERCAST)),
     };
+  }
+  /**
+   * The voyage's sky while the helm is taken, or null for the preset's. Never
+   * under a capture. When it stops driving the sky, the preset's is handed
+   * back with a fresh environment cube, as leaving the Tour does.
+   */
+  private helmSky(): Readonly<ReturnType<Gameplay['voyageSky']>> {
+    const preset = getPreset(this.state.preset);
+    const sky =
+      this.state.cameraMode === 'boat' && !this.captureOwnsClock
+        ? this.gameplay?.voyageSky(
+            { coverage: this.state.cloudCoverage, kind: preset.weather.kind, intensity: preset.weather.intensity },
+            this.state.timeOfDay,
+          ) ?? null
+        : null;
+    if (sky === null && this.helmSkyDriven) {
+      this.helmSkyDriven = false;
+      this.applyPreset(true);
+      this.lastEnvElevation = Number.NaN;
+    }
+    if (sky !== null) this.helmSkyDriven = true;
+    return sky;
   }
   /**
    * Sun elevation, azimuth and night blend for a clock time.
@@ -3356,8 +3560,10 @@ class App {
      * `cinematicTimeOfDay` is a pure function of the loop clock, so this stays
      * inside the determinism guarantee the capture harness depends on.
      */
-    if (this.state.cameraMode === 'cinematic') {
-      const env = this.director.cinematicEnvironment();
+    // At the helm the voyage drives the same path: the Tour's hour curve on a
+    // ten-minute day, and the voyage's squall (`gameplay/Voyage.ts`).
+    const env = this.state.cameraMode === 'cinematic' ? this.director.cinematicEnvironment() : this.helmSky();
+    if (env) {
       this.atmosphere.setParams(this.tourSky(env.hours, env.rain));
       this.clouds.setParams({ coverage: env.cloudCoverage });
       // Kind *and* intensity. Setting the intensity alone produces no weather
@@ -3535,6 +3741,7 @@ class App {
       const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
       const wind = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
       this.lightning.setCloudBase(getPreset(this.state.preset).clouds.altitude ?? 900);
+      this.lightning.setReduceFlashes(this.state.reduceFlashes);
       const strike = this.lightning.update(
         dt,
         this.camera,
@@ -3542,12 +3749,19 @@ class App {
         !this.captureOwnsClock && this.director.submersion() < 0.5,
       );
       if (strike) {
-        this.audio.playThunder(strike.distance / 1000, strike.distance / 343); // speed of sound, m/s
+        this.audio.playThunder(strike.distance / 1000, strike.distance / 343, strike.x, strike.z); // speed of sound, m/s
+        this.gameplay?.reportThunder(strike.distance);
       }
       // Less of the flash as a grade lift now the strike lights the scene for
       // real (`lighting/LightningLight`); what is left is the eye's response to
       // a bright sky, which a frame-wide lift is the right model of.
       this.colorGrade.setFlash(this.lightning.flashIntensity * FLASH_GRADE_SHARE);
+      // The cloud deck lit from inside at the strike (the clouds lane's hook).
+      const at = this.lightning.lastStrike;
+      if (Number.isFinite(at.distance)) {
+        _flashAt.set(at.x, this.lightning.cloudBaseHeight, at.z);
+        this.clouds.setFlash(_flashAt, this.lightning.flashIntensity);
+      }
     }
 
     // The lights `lighting/` owns: cascade refit, fire and lanterns after dark,
@@ -3568,6 +3782,8 @@ class App {
       .multiplyScalar((this.atmosphere.sunLight.intensity / 3.4) * 0.75)
       .add(_smokeSky.copy(this.atmosphere.zenithColor).multiplyScalar(this.atmosphere.ambientLight.intensity * 0.6));
     this.props?.setDetailLighting(_smokeLight, this.lighting.local.fireLevel);
+    // Rain takes the same light, and the lightning's.
+    this.weather.setLighting(_smokeLight, this.lighting.flash.level);
     this.props?.setBeaconLevel(this.lighting.local.beaconLevel);
 
     // The key light, whichever body is providing it, at its actual strength.
@@ -3673,6 +3889,9 @@ class App {
       this.atmosphere.sunDirection,
       this.atmosphere.sunColor,
     );
+    // W6: the far sea's haze is the dome's own horizon, thickened by spray as the wind rises.
+    this.aerial.setHorizon(this.atmosphere);
+    this.aerial.setSurfaceHaze(0.00025 * (1 + THREE.MathUtils.clamp((this.state.windSpeed - 10) / 10, 0, 1)));
     // Cloud tops are lit by the sky over them, and the environment capture has
     // to know how much of that sky is cloud.
     //
@@ -3762,11 +3981,12 @@ class App {
       _keyDirection,
       this.atmosphere.sunLight.color,
       this.atmosphere.sunLight.intensity / 3.4,
-      this.atmosphere.zenithColor,
+      // The lightning lights the spray as the sky does, cool and from all round.
+      _spraySky.copy(this.atmosphere.zenithColor).addScalar(this.lighting.flash.level * 1.5),
     );
     // The lens and the frame height set the one-pixel floor on droplet width.
     this.spray.setView(this.camera.fov, this.renderer.getDrawingBufferSize(_drawingBuffer).y, this.camera.position, dt);
-    // While the bow sheet is up (at the helm, under way) it takes the routine
+    // While the bow sheet is up (under way, in any mode) it takes the routine
     // pitching at the bow off the impact spray; see `SHEET_COVERS_CLOSING`.
     this.spray.setBowSheet(this.gameplay?.bowSheetUp ?? false);
     this.spray.update(dt, elapsed, (x, z) => this.sampler.height(x, z), this.camera.position);
@@ -3866,7 +4086,7 @@ class App {
     // whole graph under water on the same continuous value the visuals use.
     const audio = this.audioParams;
     audio.windSpeed = this.state.windSpeed;
-    audio.waveHeight = this.state.peakWavelength * 0.045;
+    audio.waveHeight = significantWaveHeight(this.simulation.spectrumParams);
     audio.peakWavelength = this.state.peakWavelength;
     audio.rain = raining;
     audio.submersion = submersion;
@@ -3875,6 +4095,15 @@ class App {
     // so a sky with no birds in it stays silent instead of the audio inventing
     // some. Low draws none, and hears none.
     audio.birdCount = this.birds.getCount();
+    audio.listenerX = this.camera.position.x;
+    audio.listenerZ = this.camera.position.z;
+    // The listener's pose, for sound in space (A4).
+    this.camera.getWorldDirection(_impactForward);
+    audio.listenerY = this.camera.position.y;
+    audio.listenerForwardX = _impactForward.x;
+    audio.listenerForwardY = _impactForward.y;
+    audio.listenerForwardZ = _impactForward.z;
+    audio.sunElevation = this.atmosphere.sunDirection.y;
     this.updateShipAudio(dt, audio);
     this.audio.setMusicState(this.chooseMusicState(raining, submersion), this.musicEnergy());
     this.audio.update(dt, audio);
@@ -3911,8 +4140,14 @@ class App {
     // Set explicitly rather than left to the effect's own default, because which
     // way rain runs down a lens is exactly the kind of thing that is obvious to a
     // viewer and invisible to every test we have.
+    // The lean is the wind across the view: its component along the camera's
+    // right, so drops run with the wind whichever way the camera faces.
     const lean = Math.min(0.5, this.state.windSpeed * 0.018);
-    this.lensRain.setGravity(Math.sin(preset.sea.windDirection) * lean, 1, 1 + lean);
+    this.camera.getWorldDirection(_impactForward);
+    const across =
+      (Math.sin(preset.sea.windDirection) * _impactForward.x - Math.cos(preset.sea.windDirection) * _impactForward.z) /
+      Math.max(1e-3, Math.hypot(_impactForward.x, _impactForward.z));
+    this.lensRain.setGravity(across * lean, 1, 1 + lean);
     this.lensRain.update(dt);
 
     // Volumetric fog follows the key light, and fades out as the camera goes
@@ -4036,6 +4271,8 @@ class App {
       const orders = this.director.shipInput;
       this.shipControls.setInput(orders.throttle, orders.rudder);
     }
+    if (this.gamepad) this.gamepad.haptics = this.state.haptics;
+    this.gamepad?.update(dt, this.state.cameraMode === 'boat', this.gameplay?.shakeTrauma ?? 0);
     this.shipControls?.update(dt);
     // Sails, anchor and cargo: adds to the forces the controller just set, so
     // it runs between the controller and the solve. See `src/gameplay`.
@@ -4044,10 +4281,19 @@ class App {
     // Safe before the sampler's first readback resolves: it reports height 0 and
     // bodies simply settle to flat water rather than producing NaN.
     this.buoyancy.update(dt, this.sampler);
+    // The bow spray, and the slam spray below, read this frame's solved pose.
+    this.ship?.object.updateWorldMatrix(true, false);
+    this.gameplay?.updateBowSpray(dt);
 
     const ship = this.ship;
     if (ship) {
+      ship.setHelm(this.shipControls?.getState(this.shipStateOut).rudder ?? 0);
       ship.update(dt);
+      this.shipLights?.update(dt, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
+      // The lanterns' glints on the sea after dark (`OceanMaterial.setLanterns`).
+      this.water.setLanterns(this.shipLights?.lanternPositions ?? [], ship.object, LightingRig.darkness(this.atmosphere.sunDirection.y, this.atmosphere.overcast));
+      this.shipFittings?.update(this.gameplay?.anchorCable(this.shipFittings.anchorState) ?? null);
+      this.crew?.update(dt);
 
       const position = ship.object.position;
       // Speed along the bow, from the body, rather than frame-to-frame distance.
@@ -4059,6 +4305,7 @@ class App {
       this.previousShipPosition.copy(position);
 
       this.wake.emit(position.x, position.z, ship.heading, speed, ship.hullBeam);
+      this.particles.trackHull(dt, position.x, position.y, position.z, ship.heading, speed, ship.hullBeam, ship.hullLength);
       this.water.setHull({
         x: position.x,
         z: position.z,
@@ -4091,6 +4338,11 @@ class App {
     //
     // Must run outside an active render target; it saves and restores its own.
     this.wake.update(dt, this.renderer);
+    // After the wake, so it tests the foam the water is drawing this frame.
+    this.spindrift.update(
+      dt, this.camera, this.state.windSpeed, getPreset(this.state.preset).sea.windDirection,
+      this.wake.centerX, this.wake.centerZ, this.wake.extent, this.renderer,
+    );
   }
 
   /**
@@ -4171,6 +4423,8 @@ class App {
          */
         adaptive: this.adaptive,
         atmosphere: this.atmosphere,
+        /** The shared haze, so a probe can A/B its horizon terms in one session. */
+        aerial: this.aerial,
         /**
          * The cloud layer, so `scripts/profile-frame.mjs` can vary its step
          * count without going through a tier change.
@@ -4271,6 +4525,7 @@ class App {
             this.onStateChange(key as keyof UiState);
           }
           this.panel.setState(partial);
+          this.pauseMenu?.setState(partial);
         },
         /**
          * Places the camera exactly, for reproducible screenshots.
@@ -4437,6 +4692,7 @@ class App {
           this.clouds.resetWind();
           this.birds.resetClock(start);
           this.spray.resetClock(start);
+          this.spindrift.reset(this.renderer);
           this.splash.resetClock(start);
           this.fish.resetClock(start);
           this.kelp.resetClock(start);
@@ -4477,7 +4733,11 @@ class App {
           // three hundred settle steps later.
           this.wetness.setWetness(resetRain);
           if (shipInput) this.shipControls?.setInput(shipInput.throttle, shipInput.rudder);
+          // A shot that drives her by scripted input shows her under sail.
+          this.scriptedUnderWay = (shipInput?.throttle ?? 0) > 0;
           this.ship?.resetClock(start);
+          this.shipLights?.reset(start);
+          this.crew?.reset(start);
           this.previousShipPosition.copy(this.ship?.object.position ?? this.previousShipPosition);
           // The resets above write each body's position and quaternion, not its
           // world matrix, which only refreshes when a frame renders — and the
@@ -4624,6 +4884,12 @@ class App {
         setSprayStrength: (strength: number) => this.spray.setStrength(strength),
         /** Live impact events, for the spray test. */
         sprayLiveEvents: () => this.spray.liveEvents(),
+        /** Test-only spindrift slot count; null follows the tier. */
+        setSpindriftOverride: (count: number | null) => {
+          this.spindriftOverride = count;
+          this.spindrift.setCount(count ?? QUALITY_TIERS[this.state.quality].spindrift);
+        },
+        spindrift: this.spindrift,
         /** The spray system itself, for probing its event table. */
         spray: this.spray,
         /** The impact splashes, for firing one by hand. */
@@ -4660,11 +4926,14 @@ class App {
     this.disposed = true;
     window.removeEventListener('resize', this.onResize);
     this.loop?.stop();
+    this.pauseMenu?.dispose();
+    this.pauseRelease?.();
     this.panel?.dispose();
     this.detachUiSounds?.();
     this.detachUiSounds = null;
     this.hud?.dispose();
     this.touchControls?.dispose();
+    this.gamepad?.dispose();
     this.director?.dispose();
     this.sampler?.dispose();
     this.simulation?.dispose();
@@ -4698,6 +4967,7 @@ class App {
     this.spatialAa?.dispose();
     this.postChain?.dispose();
     this.spray?.dispose();
+    this.spindrift?.dispose();
     this.particles?.dispose();
     this.caustics?.dispose();
     this.shipControls?.dispose();
@@ -4708,6 +4978,9 @@ class App {
     this.lighting?.dispose();
     this.buoyancy?.dispose();
     this.wake?.dispose();
+    this.shipLights?.dispose();
+    this.shipFittings?.dispose();
+    this.crew?.dispose();
     this.ship?.dispose();
     this.props?.dispose();
     this.seafloor?.dispose();

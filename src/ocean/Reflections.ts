@@ -24,6 +24,9 @@ import { reflector } from 'three/tsl';
 /** Scratch for the clear colour the reflection render borrows. */
 const _clearColor = new THREE.Color();
 
+/** WebGPU's ceiling, and what the stretch needs: the column is up to 16 times taller than wide. */
+const MIRROR_ANISOTROPY = 16;
+
 export class Reflections {
   /** Add to the scene; its transform defines the mirror plane. */
   readonly plane: THREE.Object3D;
@@ -79,6 +82,19 @@ export class Reflections {
       } finally {
         renderer.setClearColor(_clearColor, alpha);
       }
+    };
+    // **Anisotropic filtering on the mirror.** A rough sea stretches what it
+    // reflects up and down the frame and hardly at all sideways (see the
+    // reflection block in `OceanMaterial`), and the water samples the mirror
+    // with a tall, narrow gradient to say so. Without anisotropy the hardware
+    // takes the mip level from the tall axis and blurs as far sideways as
+    // down, which wiped the masts out of the ship's reflection. Set on each
+    // target as the reflector creates it, before its sampler is first built.
+    const getTarget = this.base.getRenderTarget.bind(this.base);
+    this.base.getRenderTarget = (camera: THREE.Camera) => {
+      const target = getTarget(camera) as THREE.RenderTarget;
+      if (target.texture.anisotropy !== MIRROR_ANISOTROPY) target.texture.anisotropy = MIRROR_ANISOTROPY;
+      return target;
     };
     this.plane = node.target;
   }

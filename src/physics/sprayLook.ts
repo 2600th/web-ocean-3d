@@ -122,6 +122,13 @@ export const sprayUniforms = {
   /** Hull box in hull-local space: centre and half-extents. Zero extents disable it. */
   hullCenter: uniform(new THREE.Vector3()),
   hullHalf: uniform(new THREE.Vector3()),
+  /**
+   * The quality tier's `spray`, for every system of thrown water: the slam
+   * spray, the bow spray and sheet, and the splashes. 0 draws none of them;
+   * below 1 they draw fewer particles. Written by `Spray.setStrength`, which is
+   * the tier's one control, so the others follow it without wiring of their own.
+   */
+  strength: uniform(1),
 };
 
 /** Radiance and opacity, quad shape, and the fragment's age/depth/softness. */
@@ -264,6 +271,8 @@ export function sprayMaterial(vertex: () => any, depthOnly: boolean): THREE.Mesh
     // resolve and GTAO then drew as hard-edged translucent rectangles laid over
     // the water (round 10c). The threshold is below one 8-bit step of colour.
     material.alphaTest = SPRAY_ALPHA_FLOOR;
+    // No contact shadows or AO on droplets; see `sceneMrt`'s surface flag.
+    material.userData.airborneWater = true;
   }
   return material;
 }

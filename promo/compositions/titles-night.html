@@ -1,0 +1,126 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Pirata One";
+      src: url("assets/fonts/pirata-one.woff2") format("woff2");
+      font-weight: 400;
+    }
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    /* One voice for every line: the game's display face in its parchment white. */
+    .tl-line {
+      position: absolute;
+      font-family: "Pirata One", serif;
+      font-weight: 400;
+      line-height: 1;
+      color: #f6ead0;
+      white-space: pre;
+      text-shadow:
+        0 0 44px rgba(6, 12, 18, 0.62),
+        0 4px 12px rgba(6, 12, 18, 0.55);
+    }
+    .tl-line span {
+      display: inline-block;
+      white-space: pre;
+    }
+    /* Each timed line is a full-frame clip; the line inside it carries the position. */
+    .tl-clip {
+      position: absolute;
+      inset: 0;
+    }
+    #tl-sea-a,
+    #tl-sea-b {
+      font-size: 158px;
+      left: 192px;
+    }
+    #tl-sea-a {
+      top: 470px;
+    }
+    #tl-sea-b {
+      top: 624px;
+    }
+    /* The dip cut into the squall: the dusk goes dark for three frames. */
+    #tn-dip-fill {
+      position: absolute;
+      inset: 0;
+      background: #05090c;
+      opacity: 0;
+    }
+    #tl-sea .tl-accent {
+      color: #ffd36b;
+    }
+    /* The claim sits in the night sky to the right of the ship, clear of the moon's glitter. */
+    .tl-claim {
+      font-size: 116px;
+      left: 1040px;
+    }
+    #tl-claim-a {
+      top: 300px;
+    }
+    #tl-claim-b {
+      top: 432px;
+    }
+    #tl-claim-c {
+      top: 564px;
+    }
+  </style>
+
+  <div id="root" data-composition-id="titles-night" data-width="1920" data-height="1080">
+    <!-- 08 to 09: darken the last frames of the dusk, cut to the squall, and lift. -->
+    <div id="tn-dip" class="clip tl-clip" data-start="2.0" data-duration="0.5" data-track-index="2" data-layout-ignore>
+      <div id="tn-dip-fill"></div>
+    </div>
+
+    <!-- 09: the payoff line, after the first strike. Times are from 31.3 s of the film. -->
+    <div id="tl-sea" class="clip tl-clip" data-start="4.8" data-duration="3.2" data-track-index="1">
+      <div id="tl-sea-a" class="tl-line"><span>A</span><span> </span><span>sea</span></div>
+      <div id="tl-sea-b" class="tl-line"><span>raised</span><span> </span><span class="tl-accent">live</span></div>
+    </div>
+
+    <!-- 11: the claim, three lines, the README's own words. -->
+    <div id="tl-claim" class="clip tl-clip" data-start="14.3" data-duration="5.6" data-track-index="1">
+      <div id="tl-claim-a" class="tl-line tl-claim"><span>Every</span><span> </span><span>wave,</span></div>
+      <div id="tl-claim-b" class="tl-line tl-claim"><span>worked</span><span> </span><span>out</span><span> </span><span>live</span></div>
+      <div id="tl-claim-c" class="tl-line tl-claim"><span>in</span><span> </span><span>your</span><span> </span><span>browser</span></div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const hidden = { opacity: 0, filter: "blur(8px)" };
+    const shown = { opacity: 1, filter: "blur(0px)" };
+
+    // Each piece arrives once and then holds dead still; the picture does the moving.
+    function arrive(selector, at, each, duration) {
+      tl.fromTo(selector, hidden, { ...shown, duration, ease: "power3.out", stagger: each }, at);
+    }
+    function leave(selector, at) {
+      tl.fromTo(
+        selector,
+        shown,
+        { opacity: 0, filter: "blur(8px)", duration: 0.2, ease: "power2.in", immediateRender: false },
+        at,
+      );
+    }
+
+    tl.fromTo("#tn-dip-fill", { opacity: 0 }, { opacity: 0.5, duration: 0.1, ease: "power2.in" }, 2.1);
+    tl.fromTo(
+      "#tn-dip-fill",
+      { opacity: 0.5 },
+      { opacity: 0, duration: 0.14, ease: "power2.out", immediateRender: false },
+      2.2,
+    );
+
+    arrive("#tl-sea span", 4.9, 0.09, 0.2);
+    leave("#tl-sea span", 7.75);
+
+    arrive("#tl-claim-a span", 14.4, 0.07, 0.2);
+    arrive("#tl-claim-b span", 15.0, 0.07, 0.2);
+    arrive("#tl-claim-c span", 15.8, 0.07, 0.2);
+    leave("#tl-claim span", 19.65);
+
+    window.__timelines["titles-night"] = tl;
+  </script>
+</template>

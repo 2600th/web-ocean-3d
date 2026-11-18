@@ -116,9 +116,24 @@
   --wood-a: rgba(42, 27, 15, 0.84);
   --wood-deep-a: rgba(23, 14, 7, 0.88);
 
+  /*
+   * One scale of durations, six steps, for every transition and animation here
+   * and for the camera's mode-change sweep (CameraDirector, 0.9 s = arrive).
+   * Pick the step by what moves: a press, a state changing, a piece of
+   * furniture moving, something revealed, a whole surface arriving, a fade left
+   * for the viewer to forget. The two ambient loops (the ink running, the ship
+   * bobbing) are cycles, not durations, and keep their own.
+   */
+  --dur-press: 120ms;
+  --dur-state: 200ms;
+  --dur-move: 320ms;
+  --dur-reveal: 560ms;
+  --dur-arrive: 900ms;
+  --dur-slow: 1600ms;
+
   /* Attention: fade slowly out, come back at once. */
-  --fade-out: 1.4s;
-  --fade-in: 220ms;
+  --fade-out: var(--dur-slow);
+  --fade-in: var(--dur-state);
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.55, 0, 0.9, 0.4);
@@ -315,7 +330,7 @@ body {
   text-align: center;
   text-decoration: none;
   cursor: pointer;
-  transition: transform 120ms var(--ease), box-shadow 120ms var(--ease), filter 160ms;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
 }
 
 /* Polished brass with the label engraved. */
@@ -395,7 +410,7 @@ body {
   color: var(--ink);
   cursor: pointer;
   box-shadow: 0 2px 0 #4a3210, 0 3px 6px rgba(40, 22, 4, 0.3);
-  transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease);
 }
 
 .panel__collapse svg {
@@ -403,7 +418,7 @@ body {
   height: 20px;
   stroke-width: 2.4;
   transform: rotate(180deg);
-  transition: transform 260ms var(--ease);
+  transition: transform var(--dur-move) var(--ease);
 }
 
 .panel__collapse:active {
@@ -499,7 +514,7 @@ body {
   cursor: pointer;
   background: rgba(91, 65, 41, 0.12);
   box-shadow: inset 0 0 0 1px rgba(91, 65, 41, 0.35);
-  transition: transform 120ms var(--ease), box-shadow 160ms var(--ease), background 160ms;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-state) var(--ease), background var(--dur-state);
 }
 
 .preset:hover {
@@ -595,7 +610,7 @@ body {
     var(--brass-grad) border-box;
   color: var(--brass-hi);
   box-shadow: 0 0 0 1px var(--brass-edge), 0 3px 0 var(--brass-edge), 0 4px 6px rgba(40, 22, 4, 0.3);
-  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease);
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease);
 }
 
 .plaque:hover {
@@ -653,6 +668,54 @@ body {
   white-space: nowrap;
 }
 
+/* A sound slider's mute: a speaker beside the reading, struck through when muted. */
+.field__row:has(.field__mute) .field__value {
+  margin-left: auto;
+}
+
+.field__mute {
+  flex: none;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px -6px -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.field__mute .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.field__mute:hover {
+  color: var(--ink);
+}
+
+.field__mute:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.field__mute .icon-sound__off,
+.field__mute[aria-pressed='true'] .icon-sound__waves {
+  display: none;
+}
+
+.field__mute[aria-pressed='true'] .icon-sound__off {
+  display: inline;
+}
+
+.field.is-muted .range {
+  opacity: 0.45;
+}
+
 /*
  * Range: a brass rail. An engraved groove cut into the paper, filled with
  * brass to the reading, and a round brass knob. The thumb sits in a 22px box
@@ -695,7 +758,7 @@ body {
   border-radius: 50%;
   background: radial-gradient(circle at 36% 30%, #fff5cc 0, #ecc66c 24%, #a87a2c 62%, #5e4012 100%);
   box-shadow: 0 0 0 1.5px var(--brass-edge), 0 2px 3px rgba(20, 10, 0, 0.5);
-  transition: transform 120ms var(--ease);
+  transition: transform var(--dur-press) var(--ease);
 }
 
 .range:active::-webkit-slider-thumb {
@@ -760,7 +823,7 @@ body {
   width: 18px;
   height: 18px;
   transform: rotate(-90deg);
-  transition: transform 220ms var(--ease);
+  transition: transform var(--dur-state) var(--ease);
 }
 
 .ledger-tools[open] .ledger-tools__chev {
@@ -811,7 +874,7 @@ body {
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 13.5c2.4 1.2 4 3 5.2 5.5C12 12 15.6 7 21 3.5' fill='none' stroke='%23000' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
   opacity: 0;
   transform: scale(0.6);
-  transition: opacity 140ms var(--ease), transform 220ms var(--ease);
+  transition: opacity var(--dur-press) var(--ease), transform var(--dur-state) var(--ease);
 }
 
 .switchrow.is-on .switch__knob {
@@ -846,7 +909,7 @@ body {
   color: var(--brass-hi);
   cursor: pointer;
   box-shadow: 0 0 0 1px var(--brass-edge), 0 4px 0 var(--brass-edge), 0 6px 12px rgba(5, 3, 1, 0.45);
-  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease), opacity 200ms;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), opacity var(--dur-state);
 }
 
 .panel-toggle:active {
@@ -896,7 +959,7 @@ body {
   left: 50%;
   width: clamp(280px, calc(100% - 640px), 560px);
   transform: translateX(-50%);
-  transition: opacity 400ms var(--ease);
+  transition: opacity var(--dur-move) var(--ease);
 }
 
 .hud-compass__window {
@@ -1039,6 +1102,29 @@ body {
   clip-path: polygon(100% 50%, 0 10%, 20% 50%, 0 90%);
 }
 
+/* The no-go zone either side of the wind. Fades for good once learned; brighter
+   while her bow is inside it. Off the visible arc it is simply not drawn. */
+.hud-compass__window > .hud-compass__nogo {
+  z-index: 2;
+  bottom: 0;
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--wax) 22%, var(--wax) 78%, transparent);
+  opacity: 0.55;
+  transition: opacity 1.6s ease;
+  pointer-events: none;
+}
+
+.hud-compass__nogo.is-inside {
+  opacity: 1;
+}
+
+.hud-compass__nogo.is-learned,
+.hud-compass__nogo.is-off-left,
+.hud-compass__nogo.is-off-right {
+  opacity: 0;
+}
+
 .hud-compass__mark--ship {
   bottom: 0;
   width: 14px;
@@ -1107,11 +1193,11 @@ body {
   width: min(340px, 100%);
   max-width: 100%;
   padding: 12px 24px 12px 14px;
-  animation: toast-unfurl 560ms var(--ease) both;
+  animation: toast-unfurl var(--dur-reveal) var(--ease) both;
 }
 
 .toast.is-leaving {
-  animation: toast-roll 380ms var(--ease-in) both;
+  animation: toast-roll var(--dur-move) var(--ease-in) both;
 }
 
 /* Unrolled from the middle, the way a strip of chart is opened out. The clip
@@ -1208,7 +1294,7 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 12px;
-  transition: opacity 400ms var(--ease);
+  transition: opacity var(--dur-move) var(--ease);
 }
 
 .objective {
@@ -1225,7 +1311,7 @@ body {
 }
 
 .objective.is-new {
-  animation: objective-unfurl 760ms var(--ease) both;
+  animation: objective-unfurl var(--dur-arrive) var(--ease) both;
 }
 
 @keyframes objective-unfurl {
@@ -1309,7 +1395,7 @@ body {
   height: 22px;
   border-radius: 50%;
   border: 1.75px solid var(--ink-soft);
-  transition: transform 160ms linear;
+  transition: transform var(--dur-state) linear;
 }
 
 .objective__arrow::before {
@@ -1355,7 +1441,7 @@ body {
 }
 
 .score__row.is-bump .score__value {
-  animation: score-bump 620ms var(--ease) both;
+  animation: score-bump var(--dur-reveal) var(--ease) both;
 }
 
 @keyframes score-bump {
@@ -1368,6 +1454,117 @@ body {
   }
 }
 
+/* What is coming: a squall, the dark. Wax on the paper, so it reads as news. */
+.objective__warning {
+  margin: 8px 0 0;
+  font: 700 14px/1.3 var(--font-body);
+  color: var(--wax);
+}
+
+.objective__warning[hidden],
+.tally[hidden] {
+  display: none;
+}
+
+/* ---- Voyage tally --------------------------------------------------------- */
+
+.tally {
+  width: 100%;
+  padding: 18px 22px 18px;
+  pointer-events: auto;
+}
+
+.tally.is-new {
+  animation: objective-unfurl var(--dur-arrive) var(--ease) both;
+}
+
+.tally__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.tally__sub {
+  margin: 4px 0 0;
+  font: 500 14.5px/1.35 var(--font-body);
+  color: var(--ink-soft);
+}
+
+.tally__rows {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+  border-top: 1.5px solid rgba(91, 65, 41, 0.35);
+}
+
+.tally__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tally__label {
+  font: 700 11.5px/1.2 var(--font-body);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.tally__value {
+  margin: 0;
+  font: 800 16px/1.2 var(--font-body);
+  color: var(--ink);
+  text-align: right;
+}
+
+.tally__again {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 8px 20px 9px 14px;
+  border: 2.5px solid transparent;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, #c13a2c 0%, #8e1b17 55%, #661009 100%) padding-box,
+    var(--brass-grad) border-box;
+  color: #ffe6a6;
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1;
+  text-shadow: 0 1px 0 rgba(60, 8, 4, 0.85);
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1.5px #2a0c06,
+    inset 0 1px 0 rgba(255, 200, 170, 0.4),
+    0 4px 0 #3b0d08,
+    0 8px 14px rgba(40, 10, 0, 0.4);
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
+}
+
+.tally__again:hover {
+  filter: brightness(1.1) saturate(1.05);
+}
+
+.tally__again:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 0 0 1.5px #2a0c06,
+    0 1px 0 #3b0d08,
+    0 3px 6px rgba(40, 10, 0, 0.4);
+}
+
+.tally__icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.1;
+}
+
 /* ---- Wind dial + log ------------------------------------------------------ */
 
 .hud-instruments {
@@ -1376,7 +1573,7 @@ body {
   bottom: var(--edge-b);
   display: flex;
   align-items: center;
-  transition: opacity 400ms var(--ease);
+  transition: opacity var(--dur-move) var(--ease);
 }
 
 .dial {
@@ -1441,7 +1638,7 @@ body {
   left: calc(50% - 7px);
   width: 14px;
   color: var(--wind);
-  transition: transform 900ms var(--ease);
+  transition: transform var(--dur-arrive) var(--ease);
   filter: drop-shadow(0 0 1.5px var(--parchment-hi)) drop-shadow(0 0 1px var(--parchment-hi));
 }
 
@@ -1452,6 +1649,15 @@ body {
   background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 90'%3E%3Cpath d='M7 0l6.5 15H8.4v58H5.6V15H.5z'/%3E%3Cpath d='M5.6 70L1 76v8l4.6-6zM8.4 70l4.6 6v8l-4.6-6zM5.6 79L1 85v5l4.6-6zM8.4 79l4.6 6v5l-4.6-6z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 90'%3E%3Cpath d='M7 0l6.5 15H8.4v58H5.6V15H.5z'/%3E%3Cpath d='M5.6 70L1 76v8l4.6-6zM8.4 70l4.6 6v8l-4.6-6zM5.6 79L1 85v5l4.6-6zM8.4 79l4.6 6v5l-4.6-6z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
+}
+
+/* Stalled head to wind: the arrow and the reading's caption turn amber. */
+.hud-instruments.is-stalled .dial__wind {
+  color: var(--warn);
+}
+
+.hud-instruments.is-stalled .reading--log .reading__sub {
+  color: var(--warn);
 }
 
 /* Fixed to the bezel: the direction the view looks. */
@@ -1549,7 +1755,7 @@ body {
 .hud-hints {
   opacity: 0;
   transform: translateY(6px);
-  transition: opacity 500ms var(--ease), transform 500ms var(--ease);
+  transition: opacity var(--dur-reveal) var(--ease), transform var(--dur-reveal) var(--ease);
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -1612,10 +1818,10 @@ body {
     0 3px 0 #0d0703,
     0 4px 6px rgba(0, 0, 0, 0.35);
   transition:
-    transform 110ms var(--ease),
-    box-shadow 110ms var(--ease),
-    background 160ms,
-    color 160ms;
+    transform var(--dur-press) var(--ease),
+    box-shadow var(--dur-press) var(--ease),
+    background var(--dur-state),
+    color var(--dur-state);
 }
 
 .tab:hover {
@@ -1824,24 +2030,24 @@ body {
 /* Dragging the camera: the viewer is looking at the sea, so let them. */
 #ui-root.is-dragging :is(.hud-compass, .hud-instruments, .hud-modes, .hud-corner) {
   opacity: 0.18;
-  transition-duration: 300ms;
+  transition-duration: var(--dur-move);
 }
 
 #ui-root.is-dragging :is(.hud-quest, .panel--collapsed, .panel-toggle) {
   opacity: 0.35;
-  transition-duration: 300ms;
+  transition-duration: var(--dur-move);
 }
 
 #ui-root.is-dragging .panel:not(.panel--collapsed) {
   opacity: 0.6;
-  transition-duration: 300ms;
+  transition-duration: var(--dur-move);
 }
 
 /* The tour is a film: instruments, quest and corner go; the mode bar stays
    as a way out, and goes too once the viewer settles in to watch. */
 #ui-root[data-mode='cinematic'] :is(.hud-compass, .hud-instruments, .hud-quest, .hud-corner) {
   opacity: 0;
-  transition-duration: 700ms;
+  transition-duration: var(--dur-reveal);
 }
 
 #ui-root[data-mode='cinematic'].is-idle :is(.hud-modes, .panel--collapsed, .panel-toggle) {
@@ -1850,7 +2056,7 @@ body {
 
 /* A mode change made from the keyboard is seen on the bar too. */
 .tab.is-arriving {
-  animation: tab-arrive 420ms var(--ease);
+  animation: tab-arrive var(--dur-move) var(--ease);
 }
 
 @keyframes tab-arrive {
@@ -1895,14 +2101,14 @@ body {
   background: linear-gradient(180deg, #081b25 0%, #183f4c 40%, #b9845c 56%, #24515a 57%, #04111a 100%);
   opacity: 1;
   visibility: visible;
-  transition: opacity 900ms var(--ease), visibility 0s linear 0s;
+  transition: opacity var(--dur-arrive) var(--ease), visibility 0s linear 0s;
 }
 
 .boot--hidden {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 900ms var(--ease), visibility 0s linear 900ms;
+  transition: opacity var(--dur-arrive) var(--ease), visibility 0s linear var(--dur-arrive);
 }
 
 .boot__sea {
@@ -1922,7 +2128,7 @@ body {
   margin: auto auto auto 0;
   padding: 42px 52px 38px;
   filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.6)) drop-shadow(0 4px 6px rgba(0, 0, 0, 0.4));
-  animation: sheet-arrive 900ms var(--ease) both;
+  animation: sheet-arrive var(--dur-arrive) var(--ease) both;
 }
 
 /* The chart is laid on the table: a short drop and settle, once. */
@@ -1939,7 +2145,7 @@ body {
 
 /* Loading: the menu's choices fold away and the course is charted. */
 .boot--loading .boot__progress {
-  animation: chart-in 640ms var(--ease) both;
+  animation: chart-in var(--dur-reveal) var(--ease) both;
 }
 
 @keyframes chart-in {
@@ -2089,7 +2295,7 @@ body {
     inset 0 1px 0 rgba(255, 230, 170, 0.15),
     0 4px 0 var(--brass-edge),
     0 7px 12px rgba(40, 20, 0, 0.35);
-  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease), filter 160ms;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
 }
 
 .boot__choice:hover {
@@ -2177,7 +2383,7 @@ body {
     inset 0 -3px 0 rgba(40, 4, 0, 0.35),
     0 6px 0 #3b0d08,
     0 12px 22px rgba(40, 10, 0, 0.45);
-  transition: transform 110ms var(--ease), box-shadow 110ms var(--ease), filter 160ms;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
 }
 
 .cta:hover {
@@ -2261,7 +2467,7 @@ body {
     var(--wax);
   transform: scaleX(0);
   transform-origin: left center;
-  transition: transform 600ms var(--ease);
+  transition: transform var(--dur-reveal) var(--ease);
   animation: ink-wet 2.4s linear infinite;
 }
 
@@ -2282,7 +2488,7 @@ body {
   bottom: 12px;
   height: 0;
   transform: translateX(calc(var(--boot-progress, 0) * 100%));
-  transition: transform 600ms var(--ease);
+  transition: transform var(--dur-reveal) var(--ease);
 }
 
 .boot__ship {
@@ -2337,7 +2543,7 @@ body {
   font: 500 14px/1.4 var(--font-body);
   color: var(--ink-soft);
   opacity: 0.92;
-  transition: opacity 360ms var(--ease);
+  transition: opacity var(--dur-move) var(--ease);
 }
 
 .boot__tip.is-changing {
@@ -2506,7 +2712,7 @@ body {
     var(--brass-grad) border-box;
   box-shadow: 0 0 0 1px var(--brass-edge), 0 3px 0 var(--brass-edge), 0 6px 14px rgba(5, 3, 1, 0.45);
   cursor: pointer;
-  transition: transform 100ms var(--ease), box-shadow 100ms var(--ease), filter 140ms;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-press);
 }
 
 .touchhelm__btn:active {
@@ -2549,7 +2755,7 @@ body {
   pointer-events: none;
   opacity: 0;
   transform: translateY(14px);
-  transition: opacity 1.6s var(--ease), transform 1.6s var(--ease);
+  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
   z-index: 5;
 }
 
@@ -2619,7 +2825,7 @@ body {
     padding: 18px max(18px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px))
       max(18px, env(safe-area-inset-left, 0px));
     transform: translateY(105%);
-    transition: transform 0.38s var(--ease), opacity var(--fade-in) var(--ease);
+    transition: transform var(--dur-move) var(--ease), opacity var(--fade-in) var(--ease);
     will-change: transform;
   }
 
@@ -2767,7 +2973,7 @@ body {
   .objective__more svg {
     width: 18px;
     height: 18px;
-    transition: transform 240ms var(--ease);
+    transition: transform var(--dur-state) var(--ease);
   }
 
   .objective.is-expanded .objective__more {
@@ -3361,10 +3567,781 @@ body {
 
   .quote {
     transform: none;
-    transition: opacity 0.4s linear !important;
+    transition: opacity var(--dur-move) linear !important;
   }
 
   .boot__ship {
     animation: none !important;
+  }
+}
+
+/* ==========================================================================
+   The shell: title extras, pause, settings, and the access options
+   ========================================================================== */
+
+/* ---- Title: what is on record, and the two ways to start -------------------- */
+
+.boot__record {
+  margin: 0 0 4px;
+  font: 700 13px/1.3 var(--font-body);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.boot__record.is-empty {
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.boot__starts {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The second way to start: brass, with the name engraved, a step below the wax call. */
+.cta--quiet {
+  margin-top: 8px;
+  padding: 9px 30px 10px 22px;
+  border-color: transparent;
+  background: var(--brass-face) padding-box, linear-gradient(180deg, #6b4a17, #2a1806) border-box;
+  color: var(--ink);
+  font-size: 27px;
+  text-shadow: 0 1px 0 rgba(255, 245, 210, 0.6);
+  box-shadow:
+    0 0 0 1.5px var(--brass-edge),
+    inset 0 1px 0 rgba(255, 252, 230, 0.8),
+    inset 0 -3px 0 rgba(96, 62, 14, 0.35),
+    0 5px 0 #4a3210,
+    0 9px 16px rgba(40, 22, 4, 0.35);
+}
+
+.cta--quiet:active {
+  box-shadow: 0 0 0 1.5px var(--brass-edge), inset 0 1px 0 rgba(255, 252, 230, 0.6), 0 1px 0 #4a3210;
+}
+
+.cta--quiet .cta__icon {
+  width: 24px;
+  height: 24px;
+  filter: none;
+}
+
+.cta:focus-visible {
+  outline: 3px solid var(--wax-hi);
+  outline-offset: 4px;
+}
+
+/* The graphics choice, demoted: smaller plaques under the call to start. */
+.boot__gate-label--quiet {
+  margin: 26px 0 16px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.boot__choices--compact {
+  gap: 7px;
+}
+
+.boot__choices--compact .boot__choice {
+  padding: 7px 4px 6px;
+  border-width: 2px;
+}
+
+.boot__choices--compact .boot__choice-name {
+  font-size: 19px;
+}
+
+.boot__choices--compact .boot__choice-detail {
+  font-size: 11.5px;
+}
+
+.boot__gate-readout--note {
+  margin-top: 12px;
+}
+
+.boot__choice:focus-visible {
+  outline: 3px solid var(--wax-hi);
+  outline-offset: 3px;
+}
+
+/* ---- The pause button in the instrument corner ------------------------------- */
+
+.hud-corner__pause {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin: -4px 4px -4px -4px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--brass-face) padding-box, linear-gradient(#7a5519, #3b2609) border-box;
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 0 2px 0 #4a3210;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
+}
+
+.hud-corner__pause[hidden] {
+  display: none;
+}
+
+.hud-corner__pause:hover {
+  filter: brightness(1.1);
+}
+
+.hud-corner__pause:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 #4a3210;
+}
+
+.hud-corner__pause-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.panel__settings {
+  margin-bottom: 9px;
+}
+
+.panel__settings[hidden] {
+  display: none;
+}
+
+/* ---- The pause sheet ---------------------------------------------------------- */
+
+.shell {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  overflow-y: auto;
+  padding: max(20px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+    max(20px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  /* A flat tint, never a blur: the sea behind is a still frame and stays legible. */
+  background: rgba(8, 5, 2, 0.6);
+}
+
+.shell[hidden] {
+  display: none;
+}
+
+.shell__sheet {
+  align-self: center;
+  justify-self: center;
+  width: min(440px, 100%);
+  max-height: 100%;
+  margin: auto;
+  padding: 36px 40px 34px;
+  animation: sheet-arrive var(--dur-reveal) var(--ease) both;
+}
+
+.shell__sheet--wide {
+  display: flex;
+  flex-direction: column;
+  width: min(940px, 100%);
+  max-height: calc(100vh - 40px);
+  padding: 26px 34px 24px;
+}
+
+.shell__view[hidden] {
+  display: none;
+}
+
+.shell__view--settings {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.shell__view--settings[hidden] {
+  display: none;
+}
+
+.shell__title {
+  margin: 0;
+  text-align: center;
+  font: 400 54px/0.95 var(--font-display);
+  color: var(--ink);
+  text-shadow: 0 1px 0 rgba(255, 250, 235, 0.6);
+}
+
+.shell__title:focus {
+  outline: none;
+}
+
+.shell__title--small {
+  font-size: 38px;
+  text-align: left;
+}
+
+.shell__flourish {
+  margin: 14px auto 18px;
+}
+
+.shell__menu {
+  display: grid;
+  gap: 14px;
+}
+
+.shell__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 3px double var(--ink-faint);
+}
+
+.shell__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 10px 6px 0;
+  margin-right: -10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(91, 65, 41, 0.55) transparent;
+}
+
+.shell__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px 18px 9px;
+  border: 3px solid transparent;
+  border-radius: 14px;
+  background: var(--brass-face) padding-box, linear-gradient(180deg, #6b4a17, #2a1806) border-box;
+  color: var(--ink);
+  font: 400 27px/1 var(--font-display);
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 0 rgba(255, 245, 210, 0.6);
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1.5px var(--brass-edge),
+    inset 0 1px 0 rgba(255, 252, 230, 0.8),
+    inset 0 -3px 0 rgba(96, 62, 14, 0.35),
+    0 5px 0 #4a3210,
+    0 9px 14px rgba(40, 22, 4, 0.3);
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
+}
+
+.shell__btn:hover {
+  filter: brightness(1.07);
+}
+
+.shell__btn:active {
+  transform: translateY(4px);
+  box-shadow: 0 0 0 1.5px var(--brass-edge), inset 0 1px 0 rgba(255, 252, 230, 0.6), 0 1px 0 #4a3210;
+}
+
+.shell__btn:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.85) brightness(0.8);
+}
+
+.shell__btn-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+/* Resume: the wax call, as on the title. */
+.shell__btn--primary {
+  background: linear-gradient(180deg, #c13a2c 0%, #8e1b17 55%, #661009 100%) padding-box, var(--brass-grad) border-box;
+  color: #ffe6a6;
+  text-shadow: 0 2px 0 rgba(60, 8, 4, 0.85);
+  box-shadow:
+    0 0 0 1.5px #2a0c06,
+    inset 0 1px 0 rgba(255, 200, 170, 0.4),
+    inset 0 -3px 0 rgba(40, 4, 0, 0.35),
+    0 5px 0 #3b0d08,
+    0 9px 16px rgba(40, 10, 0, 0.4);
+}
+
+.shell__btn--quiet {
+  font-size: 22px;
+  min-height: 46px;
+}
+
+.shell__btn--small {
+  min-height: 44px;
+  padding: 6px 16px 5px;
+  font-size: 22px;
+}
+
+.shell__back .shell__btn-icon {
+  transform: rotate(90deg);
+}
+
+.shell :focus-visible {
+  outline: 3px solid var(--wax-hi);
+  outline-offset: 3px;
+}
+
+/* ---- The settings ------------------------------------------------------------- */
+
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 34px;
+  align-items: start;
+}
+
+.settings__col {
+  min-width: 0;
+}
+
+.settings__col > .settings__section:first-child {
+  padding-top: 8px;
+}
+
+.settings__col + .settings__col > .settings__section:first-child {
+  border-top: 0;
+}
+
+.settings__group {
+  margin: 12px 0 4px;
+  font: 800 11px/1 var(--font-body);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.keyrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.keyrow__label {
+  flex: 1;
+  min-width: 0;
+  font: 600 15.5px/1.2 var(--font-body);
+  color: var(--ink);
+}
+
+/* A keycap, large enough to press: paper with a hard edge, as the hint keys are. */
+.keybtn {
+  flex: none;
+  min-width: 82px;
+  min-height: 38px;
+  padding: 6px 12px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: linear-gradient(180deg, var(--parchment-hi), var(--parchment-lo));
+  color: var(--ink);
+  font: 800 15px/1 var(--font-body);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(91, 65, 41, 0.55), 0 3px 0 #6e4f26;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
+}
+
+.keybtn:hover {
+  filter: brightness(1.06);
+}
+
+.keybtn:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 1px rgba(91, 65, 41, 0.55), 0 0 0 #6e4f26;
+}
+
+.keybtn.is-changed {
+  box-shadow: 0 0 0 1.5px var(--brass-lo), 0 3px 0 #6e4f26;
+}
+
+/* Waiting for a key: polished brass with the prompt in wax. */
+.keybtn.is-capturing {
+  background: var(--brass-face);
+  color: var(--wax);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.keyreset {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.keyreset[hidden] {
+  display: none;
+}
+
+.keyreset:hover {
+  color: var(--ink);
+  background: rgba(91, 65, 41, 0.14);
+}
+
+.keyreset:active {
+  background: rgba(91, 65, 41, 0.26);
+}
+
+.keyreset__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.settings__foot {
+  padding: 8px 0 2px;
+}
+
+.settings__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 16px 7px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--brass-face);
+  color: var(--ink);
+  font: 700 13px/1 var(--font-body);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--brass-edge), inset 0 1px 0 rgba(255, 252, 230, 0.75), 0 3px 0 #5a3d12;
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-state);
+}
+
+.settings__btn:hover {
+  filter: brightness(1.07);
+}
+
+.settings__btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 1px var(--brass-edge), 0 1px 0 #5a3d12;
+}
+
+.settings__btn:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.85) brightness(0.85);
+  opacity: 0.7;
+}
+
+.settings__btn-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.settings__live {
+  min-height: 1.4em;
+  margin: 8px 0 0;
+  font: 600 14px/1.4 var(--font-body);
+  color: var(--wax);
+}
+
+.settings__hint {
+  margin: 2px 0 6px 30px;
+  font: 500 13.5px/1.4 var(--font-body);
+  color: var(--ink-soft);
+}
+
+.settings__hint[hidden] {
+  display: none;
+}
+
+.field--slider .settings__hint,
+.field > .settings__hint {
+  margin-left: 0;
+}
+
+.switchfield {
+  padding: 2px 0;
+}
+
+.switchrow {
+  min-height: 40px;
+}
+
+.switchrow:focus-visible {
+  outline: 3px solid var(--wax-hi);
+  outline-offset: 2px;
+}
+
+.switchrow:hover .switch {
+  background: rgba(255, 250, 235, 0.6);
+}
+
+.switchrow:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.field.is-disabled .field__label,
+.field.is-disabled .field__value {
+  opacity: 0.55;
+}
+
+.plaques--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plaque:has(:disabled) {
+  cursor: not-allowed;
+  filter: grayscale(0.85) brightness(0.8);
+}
+
+/* ---- Interface size ------------------------------------------------------------ */
+
+/* The player's step, 1, 1.15 or 1.3 (`prefs.ts`). The sea behind is not touched. */
+#ui-root {
+  zoom: var(--ui-scale, 1);
+}
+
+/* ---- Shapes as well as colours --------------------------------------------------- */
+
+/*
+ * Every cue that was colour alone gains a shape or a pattern, and only when the
+ * player asks (html[data-shape-cues]). Drawn with masks and gradients, so no
+ * new assets and no new colours.
+ */
+html[data-shape-cues='on'] .hud-compass__window > .hud-compass__nogo {
+  height: 8px;
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 232, 200, 0.75) 0 2px, transparent 2px 6px),
+    linear-gradient(90deg, transparent, var(--wax) 22%, var(--wax) 78%, transparent);
+  border: 1px solid rgba(255, 232, 200, 0.7);
+  border-bottom: 0;
+}
+
+html[data-shape-cues='on'] .hud-compass__mark--objective:not(.is-off-left):not(.is-off-right) {
+  width: 24px;
+  height: 24px;
+  margin-left: -12px;
+  top: 13px;
+  padding: 2px;
+  border: 2px solid var(--gold);
+  border-radius: 3px;
+}
+
+html[data-shape-cues='on'] .hud-instruments.is-stalled .reading--log .reading__sub::before,
+html[data-shape-cues='on'] .hud-corner__fps::before {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  background: currentColor;
+}
+
+/* Stalled: a hazard triangle before the caption. */
+html[data-shape-cues='on'] .hud-instruments.is-stalled .reading--log .reading__sub::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5l10.5 19H1.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5l10.5 19H1.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* Frame rate: a circle when it is good, a triangle when it wavers, a square when it is poor. */
+html[data-shape-cues='on'] .hud-corner__fps.is-good::before {
+  border-radius: 50%;
+}
+
+html[data-shape-cues='on'] .hud-corner__fps.is-warn::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5l10.5 19H1.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5l10.5 19H1.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* Warnings and dangers: a hatched band along the toast's edge, diagonal for one, crossed for the other. */
+html[data-shape-cues='on'] .toast--warning::after,
+html[data-shape-cues='on'] .toast--danger::after {
+  content: '';
+  position: absolute;
+  inset: 12px auto 12px 8px;
+  width: 7px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(135deg, var(--ink) 0 2px, transparent 2px 5px);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+html[data-shape-cues='on'] .toast--danger::after {
+  background:
+    repeating-linear-gradient(135deg, var(--wax) 0 2px, transparent 2px 5px),
+    repeating-linear-gradient(45deg, var(--wax) 0 2px, transparent 2px 5px);
+}
+
+/* ---- Small screens and touch ------------------------------------------------------ */
+
+@media (max-width: 900px) and (orientation: portrait), (max-width: 699px) {
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings__col + .settings__col > .settings__section:first-child {
+    border-top: 1px solid rgba(143, 113, 77, 0.55);
+  }
+}
+
+@media (max-width: 900px) {
+  .shell__sheet {
+    padding: 28px 22px 26px;
+  }
+
+  .shell__sheet--wide {
+    padding: 18px 16px 16px;
+    max-height: calc(100vh - 28px);
+  }
+
+  .shell__title {
+    font-size: 44px;
+  }
+
+  .shell__title--small {
+    font-size: 32px;
+  }
+}
+
+@media (pointer: coarse) {
+  .keybtn,
+  .keyreset {
+    min-height: 44px;
+  }
+
+  .keyreset {
+    width: 44px;
+    height: 44px;
+  }
+
+  .hud-corner__pause {
+    width: 40px;
+    height: 40px;
+    margin: -8px 6px -8px -6px;
+  }
+
+  .hud-corner__pause-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .settings__btn,
+  .switchrow {
+    min-height: 44px;
+  }
+
+  .plaques--three .plaque {
+    min-height: 44px;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .shell__sheet {
+    padding: 16px 24px 16px;
+  }
+
+  .shell__title {
+    font-size: 34px;
+  }
+
+  .shell__flourish {
+    display: none;
+  }
+
+  .shell__menu {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .shell__btn {
+    min-height: 46px;
+    font-size: 21px;
+    white-space: nowrap;
+  }
+
+  .shell__sheet--wide {
+    max-height: calc(100vh - 20px);
+    padding: 12px 18px 10px;
+  }
+
+  .boot__starts {
+    flex-direction: row;
+    justify-content: center;
+    gap: 14px;
+  }
+
+  .boot__record {
+    margin-bottom: 2px;
+    font-size: 11.5px;
+  }
+
+  .cta--quiet {
+    margin-top: 12px;
+    font-size: 22px;
+    padding: 8px 20px 9px 16px;
+  }
+}
+
+@media (max-width: 600px) and (orientation: portrait) {
+  .cta--quiet {
+    margin-top: 6px;
+    font-size: 24px;
+    padding: 8px 24px 9px 18px;
+  }
+
+  .boot__gate-label--quiet {
+    margin: 14px 0 7px;
+  }
+
+  .boot__choices--compact .boot__choice-name {
+    font-size: 15px;
+  }
+
+  .boot__gate-readout--note {
+    display: none;
+  }
+}
+
+/* ---- Reduce motion, set in the game rather than by the system ---------------------- */
+
+html[data-reduce-motion='on'] *,
+html[data-reduce-motion='on'] *::before,
+html[data-reduce-motion='on'] *::after {
+  transition-duration: 0.001ms !important;
+  transition-delay: 0s !important;
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}
+
+html[data-reduce-motion='on'] .quote {
+  transform: none;
+  transition: opacity var(--dur-move) linear !important;
+}
+
+html[data-reduce-motion='on'] .boot__ship {
+  animation: none !important;
+}
+
+/* A phone held upright has no room in the corner beside the objective chip: the
+   ledger's "Pause & settings" button is the way in there. */
+@media (max-width: 600px) and (orientation: portrait) {
+  .hud-corner__pause {
+    display: none;
   }
 }

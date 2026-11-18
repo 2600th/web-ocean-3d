@@ -354,6 +354,25 @@ bottom edge in their darker material, which `:active` removes.
   full sea; *failed* — the course greys where it stopped, the status turns wax
   red and says what to try, the error's own words sit under it in small ink,
   and a brass "Try again" reloads.
+- **Title** — the start gate is the title screen. Under the title a quiet line
+  says what is on record (gold and voyages completed, or that nothing is);
+  *Continue* (wax call, only when a record exists) and *New voyage* (the call,
+  or a brass second step beside Continue) lead, and the graphics plaques sit
+  below, smaller. Focus starts on the first call.
+- **Pause and settings** (`PauseMenu.ts`, `SettingsScreen.ts`) — Escape, the
+  corner's brass pause button or a pad's menu button opens a parchment sheet
+  over a flat dark tint (no blur): *Resume* (wax), *Settings*, *Restart voyage*,
+  *Quit to title*. The rest of the interface is made `inert` and keys are
+  stopped before the game sees them; focus is trapped and returns where it was.
+  Settings is two columns of ledger sections (one under 900px): *Keys* (a
+  keycap per action; click, press a key, Escape cancels; a taken key swaps and
+  says so; per-row and whole reset), *Looking around*, *Comfort*, *Screen*,
+  *Sound* (a link to the ledger, not a copy). Disabled controls say why beside
+  them. Shape cues (`html[data-shape-cues]`) add a hatch to the no-go arc, a
+  box round the objective mark, a triangle to a stall, a circle, triangle or
+  square to the frame rate and a hatched band to warning and danger toasts.
+  Interface size is CSS `zoom` on `#ui-root` in three steps; `data-reduce-motion`
+  repeats the reduced-motion rules for the player's own switch.
 - **Menu sea** (`MenuSea.ts`) — the gate's own living backdrop, painted on a
   2D canvas (never WebGL, so it costs the GPU nothing the real sea needs):
   a dusk sky, painted flat-bottomed clouds lit from below, stars, gulls, a sun
@@ -407,7 +426,11 @@ clears the sail orders and the stick. Landscape phones show none.
 
 ## Motion
 
-Exponential ease-out (`cubic-bezier(.16,1,.3,1)`) everywhere. The authored
+Exponential ease-out (`cubic-bezier(.16,1,.3,1)`) everywhere, over one scale of
+six durations kept as custom properties: `--dur-press` 120ms, `--dur-state`
+200ms, `--dur-move` 320ms, `--dur-reveal` 560ms, `--dur-arrive` 900ms and
+`--dur-slow` 1600ms. The camera's mode-change sweep uses the same 900ms, and
+is a cut under reduced motion. The authored
 moments are the toast unroll, the objective unfurl, the score bump, the
 tab arrival, the chart laid on the table, the boot ship's bob, the ink
 running on the course, and the menu sea. `prefers-reduced-motion` collapses every transition and

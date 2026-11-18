@@ -19,7 +19,8 @@
  * opt back into hit-testing, so nothing here can swallow a camera drag.
  */
 
-import { Coach, type LessonId } from './Coach.ts';
+import { keybinds, type KeyAction } from '../input/keybinds.ts';
+import { Coach, type InputKind, type LessonId } from './Coach.ts';
 import { compassRose, icon, type IconName } from './icons.ts';
 import {
   CAMERA_MODES,
@@ -30,6 +31,7 @@ import {
   type ToastKind,
   type ToastOptions,
   type UiCallbacks,
+  type VoyageTally,
 } from './types.ts';
 
 interface Hint {
@@ -44,12 +46,17 @@ const MODE_LABELS: Record<CameraMode, string> = {
   cinematic: 'Tour',
 };
 
-const MODE_DIGITS: Record<CameraMode, string> = {
-  orbit: '1',
-  fly: '2',
-  boat: '3',
-  cinematic: '4',
+/** The key bound to each mode, which the player may have changed. */
+const MODE_ACTIONS: Record<CameraMode, KeyAction> = {
+  orbit: 'modeOrbit',
+  fly: 'modeFly',
+  boat: 'modeHelm',
+  cinematic: 'modeTour',
 };
+
+function modeKey(mode: CameraMode): string {
+  return keybinds.labelOf(MODE_ACTIONS[mode]);
+}
 
 /** What each mode is for, in a sentence a first-time visitor can choose by. Tab tooltips. */
 const MODE_TIPS: Record<CameraMode, string> = {
@@ -66,36 +73,56 @@ const MODE_ICONS: Record<CameraMode, IconName> = {
   cinematic: 'tour',
 };
 
-const HINTS: Record<CameraMode, readonly Hint[]> = {
-  orbit: [
-    { action: 'Look around', key: 'Drag' },
-    { action: 'Slide', key: 'Right drag' },
-    { action: 'Zoom', key: 'Scroll' },
-  ],
-  fly: [
-    { action: 'Fly', key: 'WASD' },
-    { action: 'Look', key: 'Click, then mouse' },
-    { action: 'Set speed', key: 'Scroll' },
-    { action: 'Boost', key: 'Shift' },
-  ],
-  // W/S step the canvas (furled, half, full) and R lets go or weighs the
-  // anchor — see `src/gameplay`.
-  boat: [
-    { action: 'More or less sail', key: 'W S' },
-    { action: 'Steer', key: 'A D' },
-    { action: 'Anchor', key: 'R' },
-    { action: 'Look', key: 'Drag' },
-  ],
-  // Nothing to drive — the tour holds the wheel. The hint names what the viewer
-  // *can* do, which is leave.
-  cinematic: [
-    { action: 'Take the helm', key: '3' },
-    { action: 'Fly free', key: '2' },
-  ],
-};
+/** The key list for a mode. The helm's and the tour's follow the player's bindings. */
+function hintsFor(mode: CameraMode): readonly Hint[] {
+  switch (mode) {
+    case 'orbit':
+      return [
+        { action: 'Look around', key: 'Drag' },
+        { action: 'Slide', key: 'Right drag' },
+        { action: 'Zoom', key: 'Scroll' },
+      ];
+    case 'fly':
+      return [
+        { action: 'Fly', key: 'WASD' },
+        { action: 'Look', key: 'Click, then mouse' },
+        { action: 'Set speed', key: 'Scroll' },
+        { action: 'Boost', key: 'Shift' },
+      ];
+    // More and less sail step the canvas (furled, half, full) and the anchor
+    // key lets go or weighs it; see `src/gameplay`.
+    case 'boat':
+      return [
+        { action: 'More or less sail', key: keybinds.labelsOf('sailMore', 'sailLess') },
+        { action: 'Steer', key: keybinds.labelsOf('steerPort', 'steerStarboard') },
+        { action: 'Trim sails', key: keybinds.labelsOf('trimIn', 'trimOut') },
+        { action: 'Anchor', key: keybinds.labelOf('anchor') },
+        { action: 'Look', key: 'Drag' },
+      ];
+    // Nothing to drive: the tour holds the wheel. The hint names what the
+    // viewer *can* do, which is leave.
+    case 'cinematic':
+      return [
+        { action: 'Take the helm', key: modeKey('boat') },
+        { action: 'Fly free', key: modeKey('fly') },
+      ];
+  }
+}
 
-/** Keyboard digits, in mode order. */
-const MODE_DIGITS_ORDER: readonly string[] = CAMERA_MODES.map((mode) => MODE_DIGITS[mode]);
+/** The helm's hints once a gamepad is in use (standard mapping, Xbox names). */
+const PAD_BOAT_HINTS: readonly Hint[] = [
+  { action: 'More or less sail', key: 'RT LT' },
+  { action: 'Steer', key: 'Left stick' },
+  { action: 'Trim sails', key: 'LB RB' },
+  { action: 'Anchor', key: 'A' },
+  { action: 'Look', key: 'Right stick' },
+];
+
+/**
+ * Half-width of the compass's no-go arc, degrees either side of the wind:
+ * `IRONS_DEG` in `gameplay/sailing.ts`, repeated because `src/ui` stands alone.
+ */
+const NO_GO_DEG = 35;
 
 /** Minimum ms between FPS text writes (~4 per second). */
 const FPS_WRITE_INTERVAL = 250;
@@ -179,6 +206,12 @@ function beaufort(knots: number): number {
   return index < 0 ? 12 : index;
 }
 
+/** Minutes and seconds, for a voyage's time: 4:07. */
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
 function formatDistance(metres: number): string {
   if (metres < 1000) return `${Math.max(0, Math.round(metres / 5) * 5)} m`;
   return `${(metres / 1852).toFixed(1)} nmi`;
@@ -196,6 +229,19 @@ function isTypingTarget(target: EventTarget | null): boolean {
   const tag = target.tagName;
   return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'OPTION';
 }
+
+/** One line of the score plate. `shown` is the figure on screen while it counts up. */
+interface ScoreRow {
+  row: HTMLElement;
+  value: HTMLElement;
+  /** The text the line is settling on. */
+  text: string;
+  shown: number | null;
+  frame: number;
+}
+
+/** How long a rising figure takes to count up to its new value, ms. */
+const SCORE_COUNT_MS = 900;
 
 function reducedMotion(): boolean {
   return typeof window.matchMedia === 'function'
@@ -216,10 +262,13 @@ export class Hud {
   // instrument corner
   private readonly fpsValue: HTMLElement;
   private readonly backendBadge: HTMLElement;
+  private readonly pauseButton: HTMLButtonElement;
 
   // modes
   private readonly hintList: HTMLElement;
   private readonly modeButtons = new Map<CameraMode, HTMLButtonElement>();
+  private readonly modeKeys = new Map<CameraMode, HTMLElement>();
+  private stopKeyWatch: (() => void) | null = null;
 
   // compass
   private readonly compassWindow: HTMLElement;
@@ -238,6 +287,7 @@ export class Hud {
   private readonly windFromText: HTMLElement;
   private readonly windForceText: HTMLElement;
   private readonly logBlock: HTMLElement;
+  private readonly logSub: HTMLElement;
   private readonly logKnotsText: HTMLElement;
 
   // toasts
@@ -250,8 +300,16 @@ export class Hud {
   private readonly objectiveBearingRow: HTMLElement;
   private readonly objectiveArrow: HTMLElement;
   private readonly objectiveBearingText: HTMLElement;
+  private readonly objectiveWarning: HTMLElement;
   private readonly scoreEl: HTMLElement;
-  private readonly scoreRows = new Map<string, { row: HTMLElement; value: HTMLElement }>();
+  // voyage tally
+  private readonly tallyEl: HTMLElement;
+  private readonly tallyTitle: HTMLElement;
+  private readonly tallySub: HTMLElement;
+  private readonly tallyRows: HTMLElement;
+  private readonly tallyAgain: HTMLButtonElement;
+  private onSailAgain: (() => void) | null = null;
+  private readonly scoreRows = new Map<string, ScoreRow>();
 
   private mode: CameraMode;
   private pendingFps = 0;
@@ -283,6 +341,8 @@ export class Hud {
   private shipKnots: number | null = null;
   private objective: Objective | null = null;
   private writtenObjectiveArrow = Number.NaN;
+  /** The needle's unwrapped angle, so the transition turns the short way across 180. */
+  private objectiveArrowTurn = 0;
   private lastObjectiveWrite = 0;
   private shipHeading: number | null = null;
 
@@ -292,6 +352,16 @@ export class Hud {
   private shownLesson: LessonId | null = null;
   /** Ship's head when the steering lesson went up; a real turn from it is the lesson done. */
   private steerFrom: number | null = null;
+  /** Hands to go back to when the gamepad is put down. */
+  private readonly baseInput: InputKind;
+  /** The compass's no-go arc either side of the wind, and how it is placed. */
+  private readonly noGoArc: HTMLElement;
+  private windFrom = 0;
+  /** True once her bow has been inside the no-go zone; leaving it under way is the lesson. */
+  private wasInNoGo = false;
+  /** Seconds-ish of sailing at way, for learning the arc without ever stalling. */
+  private sailedTime = 0;
+  private lastNavAt = 0;
 
   constructor(root: HTMLElement, initial: CameraMode, callbacks: UiCallbacks) {
     this.root = root;
@@ -327,7 +397,13 @@ export class Hud {
     objectiveMark.hidden = true;
     const shipMark = el('span', 'hud-compass__mark hud-compass__mark--ship');
     shipMark.hidden = true;
-    compassWindow.append(tape, objectiveMark, shipMark);
+    // The no-go zone: a red band on the tape either side of where the wind
+    // comes from. Shown at the helm until the player has sailed out of it.
+    const noGoArc = el('span', 'hud-compass__mark hud-compass__nogo');
+    noGoArc.style.width = `${NO_GO_DEG * 2 * TAPE_PX_PER_DEG}px`;
+    noGoArc.style.marginLeft = `${-NO_GO_DEG * TAPE_PX_PER_DEG}px`;
+    noGoArc.hidden = true;
+    compassWindow.append(tape, noGoArc, objectiveMark, shipMark);
 
     const lubber = el('span', 'hud-compass__lubber');
     lubber.setAttribute('aria-hidden', 'true');
@@ -359,7 +435,10 @@ export class Hud {
     objectiveArrow.setAttribute('aria-hidden', 'true');
     const bearingText = el('span', 'objective__bearing-text');
     bearingRow.append(objectiveArrow, bearingText);
-    objectiveText.append(objectiveTitle, objectiveDetail, bearingRow);
+    // What is coming (a squall, the dark), said plainly under the bearing.
+    const objectiveWarning = el('p', 'objective__warning');
+    objectiveWarning.hidden = true;
+    objectiveText.append(objectiveTitle, objectiveDetail, bearingRow, objectiveWarning);
     // On a phone the scroll folds to a chip (seal, title, bearing); this
     // button unfolds it. A wide screen has room for the whole scroll and
     // never shows it.
@@ -378,7 +457,22 @@ export class Hud {
     const scoreEl = el('dl', 'score plate');
     scoreEl.hidden = true;
     scoreEl.setAttribute('aria-label', 'Score');
-    quest.append(objectiveEl, scoreEl);
+
+    // The voyage's close: what came home, and the choice to go again. Takes
+    // the objective's place while it is up; the only part of the quest column
+    // that takes clicks.
+    const tallyEl = el('article', 'tally parchment');
+    tallyEl.hidden = true;
+    tallyEl.setAttribute('aria-label', 'Voyage tally');
+    const tallyTitle = el('h2', 'tally__title');
+    const tallySub = el('p', 'tally__sub');
+    const tallyRows = el('dl', 'tally__rows');
+    const tallyAgain = el('button', 'tally__again');
+    tallyAgain.type = 'button';
+    tallyAgain.append(icon('anchor', 'tally__icon'), el('span', 'tally__again-label', 'Sail again'));
+    tallyAgain.addEventListener('click', () => this.onSailAgain?.(), { signal });
+    tallyEl.append(tallyTitle, tallySub, tallyRows, tallyAgain);
+    quest.append(objectiveEl, tallyEl, scoreEl);
 
     // ---- Wind dial + log ---------------------------------------------------
     const instruments = el('div', 'hud-instruments');
@@ -405,7 +499,8 @@ export class Hud {
     const logFigure = el('span', 'reading__figure');
     const logKnotsText = el('span', 'reading__value', '0.0');
     logFigure.append(logKnotsText, el('span', 'reading__unit', 'kn'));
-    logBlock.append(logFigure, el('span', 'reading__sub', 'through water'));
+    const logSub = el('span', 'reading__sub', 'through water');
+    logBlock.append(logFigure, logSub);
     logBlock.hidden = true;
     readings.append(windBlock, logBlock);
     instruments.append(dial, readings);
@@ -421,14 +516,14 @@ export class Hud {
       const button = el('button', 'tab');
       button.type = 'button';
       button.setAttribute('aria-pressed', mode === this.mode ? 'true' : 'false');
-      button.setAttribute('aria-label', `${MODE_LABELS[mode]}: ${MODE_TIPS[mode]} (key ${MODE_DIGITS[mode]})`);
-      button.title = `${MODE_TIPS[mode]} (${MODE_DIGITS[mode]})`;
       button.classList.toggle('is-active', mode === this.mode);
+      const keycap = el('kbd', 'tab__key');
       button.append(
         icon(MODE_ICONS[mode], 'tab__icon'),
         el('span', 'tab__name', MODE_LABELS[mode]),
-        el('kbd', 'tab__key', MODE_DIGITS[mode]),
+        keycap,
       );
+      this.modeKeys.set(mode, keycap);
       button.addEventListener('click', () => this.selectMode(mode), { signal });
       this.modeButtons.set(mode, button);
       modes.append(button);
@@ -443,7 +538,15 @@ export class Hud {
     fpsValue.setAttribute('aria-label', 'Frames per second');
     const backendBadge = el('span', 'hud-corner__backend', 'WebGPU');
     backendBadge.setAttribute('aria-label', 'Renderer backend: WebGPU');
-    corner.append(fpsValue, el('span', 'hud-corner__unit', 'fps'), backendBadge);
+    // Pause, for hands with no Escape key. Shown once the host says what pausing does.
+    const pauseButton = el('button', 'hud-corner__pause');
+    pauseButton.type = 'button';
+    pauseButton.hidden = true;
+    pauseButton.setAttribute('aria-label', 'Pause and settings');
+    pauseButton.title = 'Pause and settings (Esc)';
+    pauseButton.append(icon('pause', 'hud-corner__pause-icon'));
+    corner.append(pauseButton, fpsValue, el('span', 'hud-corner__unit', 'fps'), backendBadge);
+    this.pauseButton = pauseButton;
 
     hud.append(compass, toastStack, quest, instruments, helm, corner);
 
@@ -457,6 +560,7 @@ export class Hud {
     this.headingPoint = headingPoint;
     this.objectiveMark = objectiveMark;
     this.shipMark = shipMark;
+    this.noGoArc = noGoArc;
     this.instruments = instruments;
     this.dialCard = dialCard;
     this.windArrow = windArrow;
@@ -464,6 +568,7 @@ export class Hud {
     this.windFromText = windFromText;
     this.windForceText = windForceText;
     this.logBlock = logBlock;
+    this.logSub = logSub;
     this.logKnotsText = logKnotsText;
     this.toastStack = toastStack;
     this.objectiveEl = objectiveEl;
@@ -472,13 +577,27 @@ export class Hud {
     this.objectiveBearingRow = bearingRow;
     this.objectiveArrow = objectiveArrow;
     this.objectiveBearingText = bearingText;
+    this.objectiveWarning = objectiveWarning;
     this.scoreEl = scoreEl;
+    this.tallyEl = tallyEl;
+    this.tallyTitle = tallyTitle;
+    this.tallySub = tallySub;
+    this.tallyRows = tallyRows;
+    this.tallyAgain = tallyAgain;
 
     this.objectiveMore = objectiveMore;
     // Lessons are phrased for the hands in use: a phone has no W key.
-    this.coach = new Coach(
-      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches,
-    );
+    this.baseInput =
+      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+        ? 'touch'
+        : 'keyboard';
+    this.coach = new Coach(this.baseInput);
+    this.paintModeKeys();
+    // A key rebound in the settings is the key the tabs and the lessons name.
+    this.stopKeyWatch = keybinds.onChange(() => {
+      this.paintModeKeys();
+      this.renderHints(this.mode);
+    });
     this.renderHints(this.mode);
     this.root.append(hud);
     this.measureCompass();
@@ -529,6 +648,13 @@ export class Hud {
         FPS_WRITE_INTERVAL - elapsed,
       );
     }
+  }
+
+  /** Gives the corner's pause button something to do, and shows it. */
+  setPauseHandler(open: () => void): void {
+    if (this.disposed) return;
+    this.pauseButton.hidden = false;
+    this.pauseButton.addEventListener('click', open, { signal: this.controller.signal });
   }
 
   /**
@@ -615,6 +741,8 @@ export class Hud {
     this.shipKnots = nav.shipKnots;
 
     if (this.objective !== null) this.placeObjective(false);
+    this.windFrom = wrap360(nav.windFromDeg);
+    this.placeNoGo();
 
     const now = performance.now();
     if (now - this.lastNavWrite >= NAV_WRITE_INTERVAL) {
@@ -623,6 +751,24 @@ export class Hud {
       setText(this.headingPoint, pointName(heading));
       if (this.shipKnots !== null) setText(this.logKnotsText, Math.abs(this.shipKnots).toFixed(1));
     }
+  }
+
+  /**
+   * A gamepad was used: lessons and the key list switch to its buttons until
+   * a key or a pointer is used again.
+   */
+  setPadInUse(): void {
+    if (this.disposed || !this.coach.setInput('pad')) return;
+    this.renderHints(this.mode);
+  }
+
+  /**
+   * An order given by hands the HUD cannot see (the touch stick's sheets, a
+   * gamepad), reported so its lesson counts as done.
+   */
+  noteLesson(id: LessonId): void {
+    if (this.disposed) return;
+    this.learn(id);
   }
 
   // ======================================================================
@@ -657,7 +803,7 @@ export class Hud {
       gone = true;
       window.clearTimeout(timer);
       node.classList.add('is-leaving');
-      window.setTimeout(() => node.remove(), reducedMotion() ? 0 : 420);
+      window.setTimeout(() => node.remove(), reducedMotion() ? 0 : 360); // the roll-away is --dur-move, 320 ms
     };
     const timer = window.setTimeout(dismiss, duration);
     return dismiss;
@@ -690,6 +836,10 @@ export class Hud {
     setText(this.objectiveTitle, objective.title);
     setText(this.objectiveDetail, objective.detail ?? '');
     this.objectiveDetail.hidden = !objective.detail;
+    const warning = objective.warning ?? '';
+    if (warning !== '' && warning !== this.objectiveWarning.textContent) this.wake();
+    setText(this.objectiveWarning, warning);
+    this.objectiveWarning.hidden = warning === '';
     this.objectiveEl.hidden = false;
     if (fresh && !reducedMotion()) {
       this.objectiveEl.classList.remove('is-new');
@@ -698,6 +848,57 @@ export class Hud {
       this.objectiveEl.classList.add('is-new');
     }
     this.placeObjective(true);
+  }
+
+  /**
+   * Shows the voyage's tally in the objective's place, or puts it away with
+   * `null`. `onSailAgain` is what its one button does; the button takes focus
+   * so a keyboard can answer it with Enter.
+   */
+  setTally(tally: VoyageTally | null, onSailAgain?: () => void): void {
+    if (this.disposed) return;
+    if (tally === null) {
+      this.tallyEl.hidden = true;
+      this.onSailAgain = null;
+      return;
+    }
+    this.onSailAgain = onSailAgain ?? null;
+    const full = tally.cargo >= tally.casks;
+    setText(this.tallyTitle, full ? 'All cargo home' : 'Cargo home');
+    setText(this.tallySub, `Voyage ${tally.voyage} · at anchor off the cove`);
+    const best = tally.newBest
+      ? `${formatClock(tally.seconds)} · new best`
+      : tally.bestSeconds !== null
+        ? formatClock(tally.bestSeconds)
+        : 'Land every cask to set one';
+    const rows: readonly (readonly [string, string])[] = [
+      ['Cargo landed', `${tally.cargo} of ${tally.casks}`],
+      ['Gold', `+${tally.gold.toLocaleString('en-GB')}`],
+      ['Time', formatClock(tally.seconds)],
+      ['Best time', best],
+      ['Purse', `${tally.purse.toLocaleString('en-GB')} gold`],
+      ['Voyages home', tally.voyage.toLocaleString('en-GB')],
+    ];
+    this.tallyRows.replaceChildren(
+      ...rows.map(([label, value]) => {
+        const row = el('div', 'tally__row');
+        row.append(el('dt', 'tally__label', label), el('dd', 'tally__value', value));
+        return row;
+      }),
+    );
+    const fresh = this.tallyEl.hidden;
+    this.tallyEl.hidden = false;
+    this.objectiveEl.hidden = true;
+    this.objectiveMark.hidden = true;
+    this.wake();
+    if (fresh) {
+      if (!reducedMotion()) {
+        this.tallyEl.classList.remove('is-new');
+        void this.tallyEl.offsetWidth;
+        this.tallyEl.classList.add('is-new');
+      }
+      this.tallyAgain.focus({ preventScroll: true });
+    }
   }
 
   /**
@@ -714,12 +915,21 @@ export class Hud {
       const value = el('dd', 'score__value');
       row.append(el('dt', 'score__label', label), value);
       this.scoreEl.append(row);
-      entry = { row, value };
+      entry = { row, value, text: '', shown: null, frame: 0 };
       this.scoreRows.set(label, entry);
-    } else if (entry.value.textContent === text) {
+    } else if (entry.text === text) {
       return;
     }
-    entry.value.textContent = text;
+    window.cancelAnimationFrame(entry.frame);
+    const from = entry.shown;
+    entry.text = text;
+    if (typeof value === 'number' && from !== null && value > from && !reducedMotion()) {
+      // Gold and cargo count up to the new figure rather than snapping to it.
+      this.countScore(entry, from, value);
+    } else {
+      entry.value.textContent = text;
+      entry.shown = typeof value === 'number' ? value : null;
+    }
     this.wake();
     this.scoreEl.hidden = false;
     if (!reducedMotion()) {
@@ -729,11 +939,35 @@ export class Hud {
     }
   }
 
+  private countScore(entry: ScoreRow, from: number, to: number): void {
+    const started = performance.now();
+    const step = (now: number): void => {
+      const p = Math.min(1, (now - started) / SCORE_COUNT_MS);
+      const eased = 1 - (1 - p) ** 3;
+      entry.shown = p >= 1 ? to : Math.round(from + (to - from) * eased);
+      entry.value.textContent = entry.shown.toLocaleString('en-GB');
+      if (p < 1) entry.frame = window.requestAnimationFrame(step);
+    };
+    entry.frame = window.requestAnimationFrame(step);
+  }
+
+  /**
+   * Marks the ship as stalled head to wind: the wind arrow on the dial turns
+   * amber and the speed reading says why she is not moving. Cleared when she
+   * is free. The toast still tells the visitor what to do about it.
+   */
+  setStalled(stalled: boolean): void {
+    if (this.disposed) return;
+    this.instruments.classList.toggle('is-stalled', stalled);
+    setText(this.logSub, stalled ? 'head to wind' : 'through water');
+  }
+
   /** Removes one score line, or every line when `label` is omitted. */
   clearScore(label?: string): void {
     if (this.disposed) return;
     for (const [key, entry] of this.scoreRows) {
       if (label !== undefined && key !== label) continue;
+      window.cancelAnimationFrame(entry.frame);
       entry.row.remove();
       this.scoreRows.delete(key);
     }
@@ -788,6 +1022,8 @@ export class Hud {
       this.fpsTimer = 0;
     }
     this.controller.abort();
+    this.stopKeyWatch?.();
+    this.stopKeyWatch = null;
     window.clearInterval(this.idleTimer);
     window.clearTimeout(this.hintTimer);
     window.clearTimeout(this.objectiveChipTimer);
@@ -795,6 +1031,8 @@ export class Hud {
     delete this.root.dataset.mode;
     this.hudEl.remove();
     this.modeButtons.clear();
+    this.modeKeys.clear();
+    for (const entry of this.scoreRows.values()) window.cancelAnimationFrame(entry.frame);
     this.scoreRows.clear();
   }
 
@@ -803,26 +1041,38 @@ export class Hud {
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (isTypingTarget(event.target)) return;
+    this.leavePad();
 
     // The helm's orders, as lessons done. Pressing the key is knowing it; the
     // gameplay layer carries out the order itself.
+    const action = keybinds.actionFor(event.code);
     if (this.mode === 'boat') {
       const lesson: LessonId | null =
-        event.code === 'KeyW' ? 'sail'
-          : event.code === 'KeyA' || event.code === 'KeyD' ? 'steer'
-            : event.code === 'KeyR' ? 'anchor'
-              : null;
+        action === 'sailMore' ? 'sail'
+          : action === 'steerPort' || action === 'steerStarboard' ? 'steer'
+            : action === 'anchor' ? 'anchor'
+              : action === 'trimIn' || action === 'trimOut' ? 'trim'
+                : null;
       if (lesson !== null) this.learn(lesson);
     }
 
-    const index = MODE_DIGITS_ORDER.indexOf(event.key);
-    if (index < 0) return;
-    const mode = CAMERA_MODES[index];
+    const mode = CAMERA_MODES.find((candidate) => MODE_ACTIONS[candidate] === action);
     if (mode === undefined) return;
 
     event.preventDefault();
     this.selectMode(mode);
   };
+
+  /** Writes each tab's key, and the words that name it, from the bindings in force. */
+  private paintModeKeys(): void {
+    for (const [mode, button] of this.modeButtons) {
+      const key = modeKey(mode);
+      const keycap = this.modeKeys.get(mode);
+      if (keycap) setText(keycap, key);
+      button.setAttribute('aria-label', `${MODE_LABELS[mode]}: ${MODE_TIPS[mode]} (key ${key})`);
+      button.title = `${MODE_TIPS[mode]} (${key})`;
+    }
+  }
 
   private selectMode(mode: CameraMode): void {
     if (mode === this.mode) return;
@@ -844,6 +1094,7 @@ export class Hud {
     if (performance.now() - this.lastInput < IDLE_MS) return;
     // Something the viewer is reading or operating keeps the chrome up.
     if (this.toastStack.querySelector('.toast:not(.is-leaving)') !== null) return;
+    if (!this.tallyEl.hidden) return;
     if (this.root.querySelector(':focus-visible') !== null) return;
     this.idle = true;
     this.root.classList.add('is-idle');
@@ -852,6 +1103,7 @@ export class Hud {
   /** A press on the canvas becomes a camera drag once it travels a few pixels. */
   private readonly onPointerDown = (event: PointerEvent): void => {
     this.noteInput();
+    this.leavePad();
     if (!(event.target instanceof HTMLCanvasElement)) return;
     this.dragStart = { x: event.clientX, y: event.clientY };
     window.addEventListener('pointermove', this.onDragMove, {
@@ -885,6 +1137,44 @@ export class Hud {
       // A lesson stays up until it is done; only the key list times out.
       if (this.shownLesson === null) this.hudEl.classList.remove('hud--hints');
     }, HINT_MS);
+  }
+
+  /** Keys or a pointer again: back to their phrasing. */
+  private leavePad(): void {
+    if (this.coach.inputKind === 'pad' && this.coach.setInput(this.baseInput)) {
+      this.renderHints(this.mode);
+    }
+  }
+
+  /**
+   * Places the no-go arc on the tape, centred on where the wind comes from,
+   * and learns it: once her bow has been in the zone and she has sailed out
+   * of it with way on, or after two minutes of sailing that never went near
+   * it, the arc fades and stays gone.
+   */
+  private placeNoGo(): void {
+    const now = performance.now();
+    const elapsed = this.lastNavAt > 0 ? Math.min(0.5, (now - this.lastNavAt) / 1000) : 0;
+    this.lastNavAt = now;
+
+    const ship = this.shipHeading;
+    if (ship === null) {
+      this.noGoArc.hidden = true;
+      return;
+    }
+    const off = Math.abs(wrap180(ship - this.windFrom));
+    const knots = Math.abs(this.shipKnots ?? 0);
+    if (!this.coach.has('nogo')) {
+      if (off < NO_GO_DEG) this.wasInNoGo = true;
+      if (knots > 2) this.sailedTime += elapsed;
+      if ((this.wasInNoGo && off > NO_GO_DEG + 10 && knots > 2) || this.sailedTime > 120) {
+        this.learn('nogo');
+      }
+    }
+    const learned = this.coach.has('nogo');
+    this.noGoArc.classList.toggle('is-learned', learned);
+    this.noGoArc.classList.toggle('is-inside', off < NO_GO_DEG);
+    this.placeMark(this.noGoArc, this.windFrom);
   }
 
   /** Marks a lesson done and moves the ribbon on to the next one. */
@@ -955,7 +1245,8 @@ export class Hud {
       this.hudEl.classList.add('hud--hints');
       return;
     }
-    for (const hint of HINTS[mode]) {
+    const hints = mode === 'boat' && this.coach.inputKind === 'pad' ? PAD_BOAT_HINTS : hintsFor(mode);
+    for (const hint of hints) {
       const row = el('li', 'hud-hints__item');
       row.append(el('kbd', 'keycap', hint.key), el('span', 'hud-hints__action', hint.action));
       this.hintList.append(row);
@@ -1006,8 +1297,12 @@ export class Hud {
     if (hasBearing) {
       const relative = Math.round(wrap180(objective.bearingDeg! - this.heading));
       if (relative !== this.writtenObjectiveArrow) {
+        // A wrapped angle jumping from 179 to -179 would spin the whole circle
+        // under the transition; step by the shortest difference instead.
+        if (Number.isNaN(this.writtenObjectiveArrow)) this.objectiveArrowTurn = relative;
+        else this.objectiveArrowTurn += wrap180(relative - this.writtenObjectiveArrow);
         this.writtenObjectiveArrow = relative;
-        this.objectiveArrow.style.transform = `rotate(${relative}deg)`;
+        this.objectiveArrow.style.transform = `rotate(${this.objectiveArrowTurn}deg)`;
       }
     }
 

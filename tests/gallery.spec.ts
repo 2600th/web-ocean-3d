@@ -162,15 +162,25 @@ test.describe('gallery', () => {
     if (ONLY && !ONLY.includes('interface')) return;
     // The interface shot, with the overlay: a compositor screenshot rather than
     // a render, because the panel and HUD are DOM.
+    //
+    // It shows the game being played: the helm, under way with the chase
+    // camera (`boat-chase`: full ahead, the wake trailing), with no debug
+    // overlay. It used to be Orbit mode with the buoyancy probes switched on,
+    // which put the hull's sample dots on the front page and no gameplay.
     await page.goto('/?gate=0&quality=high');
     await bootOcean(page);
-    await applyShot(page, SHOTS[0]);
-    await page.evaluate(() => window.__ocean.setState({ buoyancyProbes: true }));
-    // The probes are geometry, so they need a frame to appear.
-    await page.evaluate(() => window.__ocean.step(1 / 60, 2));
+    const helm = SHOTS.find((s) => s.id === 'boat-chase');
+    if (helm === undefined) throw new Error('gallery: no canonical shot "boat-chase"');
+    await applyShot(page, helm);
+    // The shot drives her by scripted input, which leaves the helm's own sail
+    // setting furled. Set it, so the HUD reads what the picture shows, and give
+    // the canvas and the HUD two seconds to follow.
+    await page.evaluate(async () => {
+      (window.__ocean as any).gameplay?.setSail('full');
+      await window.__ocean.step(1 / 60, 120);
+    });
     const ui = await page.screenshot({ animations: 'disabled' });
     writeFileSync(join(IMAGE_DIR, 'interface.png'), ui);
-    await page.evaluate(() => window.__ocean.setState({ buoyancyProbes: false }));
     console.log('[gallery] interface.png');
   });
 });

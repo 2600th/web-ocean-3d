@@ -201,6 +201,14 @@ export interface QualitySettings {
    * raising the tier cannot compile a shader mid-session.
    */
   spray: number;
+  /**
+   * Spindrift slots: spray the wind tears off breaking crests in a gale (see
+   * `physics/Spindrift`). One compute pass and one instanced draw, budgeted at
+   * about 0.5 ms for High's 60,000. Zero at Low and Medium, where nothing is
+   * dispatched or drawn; the pipelines are still built at boot at every tier,
+   * so raising the tier compiles nothing.
+   */
+  spindrift: number;
   underwaterParticles: number;
   /**
    * Gulls in the flock, and fish in the school.
@@ -407,6 +415,30 @@ export interface QualitySettings {
    * no texture and no shadow.
    */
   canopy: number;
+
+  /**
+   * Whether the sails are verlet cloth in compute (`scene/ship/ClothSolver`)
+   * rather than the analytic vertex-stage billow. About 900 vertices, eight
+   * small dispatches a frame at 60 Hz; budgeted at 0.5 ms.
+   */
+  sailCloth: boolean;
+
+  /**
+   * Weather and fire detail, 0..1: the share of rain drops drawn (`Weather`),
+   * whether the deck takes splash crowns (from 0.5), the camp fire's embers
+   * and sparks, and the lightning's forks and leader. Instance counts only, so
+   * a tier change compiles nothing.
+   */
+  weatherDetail: number;
+  /**
+   * Figures on deck (`scene/crew`): instanced skinned figures, one draw per
+   * pose group (five at most) and their shadow draws. 0 draws none. Only the
+   * instance counts move, so a tier change compiles nothing. At 9: about 76k
+   * triangles submitted per pass (each group draws the parts any of its figures
+   * wears; a figure's unworn parts collapse to a point), about 40k of them
+   * visible, and five 23-bone mixers.
+   */
+  crew: number;
 }
 
 export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
@@ -428,6 +460,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 0,
     godRaySteps: 0,
     spray: 0,
+    spindrift: 0,
     underwaterParticles: 400,
     birds: 0,
     fish: 0,
@@ -453,6 +486,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 0,
     meadow: 0,
     canopy: 4000,
+    sailCloth: false,
+    weatherDetail: 0.4,
+    crew: 0,
   },
   medium: {
     fftSize: 128,
@@ -472,6 +508,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 12,
     godRaySteps: 12,
     spray: 0.6,
+    spindrift: 0,
     underwaterParticles: 1200,
     birds: 14,
     fish: 110,
@@ -497,6 +534,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 0.5,
     meadow: 18000,
     canopy: 9000,
+    sailCloth: false,
+    weatherDetail: 0.7,
+    crew: 5,
   },
   high: {
     fftSize: 256,
@@ -516,6 +556,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 18,
     godRaySteps: 24,
     spray: 1,
+    spindrift: 60000,
     underwaterParticles: 2400,
     birds: 26,
     // [underwater-look-3] Round 12: 240 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
@@ -540,6 +581,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 0.8,
     meadow: 38000,
     canopy: 15000,
+    sailCloth: true,
+    weatherDetail: 1,
+    crew: 9,
   },
   ultra: {
     fftSize: 256,
@@ -559,6 +603,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 34,
     godRaySteps: 40,
     spray: 1,
+    spindrift: 80000,
     underwaterParticles: 4000,
     birds: 40,
     // [underwater-look-3] Round 12: 380 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
@@ -583,6 +628,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 1,
     meadow: 62000,
     canopy: 20000,
+    sailCloth: true,
+    weatherDetail: 1,
+    crew: 9,
   },
   max: {
     fftSize: 512,
@@ -604,6 +652,7 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     cloudSteps: 34,
     godRaySteps: 40,
     spray: 1,
+    spindrift: 100000,
     underwaterParticles: 6000,
     birds: 64,
     // [underwater-look-3] Round 12: 560 plus the 24 chromis; see `Fish.CHROMIS_OFFSET`.
@@ -628,6 +677,9 @@ export const QUALITY_TIERS: Record<QualityTier, QualitySettings> = {
     seaCreatures: 1,
     meadow: 90000,
     canopy: 24000,
+    sailCloth: true,
+    weatherDetail: 1,
+    crew: 9,
   },
 };
 

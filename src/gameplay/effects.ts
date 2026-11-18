@@ -1,5 +1,18 @@
 import * as THREE from 'three/webgpu';
-import { attribute, exp, float, normalView, smoothstep, uv, vec2, vec3 } from 'three/tsl';
+import {
+  attribute,
+  cameraFar,
+  cameraNear,
+  exp,
+  float,
+  normalView,
+  perspectiveDepthToViewZ,
+  positionView,
+  smoothstep,
+  uv,
+  vec2,
+  vec3,
+} from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDown } from '../core/tslMath';
 import {
@@ -7,10 +20,12 @@ import {
   CLASS_DROP,
   CLASS_MIST,
   particleVertex,
+  sharedSceneDepth,
   sprayMaterial,
   sprayUniforms,
 } from '../physics/sprayLook';
 import { BowSheet, levelQuaternion, sheetPoint, sheetPointWorld, sheetStation, type SheetStation } from './BowSheet';
+import type { SprayLanding } from '../physics/Spray';
 
 /**
  * The two pieces of gameplay feedback that have to be visible at any range:
@@ -46,6 +61,8 @@ export class ObjectiveBeacon {
   private readonly materials: THREE.Material[] = [];
   private readonly geometries: THREE.BufferGeometry[] = [];
   private time = 0;
+  /** 0..1 multiplier on everything the beacon draws: how far it has faded in. */
+  visibility = 1;
 
   constructor() {
     this.object.name = 'objective-beacon';
@@ -87,7 +104,10 @@ export class ObjectiveBeacon {
     ring.side = THREE.DoubleSide;
     ring.fog = false;
     ring.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(1.6) as any;
-    ring.opacityNode = float(1).sub(this.uRing).mul(this.uOpacity).mul(0.7) as any;
+    // Rises over the first tenth of the loop and falls to nothing at its end, so
+    // the ring is invisible at the wrap instead of snapping back to full.
+    const ringEnvelope = smoothstep(0, 0.1, this.uRing).mul(float(1).sub(this.uRing));
+    ring.opacityNode = ringEnvelope.mul(this.uOpacity).mul(0.9) as any;
     this.ring = new THREE.Mesh(ringGeometry, ring);
     this.ring.frustumCulled = false;
     this.ring.renderOrder = 7;
@@ -104,17 +124,19 @@ export class ObjectiveBeacon {
    * hundred metres; faded out close in, because at arm's length a shaft of light
    * is no longer a marker, it is a wall.
    */
-  update(dt: number, target: THREE.Vector3, viewer: THREE.Vector3): void {
+  update(dt: number, target: THREE.Vector3, viewer: THREE.Vector3, reducedMotion = false): void {
     this.time += dt;
     this.object.position.set(target.x, target.y + 0.2, target.z);
     const distance = Math.hypot(viewer.x - target.x, viewer.z - target.z);
     const widen = Math.min(6, Math.max(1, distance / 70));
     this.column.scale.set(widen, 1, widen);
-    const pulse = 0.82 + 0.18 * Math.sin(this.time * 2.6);
+    // Reduced motion: a steady column and a ring held still part-way through
+    // its spread, rather than a pulse and a ripple.
+    const pulse = reducedMotion ? 0.91 : 0.82 + 0.18 * Math.sin(this.time * 2.6);
     const near = Math.min(1, Math.max(0, (distance - 14) / 40));
-    this.uOpacity.value = pulse * (0.25 + 0.75 * near);
+    this.uOpacity.value = pulse * (0.25 + 0.75 * near) * this.visibility;
 
-    const phase = (this.time / 2.2) % 1;
+    const phase = reducedMotion ? 0.3 : (this.time / 2.2) % 1;
     this.uRing.value = phase;
     const radius = 1.5 + phase * 9;
     this.ring.scale.set(radius, 1, radius);
@@ -127,6 +149,67 @@ export class ObjectiveBeacon {
   dispose(): void {
     for (const m of this.materials) m.dispose();
     for (const g of this.geometries) g.dispose();
+  }
+}
+
+/**
+ * A glint on the cargo while it floats: a four-point star that blooms and
+ * fades every couple of seconds, so a cask in the swell catches the eye the
+ * way a wet barrel catches the sun. A camera-facing quad, widened with range
+ * like the beacon so it does not shrink away, and depth-tested so a wave in
+ * front of the cask hides it. Under reduced motion it holds steady and dim.
+ */
+export class CargoGlint {
+  readonly mesh: THREE.Mesh;
+
+  private readonly geometry = new THREE.PlaneGeometry(1, 1);
+  private readonly material = new THREE.MeshBasicNodeMaterial();
+  private readonly uAmount = uniform(0);
+  private time = 0;
+
+  constructor() {
+    const material = this.material;
+    material.transparent = true;
+    material.depthWrite = false;
+    material.blending = THREE.AdditiveBlending;
+    material.side = THREE.DoubleSide;
+    material.fog = false;
+    material.colorNode = vec3(BEACON_COLOR.r, BEACON_COLOR.g, BEACON_COLOR.b).mul(3.2) as any;
+    const p = uv().sub(vec2(0.5, 0.5));
+    const radius = p.length().mul(2);
+    const core = float(1).sub(radius).clamp(0, 1).pow(2.2);
+    // Two thin streaks, one across and one up, each tapering toward its tip.
+    const streakH = exp(p.y.abs().mul(-16)).mul(float(1).sub(p.x.abs().mul(2)).clamp(0, 1).pow(1.3));
+    const streakV = exp(p.x.abs().mul(-16)).mul(float(1).sub(p.y.abs().mul(2)).clamp(0, 1).pow(1.3));
+    material.opacityNode = core.add(streakH.add(streakV)).mul(this.uAmount).clamp(0, 1) as any;
+    this.mesh = new THREE.Mesh(this.geometry, material);
+    this.mesh.name = 'gameplay-cargo-glint';
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 7;
+    this.mesh.castShadow = false;
+    this.mesh.receiveShadow = false;
+  }
+
+  /** `reveal` is the cargo's own fade-in, 0..1. */
+  update(dt: number, at: THREE.Vector3, camera: THREE.Camera, reducedMotion: boolean, reveal: number): void {
+    this.time += dt;
+    this.mesh.position.set(at.x, at.y + 1.1, at.z);
+    this.mesh.quaternion.copy(camera.quaternion);
+    // Blooms for about a third of each 2.3 s, a faint core the rest of the time.
+    const twinkle = Math.pow(Math.max(0, Math.sin(this.time * 2.7)), 4);
+    const distance = camera.position.distanceTo(at);
+    const range = Math.min(5, Math.max(1, distance / 60));
+    const strength = reducedMotion ? 0.4 : 0.2 + 0.8 * twinkle;
+    // Too close and it is a lens flare on a barrel; fade out inside 6 m.
+    const near = Math.min(1, Math.max(0, (distance - 6) / 10));
+    this.uAmount.value = strength * near * reveal;
+    const size = (2.4 + 3 * (reducedMotion ? 0.3 : twinkle)) * range;
+    this.mesh.scale.set(size, size, size);
+  }
+
+  dispose(): void {
+    this.geometry.dispose();
+    this.material.dispose();
   }
 }
 
@@ -152,6 +235,8 @@ export class Burst {
   private readonly uTint = uniform(new THREE.Color(1, 0.75, 0.35));
   private age = BURST_LIFE;
   private seed = 1;
+  /** Opacity ceiling: the sand plume is thin, so its overlapping sprites do not sum to white. */
+  private peak = 1;
 
   private readonly matrix = new THREE.Matrix4();
   private readonly position = new THREE.Vector3();
@@ -170,7 +255,11 @@ export class Burst {
     this.material.colorNode = (this.uTint as any).mul(3);
     const radius = uv().sub(vec2(0.5, 0.5)).length().mul(2);
     const glow = float(1).sub(radius).clamp(0, 1).pow(2.2);
-    this.material.opacityNode = glow.mul(this.uFade) as any;
+    // Soft against what is behind it, as spray is: a spark passing into the
+    // water or the planks fades out over half a metre instead of being cut.
+    const sceneZ: any = perspectiveDepthToViewZ(sharedSceneDepth().x, cameraNear, cameraFar);
+    const soft: any = (positionView as any).z.sub(sceneZ).div(0.5).clamp(0, 1);
+    this.material.opacityNode = glow.mul(this.uFade).mul(soft) as any;
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, BURST_COUNT);
     this.mesh.name = 'gameplay-burst';
     this.mesh.frustumCulled = false;
@@ -190,12 +279,16 @@ export class Burst {
 
   /**
    * @param strength 0..1, scales launch speed and spark size.
-   * @param gold     Gold sparks (a reward) or white water (an anchor).
+   * @param gold     Gold sparks (a reward), white water (an anchor) or, for
+   *                 `'sand'`, a low, wide, slow plume of churned bottom.
    */
-  fire(at: THREE.Vector3, strength = 1, gold = true): void {
+  fire(at: THREE.Vector3, strength = 1, gold: boolean | 'sand' = true): void {
     this.origin.copy(at);
     this.age = 0;
-    this.uTint.value.setRGB(gold ? 1 : 0.85, gold ? 0.75 : 0.92, gold ? 0.35 : 1);
+    const sand = gold === 'sand';
+    this.peak = sand ? 0.35 : 1;
+    if (sand) this.uTint.value.setRGB(0.5, 0.4, 0.24);
+    else this.uTint.value.setRGB(gold ? 1 : 0.85, gold ? 0.75 : 0.92, gold ? 0.35 : 1);
     // A deterministic spread per burst, so two identical runs throw identical sparks.
     let h = (this.seed++ * 0x9e3779b1) >>> 0;
     const next = () => {
@@ -206,13 +299,14 @@ export class Burst {
     };
     for (let i = 0; i < BURST_COUNT; i++) {
       const angle = next() * Math.PI * 2;
-      const out = (1.5 + next() * 5) * strength;
+      // Sand rises a few metres and spreads, rather than fountaining.
+      const out = (sand ? 1.5 + next() * 4.5 : 1.5 + next() * 5) * strength;
       // High enough to clear the hull and sails from the chase camera: 4 to 13 m.
-      const up = (9 + next() * 7) * (0.55 + 0.45 * strength);
+      const up = (sand ? 4 + next() * 4 : 9 + next() * 7) * (0.55 + 0.45 * strength);
       this.velocity[i * 3] = Math.cos(angle) * out;
       this.velocity[i * 3 + 1] = up;
       this.velocity[i * 3 + 2] = Math.sin(angle) * out;
-      this.size[i] = (0.8 + 0.8 * next()) * (0.6 + 0.4 * strength);
+      this.size[i] = (0.8 + 0.8 * next()) * (0.6 + 0.4 * strength) * (sand ? 2.4 : 1);
     }
     this.mesh.visible = true;
   }
@@ -222,7 +316,7 @@ export class Burst {
     this.age += dt;
     const t = Math.min(this.age, BURST_LIFE);
     const life = t / BURST_LIFE;
-    this.uFade.value = Math.max(0, 1 - life * life);
+    this.uFade.value = this.peak * Math.max(0, 1 - life * life);
     const shrink = 1 - life * 0.7;
     for (let i = 0; i < BURST_COUNT; i++) {
       this.position.set(
@@ -260,6 +354,8 @@ const SPRAY_COUNT = 1792;
  * past 1.0x — and then only the oldest mist is cut short.
  */
 const SPRAY_RATE = 1000;
+/** Seconds between two bow drops traced to where they land; see `BowSpray.traceLanding`. */
+const BOW_LANDING_INTERVAL = 0.18;
 /** Hull speed, m/s, below which the bow throws nothing, and at which it throws most. */
 const SPRAY_START_SPEED = 2.4;
 const SPRAY_FULL_SPEED = 7;
@@ -362,6 +458,13 @@ export class BowSpray {
   /** The sheet's and the spray's strength, 0..~1.3, following speed, immersion and plunge. */
   private intensity = 0;
   private speed = 0;
+  /** Clock of the last particle thrown; see `idle`. */
+  private lastEmit = -1000;
+  /** Ring slots in use at this tier; see `update`. */
+  private capacity = SPRAY_COUNT;
+  /** Where flung drops leave foam; see `traceLanding`. */
+  landing: SprayLanding | null = null;
+  private lastLanding = -1000;
 
   constructor() {
     this.geometry = new THREE.InstancedBufferGeometry();
@@ -434,6 +537,18 @@ export class BowSpray {
     this.time += dt;
     this.uClock.value = this.time;
 
+    // The quality tier's spray control (`sprayUniforms.strength`): below 1 a
+    // shorter ring at a lower rate, so the same seconds of spray are in the air
+    // but thinner; at 0 nothing, the sheet included.
+    const tier = Math.max(0, sprayUniforms.strength.value as number);
+    const capacity = tier <= 0 ? 0 : Math.max(64, Math.round(SPRAY_COUNT * Math.min(1, tier)));
+    if (capacity !== this.capacity) {
+      this.capacity = capacity;
+      this.geometry.instanceCount = Math.max(1, capacity);
+      if (this.cursor >= capacity) this.cursor = 0;
+    }
+    this.sheet.mesh.visible = tier > 0;
+
     // How fast the stem is driving down, from its own track: a plunge into a
     // sea throws a burst on top of the steady fan.
     this.bow.set(hullLength * 0.5, 0, 0).applyMatrix4(hull.matrixWorld);
@@ -455,7 +570,7 @@ export class BowSpray {
     this.speed = Math.max(0, speed);
     this.sheet.update(this.time, hull, this.intensity, this.speed, hullLength * 0.5, hullBeam);
 
-    this.pending += SPRAY_RATE * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
+    this.pending += SPRAY_RATE * Math.min(1, tier) * Math.min(1.3, this.intensity) * (0.7 + 0.8 * boost) * dt;
     if (this.pending >= 1) {
       this.forward.set(1, 0, 0).applyQuaternion(hull.quaternion).setY(0);
       if (this.forward.lengthSq() < 1e-6) this.forward.set(1, 0, 0);
@@ -480,6 +595,11 @@ export class BowSpray {
     return this.intensity;
   }
 
+  /** Nothing to draw: no sheet, and the last particle thrown has come down. */
+  get idle(): boolean {
+    return this.capacity === 0 || (this.intensity < 0.005 && this.time - this.lastEmit > 2);
+  }
+
   clear(): void {
     (this.origin.array as Float32Array).fill(0);
     (this.launch.array as Float32Array).fill(0);
@@ -495,6 +615,8 @@ export class BowSpray {
     this.dirty = false;
     this.bowPrimed = false;
     this.intensity = 0;
+    this.lastEmit = -1000;
+    this.lastLanding = -1000;
   }
 
   dispose(): void {
@@ -512,8 +634,9 @@ export class BowSpray {
     hullBeam: number,
   ): void {
     const i = this.cursor;
-    this.cursor = (this.cursor + 1) % SPRAY_COUNT;
+    this.cursor = (this.cursor + 1) % Math.max(1, this.capacity);
     const n = this.serial++;
+    this.lastEmit = this.time;
     const r1 = hash(n, 1);
     const r2 = hash(n, 2);
     const r3 = hash(n, 3);
@@ -551,6 +674,38 @@ export class BowSpray {
       strength,
     );
     this.dirty = true;
+    if (this.landing && cls === CLASS_DROP && this.time - this.lastLanding >= BOW_LANDING_INTERVAL) {
+      this.lastLanding = this.time;
+      this.traceLanding(i, water - 0.1, strength);
+    }
+  }
+
+  /**
+   * Where drop `i` comes back down, from the closed form the shader draws it
+   * with (droplet drag 0.6/s), reported as a fleck of foam. A few a second, not
+   * every drop: the bow wave's own foam is already under most of them, and the
+   * flecks are for the ones flung clear of it.
+   */
+  private traceLanding(i: number, water: number, strength: number): void {
+    const k = 0.6;
+    const fall = -GRAVITY / k;
+    const wind = sprayUniforms.wind.value as THREE.Vector3;
+    const y0 = this.origin.getY(i);
+    const vy = this.launch.getY(i);
+    const height = (t: number) => y0 + fall * t + (vy - fall) * ((1 - Math.exp(-k * t)) / k) - water;
+    let lo = 0.02;
+    let hi = 3;
+    if (height(hi) > 0) return;
+    for (let n = 0; n < 12; n++) {
+      const mid = (lo + hi) / 2;
+      if (height(mid) > 0) lo = mid;
+      else hi = mid;
+    }
+    const t = (lo + hi) / 2;
+    const reach = (1 - Math.exp(-k * t)) / k;
+    const x = this.origin.getX(i) + wind.x * t + (this.launch.getX(i) - wind.x) * reach;
+    const z = this.origin.getZ(i) + wind.z * t + (this.launch.getZ(i) - wind.z) * reach;
+    this.landing!.land(x, z, 0.8, 0.25 + 0.15 * strength, t, false);
   }
 
   /** Trajectory, size and opacity; `particleVertex` does the rest. */
@@ -627,7 +782,12 @@ export class BowSpray {
     // Back into the sea a little below where it left the crest.
     const water: any = attribute('bowWater', 'float');
     const submerged: any = smoothstepDown(water.sub(centre.y), 0.05, 0.4);
-    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged).mul(strength.sqrt());
+    const opacity: any = density
+      .mul(fadeIn)
+      .mul(fadeOut)
+      .mul(submerged)
+      .mul(strength.sqrt())
+      .mul(sprayUniforms.strength.min(1));
 
     return particleVertex({
       centre,

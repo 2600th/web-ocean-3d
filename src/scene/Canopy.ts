@@ -119,15 +119,89 @@ function lodBands(candidates: number): [number, number] {
 const REDEAL_DISTANCE = 6;
 
 /**
- * Elevation band, matching `Seafloor`'s vegetation ramp and treeline. Derived
- * from `ISLAND.peak` rather than typed, as `IslandMeadow`'s is.
+ * Top of the elevation band, derived from `ISLAND.peak` rather than typed, as
+ * `IslandMeadow`'s is. The bottom is the wandering edge, `EDGE_*` below.
  */
-const CANOPY_MIN_HEIGHT = 6;
-const CANOPY_FULL_HEIGHT = 21;
 const CANOPY_FADE_HEIGHT = ISLAND.peak + 60;
 const CANOPY_MAX_HEIGHT = ISLAND.peak + 90;
 /** How far past the shore radius trees may stand, in island radii. */
 const ISLAND_REACH = 1.22;
+
+/**
+ * The forest's lower edge, and why it wanders.
+ *
+ * The band used to start at a contour, `CANOPY_MIN_HEIGHT` to
+ * `CANOPY_FULL_HEIGHT`, so the forest stopped on a level line fifteen metres
+ * up and left a strip of open ground between it and the sand that read from
+ * the sea as a mown lawn. A real littoral forest comes down to the back of the
+ * beach in some places and stands back behind scrub in others. So the edge is
+ * a field: where it is low the trees reach the sand at about three metres, and
+ * where it is high they stand back to eleven. Squared, so most of the coast is
+ * forest to the sand and the clearings are the exception.
+ */
+const EDGE_FIELD_METRES = 46;
+const EDGE_LOW = 2.8;
+const EDGE_WANDER = 8.5;
+const EDGE_RAMP = 4.5;
+
+/**
+ * Depth in the canopy: crowns of different sizes, a few emergents, gaps.
+ *
+ * A canopy of same-sized crowns reads as a texture. Real tropical forest is
+ * groves of taller and shorter stands (`GROVE_*`, a broad field of crown
+ * height), a scatter of emergents standing well clear of the rest
+ * (`EMERGENT_*`: silk-cotton and the like, nearly twice the height of the
+ * canopy, with a paler crown), and gaps where a tree fell (`GAP_*`). Each gap
+ * and each emergent puts a shadow between crowns, and the shadow is what the
+ * eye reads as depth from the sea.
+ */
+const GROVE_FIELD_METRES = 64;
+const GROVE_RANGE: readonly [number, number] = [0.78, 1.28];
+const EMERGENT_SHARE = 0.03;
+const EMERGENT_HEIGHT = 1.85;
+const EMERGENT_WIDTH = 1.3;
+/** Emergents need deep soil: none on the crest or the upper summit. */
+const EMERGENT_MAX_GROUND = ISLAND.peak * 0.7;
+const GAP_FIELD_METRES = 38;
+const GAP_FROM = 0.74;
+const GAP_FULL = 0.8;
+
+/**
+ * Shade between crowns: a crown standing below its neighbours' tops is lit
+ * only by the sky they leave it. The light it gets comes from the height of its
+ * top against the mean of its neighbours' over a three-by-three block of
+ * `SHADE_CELL` cells: `SHADE_PER_METRE` per metre above or below them, about
+ * `SHADE_BASE`, clamped to `SHADE_RANGE`.
+ */
+const SHADE_CELL = 11;
+const SHADE_BASE = 0.8;
+const SHADE_PER_METRE = 0.055;
+const SHADE_RANGE: readonly [number, number] = [0.42, 1];
+
+/**
+ * Species, as a tint on the stand's greens. Three kinds, gathered in stands:
+ * dark, blue-green mango and mahogany; the stand's own broadleaf; and pale,
+ * yellow-green pioneers (trumpet tree, young growth), which also gather round
+ * the gaps. Encoded as the fraction of `treeC.z`, whose integer part is the
+ * crown shape, so the per-tree record stays three vec4s.
+ */
+const SPECIES_FIELD_METRES = 120;
+const SPECIES_DARK = new THREE.Color(0.7, 0.86, 0.92);
+const SPECIES_PALE = new THREE.Color(1.28, 1.2, 0.74);
+/** Emergents' crown: pale. */
+const SPECIES_EMERGENT = 0.97;
+
+/**
+ * Light through the leaves, against the sun.
+ *
+ * `backScatter` in the material is the narrow lobe straight down the sun's
+ * line. This is the broad one: the thin diffuse transmission every foliage
+ * model has (`lighting/Translucency`'s, for leaves), lighting the shaded side
+ * of a crown yellow-green when the viewer looks toward the sun. Weighted by how
+ * far the view faces into the light, so a crown seen down-sun is unchanged.
+ */
+const LEAF_TRANSMITTANCE = 0.22;
+const LEAF_TRANSMIT_TINT = new THREE.Color(1.15, 1.35, 0.5);
 /** Slope sample spacing for the soil test and the sun-exposure bias, metres. */
 const SLOPE_SAMPLE_METRES = 4;
 
@@ -752,8 +826,10 @@ function plantForest(seed: number, sunDir: THREE.Vector3): Forest {
     const x = ISLAND.x + Math.cos(angle) * radius;
     const z = ISLAND.z + Math.sin(angle) * radius;
     const ground = seafloorHeight(x, z);
+    const edgeField = valueNoise3(x / EDGE_FIELD_METRES, 2.7, z / EDGE_FIELD_METRES, 23);
+    const edge = EDGE_LOW + edgeField * edgeField * EDGE_WANDER;
     const band =
-      smoothstep(CANOPY_MIN_HEIGHT, CANOPY_FULL_HEIGHT, ground) *
+      smoothstep(edge, edge + EDGE_RAMP, ground) *
       (1 - smoothstep(CANOPY_FADE_HEIGHT, CANOPY_MAX_HEIGHT, ground));
     if (band <= 0) continue;
     const fromIsland = Math.hypot(x - ISLAND.x, z - ISLAND.z);
@@ -762,15 +838,32 @@ function plantForest(seed: number, sunDir: THREE.Vector3): Forest {
     const east = seafloorHeight(x + SLOPE_SAMPLE_METRES, z);
     const north = seafloorHeight(x, z + SLOPE_SAMPLE_METRES);
     const n = new THREE.Vector3(ground - east, SLOPE_SAMPLE_METRES, ground - north).normalize();
-    const holdsSoil = smoothstep(0.8, 0.88, n.y);
-    const presence = band * onIsland * holdsSoil;
+    // Up to about 45 degrees: the spine's flanks are that steep, and forest
+    // clinging to them is what a high tropical island looks like (the Pitons
+    // are wooded to the top). Only the crest, the summit and the sea cliffs
+    // are steeper, and they stay rock.
+    const holdsSoil = smoothstep(0.68, 0.78, n.y);
+    const gap = valueNoise3(x / GAP_FIELD_METRES, 5.1, z / GAP_FIELD_METRES, 29);
+    const presence = band * onIsland * holdsSoil * (1 - smoothstep(GAP_FROM, GAP_FULL, gap));
     if (presence <= 0 || keep > Math.sqrt(presence)) continue;
     // After every draw, so clearing the site moves no other tree. A crown is
     // up to ~6 m across, hence the margin past the keep-out.
     if (inLighthouseClearing(x, z, 4)) continue;
 
-    const scale = (1 - SIZE_VARIATION + size * SIZE_VARIATION * 2) * (0.7 + 0.3 * presence);
+    // Nearly full size at the forest's edge: the edge is a wall of crowns
+    // against the beach, not a fringe of saplings.
+    const scale = (1 - SIZE_VARIATION + size * SIZE_VARIATION * 2) * (0.85 + 0.15 * presence);
     const aspect = 1 + (aspectDraw - 0.5) * 2 * ASPECT_VARIATION;
+    const grove =
+      GROVE_RANGE[0] +
+      (GROVE_RANGE[1] - GROVE_RANGE[0]) *
+        valueNoise3(x / GROVE_FIELD_METRES, 9.3, z / GROVE_FIELD_METRES, 31);
+    // A hash of the candidate, not a draw, so the sequence every other tree's
+    // draws come from is untouched.
+    const emergent =
+      hash3(i, 7, 3, seed) < EMERGENT_SHARE && ground < EMERGENT_MAX_GROUND && n.y > 0.8;
+    const tall = grove * (emergent ? EMERGENT_HEIGHT : 1);
+    const wide = Math.sqrt(grove) * (emergent ? EMERGENT_WIDTH : 1);
     const s = count * 4;
     // Sunk a little, so a tree on a slope has no daylight under its downhill
     // side. The trunk runs 0.6 m below its own origin for the same reason.
@@ -781,9 +874,9 @@ function plantForest(seed: number, sunDir: THREE.Vector3): Forest {
     // Wider than tall against the shapes' nominal proportions: a tropical
     // canopy closes overhead, and at the shapes' own width the forest read as
     // an orchard, a trunk between every pair of crowns.
-    b[s] = scale * aspect * CROWN_SPREAD * mirror;
-    b[s + 1] = scale / aspect;
-    b[s + 2] = scale * aspect * CROWN_SPREAD;
+    b[s] = scale * aspect * CROWN_SPREAD * mirror * wide;
+    b[s + 1] = (scale / aspect) * tall;
+    b[s + 2] = scale * aspect * CROWN_SPREAD * wide;
     b[s + 3] = phase;
 
     // Stand tone: a broad field across the island plus a per-crown offset, with
@@ -797,14 +890,70 @@ function plantForest(seed: number, sunDir: THREE.Vector3): Forest {
       (field * STAND_FIELD_WEIGHT + crown * STAND_INSTANCE_WEIGHT) * (1 - STAND_SLOPE_WEIGHT) +
       exposure * STAND_SLOPE_WEIGHT;
     shape[count] = Math.min(CROWNS.length - 1, Math.floor(shapeDraw * CROWNS.length));
+    // Species: the stand field picks the kind, a per-tree hash blurs the edges
+    // of the stands, and pale pioneers gather round the gaps.
+    const kindField =
+      valueNoise3(x / SPECIES_FIELD_METRES, 4.4, z / SPECIES_FIELD_METRES, 37) * 0.75 +
+      hash3(i, 11, 5, seed) * 0.25 +
+      smoothstep(GAP_FROM - 0.14, GAP_FROM, gap) * 0.3;
+    const species = emergent
+      ? SPECIES_EMERGENT
+      : Math.min(0.96, Math.max(0, (kindField - 0.5) * 1.6 + 0.5));
     c[s] = Math.min(1, Math.max(0, stand));
     c[s + 1] = 1;
-    c[s + 2] = shape[count];
-    c[s + 3] = random();
+    c[s + 2] = shape[count] + species;
+    // Integer part: the per-tree offset the leaf breakup uses. Fraction: the
+    // shade between crowns, filled in below once every tree is planted.
+    c[s + 3] = Math.floor(random() * 64);
     candidate[count] = i;
     count++;
   }
+  shadeBetweenCrowns(count, a, b, c);
   return { count, candidate, shape, a, b, c };
+}
+
+/**
+ * Adds each tree's shade between crowns to the fraction of `c[i*4+3]`: the
+ * light a crown gets from the gap its neighbours leave above it. A grid of
+ * crown tops over `SHADE_CELL` cells, read over the tree's own cell and its
+ * eight neighbours, so the neighbourhood is about thirty metres across. Over
+ * every planted tree rather than per tier, so a tier change relights nothing.
+ */
+function shadeBetweenCrowns(count: number, a: Float32Array, b: Float32Array, c: Float32Array): void {
+  const half = ISLAND.radius * ISLAND_REACH + SHADE_CELL;
+  const n = Math.ceil((2 * half) / SHADE_CELL);
+  const sum = new Float32Array(n * n);
+  const num = new Float32Array(n * n);
+  const cell = (v: number, origin: number): number =>
+    Math.min(n - 1, Math.max(0, Math.floor((v - origin + half) / SHADE_CELL)));
+  const top = (t: number): number => a[t * 4 + 1] + TREE_HEIGHT * b[t * 4 + 1];
+  for (let t = 0; t < count; t++) {
+    const k = cell(a[t * 4 + 2], ISLAND.z) * n + cell(a[t * 4], ISLAND.x);
+    sum[k] += top(t);
+    num[k] += 1;
+  }
+  for (let t = 0; t < count; t++) {
+    const cx = cell(a[t * 4], ISLAND.x);
+    const cz = cell(a[t * 4 + 2], ISLAND.z);
+    let total = 0;
+    let trees = 0;
+    for (let j = Math.max(0, cz - 1); j <= Math.min(n - 1, cz + 1); j++) {
+      for (let i = Math.max(0, cx - 1); i <= Math.min(n - 1, cx + 1); i++) {
+        total += sum[j * n + i];
+        trees += num[j * n + i];
+      }
+    }
+    // Neighbours only: the tree's own top comes out of the mean.
+    const others = trees - 1;
+    const relative = others > 0 ? top(t) - (total - top(t)) / others : 4;
+    // A crown with few neighbours is lit from the side as well.
+    const open = 1 - Math.min(1, others / 8);
+    const shade = Math.min(
+      SHADE_RANGE[1],
+      Math.max(SHADE_RANGE[0], SHADE_BASE + relative * SHADE_PER_METRE + open * 0.25),
+    );
+    c[t * 4 + 3] += Math.min(0.999, shade);
+  }
 }
 
 /**
@@ -1208,6 +1357,8 @@ export class IslandCanopy {
     const vWorld = varying(vec3(0, 0, 0), 'canopyWorld') as Node;
     const vLocal = varying(vec3(0, 0, 0), 'canopyLocal') as Node;
     const vKey = varying(float(1), 'canopyKey') as Node;
+    /** Species tint 0..1, and the shade between crowns. */
+    const vKind = varying(vec2(0.5, 1), 'canopyKind') as Node;
     /** Crown height 0..1, bark, interior, leaf. */
     const vPart = varying(vec4(0, 0, 0, 0), 'canopyPart') as Node;
 
@@ -1301,6 +1452,7 @@ export class IslandCanopy {
         cloud = this.cloudMap.sample(mapUv).x;
       }
       vKey.assign(treeC.y.mul(cloud));
+      vKind.assign(vec2(treeC.z.fract(), treeC.w.fract()));
 
       return world;
     })();
@@ -1370,10 +1522,20 @@ export class IslandCanopy {
 
       // Albedo: the two greens by occlusion, then the stand's tone.
       const stand = treeC.x;
-      const greens = mix(this.uShade, this.uSunlit, occlusion);
+      const kind = vKind.x;
+      const between = vKind.y;
+      // Below its neighbours' tops a crown's lower half is in their shade too,
+      // so the crown's own height ramp deepens with it.
+      const shaded = occlusion.mul(mix(float(0.55), float(1), between));
+      const greens = mix(this.uShade, this.uSunlit, shaded);
       const toned = mix(greens, this.uDry, stand.smoothstep(0.5, 0.95).mul(0.7));
       const value = stand.sub(0.5).mul(STAND_VALUE_RANGE).add(1);
-      const albedo = mix(toned.mul(value).mul(tile), this.uBark, bark);
+      const tint = mix(
+        mix(vec3(SPECIES_DARK.r, SPECIES_DARK.g, SPECIES_DARK.b), vec3(1, 1, 1), kind.mul(2).clamp(0, 1)),
+        vec3(SPECIES_PALE.r, SPECIES_PALE.g, SPECIES_PALE.b),
+        kind.sub(0.5).mul(2).clamp(0, 1),
+      );
+      const albedo = mix(toned.mul(value).mul(tint).mul(tile), this.uBark, bark);
 
       // Key light: wrapped, because foliage scatters; gone below the horizon.
       const wrapped = normal
@@ -1382,10 +1544,15 @@ export class IslandCanopy {
         .div(1 + CANOPY_WRAP)
         .clamp(0, 1);
       const elevation = this.uSunDir.y.max(0).smoothstep(0, 0.4);
-      const sun = wrapped.mul(elevation).mul(vKey);
+      // The neighbours shade the key as well as the sky, less fully: the sun
+      // comes in from the side and reaches over a lower crown more often.
+      const sun = wrapped.mul(elevation).mul(vKey).mul(between.mul(0.4).add(0.6));
 
-      // Sky from above, less from below.
-      const sky = this.uAmbient.mul(normal.y.mul(0.25).add(0.6)).mul(occlusion.mul(0.5).add(0.5));
+      // Sky from above, less from below, and only what the neighbours leave.
+      const sky: Node = this.uAmbient
+        .mul(normal.y.mul(0.25).add(0.6))
+        .mul(shaded.mul(0.5).add(0.5))
+        .mul(between);
 
       // Back-scatter through the crown's thin edges with the sun behind it: the
       // same narrow lobe the mesh foliage uses, weighted to the rim.
@@ -1398,7 +1565,23 @@ export class IslandCanopy {
         .mul(rim)
         .mul(float(1).sub(bark));
 
-      const light = sky.add(this.uSunColor.mul(sun)).add(this.uSunColor.mul(backScatter).mul(vKey));
+      // Diffuse transmission: the far side of the crown lit, seen against the sun.
+      const against = view.dot(this.uSunDir.negate()).mul(0.5).add(0.5);
+      const through = normal
+        .dot(this.uSunDir)
+        .negate()
+        .max(0)
+        .mul(against.mul(against))
+        .mul(elevation)
+        .mul(vKey)
+        .mul(LEAF_TRANSMITTANCE)
+        .mul(float(1).sub(bark));
+      const transmitted: Node = vec3(LEAF_TRANSMIT_TINT.r, LEAF_TRANSMIT_TINT.g, LEAF_TRANSMIT_TINT.b).mul(through);
+
+      const light = sky
+        .add(this.uSunColor.mul(sun))
+        .add(this.uSunColor.mul(backScatter).mul(vKey))
+        .add(this.uSunColor.mul(transmitted));
       return vec4(albedo.mul(light), alpha);
     })();
 

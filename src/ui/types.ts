@@ -20,6 +20,11 @@ export type PresetId =
 
 export type CameraMode = 'orbit' | 'fly' | 'boat' | 'cinematic';
 
+/** The three interface sizes. */
+export type UiScale = 1 | 1.15 | 1.3;
+
+export const UI_SCALES: readonly UiScale[] = [1, 1.15, 1.3];
+
 export interface UiState {
   quality: QualityTier;
   preset: PresetId;
@@ -52,11 +57,49 @@ export interface UiState {
    * (nothing is scheduled), so it is also the "music off" switch.
    */
   musicVolume: number;
+  /**
+   * Camera shake and hit-stop at the helm, 0..1. 0 turns both off. Reduced
+   * motion turns them off whatever this says.
+   */
+  shake: number;
+  /** Look speed, 0.4..2, for the mouse and the right stick. 1 is the usual. */
+  lookSensitivity: number;
+  /** Pull back to look up, for the mouse at the helm and in Fly and for the right stick. */
+  invertLook: boolean;
+  /**
+   * Reduced motion on top of the system setting: on, the game behaves as if the
+   * system asked for it, whatever the system says. Off defers to the system.
+   */
+  reduceMotion: boolean;
+  /** Interface size: 1, 1.15 or 1.3 times. */
+  uiScale: UiScale;
+  /** Cues that use colour also carry a shape or a pattern. */
+  shapeCues: boolean;
+  /** Sea, wind, rain, thunder and gulls, 0..1, under the master volume. */
+  ambienceVolume: number;
+  /** The ship, splashes and impacts, 0..1, under the master volume. */
+  effectsVolume: number;
+  /** Clicks and chimes of the ledger and buttons, 0..1, under the master volume. */
+  interfaceVolume: number;
+  /** Per-kind mutes; each keeps its level for when it is unmuted. */
+  musicMuted: boolean;
+  ambienceMuted: boolean;
+  effectsMuted: boolean;
+  interfaceMuted: boolean;
+  /** Less range between quiet and loud sound, for laptop speakers. */
+  reducedRange: boolean;
   buoyancyProbes: boolean;
   wakeProbes: boolean;
   /** Device pixel ratio multiplier, 0.5..2. */
   pixelRatio: number;
   cameraMode: CameraMode;
+  /**
+   * Gamepad rumble on hard knocks, where the pad and browser support it
+   * (Chrome, Edge, Safari 16.4+; not Firefox or iOS Safari).
+   */
+  haptics: boolean;
+  /** Lightning as one soft pulse per strike instead of a flash train (WCAG 2.3.1). */
+  reduceFlashes: boolean;
 }
 
 export interface UiCallbacks {
@@ -109,6 +152,20 @@ export interface Objective {
   bearingDeg: number | null;
   /** Distance in metres, or `null` to hide the distance. */
   distanceM: number | null;
+  /** What is coming, in a line of its own under the bearing. */
+  warning?: string;
+}
+
+/** The close of a voyage, for the tally. Mirrors `VoyageTally` in `src/gameplay/types.ts`. */
+export interface VoyageTally {
+  voyage: number;
+  cargo: number;
+  casks: number;
+  gold: number;
+  purse: number;
+  seconds: number;
+  bestSeconds: number | null;
+  newBest: boolean;
 }
 
 /**
@@ -127,10 +184,26 @@ export const DEFAULT_UI_STATE: UiState = {
   fogDensity: 0.35,
   volume: 0.4,
   musicVolume: 0.5,
+  shake: 1,
+  lookSensitivity: 1,
+  invertLook: false,
+  reduceMotion: false,
+  uiScale: 1,
+  shapeCues: false,
+  ambienceVolume: 1,
+  effectsVolume: 1,
+  interfaceVolume: 1,
+  musicMuted: false,
+  ambienceMuted: false,
+  effectsMuted: false,
+  interfaceMuted: false,
+  reducedRange: false,
   buoyancyProbes: false,
   wakeProbes: false,
   pixelRatio: 1,
   cameraMode: 'orbit',
+  haptics: true,
+  reduceFlashes: false,
 };
 
 export const QUALITY_TIERS: readonly QualityTier[] = ['low', 'medium', 'high', 'ultra', 'max'];

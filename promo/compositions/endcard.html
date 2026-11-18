@@ -1,0 +1,134 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Pirata One";
+      src: url("assets/fonts/pirata-one.woff2") format("woff2");
+      font-weight: 400;
+    }
+    @font-face {
+      font-family: "Alegreya";
+      src: url("assets/fonts/alegreya.woff2") format("woff2");
+      font-weight: 400 900;
+    }
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .ec-clip {
+      position: absolute;
+      inset: 0;
+    }
+    .ec-col {
+      position: absolute;
+      left: 192px;
+      top: 168px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      color: #f6ead0;
+      text-shadow:
+        0 0 44px rgba(4, 9, 14, 0.7),
+        0 4px 12px rgba(4, 9, 14, 0.6);
+    }
+    /* Set in the night sky to the left, clear of the ship. The game's own lockup: the name in its display face, "3D" in sealing-wax red. */
+    #ec-mark {
+      font-family: "Pirata One", serif;
+      font-size: 152px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    #ec-mark span {
+      display: inline-block;
+      white-space: pre;
+    }
+    #ec-mark .ec-wax {
+      color: #c23a2c;
+    }
+    /* The rule and diamond under the name, as on the title screen. */
+    #ec-rule {
+      margin-top: 30px;
+      width: 520px;
+      height: 16px;
+      position: relative;
+    }
+    #ec-rule-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 7px;
+      height: 2px;
+      background: #f6ead0;
+      opacity: 0.7;
+    }
+    #ec-rule-gem {
+      position: absolute;
+      left: 252px;
+      top: 0;
+      width: 16px;
+      height: 16px;
+      background: #c23a2c;
+    }
+    #ec-cta {
+      margin-top: 40px;
+      font-family: "Pirata One", serif;
+      font-size: 84px;
+      line-height: 1;
+    }
+    #ec-url {
+      margin-top: 22px;
+      font-family: "Alegreya", serif;
+      font-weight: 500;
+      font-size: 50px;
+      letter-spacing: 0.04em;
+      line-height: 1.1;
+    }
+  </style>
+
+  <div id="root" data-composition-id="endcard" data-width="1920" data-height="1080">
+    <div id="ec-col" class="clip ec-clip" data-start="0.3" data-duration="6.1" data-track-index="1">
+     <div class="ec-col">
+      <div id="ec-mark"><span>W</span><span>e</span><span>b</span><span> </span><span>O</span><span>c</span><span>e</span><span>a</span><span>n</span><span> </span><span class="ec-wax">3</span><span class="ec-wax">D</span></div>
+      <div id="ec-rule">
+        <div id="ec-rule-line"></div>
+        <div id="ec-rule-gem"></div>
+      </div>
+      <div id="ec-cta">Set sail</div>
+      <div id="ec-url">web-ocean-3d.vercel.app</div>
+     </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    // The name is set letter by letter, the rule is drawn from its centre and
+    // the diamond is pressed into it; then the call and the address, and it holds.
+    tl.fromTo(
+      "#ec-mark span",
+      { opacity: 0, filter: "blur(10px)" },
+      { opacity: 1, filter: "blur(0px)", duration: 0.24, ease: "power3.out", stagger: 0.075 },
+      0.4,
+    );
+    tl.fromTo("#ec-rule-line", { scaleX: 0, opacity: 0 }, { scaleX: 1, opacity: 0.7, duration: 0.5, ease: "power3.out" }, 1.45);
+    tl.fromTo(
+      "#ec-rule-gem",
+      { scale: 0, rotation: 45, opacity: 0 },
+      { scale: 1, rotation: 45, opacity: 1, duration: 0.34, ease: "back.out(1.6)" },
+      1.7,
+    );
+    tl.fromTo(
+      "#ec-cta",
+      { opacity: 0, filter: "blur(8px)" },
+      { opacity: 1, filter: "blur(0px)", duration: 0.24, ease: "power3.out" },
+      2.15,
+    );
+    tl.fromTo(
+      "#ec-url",
+      { opacity: 0, filter: "blur(8px)" },
+      { opacity: 1, filter: "blur(0px)", duration: 0.24, ease: "power3.out" },
+      2.4,
+    );
+
+    window.__timelines["endcard"] = tl;
+  </script>
+</template>

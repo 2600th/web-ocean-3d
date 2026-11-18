@@ -101,7 +101,7 @@ const JET_AROUND = 12;
 const JET_ALONG = 16;
 
 /** Pending foam flecks (drops landing, the jet's fall). */
-const MAX_PENDING = 32;
+const MAX_PENDING = 64;
 
 /** Crown launch elevation at first ejection and its fall-off, radians. */
 const PHI0 = 1.25;
@@ -204,9 +204,11 @@ export class Splash {
     const seed = new Float32Array(count * 4);
     const cls = new Float32Array(count);
     const fromJet = new Float32Array(count);
+    // Slot-fastest, as `Spray` lays out its events: trimming `instanceCount`
+    // for a lower tier then takes particles from every splash evenly.
     for (let i = 0; i < count; i++) {
-      slot[i] = Math.floor(i / PER_SLOT);
-      const k = i % PER_SLOT;
+      slot[i] = i % SLOTS;
+      const k = Math.floor(i / SLOTS);
       for (let c = 0; c < 4; c++) seed[i * 4 + c] = hash(k, 31 + c);
       const [c, j] = PARTICLE_LAYOUT[k % PARTICLE_LAYOUT.length];
       cls[i] = c;
@@ -235,6 +237,28 @@ export class Splash {
     this.jet.renderOrder = 5;
     this.materials.push(crownMaterial, jetMaterial, particleMaterial);
     this.geometries.push(crownGeometry, jetGeometry, quad);
+
+    // The dense parts again, into depth only, so the post-process fog sees a
+    // splash at its own distance instead of fogging it as the sea or sky behind
+    // it — in a storm's fog that was total. The same pre-pass `Spray` draws, for
+    // the same reason; ordered before the colour so each soft-fades against the
+    // scene and not against itself (see `sharedSceneDepth`).
+    const depthMaterials = [
+      sheetMaterial(() => this.crownVertex(), () => this.crownFragment(), true),
+      sheetMaterial(() => this.jetVertex(), () => this.jetFragment(), true),
+      sprayMaterial(() => this.particleVertex(), true),
+    ];
+    [this.crown, this.jet, this.particles].forEach((mesh, i) => {
+      const depth = new THREE.Mesh(mesh.geometry, depthMaterials[i]);
+      depth.name = `${mesh.name}-depth`;
+      depth.frustumCulled = false;
+      depth.castShadow = false;
+      depth.receiveShadow = false;
+      depth.matrixAutoUpdate = false;
+      depth.renderOrder = 4;
+      mesh.add(depth);
+    });
+    this.materials.push(...depthMaterials);
   }
 
   /** Where the foam and the ring waves go. */
@@ -319,7 +343,40 @@ export class Splash {
     if (jetSpeed > 0) {
       this.queue(x, z, radius * 1.8 + 0.3, 0.18 + 0.22 * heavy, this.clock + jetStart + jetSpan + (2 * jetSpeed) / GRAVITY);
     }
-    this.setVisible(true);
+    this.setVisible((sprayUniforms.strength.value as number) > 0);
+  }
+
+  /**
+   * Thrown water coming back down at (x, z) `delay` seconds from now: a fleck
+   * of foam, and if `ring`, a small ring wave spreading from it. For drops this
+   * system did not throw — the hull's spray and the bow's (`Spray.setLanding`).
+   *
+   * The ring takes a free slot or none: it never cuts short a splash still in
+   * the air, which a cask coming down off a crest would lose to a slam's drops.
+   */
+  land(x: number, z: number, radius: number, amount: number, delay: number, ring: boolean): void {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    const time = this.clock + Math.max(0, delay);
+    this.queue(x, z, radius, amount, time);
+    if (!ring || !this.wake) return;
+    for (let k = 0; k < SLOTS; k++) {
+      const slot = (this.cursor + k) % SLOTS;
+      if (this.slotEnd[slot] > this.clock || this.slotStart[slot] > this.clock) continue;
+      // Nothing in the air from this slot: its record's start is far in the past.
+      (this.uA.array as THREE.Vector4[])[slot].set(x, 0, z, -1000);
+      this.slotStart[slot] = time;
+      this.slotX[slot] = x;
+      this.slotZ[slot] = z;
+      this.ringWave[slot] = 1.2;
+      this.ringSpeed[slot] = 0.5 * Math.sqrt((GRAVITY * 1.2) / (2 * Math.PI)) + 0.3;
+      this.ringLife[slot] = 2.2;
+      this.ringFoam[slot] = 0.35 + 0.3 * amount;
+      this.ringAmp[slot] = 0.012;
+      this.ringWidth[slot] = 0.3;
+      this.ringR0[slot] = 0.4;
+      this.slotEnd[slot] = time + this.ringLife[slot];
+      return;
+    }
   }
 
   /** Advances the clock to `elapsed` (simulation seconds); deposits foam and drives the rings. */
@@ -339,6 +396,13 @@ export class Splash {
         i++;
       }
     }
+
+    // The quality tier's spray control (`sprayUniforms.strength`): fewer drops
+    // per splash below 1, and at 0 nothing in the air. The foam and the ring on
+    // the water stay at every tier; they cost the wake pass a few uniforms.
+    const tier = Math.max(0, sprayUniforms.strength.value as number);
+    const perSlot = tier <= 0 ? 0 : Math.max(16, Math.round(PER_SLOT * Math.min(1, tier)));
+    (this.particles.geometry as THREE.InstancedBufferGeometry).instanceCount = Math.max(1, SLOTS * perSlot);
 
     let alive = false;
     for (let slot = 0; slot < SLOTS; slot++) {
@@ -370,7 +434,7 @@ export class Splash {
         this.ringWave[slot],
       );
     }
-    this.setVisible(alive);
+    this.setVisible(alive && tier > 0);
   }
 
   /** Clears every splash and pending fleck: the state at `elapsed` with nothing in the air. */
@@ -587,7 +651,7 @@ export class Splash {
     const fadeOut: any = smoothstepDown(life, isMist.mul(-0.4).add(0.8), 1);
     // Back into the sea a little below where it left it.
     const submerged: any = smoothstepDown(origin.y.sub(centre.y), -0.02, 0.15);
-    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged);
+    const opacity: any = density.mul(fadeIn).mul(fadeOut).mul(submerged).mul(sprayUniforms.strength.min(1));
 
     return particleVertex({
       centre,
@@ -662,17 +726,23 @@ function sheetFragment(options: { rimFingers: boolean }): any {
     .max(age.mul(0.9))
     .max(options.rimFingers ? 0.3 : 0.55);
   const radiance: any = sheetRadiance(aerated, field.mul(0.4).add(0.75));
-  const alpha: any = torn.mul(membrane).mul(above).mul(ending).mul(soft).mul(nearFade).mul(facing).clamp(0, 1);
+  // Off with the tier's spray control at 0, at once rather than on the next update.
+  const enabled: any = sprayUniforms.strength.mul(1000).clamp(0, 1);
+  const alpha: any = torn.mul(membrane).mul(above).mul(ending).mul(soft).mul(nearFade).mul(facing).mul(enabled).clamp(0, 1);
   return vec4(radiance, alpha);
 }
 
-function sheetMaterial(vertex: () => any, fragment: () => any): THREE.MeshBasicNodeMaterial {
+function sheetMaterial(vertex: () => any, fragment: () => any, depthOnly = false): THREE.MeshBasicNodeMaterial {
   const material = new THREE.MeshBasicNodeMaterial();
   material.side = THREE.DoubleSide;
   material.transparent = true;
-  material.depthWrite = false;
+  material.depthWrite = depthOnly;
+  material.colorWrite = !depthOnly;
   material.fog = false;
-  material.alphaTest = SPRAY_ALPHA_FLOOR;
+  // The depth pass takes only the dense sheet, as `sprayMaterial`'s does.
+  material.alphaTest = depthOnly ? 0.3 : SPRAY_ALPHA_FLOOR;
+  // No contact shadows or AO on the sheet; see `sceneMrt`'s surface flag.
+  if (!depthOnly) material.userData.airborneWater = true;
   material.positionNode = Fn(() => vertex())() as any;
   material.colorNode = Fn(() => fragment())() as any;
   return material;

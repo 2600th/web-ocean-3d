@@ -85,6 +85,41 @@ const CHASE_PITCH_MAX = 1.15;
 const CHASE_RECENTRE_TAU = 2.2;
 
 /**
+ * The helm rig's follow: a critically damped spring on the camera's position
+ * and another on the point it looks at, rather than a first-order lag.
+ *
+ * A spring has velocity, so the camera eases into a move and out of it with no
+ * kink where the hull starts or stops, and critical damping means it never
+ * overshoots into a wobble. Behind a hull holding speed `u` it trails by
+ * `2u / omega`: about 3 m at eight knots, enough for the ship to be seen
+ * pulling away as she gathers way.
+ */
+const FOLLOW_OMEGA = 5;
+const AIM_OMEGA = 6.5;
+/**
+ * Look into the turn: the aim point slides toward the inside of a turn by this
+ * many metres per rad/s of yaw rate, up to `TURN_LOOK_MAX`. A hard turn at
+ * speed is about 0.15 rad/s, so roughly five metres at 34 m, eight degrees.
+ */
+const TURN_LOOK = 34;
+const TURN_LOOK_MAX = 8;
+/**
+ * Speed you can feel: the lens widens by up to `SPEED_FOV` degrees between
+ * `SPEED_FOV_FROM` and `SPEED_FOV_TO` m/s of way. Modest on purpose; a wide
+ * swing reads as an arcade boost, not as a ship.
+ */
+const SPEED_FOV = 5;
+const SPEED_FOV_FROM = 1.5;
+const SPEED_FOV_TO = 7.5;
+/** Seconds over which the rig's speed and yaw-rate estimates settle. */
+const MOTION_TAU = 0.6;
+/** A target move faster than this, m/s, is a teleport: the estimates restart. */
+const TELEPORT_SPEED = 40;
+/** Gamepad right stick, radians per second at full deflection. */
+const PAD_LOOK_YAW = 1.9;
+const PAD_LOOK_PITCH = 1.1;
+
+/**
  * Cruise speed, m/s: what the camera settles at with a key held, and what the
  * wheel scales. 12 is slow enough to frame the hull with and crosses the
  * island's 1.4 km in two minutes, which is what the boost is for.
@@ -135,6 +170,27 @@ export class CameraDirector {
 
   // Chase state
   private target: CameraTarget | null = null;
+  /** Spring state of the helm rig: camera position and look point, with velocities. */
+  private readonly followPos = new THREE.Vector3();
+  private readonly followVel = new THREE.Vector3();
+  private readonly aimPos = new THREE.Vector3();
+  private readonly aimVel = new THREE.Vector3();
+  private readonly aimTarget = new THREE.Vector3();
+  /** The hull's motion as the rig sees it, from frame to frame. */
+  private readonly lastTargetPos = new THREE.Vector3();
+  private lastTargetHeading = 0;
+  private hasLastTarget = false;
+  private targetSpeed = 0;
+  private targetYawRate = 0;
+  /** Degrees the lens is widened by speed this frame. */
+  private speedFov = 0;
+  /** Gamepad right stick, each -1..1. */
+  /** The viewer's look settings; see `setLookPrefs`. */
+  private lookSensitivity = 1;
+  private lookInvert = 1;
+  private padLookX = 0;
+  private padLookY = 0;
+  private reducedMotion = false;
 
   /**
    * Render-only jitter on the chase rig, set by the gameplay layer.
@@ -192,7 +248,8 @@ export class CameraDirector {
   private transition = 0;
   private readonly fromPosition = new THREE.Vector3();
   private readonly fromQuaternion = new THREE.Quaternion();
-  private static readonly TRANSITION_SECONDS = 0.85;
+  /** The interface's `--dur-arrive` (styles.css): one duration for a whole view arriving. */
+  private static readonly TRANSITION_SECONDS = 0.9;
 
   // Scratch — the update path must not allocate.
   private readonly tmpVec = new THREE.Vector3();
@@ -220,6 +277,7 @@ export class CameraDirector {
         ? window.matchMedia('(prefers-reduced-motion: reduce)')
         : null;
     this.cinematic.setReducedMotion(this.motionQuery?.matches ?? false);
+    this.reducedMotion = this.motionQuery?.matches ?? false;
 
     this.orbit = new OrbitControls(this.camera, this.domElement);
     this.orbit.enableDamping = true;
@@ -242,7 +300,10 @@ export class CameraDirector {
     window.addEventListener('mouseup', this.onMouseUp, { signal });
     this.motionQuery?.addEventListener(
       'change',
-      (event) => this.cinematic.setReducedMotion(event.matches),
+      (event) => {
+        this.cinematic.setReducedMotion(event.matches);
+        this.reducedMotion = event.matches;
+      },
       { signal },
     );
   }
@@ -337,18 +398,46 @@ export class CameraDirector {
 
   setChaseTarget(target: CameraTarget | null): void {
     this.target = target;
-    if (target === null) this.shipPin = null;
+    if (target === null) {
+      this.shipPin = null;
+      this.hasLastTarget = false;
+    }
+  }
+
+  /**
+   * Gamepad look around the ship at the helm: x to the right, y up, each
+   * -1..1, held until set back to zero. Like a mouse drag it suspends the
+   * rig's return to astern while held.
+   */
+  /**
+   * The viewer's look settings: a speed multiplier for the mouse and the right
+   * stick, and whether pulling back looks up. Orbit keeps its own drag (the
+   * speed scales it; inverting a grab-the-world drag would only confuse).
+   */
+  setLookPrefs(sensitivity: number, invertY: boolean): void {
+    this.lookSensitivity = Number.isFinite(sensitivity) ? THREE.MathUtils.clamp(sensitivity, 0.2, 3) : 1;
+    this.lookInvert = invertY ? -1 : 1;
+    this.orbit.rotateSpeed = this.lookSensitivity;
+  }
+
+  setChaseLook(x: number, y: number): void {
+    this.padLookX = Number.isFinite(x) ? THREE.MathUtils.clamp(x, -1, 1) : 0;
+    this.padLookY = Number.isFinite(y) ? THREE.MathUtils.clamp(y, -1, 1) : 0;
   }
 
   setMode(mode: DirectorMode): void {
     if (mode === this.mode) return;
     this.shipPin = null;
+    this.hasLastTarget = false;
+    this.padLookX = 0;
+    this.padLookY = 0;
 
     // Capture the current pose so the new rig can be eased into rather than cut to.
     this.fromPosition.copy(this.camera.position);
     this.fromQuaternion.copy(this.camera.quaternion);
     this.fromFov = this.camera.fov;
-    this.transition = 1;
+    // A cut, not a sweep, for a viewer who asked for less motion.
+    this.transition = this.motionQuery?.matches ? 0 : 1;
 
     if (this.mode === 'fly') this.exitPointerLock();
     if (this.mode === 'cinematic') {
@@ -494,9 +583,17 @@ export class CameraDirector {
   snapToTarget(): void {
     if (this.mode !== 'boat' || !this.target) return;
     this.transition = 0;
+    // The canonical helm pose: no lead into a turn and the lens at rest, so
+    // the snap depends on the hull's pose and nothing about its recent motion.
+    this.targetSpeed = 0;
+    this.targetYawRate = 0;
+    this.speedFov = 0;
+    this.hasLastTarget = false;
     this.updateChase(0);
     this.camera.position.copy(this.desiredPosition);
     this.camera.quaternion.copy(this.desiredQuaternion);
+    this.seedFollow();
+    this.applyFov(this.baseFov);
     this.camera.updateMatrixWorld(true);
   }
 
@@ -539,7 +636,11 @@ export class CameraDirector {
     }
 
     const desiredFov =
-      this.mode === 'cinematic' ? (this.cinematicPose.fov ?? this.baseFov) : this.baseFov;
+      this.mode === 'cinematic'
+        ? (this.cinematicPose.fov ?? this.baseFov)
+        : this.mode === 'boat' && !this.shipPin
+          ? this.baseFov + this.speedFov
+          : this.baseFov;
     if (this.transition > 0) {
       this.transition = Math.max(0, this.transition - dt / CameraDirector.TRANSITION_SECONDS);
       const t = easeInOutCubic(1 - this.transition);
@@ -631,10 +732,23 @@ export class CameraDirector {
       return;
     }
 
+    this.trackTarget(dt);
+
+    // A gamepad's right stick orbits the rig like a mouse drag.
+    const padLook = this.padLookX !== 0 || this.padLookY !== 0;
+    if (padLook && dt > 0) {
+      this.chaseYaw -= this.padLookX * PAD_LOOK_YAW * this.lookSensitivity * dt;
+      this.chasePitch = THREE.MathUtils.clamp(
+        this.chasePitch - this.padLookY * PAD_LOOK_PITCH * this.lookSensitivity * this.lookInvert * dt,
+        CHASE_PITCH_MIN,
+        CHASE_PITCH_MAX,
+      );
+    }
+
     // Recentre toward the stern whenever the viewer is not driving it. Framed as
     // an exponential rather than a lerp so the rate is the same at any frame
     // rate — the same reason the follow below is one.
-    if (!this.chaseDragging) {
+    if (!this.chaseDragging && !padLook) {
       const settle = 1 - Math.exp(-dt / CHASE_RECENTRE_TAU);
       this.chaseYaw -= this.chaseYaw * settle;
       this.chasePitch -= this.chasePitch * settle;
@@ -669,19 +783,73 @@ export class CameraDirector {
     const surface = this.surfaceHeight(this.desiredPosition.x, this.desiredPosition.z);
     if (this.desiredPosition.y < surface + 1.6) this.desiredPosition.y = surface + 1.6;
 
-    this.tmpVec2.copy(this.target.position).y += 4;
+    // Aim a little above the hull, led toward the inside of a turn so the
+    // viewer sees where she is going. Off under reduced motion.
+    this.aimTarget.copy(this.target.position).y += 4;
+    if (!this.reducedMotion) {
+      const lead = THREE.MathUtils.clamp(this.targetYawRate * TURN_LOOK, -TURN_LOOK_MAX, TURN_LOOK_MAX);
+      // Starboard is heading + 90 degrees; a positive yaw rate turns that way.
+      this.aimTarget.x += -Math.sin(this.target.heading) * lead;
+      this.aimTarget.z += Math.cos(this.target.heading) * lead;
+    }
     this.tmpQuat.setFromRotationMatrix(
-      lookAtMatrix(this.desiredPosition, this.tmpVec2, UP),
+      lookAtMatrix(this.desiredPosition, this.aimTarget, UP),
     );
     this.desiredQuaternion.copy(this.tmpQuat);
 
-    if (this.transition === 0) {
-      // Critically damped follow so the camera lags the boat a little in chop
-      // without ever overshooting into a wobble.
-      const lag = 1 - Math.exp(-4 * dt);
-      this.camera.position.lerp(this.desiredPosition, lag);
-      this.camera.quaternion.slerp(this.desiredQuaternion, lag);
+    // The lens widens with way on. Off under reduced motion.
+    this.speedFov = this.reducedMotion
+      ? 0
+      : SPEED_FOV * smoothstep(SPEED_FOV_FROM, SPEED_FOV_TO, this.targetSpeed);
+
+    if (this.transition === 0 && dt > 0) {
+      // Critically damped springs: the camera lags the hull a little in chop
+      // and as she gathers way, without ever overshooting into a wobble.
+      springTo(this.followPos, this.followVel, this.desiredPosition, FOLLOW_OMEGA, dt);
+      springTo(this.aimPos, this.aimVel, this.aimTarget, AIM_OMEGA, dt);
+      this.camera.position.copy(this.followPos);
+      this.camera.quaternion.setFromRotationMatrix(lookAtMatrix(this.followPos, this.aimPos, UP));
+    } else if (this.transition > 0) {
+      // Mid-ease the transition owns the camera; the springs wait at the end
+      // of it, at rest, so the follow picks up without a jump.
+      this.seedFollow();
     }
+  }
+
+  /** Puts the follow springs at rest on the current ideal pose. */
+  private seedFollow(): void {
+    this.followPos.copy(this.desiredPosition);
+    this.followVel.set(0, 0, 0);
+    this.aimPos.copy(this.aimTarget);
+    this.aimVel.set(0, 0, 0);
+  }
+
+  /**
+   * The hull's speed and yaw rate as the rig sees them, from the target's
+   * frame-to-frame motion and smoothed, so the camera needs nothing but the
+   * pose it already follows. A jump (a reset, a teleport) restarts them.
+   */
+  private trackTarget(dt: number): void {
+    const target = this.target;
+    if (!target) return;
+    if (dt > 0 && this.hasLastTarget) {
+      const dx = target.position.x - this.lastTargetPos.x;
+      const dz = target.position.z - this.lastTargetPos.z;
+      const speed = Math.hypot(dx, dz) / dt;
+      if (speed > TELEPORT_SPEED) {
+        this.targetSpeed = 0;
+        this.targetYawRate = 0;
+      } else {
+        let turn = target.heading - this.lastTargetHeading;
+        turn = Math.atan2(Math.sin(turn), Math.cos(turn)) / dt;
+        const k = 1 - Math.exp(-dt / MOTION_TAU);
+        this.targetSpeed += (speed - this.targetSpeed) * k;
+        this.targetYawRate += (THREE.MathUtils.clamp(turn, -1, 1) - this.targetYawRate) * k;
+      }
+    }
+    this.lastTargetPos.copy(target.position);
+    this.lastTargetHeading = target.heading;
+    this.hasLastTarget = true;
   }
 
   /**
@@ -788,14 +956,14 @@ export class CameraDirector {
   private onMouseMove = (event: MouseEvent): void => {
     if (this.mode === 'boat') {
       if (!this.chaseDragging) return;
-      this.chaseYaw -= event.movementX * CHASE_SENSITIVITY;
-      this.chasePitch += event.movementY * CHASE_SENSITIVITY;
+      this.chaseYaw -= event.movementX * CHASE_SENSITIVITY * this.lookSensitivity;
+      this.chasePitch += event.movementY * CHASE_SENSITIVITY * this.lookSensitivity * this.lookInvert;
       this.chasePitch = THREE.MathUtils.clamp(this.chasePitch, CHASE_PITCH_MIN, CHASE_PITCH_MAX);
       return;
     }
     if (this.mode !== 'fly' || !this.pointerLocked) return;
-    this.yaw -= event.movementX * MOUSE_SENSITIVITY;
-    this.pitch -= event.movementY * MOUSE_SENSITIVITY;
+    this.yaw -= event.movementX * MOUSE_SENSITIVITY * this.lookSensitivity;
+    this.pitch -= event.movementY * MOUSE_SENSITIVITY * this.lookSensitivity * this.lookInvert;
     // Stop just short of vertical; passing it would flip the horizon.
     const limit = Math.PI / 2 - 0.01;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -limit, limit);
@@ -856,6 +1024,35 @@ const scratchMatrix = new THREE.Matrix4();
 
 function lookAtMatrix(eye: THREE.Vector3, target: THREE.Vector3, up: THREE.Vector3): THREE.Matrix4 {
   return scratchMatrix.lookAt(eye, target, up);
+}
+
+/**
+ * One step of a critically damped spring pulling `pos` toward `goal`, in
+ * closed form, so it is exact and stable at any `dt` (the integration a
+ * semi-implicit step would only approximate).
+ */
+function springTo(
+  pos: THREE.Vector3,
+  vel: THREE.Vector3,
+  goal: THREE.Vector3,
+  omega: number,
+  dt: number,
+): void {
+  const decay = Math.exp(-omega * dt);
+  // x = pos - goal; temp = (v + omega x) dt; v' = (v - omega temp) e; x' = (x + temp) e
+  const x0 = pos.x - goal.x;
+  const y0 = pos.y - goal.y;
+  const z0 = pos.z - goal.z;
+  const tx = (vel.x + omega * x0) * dt;
+  const ty = (vel.y + omega * y0) * dt;
+  const tz = (vel.z + omega * z0) * dt;
+  vel.set((vel.x - omega * tx) * decay, (vel.y - omega * ty) * decay, (vel.z - omega * tz) * decay);
+  pos.set(goal.x + (x0 + tx) * decay, goal.y + (y0 + ty) * decay, goal.z + (z0 + tz) * decay);
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 function easeInOutCubic(t: number): number {

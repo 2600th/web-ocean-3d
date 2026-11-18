@@ -649,8 +649,10 @@ test.describe('interaction', () => {
         await page.evaluate(() => window.__ocean.step(1 / 60, 20));
         const held = await page.evaluate(() => window.__ocean.shipState());
         expect(held, 'no ship controller').not.toBeNull();
-        expect(held!.throttle, 'dragging the pad forward did not open the throttle')
-          .toBeGreaterThan(0.2);
+        // At the helm the sails drive her: pushing the stick forward must not
+        // open the engine the tour and the tests use.
+        expect(Math.abs(held!.throttle), 'dragging the pad forward opened the engine at the helm')
+          .toBeLessThan(0.01);
         expect(held!.rudder, 'dragging the pad right did not put the rudder over')
           .toBeGreaterThan(0.2);
 
@@ -1131,6 +1133,14 @@ test.describe('interaction', () => {
     // island anchors; the old north-east aim caught two or three gulls, about
     // 30 pixels, and failed on a flock that was rendering fine.
     await setCamera(page, [0, 12, 0], [60, 40, -60]);
+    // The camera stands where the ship floats. Away from the helm she now
+    // carries full sail, and the canvas filled this view: hiding the flock
+    // changed no pixels because none of it could be seen. The ship is not
+    // what this test is about, so she is taken out of the frame.
+    await page.evaluate(() => {
+      const ship = window.__ocean.scene.getObjectByName('ship');
+      if (ship) ship.visible = false;
+    });
     await page.evaluate(() => window.__ocean.resetDeterministic(30, 60));
 
     const withFlock = await capture(page);
@@ -1835,8 +1845,11 @@ test.describe('responsiveness', () => {
       'a declared slider is missing from the panel',
     ).toEqual(
       [
+        'ambienceVolume',
         'cloudCoverage',
+        'effectsVolume',
         'fogDensity',
+        'interfaceVolume',
         'musicVolume',
         'peakWavelength',
         'pixelRatio',

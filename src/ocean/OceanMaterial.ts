@@ -17,6 +17,7 @@ import {
   positionWorld,
   dFdx,
   dFdy,
+  screenSize,
   screenUV,
   texture,
   vec2,
@@ -29,6 +30,7 @@ import {
 } from 'three/tsl';
 import { uniform } from '../core/uniform';
 import { smoothstepDownClamped } from '../core/tslMath';
+import { SHIP_LANTERN_LOCAL } from '../lighting/LocalLights';
 import { FOOTPRINT_SPACINGS } from './meshSampling';
 import { ISLAND } from '../scene/Seafloor';
 import { beachrockFootprints, type BeachrockFootprint } from '../scene/islandDetail/beachrock';
@@ -268,6 +270,35 @@ const DETAIL_ROTATION = 1.1071487; // atan(2)
 const DETAIL_MIP_BIAS = 2;
 
 /**
+ * Gusts (see `OceanMaterial.gust`). A gust darkens the water it crosses
+ * because it raises the shortest waves first: the rougher patch mirrors less
+ * of the bright low sky and more of the darker sky overhead, the cat's paw.
+ *
+ * Scale and stretch: patches about a hundred metres across, half again as
+ * long along the wind. Drift: carried at 0.6 of the wind speed, as gust
+ * fronts are. Edges: the smoothstep that turns the noise into patches with
+ * lulls between them. Gain: the shortest band's slope in a lull and in a
+ * gust, which averages a little under 1 over the field. Mean: the field's
+ * value when `uGustStrength` is 0.
+ */
+const GUST_SCALE = 55;
+const GUST_STRETCH = 1.5;
+const GUST_DRIFT = 0.6;
+const GUST_EDGE: readonly [number, number] = [0.36, 0.7];
+const GUST_GAIN: readonly [number, number] = [0.3, 1.8];
+const GUST_MEAN = 0.5;
+
+/**
+ * The near-ripple read of the detail band: stretched 2.3 times (so 1 cm to
+ * 29 cm at High), turned by atan(1/3) so it never registers with the other
+ * two reads, at 0.6 of their slope, and drawn inside 6 m to gone by 45 m.
+ */
+const NEAR_RIPPLE_SCALE = 2.3;
+const NEAR_RIPPLE_ROTATION = 0.3217506; // atan(1/3)
+const NEAR_RIPPLE_GAIN = 0.6;
+const NEAR_RIPPLE_REACH: readonly [number, number] = [6, 45];
+
+/**
  * Gain on the sky's reflection (the environment lookup, not the planar
  * mirror's objects).
  *
@@ -303,6 +334,28 @@ const SKY_REFLECTION_GAIN = 1.3;
  * the dome nor the haze drew it).
  */
 const REFLECTION_GAIN_GRAZE = [0.0015, 0.012] as const;
+
+/**
+ * Where the swell stops displacing geometry, metres from the eye. Atlas fades
+ * each band's displacement at about thirty of its wave periods (GDC 2019);
+ * the two shorter cascades already go long before that, cut by the mesh's
+ * own band limit (`cascadeReach`), and this is the swell's. Past 4 km a
+ * metre-high crest is under a pixel from a deck, and the geometry only
+ * shimmers along the horizon row; its shading carries on in the normal.
+ * Far past the ship, so the buoyancy sampler's near field is untouched.
+ *
+ * The horizon line itself is not this file's to close. Blending the last
+ * pixels of sea toward the environment's horizon or toward `uHorizonColor`
+ * was tried (2026-11-18) and made the lines worse. By day and in the storm
+ * the scene's aerial perspective lays most of the colour on those pixels,
+ * and with the water drawn black the haze alone sat far under the dome's
+ * horizon (sRGB 115 against 204-224 in clear-day-wide, 86 against 148 in
+ * storm), so nothing the water draws beneath it can meet the dome; matching
+ * the haze's level-ray inscatter to the dome is `sky/AerialPerspective`'s
+ * job. At night the haze is dark and the far sea's own colour is the
+ * brighter side of the edge; neither target colour was the dome's there.
+ */
+const SWELL_DISPLACEMENT_FADE: readonly [number, number] = [4000, 12000];
 
 /**
  * Fresnel's flattening of the normal toward vertical, at a grazing view.
@@ -549,6 +602,66 @@ const GLINT_MAX_GAIN = 24;
 const GLINT_TWINKLE_HZ = 9;
 
 /**
+ * W3, a stable glitter path. Screen pixels a glint cell may span across the
+ * footprint's short axis before the draw hands over to its mean.
+ *
+ * The cells are world squares the area of the pixel's footprint. At a grazing
+ * view that footprint is a sliver, metres along the view and centimetres
+ * across it, so a square of its area is `sqrt(long / short)` pixels wide on
+ * screen: four pixels at a hundred metres from a deck, a dozen near the
+ * horizon. Each one is a whole cell drawn bright or dark together, and those
+ * were the hard white blocks the moon's path broke into and the tiles the sun's
+ * path showed toward the horizon. Past this span the draw fades to 1, which
+ * leaves the slope-filtered mean (LEAN): the column the eye expects there.
+ */
+const GLINT_CELL_SPAN: readonly [number, number] = [2.5, 6];
+
+/**
+ * W3. The lit source's size in slope space, as a slope variance added to the
+ * specular lobe only: the area-light highlight.
+ *
+ * The sun and moon are 0.0047 rad across, which in slope space is far under
+ * any facet's own spread, so on their own they add nothing. But a low sun or
+ * moon is not seen as a disc: forward scattering in the marine haze spreads
+ * it into an aureole a few degrees across, and that is what lights the gaps
+ * between glints and holds a sunset path together to the horizon (Atlas's
+ * area-light highlight, GDC 2019). Zero with the light high, this variance
+ * with it at the horizon.
+ */
+const LOW_LIGHT_SLOPE_VARIANCE = 0.0008;
+
+/**
+ * W3. Slope variance the glitter gains per metre of the pixel footprint's
+ * short axis, for the capillaries finer than the finest band that a wider
+ * footprint averages over (the LEADR "filtered variance widens with
+ * distance" term). Capped, so the far sheen keeps Cox-Munk-like totals.
+ *
+ * It is what keeps a resolved wave facet from lighting as one flat clipped
+ * patch in the middle distance: there the lobe was as narrow as at the bow,
+ * every facet turned to the moon drew far over white, and its edge was the
+ * edge of the facet.
+ */
+const FOOTPRINT_SLOPE_VARIANCE: readonly [number, number] = [0.04, 0.004];
+
+/**
+ * Lantern glints: the ship's deck lanterns and stern lantern mirrored in the
+ * sea at night. Four point sources through the same Gaussian slope lobe as
+ * the sun, so each is a warm broken streak under the light that follows the
+ * swell. Intensity per source at full darkness (scene units, at a metre), the
+ * extra slope variance that stands for the glass's size, and the colour of
+ * tallow light. The lobe is the slope statistics alone, without the sun's
+ * footprint widening: with it (and 0.004 here) each lantern laid a broad
+ * brown sheen under the stern instead of a streak of glints.
+ */
+const LANTERN_GLINT_INTENSITY = 14;
+const STERN_GLINT_INTENSITY = 22;
+const LANTERN_SLOPE_VARIANCE = 0.0005;
+const LANTERN_GLINT_COLOR = new THREE.Color(1.0, 0.6, 0.28);
+
+/** Scratch for `setLanterns`. */
+const _lanternScratch = new THREE.Vector3();
+
+/**
  * The undisplaced world XZ a fragment's surface point was generated from.
  *
  * A varying rather than a recomputation: the vertex stage is the only place that
@@ -631,6 +744,45 @@ const HULL_MIRROR_REACH: [number, number] = [35, 120];
  * the preset and the time of day.
  */
 const HULL_MIRROR_ALBEDO: [number, number, number] = [0.09, 0.06, 0.04];
+
+/**
+ * [island-reflection] The planar mirror's vertical stretch on a rough sea:
+ * gain on `sigV * P[1][1]` (the half-height of the column, in uv), its cap in
+ * uv far off, the mirror target's size relative to the screen's (for the
+ * sideways footprint; the tiers run 0.25 to 0.75, so a middling guess), and
+ * the cap near the eye. See the reflection block.
+ */
+const MIRROR_STRETCH: [number, number, number, number] = [1, 0.06, 0.6, 0.015];
+
+/** Metres from the eye over which the stretch's cap opens from its near value (the last above) to its far one. */
+const MIRROR_STRETCH_REACH: [number, number] = [60, 260];
+
+/** Cox-Munk slope RMS over which the far water's mirror fades out. See the reflection block. */
+const MIRROR_CALM: [number, number] = [0.15, 0.25];
+
+/** [foam] Opacity of the surf's thin foam wash at its thickest. See `surfWash`. */
+const SURF_WASH_OPACITY = 0.33;
+
+/** Three taps down the stretch, at -2/3, 0 and +2/3 of it: offset, weight. */
+const MIRROR_TAPS: ReadonlyArray<readonly [number, number]> = [
+  [-1, 0.3],
+  [0, 0.4],
+  [1, 0.3],
+];
+
+/**
+ * Metres from the eye over which the mirror's facing gate is lifted. Inside,
+ * the hull's near reflection keeps the gate it was tuned with; past it the
+ * gate held the island's reflection at a tenth or less.
+ */
+const MIRROR_FACING_REACH: [number, number] = [40, 120];
+
+/**
+ * Metres from the eye over which the screen-space trace hands over to the
+ * mirror. The hull is reflected within this; past it SSR found only the
+ * island, in fragments.
+ */
+const SSR_REACH: [number, number] = [90, 180];
 
 /**
  * Softness of the hull's shadow in the glitter: metres at the hull, and
@@ -830,6 +982,14 @@ function surfPitchHold(groundDistance: any): any {
 const SURF_VERTEX_REACH = 220;
 
 /**
+ * Ground distance, metres, inside which the vertex stage hands the open sea's
+ * swell over to the surf (`surfFftFade`). Wider than the breakers' reach: the
+ * swell still displaces the mesh out to about this range, and over shallows it
+ * must not. One heightfield evaluation per vertex in the extra ring.
+ */
+const SURF_SWELL_REACH = 1500;
+
+/**
  * How much of the FFT field survives into the surf, per band, at seabed depth
  * `depth`: `vec2(swell, chop)`, each 0..1.
  *
@@ -914,6 +1074,29 @@ const SCATTER_WRAP = 0.45;
 const FACE_SHEET_METRES = 0.35;
 const FACE_GLOW = 4;
 
+/**
+ * The crest blend (Sea of Thieves, SIGGRAPH 2018): where on a wave it starts
+ * and is full, as height over the crest scale (`uCrestScale`; most crests
+ * stand under a third of it, and a mask that only lit the tallest left the
+ * storm's near waves slate); how much of the lobe is left cross-lit and
+ * down-light; how far toward the scatter colour a backlit crest goes; and
+ * that colour's luminance against the sky it is lit by. A little over 1,
+ * because the sky behind a crest seen toward the light is the bright part
+ * of it, brighter than the sky the facet itself mirrors.
+ */
+const CREST_PEAK: readonly [number, number] = [0.03, 0.32];
+const CREST_CROSS_LIT = 0.2;
+const CREST_BLEND = 0.6;
+const CREST_LIFT = 1.1;
+
+/**
+ * Bubbles under the foam (Atlas, GDC 2019): how far the water under foam goes
+ * toward the lit bubble colour, per unit of aeration (which tops out at 0.5),
+ * and that colour's albedo against the foam's. Milky turquoise, not white.
+ */
+const BUBBLE_MILK = 1.3;
+const BUBBLE_ALBEDO = 0.42;
+
 export class OceanMaterial {
   readonly material: THREE.MeshBasicNodeMaterial;
 
@@ -996,6 +1179,10 @@ export class OceanMaterial {
   private readonly uWhitePoint = uniform(1 / 0.42);
   /** Wind gain on the detail band's slope; see `shortWaveGain`. */
   private readonly uShortWaveGain = uniform(1);
+  /** Wind speed, m/s, for the gusts' drift. See `gust`. */
+  private readonly uWindSpeed = uniform(7);
+  /** How much of the gust field reaches the surface, 0..1. See `gust`. */
+  private readonly uGustStrength = uniform(1);
   /**
    * How lit the scene is, 0..1, independent of the key light's colour.
    *
@@ -1005,6 +1192,8 @@ export class OceanMaterial {
   private readonly uLightLevel = uniform(1);
   /** Significant wave height, metres. Sets the scale a crest is measured against. */
   private readonly uWaveScale = uniform(3.5);
+  /** Significant height the crest blend measures a crest against. See `setSurf`. */
+  private readonly uCrestScale = uniform(3.5);
   private readonly uSkyColor = uniform(new THREE.Color(0x5793d0));
   private readonly uHorizonColor = uniform(new THREE.Color(0xbdd6ec));
   private readonly uFogColor = uniform(new THREE.Color(0xb9d2e8));
@@ -1056,6 +1245,10 @@ export class OceanMaterial {
   private readonly uRainSlope = uniform(0.16);
   /** Rain clock, seconds. Separate from the wave clock so it can be frozen. */
   private readonly uRainTime = uniform(0);
+  /** W3 glitter filtering on (1) or off (0); see `setGlitterFilter`. */
+  private readonly uGlitterFilter = uniform(1);
+  /** Lantern glints: world positions (w = intensity), see `setLanterns`. */
+  private readonly uLanterns: any[] = Array.from({ length: 4 }, () => uniform(new THREE.Vector4(0, -1e4, 0, 0)));
 
   /** How much of the planar reflection reaches the surface, 0..1. */
   /**
@@ -1155,6 +1348,39 @@ export class OceanMaterial {
    * point it implies, and only the exposure knows where that is (the same
    * reason `SceneBloom.setExposure` exists).
    */
+  /**
+   * The W3 glitter filtering (area-light lobe, footprint variance, the glint
+   * cells' hand-over to their mean): 1 on, 0 off. A few ALU per water pixel,
+   * so it is on in every tier; the switch is for A/B captures.
+   */
+  setGlitterFilter(amount: number): void {
+    this.uGlitterFilter.value = Math.min(1, Math.max(0, amount));
+  }
+
+  /**
+   * The ship's lights, for their glints on the sea after dark: up to three
+   * deck lanterns (`ShipLights.lanternPositions`, world space) and the stern
+   * lantern, carried by `ship` at `SHIP_LANTERN_LOCAL`. `darkness` is
+   * `LightingRig.darkness`, 0 by day, when the term costs a few ALU and adds
+   * nothing.
+   */
+  setLanterns(deck: readonly THREE.Vector3[], ship: THREE.Object3D | null, darkness: number): void {
+    const dark = Math.min(1, Math.max(0, darkness));
+    for (let i = 0; i < 3; i++) {
+      const v = this.uLanterns[i].value as THREE.Vector4;
+      const p = deck[i];
+      if (p) v.set(p.x, p.y, p.z, LANTERN_GLINT_INTENSITY * dark);
+      else v.set(0, -1e4, 0, 0);
+    }
+    const stern = this.uLanterns[3].value as THREE.Vector4;
+    if (ship) {
+      _lanternScratch.copy(SHIP_LANTERN_LOCAL).applyMatrix4(ship.matrixWorld);
+      stern.set(_lanternScratch.x, _lanternScratch.y, _lanternScratch.z, STERN_GLINT_INTENSITY * dark);
+    } else {
+      stern.set(0, -1e4, 0, 0);
+    }
+  }
+
   setExposure(toneMappingExposure: number): void {
     this.uWhitePoint.value = 1 / Math.max(0.05, toneMappingExposure);
   }
@@ -1208,6 +1434,10 @@ export class OceanMaterial {
     // the surf zone running out past the shelf it sits on.
     const height = Math.min(3.6, (this.uWaveScale.value as number) * 0.3 + 0.6);
     setSurfState(phase, period, height, strength, shoreNear);
+    // The crest blend's scale: the fully developed height, but no taller than
+    // a wind sea of this peak can stand (steepness Hs / L near 1/14), since
+    // the storm's 21 m/s gives 10.8 m while its 60 m peak carries about 4.
+    this.uCrestScale.value = Math.max(0.35, Math.min(this.uWaveScale.value as number, Math.max(4, peakWavelength) / 14));
   }
 
   setWind(bearingRadians: number, speed: number): void {
@@ -1224,6 +1454,7 @@ export class OceanMaterial {
     // nothing but. The floor keeps a glassy preset from dividing by nearly zero.
     this.uWaveScale.value = Math.max(0.35, 0.0246 * Math.max(0, speed) ** 2);
     this.uShortWaveGain.value = shortWaveGain(speed);
+    this.uWindSpeed.value = Math.max(0, speed);
     // The foam pattern's streaks lie along the same axis; it is shared with the
     // island's ground, which draws the swash foam, so it lives in `FoamPattern`.
     setFoamWind(bearingRadians);
@@ -1445,6 +1676,30 @@ export class OceanMaterial {
     this.uVertexSpacing.value = Math.max(0, spacingPerMetre);
   }
 
+  /**
+   * The gust field: how hard the wind is blowing at a world point, 0 in a
+   * lull to 1 in a gust. Its gain on the shortest waves (`GUST_GAIN`) draws
+   * the dark "cat's paws" that cross a sea under a gusty wind.
+   *
+   * The one source of gusts on the surface, so a global wind field can replace
+   * it by returning its own value here. Today it is two octaves of value noise
+   * a hundred metres across, stretched along the wind and carried down it at
+   * GUST_DRIFT of the wind speed on the simulation clock (`uRainTime`, see
+   * `setRain`), so a deterministic rewind puts every patch back. Its uniforms
+   * are `uWindAxis`, `uWindSpeed` and `uGustStrength`.
+   */
+  private gust(worldXZ: any): any {
+    const along = vec2(this.uWindAxis.x, this.uWindAxis.y);
+    const across = vec2(this.uWindAxis.y.negate(), this.uWindAxis.x);
+    const travel = this.uWindSpeed.mul(GUST_DRIFT).mul(this.uRainTime);
+    const p = vec2(
+      worldXZ.dot(along).sub(travel).div(GUST_SCALE * GUST_STRETCH),
+      worldXZ.dot(across).div(GUST_SCALE),
+    ).toVar();
+    const n = valueNoise(p).mul(0.65).add(valueNoise(p.mul(2.13).add(vec2(5.2, 1.3))).mul(0.35));
+    return mix(float(GUST_MEAN), n.smoothstep(GUST_EDGE[0], GUST_EDGE[1]), this.uGustStrength);
+  }
+
   private build(inputs: OceanMaterialInputs): void {
     const { displacementTextures, derivativeTextures, tileSizes } = inputs;
     const floorDepth = inputs.floorDepthNode ?? null;
@@ -1560,6 +1815,8 @@ export class OceanMaterial {
           0.5,
           1,
         ).toVar();
+        // The swell's far fade; see SWELL_DISPLACEMENT_FADE.
+        if (i === 0) reach.mulAssign(smoothstepDownClamped(groundDistance, SWELL_DISPLACEMENT_FADE[0], SWELL_DISPLACEMENT_FADE[1]));
         const sample = this.displacementNodes[i]
           .sample(worldXZ.div(this.uTileSizes[i]))
           .level(lod)
@@ -1607,38 +1864,52 @@ export class OceanMaterial {
       // surf), so open water pays two compares and no heightfield.
       if (floorDepth !== null) {
         If(
-          surfUniforms.active.greaterThan(0.5).and(groundDistance.lessThan(SURF_VERTEX_REACH)),
+          surfUniforms.active.greaterThan(0.5).and(groundDistance.lessThan(SURF_SWELL_REACH)),
           () => {
             const depth = floorDepth(vec3(worldXZ.x, 0, worldXZ.y)).toVar();
             If(depth.lessThan(surfReachDepth()), () => {
+              // The swell is handed to the surf at any range the mesh still
+              // carries it, not only inside the breakers' reach. Cut off at
+              // `SURF_VERTEX_REACH`, the open sea's 5 m swell stood on the
+              // shallows and the sand past it, and ended in a straight wall
+              // along that circle: the ruled white ridge in `landfall`.
               const fade = surfFftFade(depth).toVar();
               displacement.assign(
                 displacement.sub(swellDisplacement).mul(fade.y).add(swellDisplacement.mul(fade.x)),
               );
-              // The pitch needs to know which way is up the beach and how steep
-              // the bottom is, which costs two more heightfield evaluations — the
-              // same forward differences the fragment stage takes, at the same
-              // undisplaced point, so the two agree on every lean exactly. Low
-              // skips both and the breakers only rise. See `Surf.breaker`.
-              const shoreward = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
-              const beachSlope = float(0.1).toVar();
-              const pitch = float(0).toVar();
-              If(foamUniforms.detail.greaterThan(0.5), () => {
-                const bearing = shoreBearing(floorDepth, worldXZ, depth, shoreward);
-                shoreward.assign(bearing.xy);
-                beachSlope.assign(bearing.z);
-                pitch.assign(surfPitchHold(groundDistance));
+              If(groundDistance.lessThan(SURF_VERTEX_REACH), () => {
+                // The pitch needs to know which way is up the beach and how steep
+                // the bottom is, which costs two more heightfield evaluations — the
+                // same forward differences the fragment stage takes, at the same
+                // undisplaced point, so the two agree on every lean exactly. Low
+                // skips both and the breakers only rise. See `Surf.breaker`.
+                const shoreward = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
+                const beachSlope = float(0.1).toVar();
+                const pitch = float(0).toVar();
+                If(foamUniforms.detail.greaterThan(0.5), () => {
+                  const bearing = shoreBearing(floorDepth, worldXZ, depth, shoreward);
+                  shoreward.assign(bearing.xy);
+                  beachSlope.assign(bearing.z);
+                  pitch.assign(surfPitchHold(groundDistance));
+                });
+                // Band-limited to the mesh: see Surf.breaker's footprint. Eased
+                // out over the last fifth of the reach rather than stopping on
+                // its circle, where it drew a step across every breaker.
+                const wave = breaker(depth, worldXZ, beachSlope, pitch, footprint);
+                const rise = smoothstepDownClamped(groundDistance, SURF_VERTEX_REACH * 0.8, SURF_VERTEX_REACH);
+                displacement.y.addAssign(wave.eta.mul(rise));
+                displacement.x.addAssign(shoreward.x.mul(wave.lean));
+                displacement.z.addAssign(shoreward.y.mul(wave.lean));
+                // Held only where the mesh can carry a sheet this thin on a slope
+                // this shallow: vertices under ~1.2 m apart (about 50 m from the
+                // eye on High). The run-up spans 5 to 10 m of sand; on the 3.4 m
+                // grid at 150 m it drew as single flat triangles stood over the
+                // sand and the beachrock, the dark wedge by the pinnace in
+                // `landfall`. Past here the ground's swash hook draws it alone.
+                const sheet = swashSheetHeight(depth, worldXZ).toVar();
+                const hold = smoothstepDownClamped(groundDistance.mul(this.uVertexSpacing), 1.2, 2.4);
+                displacement.y.assign(mix(displacement.y, displacement.y.max(sheet), hold));
               });
-              // Band-limited to the mesh: see Surf.breaker's footprint.
-              const wave = breaker(depth, worldXZ, beachSlope, pitch, footprint);
-              displacement.y.addAssign(wave.eta);
-              displacement.x.addAssign(shoreward.x.mul(wave.lean));
-              displacement.z.addAssign(shoreward.y.mul(wave.lean));
-              // Faded out toward the edge of the vertex reach, where the mesh can
-              // no longer hold a sheet this thin on a slope this shallow.
-              const sheet = swashSheetHeight(depth, worldXZ).toVar();
-              const hold = smoothstepDownClamped(groundDistance, SURF_VERTEX_REACH * 0.7, SURF_VERTEX_REACH);
-              displacement.y.assign(mix(displacement.y, displacement.y.max(sheet), hold));
             });
           },
         );
@@ -1678,6 +1949,9 @@ export class OceanMaterial {
       const lostSlopeVariance = float(0).toVar();
       /** Cascade 0's share of the slope: the swell, which the surf replaces. */
       const swellSlope = vec2(0).toVar();
+      // Gusts: how hard the wind is blowing on this patch of water, as a gain
+      // on the shortest waves' slope. See `gust`.
+      const gustGain = mix(float(GUST_GAIN[0]), float(GUST_GAIN[1]), this.gust(fieldXZ)).toVar();
       for (let i = 0; i < cascadeCount; i++) {
         const d = this.derivativeNodes[i].sample(fieldXZ.div(this.uTileSizes[i])).toVar();
         // Weight folds into the fade, so a cascade the tier does not use
@@ -1685,7 +1959,10 @@ export class OceanMaterial {
         const fade = cascadeShadingFade(viewDistance, i, cascadeCount).mul(
           this.uCascadeWeights[i],
         );
-        slope.addAssign(vec2(d.x, d.y).mul(fade));
+        // The ripple cascade answers the gusts in its slope and variance, not
+        // in its fold: whitecap coverage stays the spectrum's.
+        const gustOn = i === MAX_CASCADES - 1 ? gustGain : float(1);
+        slope.addAssign(vec2(d.x, d.y).mul(fade).mul(gustOn));
         if (i === 0) swellSlope.assign(slope);
         // The *total* Jacobian, to first order: J - 1 = Σ (J_i - 1). See the
         // breaking-crest term in `Wake`, which uses the same sum, and why.
@@ -1697,7 +1974,7 @@ export class OceanMaterial {
         // land a few ulps negative when the variance is genuinely nil. Squared
         // fade because variance scales with the square of a linear weight.
         lostSlopeVariance.addAssign(
-          d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade),
+          d.w.sub(d.x.mul(d.x).add(d.y.mul(d.y))).max(0).mul(fade).mul(fade).mul(gustOn).mul(gustOn),
         );
       }
 
@@ -1719,7 +1996,7 @@ export class OceanMaterial {
       const cosR = Math.cos(DETAIL_ROTATION);
       const sinR = Math.sin(DETAIL_ROTATION);
       for (let i = 0; i < MAX_DETAIL; i++) {
-        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(Math.SQRT1_2);
+        const weight = this.uDetailWeights[i].mul(this.uShortWaveGain).mul(gustGain).mul(Math.SQRT1_2);
         const uvA = fieldXZ.div(this.uDetailTiles[i]);
         // Two levels coarser than the footprint: see DETAIL_MIP_BIAS.
         const a = this.detailNodes[i].sample(uvA).bias(float(DETAIL_MIP_BIAS)).toVar();
@@ -1740,9 +2017,38 @@ export class OceanMaterial {
           .add(b.w.sub(b.x.mul(b.x).add(b.y.mul(b.y))).max(0))
           .mul(this.uDetailWeights[i])
           .mul(this.uShortWaveGain.mul(this.uShortWaveGain))
+          .mul(gustGain.mul(gustGain))
           .mul(0.5)
           .toVar();
         lostDetailVariance.addAssign(detailLost);
+
+        // Ripples near the eye: a third read of the same band, stretched by
+        // NEAR_RIPPLE_SCALE and turned by a second irrational angle, so the
+        // decimetre ripples between this band and the ripple cascade's
+        // shortest waves are drawn where they are resolved instead of the
+        // near water reading as gel. Shading only, the same texture (no new
+        // binding; the stage is at 16), and gone past NEAR_RIPPLE_REACH,
+        // where the bias has already turned it into variance. The k^-4 tail
+        // has the same slope in every octave, so the stretched read keeps
+        // the band's slope statistics.
+        const near = smoothstepDownClamped(viewDistance, NEAR_RIPPLE_REACH[0], NEAR_RIPPLE_REACH[1])
+          .mul(this.uDetailWeights[i])
+          .toVar();
+        const cosC = Math.cos(NEAR_RIPPLE_ROTATION);
+        const sinC = Math.sin(NEAR_RIPPLE_ROTATION);
+        const uvC = vec2(
+          fieldXZ.x.mul(cosC).add(fieldXZ.y.mul(sinC)),
+          fieldXZ.y.mul(cosC).sub(fieldXZ.x.mul(sinC)),
+        )
+          .div(this.uDetailTiles[i].mul(NEAR_RIPPLE_SCALE))
+          .add(vec2(0.13, 0.59));
+        const c = this.detailNodes[i].sample(uvC).bias(float(DETAIL_MIP_BIAS)).toVar();
+        const cSlope = vec2(c.x.mul(cosC).sub(c.y.mul(sinC)), c.x.mul(sinC).add(c.y.mul(cosC)));
+        const nearWeight = this.uShortWaveGain.mul(gustGain).mul(near).mul(NEAR_RIPPLE_GAIN).toVar();
+        slope.addAssign(cSlope.mul(nearWeight));
+        lostDetailVariance.addAssign(
+          c.w.sub(c.x.mul(c.x).add(c.y.mul(c.y))).max(0).mul(nearWeight).mul(nearWeight),
+        );
       }
 
       // Rain impacts, added to the wave slope before the normal is built so they
@@ -2011,9 +2317,14 @@ export class OceanMaterial {
       const windU = vec2(this.uWindAxis.x, this.uWindAxis.y).toVar();
       const shareU = this.uSlopeAnisotropy.div(this.uSlopeAnisotropy.add(1)).toVar();
       const roughScale = this.uRoughness.div(0.075).pow(2).toVar();
+      // The capillaries under the finest band are what a gust raises first,
+      // and past a few hundred metres they are all a cat's paw is: a patch of
+      // rougher sheen. Linear in the gain, not squared, so the far sea's mean
+      // sheen barely moves.
       const unresolved = float(0.0024)
         .mul(roughScale)
         .add(viewDistance.smoothstep(30, 500).mul(0.0035))
+        .mul(gustGain)
         .toVar();
       const varU = unresolved.add(lostSlopeVariance.mul(shareU)).add(lostDetailVariance.mul(0.5)).toVar();
       const varC = unresolved
@@ -2581,6 +2892,8 @@ export class OceanMaterial {
       const reflection = mix(analyticSky, vec3(this.envNode.rgb), this.uEnvReady)
         .mul(mix(float(1), float(SKY_REFLECTION_GAIN), smoothstep(REFLECTION_GAIN_GRAZE[0], REFLECTION_GAIN_GRAZE[1], viewDir.y)))
         .toVar();
+      /** The sky's brightness on this facet, before any object takes the ray. */
+      const skyLuma = reflection.dot(vec3(0.2126, 0.7152, 0.0722)).toVar();
       /** How much of this pixel's mirror ray an object (hull, island) takes. */
       const objectCover = float(0).toVar();
 
@@ -2607,18 +2920,85 @@ export class OceanMaterial {
         // its hull reflection hundreds of pixels to the left (the "ghost hull"
         // of reflections-3 and the rectangle beside the hull in boat-sea-2), and
         // nothing under the ship itself.
-        const safeUv: any = (viewportSafeUV(vec2(rawUv.x.oneMinus(), rawUv.y)) as any).toVar();
         // Softer with sub-pixel roughness and with distance; capped because the
         // target is already at reduced resolution.
         const reflectionLod = sig.mul(6).add(viewDistance.mul(0.004)).clamp(0, 1.25).toVar();
-        const mirrored = planar.sample(safeUv).level(reflectionLod).toVar();
+        // [island-reflection] **Stretched along the vertical by the sub-pixel
+        // slopes.** A facet tilted by a slope s toward or away from the eye
+        // turns the reflected ray by 2s in elevation and hardly at all in
+        // bearing, so a rough sea smears what it reflects up and down the
+        // frame and not sideways: the long, soft columns under a coast seen
+        // across a chop. One tap at one mip level drew the island as a sharp
+        // mirror on a sea that cannot hold one, or (with the facing gate below)
+        // not at all. The spread is the along-view slope RMS `sigV` turned into
+        // screen height: 2 sigV radians is `sigV * P[1][1]` in uv.
+        //
+        // Blurred along the vertical only, by the hardware's anisotropic
+        // filter (`Reflections` turns it on): three taps, each given a
+        // gradient a third of the column tall and only the old roughness
+        // level wide. A first cut took seven taps at a mip level as wide as
+        // the gap between them; the isotropic mip blurred sideways as much as
+        // down, and the masts' reflections under the sunset ship went with it.
+        // A mast stretched vertically is still a mast.
+        //
+        // Why the mirror and not a traced reflection: WebGPU exposes no ray
+        // tracing, and the mirror already holds the true mirrored scene,
+        // canopy, cliffs and all, at a fixed cost. A march against the
+        // island's height field would trace the silhouette off-screen and on
+        // a tilted face, but with a flat colour in place of the canopy, and
+        // the toggled frames (`.claude/progress/17-island-reflection`) showed
+        // the mirror failing on how it was sampled, not on what it held.
+        const p11 = (cameraProjectionMatrix as any).element(1).element(1).abs().toVar();
+        // Capped tighter near the eye. Cox and Munk put a 6 m/s sea's slope RMS
+        // near 0.18, so by the numbers even the sunset swell should smear the
+        // ship's rig into a haze; the near water's resolved swell already
+        // breaks the rig's reflection up (the offset above), and drawn as
+        // well the masts' streaks under the sunset hull were lost.
+        const stretchCap = mix(float(MIRROR_STRETCH[3]), float(MIRROR_STRETCH[1]), viewDistance.smoothstep(...MIRROR_STRETCH_REACH));
+        const stretch = sigV.mul(p11).mul(MIRROR_STRETCH[0]).min(stretchCap).toVar();
+        const tapGap = stretch.mul(2 / 3).toVar();
+        // The old level's footprint across, in uv; the tap's third of the column down.
+        // At least a third of the tap's height across, so a narrow bright
+        // object (the lighthouse, a rock, a strip of sand) blurs into a soft
+        // smudge rather than standing as a ruled bar three taps tall: the
+        // pale columns of frame 38.
+        const footX: any = reflectionLod
+          .exp2()
+          .div(screenSize.x.mul(MIRROR_STRETCH[2]))
+          .max(stretch.mul(2 / 3).mul(screenSize.y.div(screenSize.x)).mul(0.35))
+          .toVar();
+        const gradX = vec2(footX, 0).toVar();
+        const gradY = vec2(0, tapGap.max(footX) as any).toVar();
+        const mirrored = vec4(0, 0, 0, 0).toVar();
+        for (const [k, w] of MIRROR_TAPS) {
+          const tapUv: any = viewportSafeUV(vec2(rawUv.x.oneMinus(), (rawUv as any).y.add(tapGap.mul(k))) as any);
+          mirrored.addAssign(planar.sample(tapUv).grad(gradX, gradY).mul(w));
+        }
         const objectMask: any = mirrored.a.clamp(0, 1).toVar();
 
         const rEdge = rawUv.min(rawUv.oneMinus()).toVar();
         const inFrame = rEdge.x.min(rEdge.y).smoothstep(0, 0.05).clamp(0, 1).toVar();
-        const facing = nDotV.smoothstep(0.02, 0.22).toVar();
+        // The gate is for the near water, where a facet that nearly faces away
+        // reflects a ray the flat mirror's lookup does not describe. Far off,
+        // every pixel is a crowd of facets whose statistics the stretch above
+        // already carries, and n.v there is the view's own few degrees: the
+        // gate held the mirror at a tenth or less from about 60 m out, which
+        // is why the island-reveal sea showed no island at all.
+        const facing = mix(nDotV.smoothstep(0.02, 0.22), float(1), viewDistance.smoothstep(...MIRROR_FACING_REACH)).toVar();
 
-        objectCover.assign(inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount));
+        // [island-reflection] **Faded by the sea state on the far water.** A
+        // rough sea's facets scatter a distant island's image over a tenth of
+        // the frame, and what is left is a few levels of darkening (measured:
+        // 4-8 of 255 under the island in the Tour's 15 m/s reveal) that
+        // carries no shape, only the risk of the bars of frame 38. Cox and
+        // Munk's slope RMS from the wind decides it: kept whole below about
+        // 0.15 (a 3-4 m/s sea, where the island's reflection is the picture),
+        // gone by 0.25 (about 10 m/s). Inside 60 m, where the hull is, the
+        // mirror is left as it was.
+        const coxMunk = this.uWindSpeed.mul(0.00512).add(0.003).sqrt();
+        const calmEnough = float(1).sub(coxMunk.smoothstep(...MIRROR_CALM));
+        const seaFade = mix(float(1), calmEnough, viewDistance.smoothstep(60, 200));
+        objectCover.assign(inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount).mul(seaFade));
         reflection.assign(
           mix(reflection, mirrored.rgb.div(objectMask.max(1e-3)), objectCover as any),
         );
@@ -2718,9 +3098,21 @@ export class OceanMaterial {
         // mirror keeps the rig whole where it reaches. (The mast-like ghosts in
         // ship-underway's foreground are not this: they go with the kelp
         // hidden and stay with SSR, the mirror and refraction all off.)
+        //
+        // [island-reflection] Nor on far water. There a single sharp ray per
+        // pixel is the wrong answer for a sea whose facets scatter the
+        // reflection over a tenth of the frame, and what it found was the
+        // island as torn, flickering fragments laid over the mirror's soft
+        // column. The mirror holds the whole island (and the hull) at any
+        // range; SSR stays where it earns its cost, near the hull.
         const beforeSsr = vec3(0, 0, 0).toVar();
         beforeSsr.assign(reflection);
-        reflection.assign(mix(ssr(worldPos, n, reflection) as any, beforeSsr, hullOver));
+        // Past the reach the trace is not run at all, which pays for the
+        // mirror's extra taps on the far water that is most of an island view.
+        const ssrFar = viewDistance.smoothstep(...SSR_REACH).toVar();
+        If(ssrFar.lessThan(0.999), () => {
+          reflection.assign(mix(ssr(worldPos, n, beforeSsr) as any, beforeSsr, hullOver.max(ssrFar)));
+        });
       }
 
       If(this.uHullActive.greaterThan(0.5), () => {
@@ -2760,12 +3152,41 @@ export class OceanMaterial {
       const halfVector = normalize(viewDir.add(sunDirEarly)).toVar();
       const hSlope = vec2(halfVector.x, halfVector.z).negate().div(halfVector.y.max(1e-3)).toVar();
       const dSlope = hSlope.sub(slope).toVar();
-      const covDet = slopeCov.x.mul(slopeCov.y).sub(slopeCov.z.mul(slopeCov.z)).max(1e-10).toVar();
+      // [W3] The pixel footprint, shared with the glint draw below.
+      const glintFootprintX = dFdx(fieldXZ);
+      const glintFootprintY = dFdy(fieldXZ);
+      const glintArea = glintFootprintX.x
+        .mul(glintFootprintY.y)
+        .sub(glintFootprintX.y.mul(glintFootprintY.x))
+        .abs()
+        .max(1e-8)
+        .toVar();
+      // The footprint's short axis: its area over its long axis.
+      const footprintShort = glintArea
+        .div(glintFootprintX.length().max(glintFootprintY.length()).max(1e-4))
+        .toVar();
+      // [W3] The lobe's own covariance: the slope statistics plus the lit
+      // source's aureole when it is low (LOW_LIGHT_SLOPE_VARIANCE) and the
+      // capillaries the footprint averages away (FOOTPRINT_SLOPE_VARIANCE).
+      // Isotropic, so they add to the diagonal only.
+      const lowLight = float(1).sub(sunDirEarly.y.smoothstep(0.02, 0.3)).mul(this.uGlitterFilter).toVar();
+      const lobeWiden = lowLight
+        .mul(lowLight)
+        .mul(LOW_LIGHT_SLOPE_VARIANCE)
+        .add(
+          footprintShort
+            .mul(FOOTPRINT_SLOPE_VARIANCE[0])
+            .min(FOOTPRINT_SLOPE_VARIANCE[1])
+            .mul(this.uGlitterFilter),
+        )
+        .toVar();
+      const lobeCov = vec3(slopeCov.x.add(lobeWiden), slopeCov.y.add(lobeWiden), slopeCov.z).toVar();
+      const covDet = lobeCov.x.mul(lobeCov.y).sub(lobeCov.z.mul(lobeCov.z)).max(1e-10).toVar();
       const mahalanobis = dSlope.x
         .mul(dSlope.x)
-        .mul(slopeCov.y)
-        .add(dSlope.y.mul(dSlope.y).mul(slopeCov.x))
-        .sub(dSlope.x.mul(dSlope.y).mul(slopeCov.z).mul(2))
+        .mul(lobeCov.y)
+        .add(dSlope.y.mul(dSlope.y).mul(lobeCov.x))
+        .sub(dSlope.x.mul(dSlope.y).mul(lobeCov.z).mul(2))
         .div(covDet)
         .toVar();
       const slopePdf = mahalanobis.mul(-0.5).exp().div(covDet.sqrt().mul(2 * Math.PI)).toVar();
@@ -2850,14 +3271,6 @@ export class OceanMaterial {
       // its mean and the sheen is untouched; near the eye it is a scatter of
       // points that keeps the path's energy. Two power-of-two cell sizes are
       // blended so the cells do not pop as the footprint changes.
-      const glintFootprintX = dFdx(fieldXZ);
-      const glintFootprintY = dFdy(fieldXZ);
-      const glintArea = glintFootprintX.x
-        .mul(glintFootprintY.y)
-        .sub(glintFootprintX.y.mul(glintFootprintY.x))
-        .abs()
-        .max(1e-8)
-        .toVar();
       const glintLevel = log2(glintArea).mul(0.5).toVar();
       const glintLevel0 = glintLevel.floor().toVar();
       // `uRainTime` is the simulation clock (see `setRain`), so a deterministic
@@ -2897,10 +3310,13 @@ export class OceanMaterial {
         );
         return drawn.min(GLINT_MAX_GAIN);
       };
+      // [W3] How many pixels a cell spans across the footprint's short axis
+      // (GLINT_CELL_SPAN): past it the draw is its mean.
+      const glintSpan = glintArea.sqrt().div(footprintShort.max(1e-6));
       const glintDraw = mix(
-        glintGain(glintLevel0),
-        glintGain(glintLevel0.add(1)),
-        glintLevel.sub(glintLevel0),
+        mix(glintGain(glintLevel0), glintGain(glintLevel0.add(1)), glintLevel.sub(glintLevel0)),
+        float(1),
+        glintSpan.smoothstep(GLINT_CELL_SPAN[0], GLINT_CELL_SPAN[1]).mul(this.uGlitterFilter),
       ).toVar();
       specular.mulAssign(glintDraw);
       // The hull stands between these facets and the sun. Where the planar
@@ -2916,6 +3332,41 @@ export class OceanMaterial {
       // which the mirror's coverage misses under a hull on a swell; see
       // HULL_MIRROR_LENGTH.
       specular.mulAssign(hullHit.max(hullShade).oneMinus());
+
+      // --- lantern glints ---------------------------------------------------------
+      // The ship's lights mirrored in the sea (see LANTERN_GLINT_INTENSITY):
+      // the sun's lobe, for a point source at `lp`, falling as 1/d^2. Added
+      // after the hull's occlusion, which is the sun's: the lanterns hang over
+      // the water beside the hull, not behind it.
+      const lanternCov = vec3(
+        slopeCov.x.add(LANTERN_SLOPE_VARIANCE),
+        slopeCov.y.add(LANTERN_SLOPE_VARIANCE),
+        slopeCov.z,
+      ).toVar();
+      const lanternDet = lanternCov.x.mul(lanternCov.y).sub(lanternCov.z.mul(lanternCov.z)).max(1e-10).toVar();
+      const lanternNorm = float(1).div(lanternDet.sqrt().mul(2 * Math.PI).mul(viewDir.y.max(0.02).mul(4))).toVar();
+      const lanternSum = float(0).toVar();
+      for (let i = 0; i < 4; i++) {
+        const lp: any = this.uLanterns[i];
+        const toLight = lp.xyz.sub(worldPos);
+        const d2 = toLight.dot(toLight).max(0.25);
+        const ld = toLight.mul(d2.inverseSqrt());
+        const h = normalize(viewDir.add(ld));
+        const ds = vec2(h.x, h.z).negate().div(h.y.max(1e-3)).sub(slope);
+        const m = ds.x
+          .mul(ds.x)
+          .mul(lanternCov.y)
+          .add(ds.y.mul(ds.y).mul(lanternCov.x))
+          .sub(ds.x.mul(ds.y).mul(lanternCov.z).mul(2))
+          .div(lanternDet);
+        const hy2l = h.y.mul(h.y).max(1e-3);
+        const vh = float(1).sub(viewDir.dot(h).clamp(0, 1));
+        const fr = vh.mul(vh).mul(vh).mul(vh).mul(vh).mul(0.98).add(0.02);
+        lanternSum.addAssign(
+          m.mul(-0.5).exp().div(hy2l.mul(hy2l)).mul(fr).mul(lp.w).div(d2).mul(ld.y.greaterThan(0).select(float(1), float(0))),
+        );
+      }
+      specular.addAssign(vec3(LANTERN_GLINT_COLOR.r, LANTERN_GLINT_COLOR.g, LANTERN_GLINT_COLOR.b).mul(lanternSum.mul(lanternNorm)));
 
       // --- combine ---------------------------------------------------------------
       // The body colour is authored for *daylight*. Its diffuse term bottomed out
@@ -2979,6 +3430,44 @@ export class OceanMaterial {
         .add(seenThrough)
         .mul(bedShade)
         .add(scatter.mul(sunShade))
+        .toVar();
+
+      // --- light through the crests --------------------------------------------
+      //
+      // Sea of Thieves' blend (Ang, "The Technical Art of Sea of Thieves",
+      // SIGGRAPH 2018 talks): the body is blended from its deep colour toward
+      // the scatter colour by a wave-peak mask, a forward lobe toward the light
+      // and the view's grazing angle. The terms above add light; they are sun
+      // terms, and a storm's deck takes the sun (`sunShade`, `uLightLevel`), so
+      // its crests stayed the slate of the troughs (REFERENCE_TARGETS, storm).
+      // What lights a crest from behind under an overcast is the bright sky
+      // behind the wave: so the crest colour is the scatter albedo's hue
+      // through a thin crest at the sky's own brightness, and it is blended
+      // over the reflection as well as the body (in `surface`, below), because
+      // at a grazing view Fresnel leaves the body a few percent of the pixel
+      // and a crest tip lit from behind is still seen green against a grey sky.
+      // Gone after dark with the sky (`skyLight`), so a night crest is not
+      // green. Near zero cost: a dozen ALU on values already in registers.
+      const crestPeak = worldPos.y.div(this.uCrestScale).smoothstep(CREST_PEAK[0], CREST_PEAK[1]).max(surfThin).toVar();
+      const lightBearing = vec2(sunDir.x, sunDir.z).add(vec2(1e-5, 0)).normalize();
+      const viewBearing = vec2(viewDir.x, viewDir.z).negate().add(vec2(1e-5, 0)).normalize();
+      const towardLight = viewBearing.dot(lightBearing).mul(0.5).add(0.5).toVar();
+      const crestLobe = mix(float(CREST_CROSS_LIT), float(1), towardLight.mul(towardLight).mul(towardLight));
+      const scatterHue = (this.uScatterColor as any)
+        .mul(this.uExtinction.mul(THIN_CREST_METRES).negate().exp())
+        .toVar();
+      const crestColor = scatterHue
+        .div(scatterHue.dot(vec3(0.2126, 0.7152, 0.0722)).max(1e-4))
+        .mul(skyLuma.mul(CREST_LIFT))
+        .toVar();
+      const crestBlend = crestPeak
+        .mul(crestLobe)
+        .mul(awayFromSun.mul(0.5).add(0.5))
+        .mul(across.mul(0.6).add(0.4))
+        .mul(this.uCrestGlow.div(DEFAULT_APPEARANCE.crestGlow).min(1.5))
+        .mul(skyLight)
+        .mul(CREST_BLEND)
+        .clamp(0, 0.8)
         .toVar();
 
       // --- foam --------------------------------------------------------------------
@@ -3176,6 +3665,8 @@ export class OceanMaterial {
       // The persistent buffer adds the foam the surf leaves standing and
       // drifting between sets. See the shore term in `Wake`.
       const surf = float(0).toVar();
+      /** Thin surf foam between the breakers, 0..1: drawn as a soft wash, not through the feather. */
+      const surfWash = float(0).toVar();
       /** Milky, bubble-laden water under and behind the white water, 0..1. */
       const surfAerated = float(0).toVar();
       /** Light on the surf's white water relative to flat foam: the roller's lit face and its lee. */
@@ -3192,6 +3683,8 @@ export class OceanMaterial {
       const surfPillowShadow = float(0).toVar();
       /** Where the surf's foam has been carried since it was made, metres. */
       const surfAdvect = vec2(0, 0).toVar();
+      /** Metres one pixel spans here; taken before the surf's branch, where derivatives are undefined. */
+      const foamFootprint0 = dFdx(fieldXZ).length().max(dFdy(fieldXZ).length()).toVar();
       if (floorDepth !== null) {
         If(inSurf.greaterThan(0.5), () => {
           const d = seabedDepth;
@@ -3280,14 +3773,15 @@ export class OceanMaterial {
             .toVar();
           const inward = d.div(surfBreak.max(0.05)).oneMinus().clamp(0, 1).toVar();
           const peelAt = mix(float(0.62), float(0.47), inward.smoothstep(0, 0.55)).toVar();
-          const crestSection = valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(waveNumber)))
-            .mul(0.65)
-            .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(waveNumber.add(7)))).mul(0.35))
-            .add(heightRatio.sub(1).mul(0.15))
-            .smoothstep(peelAt.sub(0.1), peelAt.add(0.1))
-            // A rip channel's waves mostly do not break.
-            .mul(rip.mul(-0.85).add(1))
-            .toVar();
+          const crestSectionOf = (wave: any): any =>
+            valueNoise(fieldXZ.mul(1 / 45).add(waveOffset(wave)))
+              .mul(0.65)
+              .add(valueNoise(fieldXZ.mul(1 / 18).add(waveOffset(wave.add(7)))).mul(0.35))
+              .add(heightRatio.sub(1).mul(0.15))
+              .smoothstep(peelAt.sub(0.1), peelAt.add(0.1))
+              // A rip channel's waves mostly do not break.
+              .mul(rip.mul(-0.85).add(1));
+          const crestSection = crestSectionOf(waveNumber).toVar();
           // And the broken stretches are not one width: the roll is thicker
           // where the section broke hardest, on top of the set's own scale.
           const sectionWidth = valueNoise(fieldXZ.mul(1 / 26).add(waveOffset(waveNumber.add(3))))
@@ -3300,8 +3794,11 @@ export class OceanMaterial {
           const rollerScale = mix(float(0.9), float(2.2), heightRatio.smoothstep(0.5, 1.5)).mul(sectionWidth).toVar();
           const rollerFront = float(-0.055).mul(rollerScale).toVar();
           const rollerBack = float(0.12).mul(rollerScale).toVar();
+          // The front edge is the bore's: sharp, the white standing up out of
+          // green water within a few tens of centimetres. Ramped over most of
+          // the roller's front half, it read as a smear rather than a lip.
           const roller = sr
-            .smoothstep(rollerFront, rollerFront.mul(0.22))
+            .smoothstep(rollerFront, rollerFront.mul(0.6))
             .mul(smoothstepDownClamped(sr, rollerBack.mul(0.25), rollerBack))
             .mul(brokenNear)
             .mul(crestSection)
@@ -3346,6 +3843,21 @@ export class OceanMaterial {
             (mix as any)(float(1), rollLit.div(flatLit.max(0.2)).clamp(0.6, 1.35), onRoll).mul(lee.mul(-0.35).add(1)),
           );
 
+          // **The bore's lip.** The leading edge of every broken crest, all the
+          // way in: the brightest, thickest white in the surf, a line a few
+          // tens of centimetres across that the dense wake and then the lace
+          // trail behind. Never narrower than a pixel's footprint in phase, so
+          // it holds as a line at a few hundred metres instead of aliasing.
+          const lipWidth = foamFootprint0.mul(surfPhaseGradient(d).abs()).max(0.012).toVar();
+          const boreX = sr.sub(rollerFront.mul(0.8)).div(lipWidth);
+          const boreLip = boreX
+            .mul(boreX)
+            .negate()
+            .exp()
+            .mul(brokenNear)
+            .mul(crestSection)
+            .mul(d.smoothstep(0.08, 0.4))
+            .toVar();
           const lipBand = d.sub(surfBreak).div(surfBreak.mul(0.22).add(0.12)).toVar();
           const lipLine = s.div(0.035).toVar();
           const lip = lipBand
@@ -3379,16 +3891,6 @@ export class OceanMaterial {
           const lastBroke = smoothstepDownClamped(d, surfBreakLast.mul(0.82), surfBreakLast.mul(1.06)).toVar();
           const previousBroke = smoothstepDownClamped(d, surfBreakPrevious.mul(0.82), surfBreakPrevious.mul(1.06)).toVar();
           const olderBroke = smoothstepDownClamped(d, surfBreakOlder.mul(0.82), surfBreakOlder.mul(1.06)).toVar();
-          // Age, in periods, of the youngest broken water at this point: the
-          // last crest if it broke here, else the one before, else the one
-          // before that.
-          const laceAge = lastBroke
-            .greaterThan(0.5)
-            .select(
-              age,
-              previousBroke.greaterThan(0.5).select(age.add(1), olderBroke.greaterThan(0.5).select(age.add(2), float(9))),
-            )
-            .toVar();
           // Not every section of a crest breaks equally hard. Horizon Forbidden
           // West fades its breakers along the wavefront with a strength texture
           // so the break has gaps; this is that in closed form, at about twenty
@@ -3397,11 +3899,21 @@ export class OceanMaterial {
           //
           // The range reaches down to a tenth, so a wave's lace has real holes
           // in it. At 0.6 to 1.1 every band stayed continuous.
-          const sections = valueNoise(fieldXZ.mul(1 / 21).add(waveOffset(surfPhaseValue.floor()).add(vec2(11.3, 1.9))))
-            .smoothstep(0.3, 0.7)
-            .mul(1.0)
-            .add(0.1)
-            .toVar();
+          //
+          // [island-reflection, foam] Keyed to the wave that laid the foam,
+          // not to the wave that passed last. One `sections` read at
+          // `floor(phase)` multiplied the whole field, so every time a crest
+          // went by, the lace the two waves before it had left was re-cut by
+          // a new section pattern, and inside a band of old foam the cut
+          // changed at every crest line: the beach-flyover's torn edges in
+          // the middle of the veil. Each age's foam keeps its own.
+          const sectionsOf = (wave: any): any =>
+            valueNoise(fieldXZ.mul(1 / 21).add(waveOffset(wave).add(vec2(11.3, 1.9))))
+              .smoothstep(0.3, 0.7)
+              .add(0.1);
+          const waveLast = surfPhaseValue.floor().toVar();
+          const sections = sectionsOf(waveLast).toVar();
+          const sectionsPrevious = sectionsOf(waveLast.sub(1)).toVar();
           // Two stages, the way a surf zone's foam ages (Monahan's stage A and
           // B whitecaps, and NeuralSpecOcean's long-tail roller wake): the dense
           // white right behind the roller, gone within half a period; and the
@@ -3431,7 +3943,12 @@ export class OceanMaterial {
           // clear sheet: `sheetClear` below still takes the white off the last
           // half metre of depth.
           const denseAt = (a: any) => a.mul(-3.4).exp().mul(0.92);
-          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3));
+          // [island-reflection, foam] Grown in over the first few tenths of
+          // a period rather than present at full strength the instant the
+          // crest passes: where a crest did not break (no roller, no dense
+          // white to stand in front of it) the lace began on the crest line
+          // itself as a hard ruled edge across the veil.
+          const laceAt = (a: any) => a.mul(-1.1).exp().mul(0.5).mul(smoothstepDownClamped(a, 2.2, 3)).mul(a.smoothstep(0, 0.3));
 
           // **Foam lines.** The white a bore leaves is not a sheet: it is torn
           // into streaks lying *along* the crest that made them, a metre or two
@@ -3449,14 +3966,28 @@ export class OceanMaterial {
           // contours do. Static in the world: the lanes are where the foam was
           // left, and `surfAdvect` already carries the bubbles shoreward.
           const contourPhase = surfPhaseValue.sub(surfUniforms.time.div(surfUniforms.period)).toVar();
-          const lanes = valueNoise(vec2(contourPhase.mul(13), 0).add(fieldXZ.mul(0.045)).add(vec2(1.7, 3.1)))
+          //
+          // [island-reflection, foam] Stretched along the shore, not along
+          // world z. The slow term was `fieldXZ * 0.045`: a value-noise cell
+          // 22 m long on the world's axes, and the lanes' cells were cut
+          // square to them wherever a crest did not happen to run along x.
+          // Seen from the beach-flyover, that cut every lane into a row of
+          // short blocks, the comb teeth in the veil (30-33). The point on
+          // the shoreline circle (`alongShore`, below, which has no seam)
+          // moves only along the coast, so the cells now lie along the
+          // crests the way the lanes do. And a softer contrast, so what is
+          // left of a cell's outline does not stand as a step.
+          const laneShore = fieldXZ.sub(vec2(ISLAND.x, ISLAND.z)).toVar();
+          const laneAlong = laneShore.div(laneShore.length().max(1)).mul(ISLAND.radius).toVar();
+          const lanes = valueNoise(vec2(contourPhase.mul(13), 0).add(laneAlong.mul(0.045)).add(vec2(1.7, 3.1)))
             .mul(0.6)
-            .add(valueNoise(vec2(contourPhase.mul(37), 0).add(fieldXZ.mul(0.13)).add(vec2(8.3, 0.4))).mul(0.4))
-            .smoothstep(0.32, 0.7)
+            .add(valueNoise(vec2(contourPhase.mul(37), 0).add(laneAlong.mul(0.13)).add(vec2(8.3, 0.4))).mul(0.4))
+            .smoothstep(0.24, 0.78)
             .toVar();
           // Dense where it is fresh, lanes as it ages: a bore's first second is
           // white all through, and only then tears.
           const tearing = age.smoothstep(0.02, 0.16).toVar();
+
           // **Froth.** White water is clumped, not banded: thick heaps of
           // froth with thinner, bubblier water between, at a few metres. Torn
           // along the crest-parallel `lanes` alone, every bore's wake was a set
@@ -3506,19 +4037,28 @@ export class OceanMaterial {
             .mul(lastBroke)
             // The sections the bore broke in stay in its wake: the gaps fill
             // only slowly, as the foam spreads, over the next period.
-            .mul(mix(crestSection, float(1), age.smoothstep(0.35, 1).mul(0.3)).mul(heightRatio.sqrt().clamp(0.85, 1.25)))
-            .max(denseAt(age.add(1)).mul(previousBroke))
-            .max(chopDense);
-          // The lace is the foam lines and nothing else: aged foam has torn all
-          // the way into them, with clear water between.
-          const lace = laceAt(age)
+            // Those of the crest that laid it: `crestSection` is the *nearest*
+            // crest's, which past mid-trough is the next one, and the wake
+            // was re-cut there by a wave that had not yet arrived.
+            .mul(mix(crestSectionOf(surfPhaseValue.floor()), float(1), age.smoothstep(0.35, 1).mul(0.3)).mul(heightRatio.sqrt().clamp(0.85, 1.25)))
+            .mul(sections)
+            .max(denseAt(age.add(1)).mul(previousBroke).mul(sectionsPrevious))
+            .max(chopDense.mul(sections));
+          // [island-reflection, foam] **Thin foam is a wash, not a torn
+          // sheet.** What the bores leave between them used to be drawn as
+          // the dense white's lace: cut by the wave's sections, combed into
+          // lanes along the crests and streaks across them, thresholded on
+          // the pattern. At the beach-flyover's range that drew a translucent
+          // veil with windows and comb teeth (frames 30-31, 38). Now only the
+          // dense foam (the roller, the lip, the white right behind the
+          // front, the swash) keeps that look; the thin remainder is one
+          // smooth amount with none of those cuts, drawn below as a faint,
+          // low-contrast wash eroded by fine isotropic noise (`surfWash`).
+          const washAge = laceAt(age)
             .mul(lastBroke)
             .max(laceAt(age.add(1)).mul(previousBroke))
             .max(laceAt(age.add(2)).mul(olderBroke))
-            .mul(mix(float(0.15), float(1.3), lanes.mul(0.6).add(surfFroth.mul(0.4))))
-            // Combed across the bands, and carried out through the rips.
-            .mul(mix(float(0.4), float(1.45), streak))
-            .mul(rip.mul(0.5).add(1));
+            .toVar();
           // Over the last half metre the bore has become the swash sheet, which
           // stays clear: its foam is the lip at its leading edge (`thin` and
           // `edgeLine` below), not a carpet over the water behind it.
@@ -3526,10 +4066,10 @@ export class OceanMaterial {
           const whitewater = dense
             // Torn, not cleared: between the clumps the churned water is
             // still about half white (round 10's "thin white strips").
-            .mul(mix(float(1), mix(float(0.46), float(1.12), torn).mul(mix(float(0.75), float(1.15), streak)), tearing))
-            .max(lace)
-            .mul(sections)
+            .mul(mix(float(1), mix(float(0.46), float(1.12), torn).mul(mix(float(0.9), float(1.06), streak)), tearing))
             .mul(sheetClear)
+            // Dense only while it is dense: its thin tail goes to the wash.
+            .mul(dense.smoothstep(0.15, 0.4))
             .min(0.95)
             .toVar();
 
@@ -3589,8 +4129,23 @@ export class OceanMaterial {
           // What is left of a bore is still being carried up the beach by the
           // next, so the pattern drifts shoreward as it ages — and stops doing so
           // at the waterline, where the ground draws the same pattern unmoved.
+          //
+          // [island-reflection, foam] By the age of the *current* wave only,
+          // so the carry is continuous everywhere except along the bore's own
+          // front, where new white water arrives anyway. It used to run on
+          // the age of the youngest wave that had broken here, picked by a
+          // hard test of the depth against each of the last three break
+          // depths (0, 1, 2 periods added, or 3 where none had). On an uneven
+          // shelf those tests cut the water into islands that follow the
+          // seabed's contours, and the carry jumped by one to three periods,
+          // three to ten metres, at every one of their edges: the foam
+          // pattern, its lace and the pillow were all read torn along those
+          // outlines. That is the beach-flyover's dark, silhouette-shaped
+          // ghosts with comb-toothed edges (`.claude/progress/
+          // 17-island-reflection`, 30-33). A wave older than one period has
+          // long since carried its foam up the beach.
           surfAdvect.assign(
-            shoreward.mul(laceAge.min(3).mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
+            shoreward.mul(age.mul(surfUniforms.period).mul(0.35)).mul(d.smoothstep(0.3, 1.5)),
           );
 
           // **The pillow.** White water is a heap of churned foam, not a
@@ -3658,7 +4213,11 @@ export class OceanMaterial {
           // breakers are a pixel wide. The time-averaged coverage stands in for
           // them there: most of the inner surf zone white most of the time,
           // thinning out to the break line.
-          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3)).mul(0.8).toVar();
+          //
+          // At 0.45, not 0.8: at 0.8 the average laid one white blanket over
+          // the inner surf zone from 90 m out, and the bores, their lips and
+          // the lace between them were lost in it as a smear (`landfall`).
+          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3)).mul(0.45).toVar();
           const far = viewDistance.smoothstep(90, 320).toVar();
           // And the line of white at the water's edge, which from more than a
           // few tens of metres is all the swash amounts to: a beach without it
@@ -3690,31 +4249,32 @@ export class OceanMaterial {
           // The far band keeps the lanes too, which at a few hundred metres are
           // still several pixels apart, so it reads as foam lines rather than
           // the flat plate the time-average alone drew.
-          // The residual floor: the old, stable foam of many sets, a sparse
-          // scatter of lines over the inner surf zone that is there even in a
-          // lull. The field itself is the lace above, which follows the sets;
-          // this is only what keeps a lull from going glass-clear. Carried in
-          // to the waterline, where the swash's own foam takes over.
-          const residual = lanes
-            .mul(lanes)
-            .mul(smoothstepDownClamped(d, surfBreak.mul(0.45), surfBreak.mul(1.15)))
-            .mul(sheetClear)
-            .mul(0.28)
-            .toVar();
           surf.assign(
             roller
               .mul(mix(float(0.6), float(1), lanes.max(sections.sub(0.6).mul(2.5))))
               .max(chopRoller.mul(mix(float(0.55), float(1), lanes)))
-              .max(residual)
               .max(lip)
+              .max(boreLip)
               .max(pitching)
               .max(crestWhite)
               .max(whitewater)
               .max(thin)
-              .max(band.mul(far).mul(mix(float(0.35), float(1.1), lanes)).mul(sections).mul(crestSection.mul(0.6).add(0.4)))
               .max(edgeLine)
               .mul(rockKeep)
               .max(rockWhite)
+              .clamp(0, 1)
+              .mul(strength),
+          );
+          // The wash: the lace the last three bores left, the dense white's
+          // tail, and from far off the time-averaged band, all smooth. Less
+          // between the breakers rather than more: the old residual floor of
+          // lane lines over the whole inner surf zone is gone with the lanes.
+          surfWash.assign(
+            washAge
+              .max(dense.mul(0.8))
+              .max(band.mul(far).mul(0.6))
+              .mul(sheetClear)
+              .mul(rockKeep)
               .clamp(0, 1)
               .mul(strength),
           );
@@ -3847,7 +4407,7 @@ export class OceanMaterial {
       // the current with the foam it belongs to, and in the surf by the
       // shoreward carry, faded out at the waterline where the ground draws the
       // same pattern in place.
-      const foamAmount = openCover.max(surf).max(contactAmount).toVar();
+      const foamAmount = openCover.max(surf).max(surfWash).max(contactAmount).toVar();
       // The pattern's ramp width. web-ocean uses `fwidth(pattern) + 0.03`;
       // derivatives are undefined inside the non-uniform branch below, so the
       // footprint is taken here and scaled by the pattern's steepest measured
@@ -4071,6 +4631,24 @@ export class OceanMaterial {
           smoothstepDownClamped(viewDistance, 60, 260),
         );
         foamMask.assign(openMask.max(surfMask));
+
+        // The surf's thin foam, as a wash: at most a third opaque, its shape a
+        // soft threshold on fine isotropic noise (cells about 1.1 m and
+        // 0.55 m, carried with the foam), so it breaks into small soft patches
+        // as it thins and is gone below a few percent, with no edge longer
+        // than a cell. Where the cells are under a few pixels the noise
+        // would only shimmer, so it hands over to the plain amount.
+        If(surfWash.greaterThan(0.01), () => {
+          const erosion = valueNoise(foamXZ.mul(1 / 1.1).add(vec2(17.3, 4.9)))
+            .mul(0.6)
+            .add(valueNoise(foamXZ.mul(1 / 0.55).add(vec2(2.2, 31.7))).mul(0.4));
+          const washEdge = surfWash.oneMinus().mul(0.7).add(0.15);
+          const eroded = erosion.smoothstep(washEdge.sub(0.16), washEdge.add(0.16));
+          const washResolved = smoothstepDownClamped(foamFootprint, 0.12, 0.45);
+          const washShape = mix(surfWash.smoothstep(0.05, 0.7).mul(0.55), eroded, washResolved);
+          const washMask = washShape.mul(surfWash.smoothstep(0.03, 0.2)).mul(SURF_WASH_OPACITY);
+          foamMask.assign(foamMask.max(washMask));
+        });
       });
 
       // Aerated water: the bubble cloud a few centimetres to a metre under the
@@ -4206,6 +4784,17 @@ export class OceanMaterial {
       // turned the bubble cloud under every deep-water whitecap into a grey disc:
       // the bubbles brighten the water they are in, they do not repaint it.
       const aeratedLift = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(0.34);
+      // Atlas's bubble colour (GDC 2019): the water under and around foam is
+      // full of bubbles, so it goes milky toward their lit colour in
+      // proportion to the foam's density, instead of staying as clear as open
+      // water with a white film on top. Toward `max(water, bubbles)`, so it
+      // only ever lightens: the grey disc above came from a blend that could
+      // darken the body. Under Fresnel, where bubbles below the surface
+      // belong, so it shows looking down into the water more than from a
+      // deck. (Blended over the reflection as well, it washed the storm's
+      // green crests grey and still barely read at grazing.)
+      const bubbleLit = (this.uFoamColor as any).mul(vec3(0.6, 0.83, 0.82)).mul(foamLight).mul(BUBBLE_ALBEDO);
+      litBody.assign(mix(litBody, litBody.max(bubbleLit), aeration.mul(BUBBLE_MILK).clamp(0, 0.7)));
       litBody.addAssign(aeratedLift.mul(aeration));
 
       // Foam kills the specular under it. Bubbles are a diffuse rough medium, so a
@@ -4221,7 +4810,7 @@ export class OceanMaterial {
       // contour, and not the mesh.
       const nearLand = smoothstepDownClamped(seabedSigned, 0.4, 1.2);
       const edgeVisible = mix(float(1), straightThickness.smoothstep(0.0, 0.045), nearLand).toVar();
-      const surface = mix(litBody, reflection, fresnel.mul(edgeVisible))
+      const surface = mix(mix(litBody, reflection, fresnel.mul(edgeVisible)), crestColor, crestBlend.mul(edgeVisible))
         .add(specular.mul(foamMask.mul(0.88).oneMinus()).mul(edgeVisible))
         .toVar();
 

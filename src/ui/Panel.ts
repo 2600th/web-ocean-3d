@@ -39,8 +39,12 @@ type SliderKey =
   | 'fogDensity'
   | 'volume'
   | 'musicVolume'
+  | 'ambienceVolume'
+  | 'effectsVolume'
+  | 'interfaceVolume'
   | 'pixelRatio';
-type ToggleKey = 'buoyancyProbes' | 'wakeProbes';
+type ToggleKey = 'buoyancyProbes' | 'wakeProbes' | 'reducedRange';
+type MuteKey = 'musicMuted' | 'ambienceMuted' | 'effectsMuted' | 'interfaceMuted';
 
 interface SliderSpec {
   readonly key: SliderKey;
@@ -50,6 +54,8 @@ interface SliderSpec {
   readonly min: number;
   readonly max: number;
   readonly step: number;
+  /** A mute switch beside the reading, for the sound sliders. */
+  readonly mute?: MuteKey;
   format(value: number): string;
 }
 
@@ -75,7 +81,14 @@ const SEA_SKY_SLIDERS = [
   'timeOfDay',
 ] as const satisfies readonly SliderKey[];
 
-const CABIN_SLIDERS = ['volume', 'musicVolume', 'pixelRatio'] as const satisfies readonly SliderKey[];
+const CABIN_SLIDERS = [
+  'volume',
+  'musicVolume',
+  'ambienceVolume',
+  'effectsVolume',
+  'interfaceVolume',
+  'pixelRatio',
+] as const satisfies readonly SliderKey[];
 
 const SLIDERS: readonly SliderSpec[] = [
   {
@@ -145,6 +158,37 @@ const SLIDERS: readonly SliderSpec[] = [
     min: 0,
     max: 1,
     step: 0.01,
+    mute: 'musicMuted',
+    format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
+  },
+  {
+    key: 'ambienceVolume',
+    label: 'Sea & weather',
+    tip: 'The sea, wind, rain, thunder and gulls',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    mute: 'ambienceMuted',
+    format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
+  },
+  {
+    key: 'effectsVolume',
+    label: 'Ship',
+    tip: 'Her hull, rigging and canvas, and every slap, slam and splash',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    mute: 'effectsMuted',
+    format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
+  },
+  {
+    key: 'interfaceVolume',
+    label: 'Clicks',
+    tip: 'The ledger, the buttons and the reward chime',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    mute: 'interfaceMuted',
     format: (v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`),
   },
   {
@@ -260,12 +304,14 @@ export class Panel {
   private readonly state: UiState;
   private readonly sliders = new Map<SliderKey, SliderRefs>();
   private readonly toggles = new Map<ToggleKey, HTMLButtonElement>();
+  private readonly mutes = new Map<MuteKey, { button: HTMLButtonElement; refs: SliderRefs }>();
   private readonly qualityInputs = new Map<QualityTier, HTMLInputElement>();
   private readonly presetInputs = new Map<PresetId, HTMLInputElement>();
   private readonly panelEl: HTMLElement;
   private readonly bodyEl: HTMLElement;
   private readonly collapseButton: HTMLButtonElement;
   private readonly sheetButton: HTMLButtonElement;
+  private readonly settingsButton!: HTMLButtonElement;
   private disposed = false;
   private sheetOpen = false;
   private collapsed = false;
@@ -361,6 +407,9 @@ export class Panel {
     for (const key of CABIN_SLIDERS) {
       this.buildSlider(cabin, `${uid}-${key}`, sliderSpec(key));
     }
+    // Laptop speakers: a calm and a storm closer together, thunder less sudden.
+    this.buildToggle(cabin, 'reducedRange', 'Laptop speakers (less range)');
+    cabin.id = `${uid}-sound`;
 
     // ---- Shipwright (debug) ------------------------------------------------
     const tools = el('details', 'ledger-tools');
@@ -384,6 +433,14 @@ export class Panel {
 
     // ---- Actions -----------------------------------------------------------
     const actions = el('div', 'panel__actions');
+    // Pause, keys and comfort settings live in their own screen; the host says
+    // how to open it (`setSettingsHandler`) and the button appears then.
+    const settingsButton = el('button', 'btn btn--brass panel__settings', 'Pause & settings');
+    settingsButton.type = 'button';
+    settingsButton.hidden = true;
+    settingsButton.title = 'Pause the sea, rebind keys, and comfort options';
+    actions.append(settingsButton);
+    this.settingsButton = settingsButton;
     const source = el('a', 'btn btn--brass', 'View Source');
     source.title = 'The code, on GitHub';
     source.href = SOURCE_URL;
@@ -417,6 +474,27 @@ export class Panel {
   setOpen(open: boolean): void {
     if (this.disposed) return;
     this.setCollapsed(!open);
+  }
+
+  /** Gives the ledger's settings button something to do, and shows it. */
+  setSettingsHandler(open: () => void): void {
+    if (this.disposed) return;
+    this.settingsButton.hidden = false;
+    this.settingsButton.addEventListener('click', open, { signal: this.controller.signal });
+  }
+
+  /**
+   * Shows the sound controls: unfolds the ledger (or raises the sheet on a
+   * phone), scrolls the volume into view and puts focus on it.
+   */
+  showSound(): void {
+    if (this.disposed) return;
+    if (window.matchMedia('(max-width: 900px)').matches) this.setSheetOpen(true);
+    else this.setCollapsed(false);
+    const volume = this.sliders.get('volume')?.input;
+    if (volume === undefined) return;
+    volume.scrollIntoView({ block: 'center' });
+    volume.focus({ preventScroll: true });
   }
 
   /** Push values in from the host without re-emitting change callbacks. */
@@ -455,6 +533,13 @@ export class Panel {
       button.setAttribute('aria-checked', next ? 'true' : 'false');
       button.classList.toggle('is-on', next);
     }
+
+    for (const [key, { refs }] of this.mutes) {
+      const next = partial[key];
+      if (next === undefined) continue;
+      this.state[key] = next;
+      this.paintSlider(refs);
+    }
   }
 
   dispose(): void {
@@ -465,6 +550,7 @@ export class Panel {
     this.sheetButton.remove();
     this.sliders.clear();
     this.toggles.clear();
+    this.mutes.clear();
     this.qualityInputs.clear();
     this.presetInputs.clear();
   }
@@ -517,6 +603,7 @@ export class Panel {
 
     const refs: SliderRefs = { spec, input, value };
     this.sliders.set(spec.key, refs);
+    if (spec.mute !== undefined) this.buildMute(row, spec.mute, spec.label, refs);
     this.paintSlider(refs);
 
     input.addEventListener(
@@ -524,14 +611,40 @@ export class Panel {
       () => {
         const next = clamp(Number(input.value), spec.min, spec.max);
         this.state[spec.key] = next;
+        // Reaching for a muted kind's level means wanting to hear it.
+        const unmute = spec.mute !== undefined && this.state[spec.mute];
+        if (unmute) this.state[spec.mute!] = false;
         this.paintSlider(refs);
         this.callbacks.onChange(spec.key, next);
+        if (unmute) this.callbacks.onChange(spec.mute!, false);
       },
       { signal: this.controller.signal },
     );
 
     field.append(row, input);
     parent.append(field);
+    // Again once in its field, which carries the muted look.
+    if (spec.mute !== undefined) this.paintSlider(refs);
+  }
+
+  /** A speaker beside a sound slider's reading: silences that kind and keeps its level. */
+  private buildMute(row: HTMLElement, key: MuteKey, label: string, refs: SliderRefs): void {
+    const button = el('button', 'field__mute');
+    button.type = 'button';
+    button.setAttribute('aria-label', `Mute ${label.toLowerCase()}`);
+    button.append(icon('sound'));
+    button.addEventListener(
+      'click',
+      () => {
+        const next = !this.state[key];
+        this.state[key] = next;
+        this.paintSlider(refs);
+        this.callbacks.onChange(key, next);
+      },
+      { signal: this.controller.signal },
+    );
+    this.mutes.set(key, { button, refs });
+    row.append(button);
   }
 
   private buildToggle(parent: HTMLElement, key: ToggleKey, labelText: string): void {
@@ -569,8 +682,15 @@ export class Panel {
     const current = Number(input.value);
     const pct = ((current - spec.min) / (spec.max - spec.min)) * 100;
     input.style.setProperty('--fill', `${clamp(pct, 0, 100).toFixed(2)}%`);
-    value.textContent = spec.format(current);
-    input.setAttribute('aria-valuetext', spec.format(current));
+    const muted = spec.mute !== undefined && this.state[spec.mute];
+    const text = muted ? 'Muted' : spec.format(current);
+    value.textContent = text;
+    input.setAttribute('aria-valuetext', text);
+    if (spec.mute !== undefined) {
+      const button = this.mutes.get(spec.mute)?.button;
+      button?.setAttribute('aria-pressed', muted ? 'true' : 'false');
+      button?.closest('.field')?.classList.toggle('is-muted', muted);
+    }
   }
 
   /**

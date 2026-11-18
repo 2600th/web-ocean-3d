@@ -836,10 +836,34 @@ export class ScreenSpaceReflection {
               .toVar('ssrTravelled');
             const rangeFade = smoothstepDownClamped(travelled, 0.72, 1).toVar('ssrRangeFade');
 
+            // --- hits under the water -------------------------------------
+            //
+            // [island-reflection] The water is not in the depth buffer, so a
+            // ray the slope ramp above lets dip slightly finds whatever lies
+            // under the surface: in the shallows that is the seabed a metre
+            // or two down, and the beach-flyover drew it as brown and grey
+            // streaks laid on the swell. Nothing below the water can be seen
+            // in a reflection off its top. The hit's height comes from the
+            // ray parameter, which `w` gives exactly because `w` is affine in
+            // it; where the ray runs across the view axis and `w` barely
+            // changes, the height is unknown and the hit is kept. Measured
+            // against the lower of the launch point and mean sea level, less
+            // a margin, so a hull's waterline seen from a crest survives.
+            const dwPerMetre = wB.sub(wA).div(this.uRange).toVar('ssrDwPerMetre');
+            const known = dwPerMetre.abs().smoothstep(0.01, 0.03).toVar('ssrKnown');
+            const safeDw = dwPerMetre
+              .greaterThanEqual(0)
+              .select(dwPerMetre.max(0.01), dwPerMetre.min(-0.01));
+            const along = hitW.sub(wA).div(safeDw);
+            const hitY = p0.y.add(dir.y.mul(along.max(0))).toVar('ssrHitY');
+            const floorY = p0.y.min(0).sub(0.3).toVar('ssrFloorY');
+            const aboveWater = mix(float(1), hitY.smoothstep(floorY.sub(0.6), floorY), known).toVar('ssrAbove');
+
             const weight = gate
               .mul(edgeFade)
               .mul(rangeFade)
               .mul(thicknessFade)
+              .mul(aboveWater)
               .mul(this.uStrength)
               .clamp(0, 1)
               .toVar('ssrWeight');

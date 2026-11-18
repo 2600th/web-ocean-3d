@@ -383,6 +383,74 @@ about whether the image is any good — seams, banding, tiling, blown highlights
 and flat materials all reproduce perfectly. `KEEP_ARTIFACTS=1` exists so a human
 can review the actual frames after a visual change, not only after a failure.
 
+## Motion clips
+
+The shots above are stills, and some faults only show in motion. The foam
+texture scrolling through the water instead of travelling with it was invisible
+in every baseline. `scripts/motion-clips.mjs` records ten seconds of four
+situations as frame strips, so a change to the sea, the ship or the camera can be
+reviewed in motion, before and after.
+
+```sh
+npm run dev                                   # or: npm run build && npm run preview
+node scripts/motion-clips.mjs http://127.0.0.1:5173
+node scripts/motion-clips.mjs http://127.0.0.1:5173 --clips turn,storm
+```
+
+It takes the URL of a server that is already running and starts none. It needs
+Playwright's Chromium and a real GPU, and refuses to record on a software
+rasteriser. The browser is headless and closed when the run ends.
+
+| Clip | What it shows | Built from |
+| --- | --- | --- |
+| `breeze` | Helm in a breeze: full ahead in a steady wind, the chase camera astern | `boat-chase` |
+| `turn` | A hard turn: one second straight, the rudder hard over for five, then centred | `boat-chase` |
+| `storm` | The storm at the helm: 21 m/s, rain, heavy sea | `storm`'s sea and preset, at the helm |
+| `landfall` | The tour's `beach-flyover` (51.5 s to 61.5 s on its lap), low over the shallows toward the island | `cinematic-landfall` |
+
+| Option | Effect |
+| --- | --- |
+| `--clips a,b` | Which clips to record. Default: all four |
+| `--seconds N` | Clip length. Default 10 |
+| `--fps N` | Frames per second of simulated time. Default 30; must divide 60 |
+| `--size WxH` | Capture size. Default 960x540 |
+| `--tier T` | Quality tier. Default `high` |
+| `--sheet-every N` | One contact-sheet tile every N frames. Default 15, which is one tile every half second |
+| `--out DIR` | Default `test-results/motion` |
+
+Output, under `test-results/motion/` (git-ignored):
+
+- `<clip>/0000.png` and on: every frame, numbered, RGB. Ten seconds at 30 fps is
+  300 frames.
+- `<clip>-sheet.png`: a contact sheet, one tile per `--sheet-every` frames, read
+  left to right and top to bottom. Start here: it shows a whole clip at a glance.
+- `<clip>/clip.json`: the settings, the frame count and the ship's state at the
+  end.
+
+**How it keeps the clip deterministic.** It does not play the app. It uses the
+hooks the shots use: `window.__ocean.resetDeterministic` rewinds every clock and
+settles the world, then each frame is `step(1/60, 2)` (two of the settle's own
+1/60 s steps, which is 1/30 s of simulation) followed by `capturePixels`. Frame
+pacing, the display and the browser's throttling of `requestAnimationFrame` play
+no part, so the same arguments give the same strip, and the clip's time is
+simulation time, not wall time. The boat clips hold full ahead through an
+8-second settle so the hull is already moving at the first frame, and snap the
+chase camera to its rig, as `applyShot` does. A fresh page is used for each clip.
+
+**How to review one.** Record before and after a change at the same URL settings,
+then compare the two contact sheets, and step through the numbered frames where a
+sheet shows something. Watch for what a still cannot show: foam or texture that
+slides instead of travelling with the water, a wake that lags or swims when the
+ship turns, a camera that pops, spray that appears or vanishes in a single frame,
+and flicker from one frame to the next. Open the frames in an image viewer that
+steps through a folder, or join them into a video with a tool of your choice; the
+script writes no video.
+
+**What it does not do.** It compares nothing and passes or fails nothing; it
+makes the motion visible to a person. It records no sound. One machine's output
+is not another's: compare strips from the same GPU, driver and browser build.
+It does not replace the stills above, which stay the regression gate.
+
 ## Regenerating baselines
 
 ```sh
@@ -483,3 +551,42 @@ total about 6.3 MB.
    before concluding anything.
 5. If the change is intended, regenerate the baseline. If it is not, fix the
    renderer. Do not raise the threshold.
+
+## The audio bench
+
+Sound is checked by measurement, not by ear, with `scripts/audio-bench.mjs`. It
+bundles `src/audio` in memory with Vite, loads it into headless Chromium (no
+dev server, no port), and renders each state offline on an
+`OfflineAudioContext` through the `context` option of `AudioSystem`. The
+render is suspended every 32 ms and the game's `update` is called at each stop,
+so the score's look-ahead scheduling is deterministic; every random stream in
+the audio code is seeded, so a rerun of the same code renders the same samples.
+
+```sh
+node scripts/audio-bench.mjs                    # all states, 60 s each, about 30 s in all
+node scripts/audio-bench.mjs --states calm,storm --seconds 20
+node scripts/audio-bench.mjs --tier low         # the delay room and the reduced beds
+node scripts/audio-bench.mjs --save-baseline    # store this run as the "before" column
+```
+
+States: calm, sailing, storm (with thunder at six distances), underwater (the
+plunge at 1.5 s), tour, a night calm with the moonlit look's weather, sailing
+past a rock face (the cliff room), and a tier change (sailing, dropping to Low
+at 20 s and back at 40 s). Per state it reports integrated loudness (BS.1770-4,
+both gates), the loudest 3 s, true peak (4x oversampled), clicks, peak voices,
+sounds refused for want of a voice and music notes, peak live audio nodes and
+nodes created per second, noise beds still rendering at zero level, and when
+the score repeats. `--src <dir>` renders another revision's `src/audio` (from
+`git archive <rev> src/audio src/core`), which is how the before column is
+recorded. The table goes to `docs/AUDIO_BENCH.md` with the stored
+baseline (`docs/AUDIO_BENCH.baseline.json`) beside it; the renders go to
+`test-results/audio/<state>.wav` for listening.
+
+What it cannot do: say whether anything sounds good. A small step buried under
+the noise beds is below the click detector. `BENCH_DIAG=music` (or a stem name
+such as `drone`) renders the score alone; there a bare sawtooth itself reads as
+clicks at about 9x, so use it to compare before with after, not as a count.
+`BENCH_DIAG=wet` renders the shared room's return alone (every dry path and
+the score cut; interface sounds stay), to show how wet the world is.
+`BENCH_PARAMS` and `BENCH_EVENTS` override scene values or add events, as JSON.
+Diagnostic and partial runs leave `docs/AUDIO_BENCH.md` alone.

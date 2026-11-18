@@ -23,14 +23,16 @@ import { mulberry32 } from '../core/random';
  * noise — a linear crossfade of uncorrelated signals dips 3 dB in the middle,
  * which for a bed that loops every few seconds is an audible periodic sag.
  *
- * **Loop period.** Four seconds of noise repeats, and a listener who is paying
- * attention can hear that repeat as a texture. Two things hide it and neither is
- * a fix: every bed plays the shared buffer at a different rate and from a
- * different offset, so no two layers ever repeat together, and the layers'
- * amplitude modulation is CPU-side on periods that have nothing to do with the
- * buffer length. Making the buffer longer trades memory for a longer tell; 4 s at
- * 48 kHz is 768 KB per buffer, and two buffers is the point where the cost stops
- * being free.
+ * **Loop period (A5).** Four seconds of noise repeated, and the narrow rigging
+ * band made that repeat audible as a texture. Two changes remove it. The
+ * buffer is ten seconds (1.9 MB at 48 kHz for the white, the same for the
+ * brown), so at the beds' rates of 0.83 to 1.31 the shortest repeat is 7.6 s;
+ * and each bed's read rate now wanders slowly by a few per cent
+ * (`NoiseBed.wander`), on its own incommensurate period, so the buffer is
+ * never read the same way twice and no repeat is exact. For white noise the
+ * rate changes nothing heard: the spectrum is flat either way and the band
+ * is the filter's. Every bed also still reads from its own offset at its own
+ * base rate, so no two layers repeat together.
  *
  * **Seeded.** Same reason every other procedural system in this project is: a
  * capture harness that mutes the audio still constructs it, and construction that
@@ -41,7 +43,7 @@ import { mulberry32 } from '../core/random';
 export type NoiseColor = 'white' | 'brown';
 
 /** Seconds of noise per buffer. See the loop-period note above. */
-export const NOISE_SECONDS = 4;
+export const NOISE_SECONDS = 10;
 
 /** Length of the fold that removes the loop seam, seconds. */
 const LOOP_FADE_SECONDS = 0.03;

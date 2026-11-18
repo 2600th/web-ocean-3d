@@ -87,7 +87,7 @@ const AMBIENT_SCALE = 1.8;
  *
  * Sky has no depth and the march skips it (its target clears to 1); the sea
  * is masked by the caller with the water flag, because its shading models its
- * own self-shadowing.
+ * own self-shadowing, and so are sails and bunting (`SurfaceLighting` says why).
  */
 export class ContactShadows {
   private readonly node: SequencedSSS;

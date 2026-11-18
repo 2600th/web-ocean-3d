@@ -90,6 +90,7 @@ One row per file shipped in `public/`.
 | --- | --- | --- | --- | --- | --- |
 | Dutch Ship Medium (`dutch_ship_medium`, 2k source) | `public/models/hero/dutch_ship_medium.glb` | https://polyhaven.com/a/dutch_ship_medium | James Ray Cock (model, textures, cleanup); Rico Cilliers (sails model, textures); Nicolò Zubbini (original model) | CC0 1.0 | Re-encoded by `scripts/optimize-assets.mjs`: hull colour and normal kept at 2k, the other seven maps resized to 1k, all nine KTX2 (UASTC colour/normal, ETC1S roughness), geometry Meshopt-compressed. No geometry or content edits. |
 | Rock 07 (`rock_07`, 1k source) | `public/models/dressing/rock_07.glb`, `rock_07_lod1.glb`, `rock_07_lod2.glb` | https://polyhaven.com/a/rock_07 | Jenelle van Heerden | CC0 1.0 | Built by the dressing pipeline (see below): decimated, welded, KTX2 textures, Meshopt geometry, two LOD levels. |
+| KayKit Character Pack: Adventurers 1.0 (`Barbarian`, `Knight`, `Mage`, `Rogue` and their palette textures) | `public/models/crew/crew_toy.glb` | https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0 (also https://kaylousberg.itch.io/kaykit-adventurers) | Kay Lousberg (www.kaylousberg.com) | CC0 1.0 | Rebuilt by `scripts/modelkit/crew-toy.py` (Blender 5.2) and `scripts/modelkit/crew-toy.mjs`: the four characters' heads, bodies, arms and legs joined into one skinned mesh on the pack's shared rig (weapons, hats, helmets, capes and shields dropped; hair above the brow pulled in so hats fit); pirate gear modelled for this project and added (tricorn, Monmouth cap, kerchief, eye patch, sash); the four 1024 px palettes packed into one 1024 x 512 atlas with a neutral ramp cell for per-figure tints; vertex colours mark each part and tint slot; only the deform bones and the `Idle`, `2H_Melee_Idle`, `Walking_A`, `Cheer`, `PickUp` and `Interact` clips kept; resampled, welded and Meshopt-encoded with gltf-transform. 378,240 bytes. |
 
 ### Scene dressing (`public/models/dressing/`)
 
@@ -206,6 +207,25 @@ Some slugs floated during planning do not exist on Poly Haven. Verified against
 | `wooden_barrel` | no | *(none — retired)* | `barrel_03` stood in, and is a 200-litre oil drum. The floating casks are procedural hogsheads now (`src/scene/props/`). |
 | `rock_02` | no | `rock_07` | Only `rock_07` and `rock_09` exist in the plain `rock_NN` series. |
 | `cliff_side_rock` | no | *(none — retired)* | `namaqualand_cliff_01` stood in for this and has since been dropped: it is a closed solid, but it is one 90 m mass with one composed silhouette, and five copies of one silhouette is a repeat no rotation hides. The island's crags are now built from the closed 1-2 m Sketchfab rocks, stretched and clumped. |
+
+---
+
+### Recordings (`public/audio/`)
+
+Recorded sound, used where it beats synthesis (roadmap decision 7) and always
+layered with the synthesis it stands beside (`src/audio/Samples.ts`). All CC0
+1.0 from OpenGameArt, downloaded 2026-11-18. Each was converted with ffmpeg to
+mono 48 kHz Opus (40-48 kb/s); 164,512 bytes together. The Sonniss GDC bundle
+was not used: its licence forbids redistributing the files.
+
+| Asset | File path | Source URL | Author | Licence | Modifications |
+| --- | --- | --- | --- | --- | --- |
+| Rain with long thunder (`rain-thunder.ogg`) | `public/audio/thunder-crack.ogg` | https://opengameart.org/content/rain-long-thunder | wuxiascrub | CC0 1.0 | 9 s from 20.85 s (the strike and its first roll), downmixed to mono, 25 Hz high-pass, 10 ms fade in, 3 s fade out. |
+| Solo seagull sound effects (`Seagull Ambient 1.wav` to `7.wav`) | `public/audio/gull-1.ogg` to `gull-7.ogg` | https://opengameart.org/content/solo-seagull-sound-effects | rango-mango | CC0 1.0 | Downmixed to mono, silence trimmed at both ends (-48 dB), 4 ms fade in, 300 Hz high-pass. |
+| Beach ocean waves (`wave_01` to `wave_04`, cut by qubodup from jasinski's Alki Beach recording, freesound 18363, CC0) | `public/audio/surf-1.ogg` to `surf-4.ogg` | https://opengameart.org/content/beach-ocean-waves | jasinski (recording), qubodup (cuts) | CC0 1.0 | Downmixed to mono, 20 ms fade in. |
+
+Surveyed and not used: Wikimedia Commons `Thunder_crack_2B.ogg` (CC BY-SA 4.0,
+not CC0), and Freesound files that need an account to fetch.
 
 ---
 

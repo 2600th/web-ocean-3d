@@ -292,6 +292,43 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## libebur128
+
+https://github.com/jiixyj/libebur128
+
+The audio bench's loudness meter follows ITU-R BS.1770-4. The K-weighting
+filters are derived for any sample rate the way libebur128 derives them (the
+shelf and high-pass corner, gain and Q constants, and the bilinear transform
+that turns them into biquad coefficients); at 48 kHz they reproduce the
+coefficients printed in the standard. The gating is written from the standard.
+Affected files:
+
+- `scripts/audio-bench.mjs`
+
+```
+MIT License
+
+Copyright (c) 2011 Jan Kokemüller
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## NeuralSpecOcean
 
 https://github.com/bgbg108555/NeuralSpecOcean
@@ -343,3 +380,76 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## three.js examples: webgpu_compute_particles
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_compute_particles.html
+
+The spindrift's structure follows this example: particle state in `storage`
+buffers, stepped each frame by a `Fn().compute(count)` pass and read in the
+vertex stage of an instanced draw through `toAttribute()`. The emission,
+physics and look are this project's own. Affected files:
+
+- `src/physics/Spindrift.ts`
+
+## three.js examples: webgpu_compute_cloth
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_compute_cloth.html
+
+The sail and pennant cloth is adapted from three.js r187's
+`webgpu_compute_cloth` example: verlet springs in two compute passes (spring
+forces, then a per-vertex gather over a spring list), the buffer layout and the
+integration. Several grids share the buffers, the pins follow a CPU buffer, and
+the wind is an apparent-wind pressure with flutter; see the file header.
+Affected files:
+
+- `src/scene/ship/ClothSolver.ts`
+- `src/scene/ship/Sails.ts`
+- `src/scene/ship/Pennant.ts`
+
+## three.js examples: webgpu_tsl_vfx_flames
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_tsl_vfx_flames.html
+
+The camp fire and torch flames follow this example's technique: a noise field
+scrolled upward through a tapered mask and mapped through a fire colour ramp,
+drawn additively. The sheet shape, ramp, wind lean and embers are this
+project's own. Affected files:
+
+- `src/scene/islandDetail/parts.ts`
+
+```
+The MIT License
+
+Copyright © 2010-2026 three.js authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## three.js examples: webgpu_skinning_instancing
+
+https://github.com/mrdoob/three.js/blob/r187/examples/webgpu_skinning_instancing.html
+
+The crew on deck are drawn the way three.js r187's `webgpu_skinning_instancing`
+example draws its dancers: a `SkinnedMesh` flagged as instanced and given an
+`instanceMatrix`, so one skeleton poses every instance. Here there is one such
+mesh per pose group, each with its own clip and phase. MIT, three.js authors,
+under the licence text given in the section above. Affected files:
+
+- `src/scene/crew/Crew.ts`

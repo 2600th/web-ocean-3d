@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type { BuoyantBody } from './Buoyancy';
+import { keybinds } from '../input/keybinds';
 
 /**
  * Throttle and rudder for the hero ship.
@@ -120,16 +121,19 @@ export class ShipController {
   private throttle = 0;
   private rudder = 0;
   /**
-   * Drive from canvas, as a fraction of `MAX_THRUST`, set by the gameplay layer.
+   * Force along the bow from the canvas, N, set by the gameplay layer.
    *
-   * Summed with the engine rather than replacing it, so `setInput` — the touch
-   * stick, the cinematic flight and every test that drives the hull — keeps
-   * working whatever the sails are doing. Zero unless something sets it, which is
-   * what keeps the physics identical for any caller that has never heard of sails.
+   * Its own force, not a fraction of the engine: the engine exists for the
+   * cinematic flight and the tests, which drive the hull through `setInput`,
+   * and the sails no longer borrow its thrust or its cap. Zero unless something
+   * sets it, which keeps the physics identical for any caller that has never
+   * heard of sails.
    */
-  private sailDrive = 0;
-  /** Engine plus sails as applied this frame, a fraction of `MAX_THRUST`. */
-  private drive = 0;
+  private sailForce = 0;
+  /** Engine plus sails as applied this frame, N. */
+  private thrust = 0;
+  /** Extra rudder authority above reference speed; see `setTurnBoost`. */
+  private turnBoost = 0;
   /** Whether W/S reach the engine. See `setThrottleKeysEnabled`. */
   private throttleKeys = true;
   private enabled = false;
@@ -224,17 +228,37 @@ export class ShipController {
   }
 
   /**
-   * Forward drive from the sails, as a fraction of full engine thrust.
-   *
-   * Clamped to [-0.2, 1]: a sail taken aback pushes a hull astern, weakly, and
-   * nothing a sail does should out-drive the engine the drag was tuned against.
+   * Forward force from the sails, N. Clamped to a sane band: a sail taken
+   * aback pushes a hull astern, weakly, and no canvas makes more than about
+   * the engine's full thrust.
    */
-  setSailDrive(drive: number): void {
-    this.sailDrive = Number.isFinite(drive) ? clamp(drive, -0.2, 1) : 0;
+  setSailForce(newtons: number): void {
+    this.sailForce = Number.isFinite(newtons)
+      ? clamp(newtons, -0.2 * MAX_THRUST, 1.1 * MAX_THRUST)
+      : 0;
+  }
+
+  /**
+   * Extra rudder authority once the hull is past the rudder's reference speed,
+   * as a fraction: 0 is the plain foil, 0.4 turns up to 40% harder at twice the
+   * reference speed. The helm sets it so a ship at speed answers her wheel a
+   * little more than a real one would; the tour and the tests leave it at 0.
+   */
+  setTurnBoost(boost: number): void {
+    this.turnBoost = Number.isFinite(boost) ? clamp(boost, 0, 1) : 0;
   }
 
   setInput(throttle: number, rudder: number): void {
     this.throttleInput = clamp(throttle, -1, 1);
+    this.rudderInput = clamp(rudder, -1, 1);
+  }
+
+  /**
+   * The rudder alone, for a viewer's stick or pad at the helm. The engine order
+   * is left as it is: at the helm the sails drive the ship, and a stick that
+   * also opened the throttle drove her with an engine she does not have.
+   */
+  setRudderInput(rudder: number): void {
     this.rudderInput = clamp(rudder, -1, 1);
   }
 
@@ -264,8 +288,8 @@ export class ShipController {
     this.rudderInput = 0;
     this.throttle = 0;
     this.rudder = 0;
-    this.sailDrive = 0;
-    this.drive = 0;
+    this.sailForce = 0;
+    this.thrust = 0;
     this.body.externalForce.set(0, 0, 0);
     this.body.externalTorque.set(0, 0, 0);
   }
@@ -283,8 +307,10 @@ export class ShipController {
     const keyThrottle = this.keyboard && this.throttleKeys
       ? (this.keys.has('keyw') ? 1 : 0) - (this.keys.has('keys') ? 1 : 0)
       : 0;
+    // The steering keys are the player's to rebind; the engine keys are not.
     const keyRudder = this.keyboard
-      ? (this.keys.has('keyd') ? 1 : 0) - (this.keys.has('keya') ? 1 : 0)
+      ? (this.keys.has(keybinds.lowerCodeOf('steerStarboard')) ? 1 : 0)
+        - (this.keys.has(keybinds.lowerCodeOf('steerPort')) ? 1 : 0)
       : 0;
     const wantThrottle = keyThrottle !== 0 ? keyThrottle : this.throttleInput;
     const wantRudder = keyRudder !== 0 ? keyRudder : this.rudderInput;
@@ -314,10 +340,10 @@ export class ShipController {
 
     // --- forces --------------------------------------------------------------
     const ahead = this.throttle >= 0 ? 1 : REVERSE_FRACTION;
-    // Engine and canvas together never exceed the engine alone: the drag above
-    // was tuned for one full-ahead's worth of thrust, and the top speed with it.
-    this.drive = clamp(this.throttle * ahead + this.sailDrive, -REVERSE_FRACTION, 1);
-    const thrust = this.drive * MAX_THRUST;
+    // Engine and canvas are separate forces. At the helm the engine is never
+    // opened, so the canvas alone sets her speed against the drag.
+    this.thrust = this.throttle * ahead * MAX_THRUST + this.sailForce;
+    const thrust = this.thrust;
 
     // Quadratic, and signed by direction of travel rather than by speed, so it
     // always opposes motion instead of adding to it when making sternway.
@@ -334,7 +360,8 @@ export class ShipController {
     // authority rises with speed and a stopped ship cannot turn on the spot.
     // Saturating rather than growing without bound, because past hull speed a
     // bigger rudder angle mostly just stalls the foil.
-    const flow = Math.min(1, Math.abs(alongSpeed) / RUDDER_REFERENCE_SPEED);
+    const ratio = Math.abs(alongSpeed) / RUDDER_REFERENCE_SPEED;
+    const flow = Math.min(1, ratio) * (1 + this.turnBoost * clamp(ratio - 1, 0, 1));
     // Reversed when making sternway, which is how a real hull behaves and is the
     // one piece of this that surprises people who have never backed a boat.
     const direction = alongSpeed >= 0 ? 1 : -1;
@@ -393,7 +420,7 @@ export class ShipController {
     // player can feel; with it, running aground simply does not work.
     this.body.externalForce.addScaledVector(
       this.forward,
-      -Math.max(0, this.drive) * MAX_THRUST * strength,
+      -Math.max(0, this.thrust) * strength,
     );
   }
 
@@ -422,7 +449,8 @@ export class ShipController {
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (!this.enabled || isTypingTarget(event.target)) return;
     const code = event.code.toLowerCase();
-    if (!STEERING_KEYS.has(code)) return;
+    if (!STEERING_KEYS.has(code) && code !== keybinds.lowerCodeOf('steerPort')
+      && code !== keybinds.lowerCodeOf('steerStarboard')) return;
     // Claimed, so the page does not also scroll on the arrow-adjacent bindings.
     event.preventDefault();
     this.keys.add(code);
@@ -437,7 +465,8 @@ export class ShipController {
   };
 }
 
-const STEERING_KEYS = new Set(['keyw', 'keya', 'keys', 'keyd']);
+/** The engine's own keys. The rudder's come from `keybinds`. */
+const STEERING_KEYS = new Set(['keyw', 'keys']);
 
 function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;

@@ -1,7 +1,10 @@
-import { icon } from './icons.ts';
+import { icon, type IconName } from './icons.ts';
 import { startLoadingTips } from './LoadingTips.ts';
 import { MenuSea } from './MenuSea.ts';
+import { installReducedMotionOverride } from './motion.ts';
+import { applyDisplayPrefs, loadSettingsPrefs } from './prefs.ts';
 import { QUALITY_TIERS, type QualityTier } from './types.ts';
+import { clearVoyageRecord, readVoyageRecord, type VoyageRecord } from './voyageRecord.ts';
 
 const STORAGE_KEY = 'web-ocean:start-selection:v1';
 
@@ -17,8 +20,17 @@ interface DeviceProbe {
   coarsePointer: boolean;
 }
 
+/** Which way the player left the title screen: back to their voyage, or out on a new one. */
+export type VoyageChoice = 'continue' | 'new';
+
 export interface StartSelection {
   quality: QualityTier;
+  /**
+   * The title screen's choice. The tooling bypass (`?gate=0`) is always a new
+   * voyage unless it says `?voyage=continue` and a record exists, so a saved
+   * game on a developer's machine cannot change what a test sees.
+   */
+  voyage: VoyageChoice;
   /**
    * The adapter metadata probe result. No device is created by the gate.
    * `undefined` means "not probed" (the tooling bypass), and `Renderer` probes
@@ -243,6 +255,26 @@ export function showWebGPURequired(root: HTMLElement, detail = ''): void {
   gate.replaceChildren(notice, retry);
 }
 
+/** A call-to-action: the wax one for the main choice, a quieter brass one beside it. */
+function startButton(label: string, iconName: IconName, quiet: boolean): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = quiet ? 'cta cta--quiet boot__start' : 'cta boot__start';
+  const text = document.createElement('span');
+  text.className = 'cta__label';
+  text.textContent = label;
+  button.append(icon(iconName, 'cta__icon'), text);
+  return button;
+}
+
+/** "Gold 120 · Voyages completed 3", from whatever the record says. Plain figures, not voice. */
+function describeRecord(record: VoyageRecord): string {
+  return [
+    'Gold ' + record.gold.toLocaleString('en-GB'),
+    'Voyages completed ' + record.voyages.toLocaleString('en-GB'),
+  ].join(' · ');
+}
+
 function renderGate(
   root: HTMLElement,
   probe: DeviceProbe,
@@ -261,16 +293,34 @@ function renderGate(
   if (bar) bar.style.transform = 'scaleX(0)';
 
   let selectedQuality = initial.quality;
+  const record = readVoyageRecord();
 
-  const intro = document.createElement('p');
-  intro.className = 'boot__gate-intro';
-  intro.textContent = 'Choose how hard this device should work. The wax tag marks what suits it, and it can be changed later from the ledger.';
+  // What is on record, or that nothing is. Quiet writing under the title: the
+  // choices below are the point of the page.
+  const ledger = document.createElement('p');
+  ledger.className = 'boot__record';
+  if (record === null) {
+    ledger.classList.add('is-empty');
+    ledger.textContent = 'No voyage on record yet.';
+  } else {
+    ledger.textContent = describeRecord(record);
+  }
 
+  // Continue leads when there is something to continue; otherwise the new
+  // voyage does, and there is only one way to go.
+  const resume = record === null ? null : startButton('Continue', 'helm', false);
+  const fresh = startButton('New voyage', record === null ? 'anchor' : 'mark', record !== null);
+  const startGroup = document.createElement('div');
+  startGroup.className = 'boot__starts';
+  startGroup.append(...(resume === null ? [fresh] : [resume, fresh]));
+
+  // The graphics choice stays, below and smaller: it is set once and the
+  // advised tier is usually right.
   const qualityLabel = document.createElement('div');
-  qualityLabel.className = 'boot__gate-label';
-  qualityLabel.textContent = 'Quality';
+  qualityLabel.className = 'boot__gate-label boot__gate-label--quiet';
+  qualityLabel.textContent = 'Graphics';
   const qualityGroup = document.createElement('div');
-  qualityGroup.className = 'boot__choices boot__choices--quality';
+  qualityGroup.className = 'boot__choices boot__choices--quality boot__choices--compact';
   qualityGroup.setAttribute('role', 'group');
   qualityGroup.setAttribute('aria-label', 'Quality tier');
   const qualityButtons = QUALITY_TIERS.map((tier) =>
@@ -284,31 +334,37 @@ function renderGate(
   const probeReadout = document.createElement('p');
   probeReadout.className = 'boot__gate-readout';
   probeReadout.textContent = describeProbe(probe);
+  const adviceNote = document.createElement('p');
+  adviceNote.className = 'boot__gate-readout boot__gate-readout--note';
+  adviceNote.textContent = 'The wax tag marks what suits this device. It can be changed later from the ledger.';
 
-  const start = document.createElement('button');
-  start.type = 'button';
-  start.className = 'cta boot__start';
-  const startLabel = document.createElement('span');
-  startLabel.className = 'cta__label';
-  startLabel.textContent = 'Set Sail';
-  start.append(icon('anchor', 'cta__icon'), startLabel);
-
-  gate.replaceChildren(
-    intro,
-    qualityLabel,
-    qualityGroup,
-    probeReadout,
-    start,
-  );
+  gate.replaceChildren(ledger, startGroup, qualityLabel, qualityGroup, adviceNote, probeReadout);
 
   return new Promise((resolve) => {
-    start.addEventListener('click', () => {
-      start.disabled = true;
+    const go = (voyage: VoyageChoice): void => {
+      for (const button of [resume, fresh, ...qualityButtons]) if (button) button.disabled = true;
       const selection = { quality: selectedQuality } satisfies StoredSelection;
       writeStoredSelection(selection);
       showProgress(root);
-      resolve({ ...selection, adapter: probe.adapter ?? undefined });
-    }, { once: true });
+      resolve({ ...selection, voyage, adapter: probe.adapter ?? undefined });
+    };
+    resume?.addEventListener('click', () => go('continue'), { once: true });
+    // A new voyage over an old record strikes the record, so it asks once
+    // first: the second press is the yes, and Continue stays beside it.
+    let armed = record === null;
+    fresh.addEventListener('click', () => {
+      if (!armed) {
+        armed = true;
+        const label = fresh.querySelector('.cta__label');
+        if (label) label.textContent = 'Strike the old record?';
+        ledger.textContent = 'A new voyage starts the count again. ' + ledger.textContent;
+        return;
+      }
+      if (record !== null) clearVoyageRecord();
+      go('new');
+    });
+    // The first control takes focus, so a keyboard needs no Tab to begin.
+    if (window.matchMedia('(pointer: fine)').matches) (resume ?? fresh).focus({ preventScroll: true });
   });
 }
 
@@ -317,6 +373,11 @@ function renderGate(
  * bypass. The adapter probe only asks for metadata and never creates a device.
  */
 export async function openStartGate(root: HTMLElement): Promise<StartSelection> {
+  // The player's motion and display settings apply to the menu as well, before
+  // anything asks the system's reduced-motion query (the menu sea does).
+  installReducedMotionOverride();
+  applyDisplayPrefs(loadSettingsPrefs());
+
   const params = new URL(window.location.href).searchParams;
   const stored = readStoredSelection();
   const requestedQuality = isQualityTier(params.get('quality'))
@@ -329,7 +390,9 @@ export async function openStartGate(root: HTMLElement): Promise<StartSelection> 
     const quality = requestedQuality ?? stored?.quality ?? 'high';
     dressBoot(root);
     showProgress(root);
-    return { quality, adapter: undefined };
+    const voyage: VoyageChoice =
+      params.get('voyage') === 'continue' && readVoyageRecord() !== null ? 'continue' : 'new';
+    return { quality, voyage, adapter: undefined };
   }
 
   dressBoot(root);
