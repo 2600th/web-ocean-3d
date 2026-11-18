@@ -513,7 +513,7 @@ const TOP_MIN = 0.5;
 const TYPE_SCALE = 1 / 20000;
 const TYPE_WEATHER = 1.6;
 const TYPE_NOISE = 0.7;
-const TYPE_LOW = 0.53;
+const TYPE_LOW = 0.48;
 const TYPE_HIGH = 0.72;
 /**
  * How far above the layer a tower may build, in layer thicknesses: 2.4 times
@@ -537,7 +537,10 @@ const ANVIL_SPREAD = 0.14;
  * `EDGE_CRISP`), so their rims thin into torn, half-transparent wisps instead
  * of ending in a cut-out line. Towers keep the hard cauliflower edge.
  */
-const WISP_CRISP = 0.55;
+const WISP_CRISP = 0.35;
+/** Extra shape-ramp width the erosion eats into, and its strength, at full wispiness. */
+const WISP_REACH = 0.12;
+const WISP_EROSION = 0.9;
 const FAIR_WISP = 0.55;
 /**
  * Nubis's two cloud-specific lighting features (Schneider, "Nubis Cubed",
@@ -562,7 +565,7 @@ const INNER_GLOW_RATE = 0.06;
  * and the radiance of a full strike there, relative to the noon key light.
  */
 const FLASH_RADIUS = 900;
-const FLASH_GAIN = 5;
+const FLASH_GAIN = 3.5;
 const FLASH_COLOR = /*@__PURE__*/ new THREE.Color(0.78, 0.84, 1.0);
 /**
  * Frequency of the erosion field relative to the base. 8, from 5.5 in round 5:
@@ -1908,8 +1911,17 @@ export class Clouds {
    * height. Lift only raises the base, so this bounds the real profile from
    * above and the edge from below: what the march's empty-sample test needs.
    */
-  private profileMax(h: any, top: any, anvil: any): any {
-    return max(smoothstep(0, 0.12, h).mul(smoothstepDown(h, top.mul(0.42), top)), anvil);
+  private profileMax(h: any, top: any, anvil: any, type: any): any {
+    return max(smoothstep(0, 0.12, h).mul(smoothstepDown(h, this.taperFrom(top, type), top)), anvil);
+  }
+
+  /**
+   * Height at which a column starts to round off toward its top: 0.42 of it
+   * for a fair-weather cell, 0.68 for a tower, so a tower stands up as a
+   * column and does not taper from its base like a cone.
+   */
+  private taperFrom(top: any, type: any): any {
+    return top.mul(mix(float(0.42), float(0.68), smoothstep(0.2, 0.7, type)));
   }
 
   /**
@@ -2031,7 +2043,7 @@ export class Clouds {
     // type, so a sparse region's cells stay low and flat.
     // An anvil holds the profile up across the top of a tall cell.
     const anvil = this.anvilAt(h, top, type);
-    const profile = max(smoothstep(lift, lift.add(0.12), h).mul(smoothstepDown(h, top.mul(0.42), top)), anvil);
+    const profile = max(smoothstep(lift, lift.add(0.12), h).mul(smoothstepDown(h, this.taperFrom(top, type), top)), anvil);
 
     // The weather field moves the threshold, so coverage varies across the sky
     // instead of being one number for the whole hemisphere.
@@ -2070,22 +2082,23 @@ export class Clouds {
     // its zero crossings. Eroding by the lumps leaves the creases standing as
     // wisps; eroding by the creases leaves rounded lumps. The first is used low
     // in the column and the second above (`WISP_LOW`).
-    const shape = smoothstep(edge, edge.add(width).add(SHAPE_WIDTH), base);
+    // Wispy where the cell is a fair-weather one or an anvil (`WISP_CRISP`):
+    // the erosion reaches further in and bites harder there. Not under a
+    // continuous deck, whose look is tuned on the crisp edge.
+    const wisp = max(
+      float(1).sub(smoothstep(0.2, 0.7, type)).mul(float(FAIR_WISP).mul(float(1).sub(this.uDeckHold))),
+      anvil,
+    ).toVar();
+    const shape = smoothstep(edge, edge.add(width).add(wisp.mul(WISP_REACH).add(SHAPE_WIDTH)), base);
     const deck = this.deckDensity(weather);
     if (detail === null) return shape.mul(profile).mul(this.uDensity).mul(deck);
 
     // |n| with its crease rounded over `DETAIL_CREASE`: sqrt(n^2 + k^2) - k.
     const nAbs = detail.mul(detail).add(DETAIL_CREASE * DETAIL_CREASE).sqrt().sub(DETAIL_CREASE);
     const lump = nAbs.min(DETAIL_RANGE).div(DETAIL_RANGE);
-    // Wispy where the cell is a fair-weather one or an anvil (`WISP_CRISP`);
-    // not under a continuous deck, whose look is tuned on the crisp edge.
-    const wisp = max(
-      float(1).sub(smoothstep(0.2, 0.7, type)).mul(float(FAIR_WISP).mul(float(1).sub(this.uDeckHold))),
-      anvil,
-    );
     const billowy = smoothstep(WISP_LOW, WISP_HIGH, h.div(top).clamp(0, 1)).mul(float(1).sub(wisp.mul(0.6)));
     const erosion = mix(lump, float(1).sub(lump), billowy)
-      .mul(EROSION_STRENGTH)
+      .mul(mix(float(EROSION_STRENGTH), float(WISP_EROSION), wisp))
       .mul(detailFade);
     const remapped = shape.sub(erosion).div(float(1).sub(erosion)).clamp(0, 1);
     // And a little of the same octave through the body, which the remap
@@ -2242,7 +2255,7 @@ export class Clouds {
             // broken sky is that, and it skips the detail noise and the light
             // march.
             const anvil = this.anvilAt(h, top, type);
-            const edgeMin = this.edgeFor(this.profileMax(h, top, anvil), weather, thin, anvil).toVar('cloudEdgeMin');
+            const edgeMin = this.edgeFor(this.profileMax(h, top, anvil, type), weather, thin, anvil).toVar('cloudEdgeMin');
             If(base.greaterThan(edgeMin), () => {
               const d = this.densityFrom(h, q, base, softness, weather, type, top, thin, true).toVar('cloudD');
 
