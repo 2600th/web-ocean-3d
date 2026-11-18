@@ -3405,6 +3405,8 @@ export class OceanMaterial {
       const surfPillowShadow = float(0).toVar();
       /** Where the surf's foam has been carried since it was made, metres. */
       const surfAdvect = vec2(0, 0).toVar();
+      /** Metres one pixel spans here; taken before the surf's branch, where derivatives are undefined. */
+      const foamFootprint0 = dFdx(fieldXZ).length().max(dFdy(fieldXZ).length()).toVar();
       if (floorDepth !== null) {
         If(inSurf.greaterThan(0.5), () => {
           const d = seabedDepth;
@@ -3513,8 +3515,11 @@ export class OceanMaterial {
           const rollerScale = mix(float(0.9), float(2.2), heightRatio.smoothstep(0.5, 1.5)).mul(sectionWidth).toVar();
           const rollerFront = float(-0.055).mul(rollerScale).toVar();
           const rollerBack = float(0.12).mul(rollerScale).toVar();
+          // The front edge is the bore's: sharp, the white standing up out of
+          // green water within a few tens of centimetres. Ramped over most of
+          // the roller's front half, it read as a smear rather than a lip.
           const roller = sr
-            .smoothstep(rollerFront, rollerFront.mul(0.22))
+            .smoothstep(rollerFront, rollerFront.mul(0.6))
             .mul(smoothstepDownClamped(sr, rollerBack.mul(0.25), rollerBack))
             .mul(brokenNear)
             .mul(crestSection)
@@ -3559,6 +3564,21 @@ export class OceanMaterial {
             (mix as any)(float(1), rollLit.div(flatLit.max(0.2)).clamp(0.6, 1.35), onRoll).mul(lee.mul(-0.35).add(1)),
           );
 
+          // **The bore's lip.** The leading edge of every broken crest, all the
+          // way in: the brightest, thickest white in the surf, a line a few
+          // tens of centimetres across that the dense wake and then the lace
+          // trail behind. Never narrower than a pixel's footprint in phase, so
+          // it holds as a line at a few hundred metres instead of aliasing.
+          const lipWidth = foamFootprint0.mul(surfPhaseGradient(d).abs()).max(0.012).toVar();
+          const boreX = sr.sub(rollerFront.mul(0.8)).div(lipWidth);
+          const boreLip = boreX
+            .mul(boreX)
+            .negate()
+            .exp()
+            .mul(brokenNear)
+            .mul(crestSection)
+            .mul(d.smoothstep(0.08, 0.4))
+            .toVar();
           const lipBand = d.sub(surfBreak).div(surfBreak.mul(0.22).add(0.12)).toVar();
           const lipLine = s.div(0.035).toVar();
           const lip = lipBand
@@ -3871,7 +3891,11 @@ export class OceanMaterial {
           // breakers are a pixel wide. The time-averaged coverage stands in for
           // them there: most of the inner surf zone white most of the time,
           // thinning out to the break line.
-          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3)).mul(0.8).toVar();
+          //
+          // At 0.45, not 0.8: at 0.8 the average laid one white blanket over
+          // the inner surf zone from 90 m out, and the bores, their lips and
+          // the lace between them were lost in it as a smear (`landfall`).
+          const band = smoothstepDownClamped(d, surfBreak.mul(0.3), surfBreak.mul(1.3)).mul(0.45).toVar();
           const far = viewDistance.smoothstep(90, 320).toVar();
           // And the line of white at the water's edge, which from more than a
           // few tens of metres is all the swash amounts to: a beach without it
@@ -3920,6 +3944,7 @@ export class OceanMaterial {
               .max(chopRoller.mul(mix(float(0.55), float(1), lanes)))
               .max(residual)
               .max(lip)
+              .max(boreLip)
               .max(pitching)
               .max(crestWhite)
               .max(whitewater)
