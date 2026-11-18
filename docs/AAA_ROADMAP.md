@@ -325,7 +325,8 @@ Still open from this pass:
   second shot.
 - **Baselines** with the ship, the beach or the island in them are out of
   date. One ocean test ("quality tiers apply cleanly") was reported failing
-  with a destroyed shadow texture, with and without this pass's changes.
+  with a destroyed shadow texture, with and without this pass's changes
+  (since fixed: see "a black screen on stepping down to Medium" below).
 
 ## After wave 2: black patches on the sails (2026-11-18)
 
@@ -348,6 +349,31 @@ Reported from the film: a working sail broke out in black, jagged patches.
 
 Two earlier attempts (holding the cloth normal to one side, and taking it
 across two cells) did not remove the patches and were not kept.
+
+## After wave 2: a black screen on stepping down to Medium (2026-11-18)
+
+Found while re-running the suite after the sail fix; it was behind two
+failing tests ("quality tiers apply cleanly" and the far-field shimmer test),
+and a player would have hit it: choosing Medium from High left the picture
+black until the tier was changed again.
+
+- **Cause.** A fault in three.js r187, not in the tier code. Resizing the
+  shadow cascades destroys their depth textures; three marks the bind groups
+  that sampled them for rebuild on the object's next refresh. An object whose
+  state has not changed gets no full refresh in a render without a velocity
+  target, so it never rebuilds, keeps the destroyed texture bound, and WebGPU
+  rejects every frame's submission. The one object that met those conditions
+  was the idle anchor cable, drawn in the planar mirror.
+- **Fix.** `installDestroyedTextureRefresh` in `src/core/threeFixes.ts`:
+  after any texture is destroyed, each render object's next refresh is made a
+  full one, once. It costs nothing in the scene pass, which is always a full
+  refresh.
+- **Checked.** Twenty-one tier changes in three runs with no black frame and
+  no GPU error; both tests pass (shimmer figures at Medium are measured again:
+  far temporal 0.520, high-frequency 0.704, near detail 0.594).
+
+The visual baselines (16 canonical shots) are still out of date and still
+fail; they predate the crew, the surf and the reflection changes.
 
 ## Milestones
 
