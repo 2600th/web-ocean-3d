@@ -1209,6 +1209,9 @@ const GULL_WIND_SILENT = 22;
  * makes the whole mix repeat on one period. Mutually incommensurate rates and
  * offsets spread across the buffer cost nothing and remove both.
  */
+/** How far each bed's read rate wanders around its base (`NoiseBed.wander`). */
+const BED_RATE_WANDER = 0.03;
+
 const BED_RATES = {
   surfNear: 0.83,
   surfFar: 1.07,
@@ -1666,6 +1669,8 @@ export class AudioSystem {
 
     const live = this.enabled && !this.muted && !this.hidden && this.running();
     this.spatial.update(params, live);
+    // No audible loop (A5): every bed's read rate drifts on its own period.
+    for (let i = 0; i < this.beds.length; i++) this.beds[i].wander(now, BED_RATE_WANDER, live);
 
     const wind = clampNumber(finite(params.windSpeed, 0), 0, 40);
     const waveHeight = clampNumber(finite(params.waveHeight, 0), 0, 20);

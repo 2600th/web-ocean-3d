@@ -139,6 +139,11 @@ export class NoiseBed {
   /** Mean square of the buffer, for `loudnessDb`. */
   private readonly power: number;
   private readonly brown: boolean;
+  /** The read rate's own wander (A5): base, period and phase. */
+  private readonly baseRate: number;
+  private readonly wanderPeriod: number;
+  private readonly wanderPhase: number;
+  private readonly rate: ParamTarget;
 
   constructor(ctx: BaseAudioContext, options: NoiseBedOptions) {
     // Ceiling on any filter corner: nine tenths of Nyquist, not Nyquist. A
@@ -153,6 +158,10 @@ export class NoiseBed {
     this.nyquist = ctx.sampleRate / 2;
     this.power = bufferPower(options.buffer);
     this.brown = options.spectrum === 'brown';
+    this.baseRate = options.playbackRate;
+    // Incommensurate per bed, from its own base rate and offset: 23 to 37 s.
+    this.wanderPeriod = 23 + ((options.playbackRate * 97.13 + options.offset * 13.7) % 14);
+    this.wanderPhase = (options.offset * 2.399) % (2 * Math.PI);
 
     this.source = ctx.createBufferSource();
     this.source.buffer = options.buffer;
@@ -210,6 +219,7 @@ export class NoiseBed {
       20,
       maxFrequency,
     );
+    this.rate = new ParamTarget(this.source.playbackRate, options.playbackRate, 0.5, 0.002, 0.25, 4);
     this.pan =
       this.panNode === null
         ? null
@@ -224,6 +234,17 @@ export class NoiseBed {
     // wrap.
     const duration = options.buffer.duration;
     this.startOffset = duration > 0 ? options.offset % duration : 0;
+  }
+
+  /**
+   * Lets the read rate drift a few per cent around its base, on this bed's
+   * own period, so its loop through the buffer is never exact (A5). Called
+   * every frame; writes only when the rate has moved.
+   */
+  wander(now: number, depth: number, live: boolean): void {
+    if (!this.started || !this.connected) return;
+    const w = Math.sin((2 * Math.PI * now) / this.wanderPeriod + this.wanderPhase);
+    this.rate.set(this.baseRate * (1 + depth * w), now, live);
   }
 
   /** Begins playback. Idempotent — a second call is a no-op, not an exception. */
