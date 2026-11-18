@@ -217,6 +217,76 @@ Found along the way, and carried into wave 2:
 - **Baselines:** every shot with the ship in it has changed and is recaptured
   after wave 2.
 
+## Status after wave 2 (2026-11-18)
+
+Ten agents, merged on `aaa-roadmap-m1` (nothing pushed). Ticked below: P0.4,
+S3, S6, S7, W6, A3 to A9, I2, I3, K1, K3, K4, X5 to X7, G1, G7 and G8. W3 is
+part done and stays open. X8 is unfinished on the branch `shore-spray-wip`.
+
+Measured in real Chrome at 1920x1080, High, 120 Hz, alternating with `main`:
+
+| View | `main`, frames drawn a second | Wave 2, frames drawn a second |
+|---|---|---|
+| Default (five runs each) | 112 to 119 | 112 to 114 in four runs, 91 in one |
+| Storm at the helm (two runs each) | 115 and 119 | 114 and 117 |
+
+Ready to play is 16.2 to 16.7 s in six of seven runs and 20.2 s in one,
+against 13.5 to 14.0 s on `main`: about 2.5 s slower. The one run at 91 frames
+a second spent part of its twelve seconds at half rate (p99 frame 16.7 ms
+against 8.5 ms); it did not repeat in three further runs, and its cause is not
+known. The functional suite passes on the merged build (88 passed, one
+skipped). The gallery, the visual baselines and the per-system caps in
+`docs/BUDGETS.md` have not been redone for wave 2.
+
+Decisions taken during the wave:
+
+- **A whipstaff, not a wheel.** The ship is steered by a whipstaff, which fits
+  1700; the helmsman stands at it.
+- **A new voyage asks once** before striking an old record on the title
+  screen, and the title screen reads the voyage's own save.
+- **Recorded sound** is in for thunder, gulls and surf (CC0, listed in
+  `ASSET_LICENSES.md`), layered with the synthesised beds.
+
+Found along the way, and carried forward:
+
+- **Start-up** is about 2.5 s slower than `main` (above).
+- **Lightning on the sails** shows as harsh white stripes. Rain is faint in
+  the storm and its deck splashes are subtle. The reduce-flashes setting has
+  not been captured working.
+- **The pale blob on the hull side** is still there. It is not the hull-spray
+  mist; the bow sheet, the spindrift and the splash are the remaining
+  suspects.
+- **The crew** read as stylised low-poly figures up close, and their lit
+  shader uses twelve uniform buffers, which is the limit.
+- **Lanterns** put little light on the lower sails; the brightness of their
+  reflection in the sea has not been captured.
+- **Rigging (S2)** is not done: ropes at the yardarms do not follow braced
+  yards, and gulls perched on the yards float when the yards brace. The anchor
+  cable's shape in shallow water is unverified.
+- **The hull from below** is still dim and pale.
+- **W3** is part done: the moon's glitter clumps close to the camera, and
+  per-axis slope moments were not added.
+- **Sky:** clouds still show weaker rows at the horizon, there are no towers
+  at noon, the moon's maria are faint, and the taller cloud shell makes the
+  overhead march steps about 2.4 times longer. Heat haze was dropped.
+- **Weather and voyage:** wind direction does not vary between voyages, squall
+  gusts are not on the wind dial, the anchorage is about 320 m off the jetty,
+  and the ship's log may show one toast twice.
+- **Shell:** Quit to title reloads the page, interface size is capped on small
+  screens, and pad rumble, the pad in menus and Escape under pointer lock are
+  untested.
+- **Island and shore:** the summit's bare rock face is large and flat grey,
+  the fort is hidden in the canopy, a faint straight dark streak remains below
+  the rock spit, and the breaker is still partly a smear.
+- **Sound:** the test bench counts a few clicks (calm 2, sailing 4, island by
+  day 3), and nobody has listened to any of it.
+- **Errors that predate the wave:** a WGSL "structures must have at least one
+  member" error in the storm shot and a depth-copy validation error at Low.
+  Both reproduce on the commit before wave 2.
+
+A one-minute film of the build is in `promo/` (not committed); see
+`promo/REVIEW.md`.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system
@@ -232,7 +302,7 @@ with content, XL several systems. Each task says what done looks like.
 - [x] **P0.3 Set budgets** (S). A table per tier of frame time, start-up time
   and download size, with a cap for every new system below. Add rows to
   `scripts/profile-frame.mjs`.
-- [ ] **P0.4 Fix what the audit found** (S each):
+- [x] **P0.4 Fix what the audit found** (S each):
   - the touch throttle driving the engine at the helm;
   - the stale whitecap expectation in `tests/foam.spec.ts` (13.4% rendered
     against 3.9% expected at 15 m/s);
@@ -292,7 +362,7 @@ different files, so they can run side by side.
 - [ ] **S2 Rigging that sags and tightens** (M). Sea of Thieves' method: solve
   the catenary on the CPU per rope with a slack value, and bend a tube in the
   vertex stage. No physics. Done when sheets and braces move with the sails.
-- [ ] **S3 Moving parts** (M). The wheel turns with the helm, the rudder
+- [x] **S3 Moving parts** (M). The wheel turns with the helm, the rudder
   swings, the yards brace toward the wind, a pennant streams from the
   masthead, and the anchor cable is visible when it is down. The pennant is
   also the player's wind indicator.
@@ -303,7 +373,7 @@ different files, so they can run side by side.
 - [x] **S5 Wet hull and deck** (S to M). `scene/Wetness.ts` already darkens and
   glosses surfaces under rain. Add a waterline band that follows the sea and a
   spray-driven wet mask that dries over seconds.
-- [ ] **S6 The hull below the waterline** (M). Planking, keel, rudder and
+- [x] **S6 The hull below the waterline** (M). Planking, keel, rudder and
   period-correct bottom treatment, so `underwater` shows a ship.
 
 **Water lane** (`ocean/`, `physics/Spray.ts`)
@@ -325,7 +395,7 @@ different files, so they can run side by side.
 - [x] **W5 Fine detail and gusts** (S to M). A low-frequency gust mask scaling
   the smallest wave band (dark "cat's paws" crossing the water) and finer
   ripples near the camera. Done when `waves` no longer reads as gel.
-- [ ] **W6 The horizon** (S to M). Fade each band's displacement with distance
+- [x] **W6 The horizon** (S to M). Fade each band's displacement with distance
   (Atlas uses about 30 wave periods) and dissolve the sea into haze by day and
   spray haze in a storm. This closes an item open since the first pass.
 
@@ -375,20 +445,20 @@ different files, so they can run side by side.
 - [x] **A2 A room around every sound** (S). A shared reverb send built from a
   synthesised impulse, with three settings crossfaded by state: open deck,
   under water, and near cliffs. Done when no effect is fully dry.
-- [ ] **A3 Loudness and priority** (M). A target of about -18 LUFS integrated
+- [x] **A3 Loudness and priority** (M). A target of about -18 LUFS integrated
   with true peak at or below -1 dB, measured by V5. Each sound gets a logical
   loudness, and the loudest present pulls the rest down (the method DICE
   called HDR audio). Music ducks under thunder, impacts and stings by
   scheduled gain ramps. A reduced dynamic range option for laptop speakers.
-- [ ] **A4 Sound in space** (M). The listener sits on the camera. Hull creaks,
+- [x] **A4 Sound in space** (M). The listener sits on the camera. Hull creaks,
   blocks, the anchor chain, splashes and the camp fire become positional
   sources; thunder comes from the bolt's bearing. Head-related filtering for
   a few hero sources, plain panning for the rest.
-- [ ] **A5 No audible loop** (S). Longer, decorrelated noise for the beds, or
+- [x] **A5 No audible loop** (S). Longer, decorrelated noise for the beds, or
   one worklet generator, so the 4 s repeat is gone.
-- [ ] **A6 Thunder that differs** (S). Per-strike envelopes, several delayed
+- [x] **A6 Thunder that differs** (S). Per-strike envelopes, several delayed
   rumbles, and a reserved voice so a distant strike cannot starve the rest.
-- [ ] **A7 Wind you feel** (S). Apparent wind, not only true wind, and wind in
+- [x] **A7 Wind you feel** (S). Apparent wind, not only true wind, and wind in
   the ears that rises with speed.
 
 ### Milestone 2: a place worth sailing to
@@ -396,10 +466,10 @@ different files, so they can run side by side.
 - [ ] **I1 Remove the one-island assumption** (L). An array of island
   descriptors, and one height function that generates both the CPU and the
   shader copy. Everything else in this milestone that adds land depends on it.
-- [ ] **I2 Give the island a silhouette** (M to L). Cliffs, a headland, a real
+- [x] **I2 Give the island a silhouette** (M to L). Cliffs, a headland, a real
   cove, a beach with a berm and relief, rock faces breaking the canopy. Done
   when the island is recognisable from its outline alone in `hero`.
-- [ ] **I3 Depth in the canopy** (M). Shading between crowns, variation in
+- [x] **I3 Depth in the canopy** (M). Shading between crowns, variation in
   height and species, emergent trees and gaps, leaf translucency, and a ragged
   edge in place of the lawn band.
 - [ ] **I4 One wind field** (M). After Ghost of Tsushima: a single gust
@@ -412,15 +482,15 @@ different files, so they can run side by side.
   at night, and a lighthouse beam visible from far off.
 - [ ] **I7 The reef at the surface's standard** (M). Realistic coral shading
   and lit fish in place of black silhouettes.
-- [ ] **K1 Clouds with variety** (M to L). Size and height variation, towers
+- [x] **K1 Clouds with variety** (M to L). Size and height variation, towers
   and anvils, wispy edges, and no visible repetition toward the horizon or at
   night. Add the dark-edge and inner-glow terms from Guerrilla's Nubis work.
 - [ ] **K2 Weather that moves** (L). Pressure zones that redistribute cloud
   cover (Sea of Thieves), a squall front with rain shafts that the player can
   skirt or cross, and lightning that lights the clouds.
-- [ ] **K3 A day in play** (S to M). An 8 to 12 minute day at the helm, not
+- [x] **K3 A day in play** (S to M). An 8 to 12 minute day at the helm, not
   only in the Tour, with a golden hour inside the first five minutes.
-- [ ] **K4 The night sky** (S to M). A moon with phase, point stars, the Milky
+- [x] **K4 The night sky** (S to M). A moon with phase, point stars, the Milky
   Way.
 - [ ] **L1 Bounce light** (M). A probe grid (`LightProbeGridNode`) for sky and
   sand bounce under the canopy, the sails and the hull. Screen-space global
@@ -429,17 +499,17 @@ different files, so they can run side by side.
   that follows the ship: slam rings, splash rings, reflections off rocks and
   the jetty. Atlas measured 0.6 to 0.8 ms for theirs; three.js's
   `webgpu_compute_water` is the starting point.
-- [ ] **S7 A crew** (L). Six to ten low-detail instanced figures with a few
+- [x] **S7 A crew** (L). Six to ten low-detail instanced figures with a few
   looped animations: a helmsman, a lookout, hands at the braces. Needs
   decision 6.
-- [ ] **X5 Fire that burns** (M). Flame sheets in place of the static cones,
+- [x] **X5 Fire that burns** (M). Flame sheets in place of the static cones,
   embers and sparks carried by the wind, lights that shift with the flicker
   so shadows move, one light per torch, and heat haze over the camp fire.
   The ship's lanterns swing (with S4).
-- [ ] **X6 Rain you sail through** (M). Rain streams past with the ship's
+- [x] **X6 Rain you sail through** (M). Rain streams past with the ship's
   speed, takes its colour from the scene and the lightning, is sheltered under
   sails and deck, and splashes on the planks. Distant sheets come with K2.
-- [ ] **X7 Lightning that lights the sky** (M). Clouds lit from inside,
+- [x] **X7 Lightning that lights the sky** (M). Clouds lit from inside,
   tapered forks, a leader stroke, and now and then a strike within 300 m. No
   more than three flashes in any second, and a reduce-flashes option (WCAG
   2.3.1).
@@ -449,10 +519,10 @@ different files, so they can run side by side.
   so smoke answers the sun, the fire and the lightning. Drawn at half
   resolution to bound the overdraw. Camp smoke first; cannon smoke uses it in
   Milestone 4.
-- [ ] **A8 The island heard** (M). Shore surf by distance to the breakers,
+- [x] **A8 The island heard** (M). Shore surf by distance to the breakers,
   fire crackle, land birds by day, insects by night, the lighthouse. The
   audio gains a time-of-day input.
-- [ ] **A9 Rain on wood and canvas** (S). Rain sounds different on the deck,
+- [x] **A9 Rain on wood and canvas** (S). Rain sounds different on the deck,
   on the sails and on the sea, mixed by where the camera is.
 - [ ] **A10 A worklet for what nodes cannot do** (M). One audio worklet
   holding modal banks for wood knocks and creaks, granular droplets, and
@@ -460,7 +530,7 @@ different files, so they can run side by side.
 
 ### Milestone 3: a voyage
 
-- [ ] **G1 A run with a beginning, a risk and an end** (M). A 3 to 5 minute
+- [x] **G1 A run with a beginning, a risk and an end** (M). A 3 to 5 minute
   voyage: take cargo to the cove before the squall or the dark closes in.
   Failure costs time or cargo, never the session.
 - [ ] **G2 An event director** (M to L). Small events on a pacing timer: a
@@ -475,7 +545,7 @@ different files, so they can run side by side.
   on.
 - [ ] **G6 A rival sail** (L). A second ship that flees, races or shadows the
   player. It needs buoyancy, wake and detail levels for more than one hull.
-- [ ] **G7 Progress that persists** (M). Gold buys sail colours, lanterns and
+- [x] **G7 Progress that persists** (M). Gold buys sail colours, lanterns and
   a flag; discoveries and purchases are saved locally; runs vary by seed.
 - [ ] **F4 A view from the deck** (M). A camera at the wheel with free look.
 - [ ] **F5 Hazards with consequences** (M). Rocks and shoals damage a hull
