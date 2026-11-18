@@ -187,7 +187,8 @@ export class Voyage {
     this.begun = true;
     // Its own stream, so the squall never moves the casks the seed lays out.
     const random = mulberry32(this.seed ^ 0x9e3779b9);
-    if (this.squallStart > this.lastSquallStart) this.lastSquallStart = this.squallStart;
+    // A squall already blowing goes on blowing; one that never began is dropped.
+    if (!this.frozen && this.squallStart <= this.dayClock) this.lastSquallStart = this.squallStart;
     this.squallStart = this.dayClock + SQUALL_EARLIEST + random() * SQUALL_SPREAD;
     this.squallStage = 0;
   }
@@ -204,7 +205,7 @@ export class Voyage {
         this.squallStage = 1;
         events.push('squallWarning');
       }
-      if (this.squallStage <= 1 && this.squallRain() > SQUALL_PEAK * 0.35) {
+      if (this.squallStage <= 1 && squallRain(this.squallStart, this.dayClock) > SQUALL_PEAK * 0.35) {
         this.squallStage = 2;
         events.push('squallArrived');
       }

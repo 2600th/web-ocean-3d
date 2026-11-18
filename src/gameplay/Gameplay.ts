@@ -352,6 +352,8 @@ export interface GameplaySnapshot {
     casks: number;
     squall: 'none' | 'coming' | 'here' | 'past';
     squallRain: number;
+    /** Seconds until this voyage's squall builds, or null once it has. */
+    squallIn: number | null;
     hours: number;
     anchorage: { x: number; z: number };
     tally: VoyageTally | null;
@@ -904,6 +906,7 @@ export class Gameplay {
         casks: VOYAGE_CASKS,
         squall: this.voyage.squallState,
         squallRain: this.voyage.squallRain(),
+        squallIn: this.voyage.squallIn(),
         hours: this.voyage.hours(),
         anchorage: { x: this.anchorage.x, z: this.anchorage.z },
         tally: this.tally,

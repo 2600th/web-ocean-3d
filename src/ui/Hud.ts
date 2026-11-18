@@ -831,9 +831,9 @@ export class Hud {
     this.onSailAgain = onSailAgain ?? null;
     const full = tally.cargo >= tally.casks;
     setText(this.tallyTitle, full ? 'All cargo home' : 'Cargo home');
-    setText(this.tallySub, `Voyage ${tally.voyage} Â· at anchor off the cove`);
+    setText(this.tallySub, `Voyage ${tally.voyage} · at anchor off the cove`);
     const best = tally.newBest
-      ? `${formatClock(tally.seconds)} Â· new best`
+      ? `${formatClock(tally.seconds)} · new best`
       : tally.bestSeconds !== null
         ? formatClock(tally.bestSeconds)
         : 'Land every cask to set one';
