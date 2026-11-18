@@ -273,11 +273,11 @@ function resolveStation(s: CrewStation, hullBeam: number, wheel: THREE.Vector3 |
   return { ...s, x: s.x, z: s.zBeam * hullBeam * 0.5, y: s.probeFrom ?? 12 };
 }
 
-/** The wheel's position in the ship's frame, if the model carries it as a node. */
+/** The helm's position in the ship's frame (a wheel, or this ship's whipstaff), if the model carries it as a node. */
 function findWheel(ship: THREE.Object3D): THREE.Vector3 | null {
   let found: THREE.Object3D | null = null;
   ship.traverse((n) => {
-    if (!found && /wheel/i.test(n.name)) found = n;
+    if (!found && /wheel|whipstaff/i.test(n.name)) found = n;
   });
   if (!found) return null;
   const box = new THREE.Box3().setFromObject(found, true);
