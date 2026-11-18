@@ -270,6 +270,20 @@ const VIEW_ONLY_LAYER = 6;
 const VIEW_ONLY_OBJECTS = /-depth$|^rudder_geo$|^whipstaff_geo$|^island-meadow$|^beach-decals$|^reef-shells$/;
 const VIEW_ONLY_MATERIALS = /^ship-lantern-iron$/;
 
+/**
+ * Casters whose shadow cannot be seen: the whipstaff is below decks. A draw in
+ * every sun cascade. Not the rudder, though it is under the hull: its shadow
+ * shows in the underwater shot (0.148 mean Delta E without it).
+ */
+const HIDDEN_CASTERS = /^whipstaff_geo$/;
+
+/**
+ * Props that sit on the reef's seabed (the crate and the chest). On the
+ * underwater layer with the reef around them, so they too cast sun shadows
+ * only while the eye is in the water; see `SunShadows.setCasterLayers`.
+ */
+const SEABED_PROPS = /^reef-(crate|chest)/;
+
 /** Scratch for the sea creatures' key light. */
 const _creatureSun = new THREE.Color();
 
@@ -2637,17 +2651,21 @@ class App {
   }
 
   /**
-   * Moves what the mirror has no use for onto `VIEW_ONLY_LAYER`. Called again
-   * after anything that builds meshes (the scene load, a tier change); meshes
-   * already moved are left alone.
+   * Moves what the mirror has no use for onto `VIEW_ONLY_LAYER`, and trims the
+   * sun's casters (`HIDDEN_CASTERS`, `SEABED_PROPS`). Called again after
+   * anything that builds meshes (the scene load, a tier change); meshes already
+   * moved are left alone.
    */
   private keepOutOfMirror(): void {
     this.scene.traverse((node) => {
+      if (HIDDEN_CASTERS.test(node.name)) node.castShadow = false;
       if (node.layers.mask !== 1) return;
       const material = (node as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
       const materialName = Array.isArray(material) ? '' : (material?.name ?? '');
       if (VIEW_ONLY_OBJECTS.test(node.name) || VIEW_ONLY_MATERIALS.test(materialName)) {
         node.layers.set(VIEW_ONLY_LAYER);
+      } else if (SEABED_PROPS.test(node.name)) {
+        node.layers.set(UNDERWATER_LAYER);
       }
     });
   }
