@@ -12,6 +12,54 @@ import * as THREE from 'three/webgpu';
  */
 const VERIFIED_PERF_REVISIONS = new Set(['187']);
 
+let shadowRefreshHolds = 0;
+
+/**
+ * Runs `render` with the shadow maps left as they are: a nested view of the
+ * scene (the planar mirror) that reads the frame's shadow maps instead of
+ * drawing them again. Does nothing unless `installShadowRefreshHold` took.
+ */
+export function holdShadowRefresh<T>(render: () => T): T {
+  shadowRefreshHolds++;
+  try {
+    return render();
+  } finally {
+    shadowRefreshHolds--;
+  }
+}
+
+/**
+ * Shadow maps are drawn once a frame, not once per camera.
+ *
+ * `ShadowNode.updateBefore` (r187) refreshes a light's shadow map the first
+ * time *each camera* draws something lit by it in a frame. The planar mirror
+ * draws the scene from a camera of its own, inside the scene pass, so every
+ * sun cascade was drawn twice a frame: at High, 204 caster draws for the view
+ * and then 98 more for the mirror, into the same three maps.
+ *
+ * The second set was also the wrong one to keep. Three gives the shadow camera
+ * the layer mask of the camera it is drawing for, the mirror's camera leaves
+ * the underwater layer out, and the mirror's command buffer is submitted
+ * before the scene pass's: so the maps the view then sampled were the mirror's,
+ * with no reef, kelp or outcrop in them.
+ *
+ * With this installed, `holdShadowRefresh` marks a render that must not
+ * refresh them, and `Reflections` wraps the mirror's render in it. The maps
+ * are the ones drawn for the view. If the mirror is ever reached before
+ * anything lit has been drawn, it reads last frame's maps, one frame old.
+ */
+export function installShadowRefreshHold(): void {
+  if (!VERIFIED_PERF_REVISIONS.has(THREE.REVISION)) return;
+  const proto = (THREE as any).ShadowNode?.prototype;
+  if (!proto || typeof proto.updateBefore !== 'function' || proto.__refreshHold) return;
+  proto.__refreshHold = true;
+  const updateBefore = proto.updateBefore;
+  proto.updateBefore = function (this: unknown, frame: unknown): void {
+    if (shadowRefreshHolds > 0) return;
+    updateBefore.call(this, frame);
+  };
+}
+
 /**
  * Instance matrices a frame late on the attribute path.
  *

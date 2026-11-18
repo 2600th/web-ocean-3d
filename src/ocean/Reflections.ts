@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { reflector } from 'three/tsl';
+import { holdShadowRefresh } from '../core/threeFixes';
 
 /**
  * Planar reflection of the scene in the water surface.
@@ -78,7 +79,9 @@ export class Reflections {
       const alpha = renderer.getClearAlpha();
       renderer.setClearColor(0x000000, 0);
       try {
-        return update(frame);
+        // The mirror reads the shadow maps the view drew this frame; without
+        // the hold three draws every cascade again for the mirror's camera.
+        return holdShadowRefresh(() => update(frame));
       } finally {
         renderer.setClearColor(_clearColor, alpha);
       }

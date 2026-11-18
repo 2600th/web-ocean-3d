@@ -14,6 +14,7 @@ import {
   installDestroyedTextureRefresh,
   installInstanceCopySync,
   installShadowCasterSharing,
+  installShadowRefreshHold,
   installSubmissionFixes,
 } from './core/threeFixes';
 import { Caustics, UnderwaterParticles, UnderwaterPass } from './underwater';
@@ -705,6 +706,8 @@ class App {
     installInstanceCopySync(this.renderer);
     installDestroyedTextureRefresh(this.renderer);
     installShadowCasterSharing(this.renderer);
+    // `?shadowonce=0` draws them per camera again, for A/B runs.
+    if (new URLSearchParams(window.location.search).get('shadowonce') !== '0') installShadowRefreshHold();
     // `?batch=0`: submit every render call on its own, as three does. For A/B
     // measurements of `installSubmitBatching`.
     installSubmissionFixes(this.renderer, {
