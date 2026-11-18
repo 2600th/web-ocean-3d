@@ -195,4 +195,68 @@ export function butterflyPassNode(
   })();
 }
 
+/**
+ * One horizontal stage and one vertical stage in a single pass.
+ *
+ * The transform along x and the transform along y act on different axes, so
+ * their stages commute: horizontal stage 0..n-1 followed by vertical stage
+ * 0..n-1 is the same operator as (horizontal k, vertical k) for k = 0..n-1.
+ * Done together, a texel reads four sources instead of two and the transform
+ * takes half as many passes, and it is the pass, not the arithmetic, that
+ * costs here (see `butterflyPassNode`). The vertical stage is applied first, at
+ * the two columns the horizontal stage then combines.
+ *
+ * The result differs from the two-pass form only in rounding order, in the
+ * last bits of a 32-bit float.
+ */
+export function butterflyBothPassNode(
+  resources: FFTResources,
+  sourceTexture: THREE.Texture,
+  stageUniform: any,
+  slots: number,
+) {
+  const { size, butterfly } = resources;
+
+  return Fn(() => {
+    const coord = ivec2(
+      float(size * slots).mul(uv().x).floor().toInt(),
+      float(size).mul(uv().y).floor().toInt(),
+    ).toVar();
+    const slotOffset = float(coord.x)
+      .div(float(size))
+      .floor()
+      .mul(size)
+      .toInt()
+      .toVar();
+    const localX = coord.x.sub(slotOffset).toVar();
+
+    const stage = stageUniform.toInt().toVar();
+    const bfX = textureLoad(butterfly, ivec2(stage, localX)).toVar();
+    const bfY = textureLoad(butterfly, ivec2(stage, coord.y)).toVar();
+    const twiddleX = vec2(bfX.x, bfX.y).toVar();
+    const twiddleY = vec2(bfY.x, bfY.y).toVar();
+    const xA = slotOffset.add(bfX.z.toInt()).toVar();
+    const xB = slotOffset.add(bfX.w.toInt()).toVar();
+    const yA = bfY.z.toInt().toVar();
+    const yB = bfY.w.toInt().toVar();
+
+    const aa = textureLoad(sourceTexture, ivec2(xA, yA)).toVar();
+    const ab = textureLoad(sourceTexture, ivec2(xA, yB)).toVar();
+    const ba = textureLoad(sourceTexture, ivec2(xB, yA)).toVar();
+    const bb = textureLoad(sourceTexture, ivec2(xB, yB)).toVar();
+
+    // The vertical stage, at column A and at column B.
+    const colA0 = vec2(aa.x, aa.y).add(cMul(twiddleY, vec2(ab.x, ab.y))).toVar();
+    const colA1 = vec2(aa.z, aa.w).add(cMul(twiddleY, vec2(ab.z, ab.w))).toVar();
+    const colB0 = vec2(ba.x, ba.y).add(cMul(twiddleY, vec2(bb.x, bb.y))).toVar();
+    const colB1 = vec2(ba.z, ba.w).add(cMul(twiddleY, vec2(bb.z, bb.w))).toVar();
+
+    // The horizontal stage, across them.
+    const out0 = colA0.add(cMul(twiddleX, colB0));
+    const out1 = colA1.add(cMul(twiddleX, colB1));
+
+    return vec4(out0.x, out0.y, out1.x, out1.y);
+  })();
+}
+
 export { int, float, uniform };

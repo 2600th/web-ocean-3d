@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { Fn, float, int, ivec2, mix, select, texture, textureLoad, uv, vec2, vec3, vec4 } from 'three/tsl';
 import { uniform } from '../core/uniform';
-import { butterflyPassNode, cMul, createFFTResources, type FFTResources } from './FFT';
+import { butterflyBothPassNode, butterflyPassNode, cMul, createFFTResources, type FFTResources } from './FFT';
 import {
   CASCADES,
   createSpectrumTexture,
@@ -18,7 +18,8 @@ import {
  *
  * Per cascade and per frame:
  *   1. evolve   h0(k) -> h(k, t) and derive four packed complex spectra
- *   2. IFFT     log2(N) horizontal + log2(N) vertical butterfly passes, x2 pairs
+ *   2. IFFT     log2(N) butterfly passes, each a horizontal and a vertical stage
+ *               (`createButterflyMaterials`), for every pair at once
  *   3. assemble unpack into a displacement texture and a derivative texture
  *
  * Field packing across the two complex slots of two RGBA ping-pong pairs
@@ -102,6 +103,8 @@ export class OceanSimulation {
   private pair!: PingPong;
   private evolve!: THREE.NodeMaterial;
   private butterfly: THREE.NodeMaterial[] = [];
+  /** The butterfly stage each of those passes runs. */
+  private butterflyStage: number[] = [];
 
   private readonly uTime = uniform(0);
   private readonly uStage = uniform(0);
@@ -397,16 +400,16 @@ export class OceanSimulation {
   }
 
   /**
-   * Runs 2*stages butterfly passes, swapping the ping-pong after each. Because
-   * the count is always even the pair ends the frame in the orientation it
-   * started in, which is what lets the stage materials bind their source texture
-   * once at build time (even stages read `read`, odd stages read `write`) and
-   * lets the assemble pass bind `read` permanently.
+   * Runs the butterfly passes, swapping the ping-pong after each. Because the
+   * count is always even (`createButterflyMaterials`) the pair ends the frame
+   * in the orientation it started in, which is what lets the stage materials
+   * bind their source texture once at build time (even passes read `read`, odd
+   * passes read `write`) and lets the assemble pass bind `read` permanently.
    */
   private runFFT(pair: PingPong, materials: THREE.NodeMaterial[]): void {
-    for (let stage = 0; stage < materials.length; stage++) {
-      this.uStage.value = stage % this.fft.stages;
-      this.runPass(materials[stage], pair.write);
+    for (let pass = 0; pass < materials.length; pass++) {
+      this.uStage.value = this.butterflyStage[pass];
+      this.runPass(materials[pass], pair.write);
       const swap = pair.read;
       pair.read = pair.write;
       pair.write = swap;
@@ -540,28 +543,36 @@ export class OceanSimulation {
   }
 
   /**
-   * One material per butterfly stage, built once — node graph construction is
+   * One material per butterfly pass, built once — node graph construction is
    * expensive and must never happen inside the frame loop.
+   *
+   * A pass runs stage k of the horizontal transform and stage k of the
+   * vertical one together (`butterflyBothPassNode`): log2(N) passes where
+   * there were 2 log2(N). The count has to stay even (see `runFFT`), so where
+   * log2(N) is odd (128, 512) the last stage is run the old way, as a
+   * horizontal pass and a vertical pass: log2(N) + 1 passes.
    */
   private createButterflyMaterials(pair: PingPong): THREE.NodeMaterial[] {
     const materials: THREE.NodeMaterial[] = [];
-    const total = this.fft.stages * 2;
+    const stages = this.fft.stages;
+    const folded = stages - (stages % 2);
+    // [stage, direction]; direction 2 is both.
+    const passes: Array<[number, 0 | 1 | 2]> = [];
+    for (let k = 0; k < folded; k++) passes.push([k, 2]);
+    if (folded < stages) passes.push([stages - 1, 0], [stages - 1, 1]);
 
-    for (let i = 0; i < total; i++) {
-      const direction: 0 | 1 = i < this.fft.stages ? 0 : 1;
+    this.butterflyStage = passes.map(([stage]) => stage);
+    passes.forEach(([, direction], i) => {
       const source = i % 2 === 0 ? pair.read.texture : pair.write.texture;
       const material = new THREE.NodeMaterial();
-      material.fragmentNode = butterflyPassNode(
-        this.fft,
-        source,
-        this.uStage,
-        direction,
-        this.slotCount,
-      );
+      material.fragmentNode =
+        direction === 2
+          ? butterflyBothPassNode(this.fft, source, this.uStage, this.slotCount)
+          : butterflyPassNode(this.fft, source, this.uStage, direction, this.slotCount);
       material.depthTest = false;
       material.depthWrite = false;
       materials.push(material);
-    }
+    });
     return materials;
   }
 
