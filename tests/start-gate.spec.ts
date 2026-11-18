@@ -30,7 +30,7 @@ test('the title offers Continue only when a voyage is on record', async ({ page 
   await expect(page.getByRole('button', { name: 'Continue' })).toHaveCount(0);
 
   await page.evaluate(() =>
-    localStorage.setItem('web-ocean:voyage:v1', JSON.stringify({ gold: 120, voyagesCompleted: 3 })));
+    localStorage.setItem('web-ocean:voyage:v1', JSON.stringify({ gold: 120, voyages: 3, bestTimeS: null })));
   await page.reload();
   await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 5_000 });
   await expect(page.locator('.boot__record')).toContainText('Gold 120');

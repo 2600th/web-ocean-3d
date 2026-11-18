@@ -4,7 +4,7 @@ import { MenuSea } from './MenuSea.ts';
 import { installReducedMotionOverride } from './motion.ts';
 import { applyDisplayPrefs, loadSettingsPrefs } from './prefs.ts';
 import { QUALITY_TIERS, type QualityTier } from './types.ts';
-import { readVoyageRecord, type VoyageRecord } from './voyageRecord.ts';
+import { clearVoyageRecord, readVoyageRecord, type VoyageRecord } from './voyageRecord.ts';
 
 const STORAGE_KEY = 'web-ocean:start-selection:v1';
 
@@ -269,12 +269,10 @@ function startButton(label: string, iconName: IconName, quiet: boolean): HTMLBut
 
 /** "Gold 120 · Voyages completed 3", from whatever the record says. Plain figures, not voice. */
 function describeRecord(record: VoyageRecord): string {
-  const parts: string[] = [];
-  if (record.gold !== null) parts.push('Gold ' + record.gold.toLocaleString('en-GB'));
-  if (record.voyages !== null) {
-    parts.push('Voyages completed ' + record.voyages.toLocaleString('en-GB'));
-  }
-  return parts.join(' · ');
+  return [
+    'Gold ' + record.gold.toLocaleString('en-GB'),
+    'Voyages completed ' + record.voyages.toLocaleString('en-GB'),
+  ].join(' · ');
 }
 
 function renderGate(
@@ -305,8 +303,7 @@ function renderGate(
     ledger.classList.add('is-empty');
     ledger.textContent = 'No voyage on record yet.';
   } else {
-    const figures = describeRecord(record);
-    ledger.textContent = figures === '' ? 'A voyage is on record.' : figures;
+    ledger.textContent = describeRecord(record);
   }
 
   // Continue leads when there is something to continue; otherwise the new
@@ -352,7 +349,20 @@ function renderGate(
       resolve({ ...selection, voyage, adapter: probe.adapter ?? undefined });
     };
     resume?.addEventListener('click', () => go('continue'), { once: true });
-    fresh.addEventListener('click', () => go('new'), { once: true });
+    // A new voyage over an old record strikes the record, so it asks once
+    // first: the second press is the yes, and Continue stays beside it.
+    let armed = record === null;
+    fresh.addEventListener('click', () => {
+      if (!armed) {
+        armed = true;
+        const label = fresh.querySelector('.cta__label');
+        if (label) label.textContent = 'Strike the old record?';
+        ledger.textContent = 'A new voyage starts the count again. ' + ledger.textContent;
+        return;
+      }
+      if (record !== null) clearVoyageRecord();
+      go('new');
+    });
     // The first control takes focus, so a keyboard needs no Tab to begin.
     if (window.matchMedia('(pointer: fine)').matches) (resume ?? fresh).focus({ preventScroll: true });
   });
