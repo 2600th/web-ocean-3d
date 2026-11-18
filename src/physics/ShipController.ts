@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type { BuoyantBody } from './Buoyancy';
+import { keybinds } from '../input/keybinds';
 
 /**
  * Throttle and rudder for the hero ship.
@@ -306,8 +307,10 @@ export class ShipController {
     const keyThrottle = this.keyboard && this.throttleKeys
       ? (this.keys.has('keyw') ? 1 : 0) - (this.keys.has('keys') ? 1 : 0)
       : 0;
+    // The steering keys are the player's to rebind; the engine keys are not.
     const keyRudder = this.keyboard
-      ? (this.keys.has('keyd') ? 1 : 0) - (this.keys.has('keya') ? 1 : 0)
+      ? (this.keys.has(keybinds.lowerCodeOf('steerStarboard')) ? 1 : 0)
+        - (this.keys.has(keybinds.lowerCodeOf('steerPort')) ? 1 : 0)
       : 0;
     const wantThrottle = keyThrottle !== 0 ? keyThrottle : this.throttleInput;
     const wantRudder = keyRudder !== 0 ? keyRudder : this.rudderInput;
@@ -446,7 +449,8 @@ export class ShipController {
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (!this.enabled || isTypingTarget(event.target)) return;
     const code = event.code.toLowerCase();
-    if (!STEERING_KEYS.has(code)) return;
+    if (!STEERING_KEYS.has(code) && code !== keybinds.lowerCodeOf('steerPort')
+      && code !== keybinds.lowerCodeOf('steerStarboard')) return;
     // Claimed, so the page does not also scroll on the arrow-adjacent bindings.
     event.preventDefault();
     this.keys.add(code);
@@ -461,7 +465,8 @@ export class ShipController {
   };
 }
 
-const STEERING_KEYS = new Set(['keyw', 'keya', 'keys', 'keyd']);
+/** The engine's own keys. The rudder's come from `keybinds`. */
+const STEERING_KEYS = new Set(['keyw', 'keys']);
 
 function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;

@@ -185,6 +185,9 @@ export class CameraDirector {
   /** Degrees the lens is widened by speed this frame. */
   private speedFov = 0;
   /** Gamepad right stick, each -1..1. */
+  /** The viewer's look settings; see `setLookPrefs`. */
+  private lookSensitivity = 1;
+  private lookInvert = 1;
   private padLookX = 0;
   private padLookY = 0;
   private reducedMotion = false;
@@ -406,6 +409,17 @@ export class CameraDirector {
    * -1..1, held until set back to zero. Like a mouse drag it suspends the
    * rig's return to astern while held.
    */
+  /**
+   * The viewer's look settings: a speed multiplier for the mouse and the right
+   * stick, and whether pulling back looks up. Orbit keeps its own drag (the
+   * speed scales it; inverting a grab-the-world drag would only confuse).
+   */
+  setLookPrefs(sensitivity: number, invertY: boolean): void {
+    this.lookSensitivity = Number.isFinite(sensitivity) ? THREE.MathUtils.clamp(sensitivity, 0.2, 3) : 1;
+    this.lookInvert = invertY ? -1 : 1;
+    this.orbit.rotateSpeed = this.lookSensitivity;
+  }
+
   setChaseLook(x: number, y: number): void {
     this.padLookX = Number.isFinite(x) ? THREE.MathUtils.clamp(x, -1, 1) : 0;
     this.padLookY = Number.isFinite(y) ? THREE.MathUtils.clamp(y, -1, 1) : 0;
@@ -723,9 +737,9 @@ export class CameraDirector {
     // A gamepad's right stick orbits the rig like a mouse drag.
     const padLook = this.padLookX !== 0 || this.padLookY !== 0;
     if (padLook && dt > 0) {
-      this.chaseYaw -= this.padLookX * PAD_LOOK_YAW * dt;
+      this.chaseYaw -= this.padLookX * PAD_LOOK_YAW * this.lookSensitivity * dt;
       this.chasePitch = THREE.MathUtils.clamp(
-        this.chasePitch - this.padLookY * PAD_LOOK_PITCH * dt,
+        this.chasePitch - this.padLookY * PAD_LOOK_PITCH * this.lookSensitivity * this.lookInvert * dt,
         CHASE_PITCH_MIN,
         CHASE_PITCH_MAX,
       );
@@ -942,14 +956,14 @@ export class CameraDirector {
   private onMouseMove = (event: MouseEvent): void => {
     if (this.mode === 'boat') {
       if (!this.chaseDragging) return;
-      this.chaseYaw -= event.movementX * CHASE_SENSITIVITY;
-      this.chasePitch += event.movementY * CHASE_SENSITIVITY;
+      this.chaseYaw -= event.movementX * CHASE_SENSITIVITY * this.lookSensitivity;
+      this.chasePitch += event.movementY * CHASE_SENSITIVITY * this.lookSensitivity * this.lookInvert;
       this.chasePitch = THREE.MathUtils.clamp(this.chasePitch, CHASE_PITCH_MIN, CHASE_PITCH_MAX);
       return;
     }
     if (this.mode !== 'fly' || !this.pointerLocked) return;
-    this.yaw -= event.movementX * MOUSE_SENSITIVITY;
-    this.pitch -= event.movementY * MOUSE_SENSITIVITY;
+    this.yaw -= event.movementX * MOUSE_SENSITIVITY * this.lookSensitivity;
+    this.pitch -= event.movementY * MOUSE_SENSITIVITY * this.lookSensitivity * this.lookInvert;
     // Stop just short of vertical; passing it would flip the horizon.
     const limit = Math.PI / 2 - 0.01;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -limit, limit);
