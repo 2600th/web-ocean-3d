@@ -1856,7 +1856,12 @@ export class Seafloor {
       // Grass on the low flats behind the beach and in clearings; jungle
       // everywhere else, in stands of two greens. No cap: the forest runs to
       // the summit, and the summit is only rock where it is steep.
-      const lowland: Node = smoothstepDownNode(wp.y, 6, 20).mul(smoothstepDownNode(steep, 0.03, 0.08)).mul(0.7);
+      //
+      // The grass band is the strip right behind the sand, not the lower
+      // twenty metres: the canopy now comes down to the beach along most of
+      // the coast (`Canopy`'s wandering edge), and a grass albedo under the
+      // forest's edge read as a lawn wherever the crowns parted.
+      const lowland: Node = smoothstepDownNode(wp.y, 3.5, 10).mul(smoothstepDownNode(steep, 0.03, 0.08)).mul(0.7);
       const clearing: Node = patch.smoothstep(0.66, 0.82).mul(0.45);
       const openness: Node = lowland.max(clearing).mul(stand.smoothstep(0.25, 0.7)).toVar();
       const forest: Node = mix(jungle, jungleLush, stand.smoothstep(0.3, 0.75)).toVar();
