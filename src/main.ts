@@ -163,6 +163,9 @@ const _vegKey = new THREE.Color();
 const _vegAmbient = new THREE.Color();
 const _smokeLight = new THREE.Color();
 const _smokeSky = new THREE.Color();
+/** Scratch for the strike point on the cloud base and the spray's sky under a flash. */
+const _flashAt = new THREE.Vector3();
+const _spraySky = new THREE.Color();
 /** How much of a lightning flash still goes to the grade as a frame-wide lift. */
 const FLASH_GRADE_SHARE = 0.55;
 /** Night multiplier on the sea's key-light glint, so the moon path reads (see `water.setSun`). */
@@ -2315,6 +2318,8 @@ class App {
         occlusion: (worldPosition) => this.seafloor.cloudShadowNode(worldPosition),
       });
       this.lighting.local.setShip(ship.object);
+      // Rain is sheltered by her deck and courses and splashes on her planks.
+      this.weather.setShip(ship.object);
       // The hull gets the same treatment the dressing does, and the part of it
       // that matters here is the caustics: `underwater.png` shows the submerged
       // hull as a flat black cutout, because the one thing lighting a shape down
@@ -2414,6 +2419,7 @@ class App {
       sanitizeDielectrics(props.object);
       applySpecularAATo(props.object);
       this.lighting.local.setIsland(props.lightAnchors(), props.object);
+      props.setFireDetail(QUALITY_TIERS[this.state.quality].weatherDetail);
       // Everything placed on the ground learns about the ground: contact
       // darkening at its base, the caustic pattern if it is under water, and the
       // island's own shadow and the cloud deck's if it is not. See
@@ -2993,6 +2999,10 @@ class App {
     // at every tier and only the master scale moves, so changing tier cannot
     // compile anything.
     this.spray.setStrength(quality.spray);
+    // Rain share and deck splashes, lightning forks, fire embers: counts only.
+    this.weather.setDetail(quality.weatherDetail);
+    this.lightning.setDetail(quality.weatherDetail);
+    this.props?.setFireDetail(quality.weatherDetail);
     this.spindrift.setCount(this.spindriftOverride ?? quality.spindrift);
     this.fish.setCount(quality.fish);
     this.kelp.setCount(quality.kelp);
@@ -3615,6 +3625,7 @@ class App {
       const coverage = THREE.MathUtils.clamp((this.state.cloudCoverage - 0.7) / 0.25, 0, 1);
       const wind = THREE.MathUtils.clamp((this.state.windSpeed - 12) / 8, 0, 1);
       this.lightning.setCloudBase(getPreset(this.state.preset).clouds.altitude ?? 900);
+      this.lightning.setReduceFlashes(this.state.reduceFlashes);
       const strike = this.lightning.update(
         dt,
         this.camera,
@@ -3629,6 +3640,12 @@ class App {
       // real (`lighting/LightningLight`); what is left is the eye's response to
       // a bright sky, which a frame-wide lift is the right model of.
       this.colorGrade.setFlash(this.lightning.flashIntensity * FLASH_GRADE_SHARE);
+      // The cloud deck lit from inside at the strike (the clouds lane's hook).
+      const at = this.lightning.lastStrike;
+      if (Number.isFinite(at.distance)) {
+        _flashAt.set(at.x, this.lightning.cloudBaseHeight, at.z);
+        (this.clouds as { setFlash?: (p: THREE.Vector3, i: number) => void }).setFlash?.(_flashAt, this.lightning.flashIntensity);
+      }
     }
 
     // The lights `lighting/` owns: cascade refit, fire and lanterns after dark,
@@ -3649,6 +3666,8 @@ class App {
       .multiplyScalar((this.atmosphere.sunLight.intensity / 3.4) * 0.75)
       .add(_smokeSky.copy(this.atmosphere.zenithColor).multiplyScalar(this.atmosphere.ambientLight.intensity * 0.6));
     this.props?.setDetailLighting(_smokeLight, this.lighting.local.fireLevel);
+    // Rain takes the same light, and the lightning's.
+    this.weather.setLighting(_smokeLight, this.lighting.flash.level);
     this.props?.setBeaconLevel(this.lighting.local.beaconLevel);
 
     // The key light, whichever body is providing it, at its actual strength.
@@ -3843,7 +3862,8 @@ class App {
       _keyDirection,
       this.atmosphere.sunLight.color,
       this.atmosphere.sunLight.intensity / 3.4,
-      this.atmosphere.zenithColor,
+      // The lightning lights the spray as the sky does, cool and from all round.
+      _spraySky.copy(this.atmosphere.zenithColor).addScalar(this.lighting.flash.level * 1.5),
     );
     // The lens and the frame height set the one-pixel floor on droplet width.
     this.spray.setView(this.camera.fov, this.renderer.getDrawingBufferSize(_drawingBuffer).y, this.camera.position, dt);

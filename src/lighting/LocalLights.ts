@@ -50,6 +50,13 @@ interface Source {
   follow: THREE.Vector3 | null;
   /** Distance over reach this frame; Infinity when out of reach or unplaced. */
   score: number;
+  /**
+   * Metres the light wanders about `anchor` with its flicker, so the light on
+   * the sand and the logs shifts as a flame's does. 0 for glass-cased lights.
+   */
+  sway: number;
+  /** Where a swaying light is centred. */
+  anchor: THREE.Vector3;
 }
 
 const FIRE_COLOR = new THREE.Color(1.0, 0.5, 0.2);
@@ -66,7 +73,8 @@ const GLOW_STANDOFF = 0.3;
 export class LocalLights {
   readonly group = new THREE.Group();
   private readonly fire: Source;
-  private readonly torch: Source;
+  /** One light per jetty torch. */
+  private readonly torches: Source[];
   private readonly lantern: Source;
   private readonly shipLantern: Source;
   private readonly beacon: Source;
@@ -75,6 +83,8 @@ export class LocalLights {
   /** Every light; the tier lights the `count` nearest, relative to their reach. */
   private readonly sources: Source[];
   private count = 0;
+  /** Under reduced motion the flames' lights hold still. */
+  private reducedMotion = false;
   /** Brightness of the ship lantern's glow (and the jetty lantern's glass), 0..1. */
   private readonly uGlow = uniform(0);
   private readonly glow: THREE.Mesh;
@@ -100,13 +110,17 @@ export class LocalLights {
       light.position.set(0, -10000, 0);
       light.visible = false;
       this.group.add(light);
-      return { light, peak, reach, flicker, seed, placed: false, follow: null, score: Infinity };
+      return { light, peak, reach, flicker, seed, placed: false, follow: null, score: Infinity, sway: 0, anchor: new THREE.Vector3() };
     };
     // In order of how much they matter: the fire lights the camp, the ship's
     // lantern is on the hero, and the jetty's pair are dressing.
     this.fire = make('camp-fire-light', FIRE_COLOR, 18, 26, 240, 1, 0.37);
     this.shipLantern = make('ship-lantern-light', LANTERN_COLOR, 3, 16, 280, 0.25, 0.71);
-    this.torch = make('jetty-torch-light', TORCH_COLOR, 6, 16, 170, 0.8, 0.13);
+    // A light each: the pair are six metres apart, and one light between them
+    // lit the jetty from a point where there is no flame. Each carries a little
+    // over half the old shared light, so the pair together are a touch brighter
+    // where their pools overlap and the same at each torch's foot.
+    this.torches = [0, 1].map((i) => make(`jetty-torch-light-${i}`, TORCH_COLOR, 3.6, 13, 170, 0.8, 0.13 + i * 0.29));
     this.lantern = make('jetty-lantern-light', LANTERN_COLOR, 2.5, 10, 150, 0.2, 0.53);
     // The lighthouse lamp: a hoop of candles in a glazed lantern 20 m up. Lights
     // its own gallery and lantern frame and the tower head; 30 m of radius
@@ -119,7 +133,17 @@ export class LocalLights {
     this.deckLanterns = [0, 1, 2].map((i) =>
       make(`ship-deck-lantern-light-${i}`, LANTERN_COLOR, 5, 12, 200, 0.25, 0.19 + i * 0.23),
     );
-    this.sources = [this.fire, this.shipLantern, this.torch, this.lantern, this.beacon, ...this.deckLanterns];
+    this.sources = [this.fire, this.shipLantern, ...this.torches, this.lantern, this.beacon, ...this.deckLanterns];
+    // Open flames wander; lanterns behind glass do not.
+    this.fire.sway = 0.14;
+    for (const t of this.torches) t.sway = 0.05;
+    try {
+      const query = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+      this.reducedMotion = query?.matches ?? false;
+      query?.addEventListener?.('change', (e) => (this.reducedMotion = e.matches));
+    } catch {
+      this.reducedMotion = false;
+    }
     this.setCount(count);
 
     // The ship lantern's flame. Additive, so at zero it adds nothing — the hull
@@ -153,15 +177,15 @@ export class LocalLights {
       this.beacon.placed = true;
     }
     this.fire.light.position.copy(anchors.fire);
+    this.fire.anchor.copy(anchors.fire);
     this.fire.placed = true;
-    if (anchors.torches.length > 0) {
-      // One light at the pair's midpoint stands in for both: they are six metres
-      // apart and light the same stretch of jetty and sand.
-      const mid = this.scratch.set(0, 0, 0);
-      for (const t of anchors.torches) mid.add(t);
-      this.torch.light.position.copy(mid.multiplyScalar(1 / anchors.torches.length));
-      this.torch.placed = true;
-    }
+    this.torches.forEach((s, i) => {
+      const at = anchors.torches[i];
+      if (!at) return;
+      s.light.position.copy(at);
+      s.anchor.copy(at);
+      s.placed = true;
+    });
     if (anchors.lanterns.length > 0) {
       this.lantern.light.position.copy(anchors.lanterns[0]);
       this.lantern.placed = true;
@@ -270,6 +294,17 @@ export class LocalLights {
       const wobble = 0.13 * Math.sin(t * 11.3) + 0.08 * Math.sin(t * 23.9 + 1.7) + 0.06 * Math.sin(t * 5.3 + 0.4);
       const flicker = 1 + wobble * s.flicker;
       this.setLevel(s, s.peak * night * cull * flicker);
+      if (s.sway > 0) {
+        // The flame's centre of light moves with its brightness: up as it
+        // flares, and side to side on the slower tongues. Same clock, so a
+        // capture lands on the same pose.
+        const k = this.reducedMotion ? 0 : s.sway;
+        s.light.position.set(
+          s.anchor.x + k * (0.7 * Math.sin(t * 7.1 + 0.3) + 0.3 * Math.sin(t * 17.3)),
+          s.anchor.y + k * 0.6 * wobble * 4,
+          s.anchor.z + k * (0.7 * Math.sin(t * 6.3 + 2.1) + 0.3 * Math.sin(t * 15.7 + 1.3)),
+        );
+      }
       if (s === this.fire) this.fireLevel = night * flicker;
     }
   }

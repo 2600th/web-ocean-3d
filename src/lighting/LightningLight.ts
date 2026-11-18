@@ -42,6 +42,11 @@ const NEAR = 1500;
 export class LightningLight {
   readonly channel: THREE.DirectionalLight;
   readonly deck: THREE.HemisphereLight;
+  /**
+   * The strike's light where the viewer is, 0..~1.4: the flash after the
+   * distance falloff. What lights the rain and the spray near the eye.
+   */
+  level = 0;
 
   constructor() {
     this.channel = new THREE.DirectionalLight(FLASH_COLOR, 0);
@@ -64,11 +69,13 @@ export class LightningLight {
       this.deck.intensity = 0;
       this.channel.visible = false;
       this.deck.visible = false;
+      this.level = 0;
       return;
     }
     this.channel.visible = true;
     this.deck.visible = true;
     const falloff = Math.min(1, Math.max(0.3, Math.pow(NEAR / Math.max(1, strike.distance), 1.2)));
+    this.level = flash * falloff;
     this.channel.intensity = CHANNEL_PEAK * flash * falloff;
     this.deck.intensity = DECK_PEAK * flash * falloff;
     // From the bolt's mid-height toward the eye. Directional, so only the

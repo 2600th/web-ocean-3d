@@ -966,6 +966,11 @@ export class Props {
     this.islandDetail.setLighting(ambient, fire);
   }
 
+  /** The tier's share of the camp fire's embers and sparks, 0..1. See `IslandDetail.setFireDetail`. */
+  setFireDetail(detail: number): void {
+    this.islandDetail.setFireDetail(detail);
+  }
+
   /** Aligns the animated dressing with a scene clock after a reset or seek. */
   resetClock(time = 0): void {
     this.islandDetail.resetClock(time);
