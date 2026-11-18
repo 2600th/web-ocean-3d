@@ -16,29 +16,31 @@ Read the notes under the table before comparing rows.
 
 | Tier | GPU frame p50 (bench) | Live frame rate | Start-up (bench, first frame) | Ready to play (live) | Download |
 |---|---|---|---|---|---|
-| Low | 0.82 ms | unmeasured | 9.9 s | unmeasured | unmeasured |
-| Medium | 4.24 ms | unmeasured | 9.8 s | unmeasured | unmeasured |
-| **High** | **7.18 ms** (roadmap: about 8.5 ms) | **113 to 119 fps** on a 120 Hz display | 9.7 s | **14 to 19 s** | **32.4 MB** |
-| Ultra | 12.10 ms | unmeasured | 9.8 s | unmeasured | unmeasured |
-| Max | 12.68 ms | unmeasured | 10.2 s | unmeasured | unmeasured |
+| Low | 0.80 ms | unmeasured | 7.4 s | unmeasured | unmeasured |
+| Medium | 2.41 ms | unmeasured | 7.5 s | unmeasured | unmeasured |
+| **High** | **3.87 ms** | **113 to 119 fps** on a 120 Hz display | 7.8 s | **14 to 19 s** | **32.4 MB** |
+| Ultra | 5.70 ms | unmeasured | 7.5 s | unmeasured | unmeasured |
+| Max | 6.08 ms | unmeasured | 7.9 s | unmeasured | unmeasured |
 
 Where each column comes from:
 
-- **GPU frame p50 (bench).** `npm run bench`, WebGPU rows of the 2026-11-15 run
-  in `docs/PERFORMANCE.md` ("2026-11-15, after the canopy rebuild"). Measured at
-  1600 x 900, DPR 1, on three.js **r185**, with GPU timestamps and the frame
-  pacer off. **Not re-measured on r187.** The gate is High under 16.7 ms. The
-  roadmap's Guardrails say "High runs at about 8.5 ms today"; it does not say
-  where that comes from, so it is quoted beside the bench figure and not used
-  in its place. Frame-rate figures from earlier runs (Low 208, Medium 135, High
-  96, Ultra 64, Max 62 delivered) are unpaced and are not repeated here.
+- **GPU frame p50 (bench).** `node scripts/benchmark.mjs`, the 2026-11-18 run
+  in `docs/PERFORMANCE.md` ("fewer draws and fewer passes"). Measured at
+  1600 x 900, DPR 1, on three.js **r187**, with GPU timestamps and the frame
+  pacer off, after the optimisation pass of that day; before it the same
+  machine read Low 2.74, Medium 2.70, High 4.64, Ultra 6.43 and Max 6.94 ms.
+  The gate is High under 16.7 ms. The r185 figures this table used to carry
+  (High 7.18 ms) and the roadmap's "about 8.5 ms" are superseded. The frame
+  interval with the loop running free, which counts the page's work as well
+  as the GPU's, is 3.8 ms at Low, 4.9 at Medium, 4.9 at High, 6.6 at Ultra and
+  7.3 at Max.
 - **Live frame rate.** `README.md` (Performance): High, 1920 x 1080, 120 Hz
   display, r187, production build, 113 to 119 fps. `docs/REFERENCE_TARGETS.md`
   (Scoreboard) records 111 to 113 fps with a p99 frame of 17.1 to 18.4 ms for
   the same configuration on the same day. The two differ by a few frames; the
   README figure is the later one. No other tier has a live figure.
 - **Start-up (bench, first frame).** Time to first frame (TTFF) in the same
-  2026-11-15 bench run, r185. It is not time to playable.
+  2026-11-18 bench run, r187. It is not time to playable.
 - **Ready to play (live).** `README.md`: High, r187, 14 to 19 s from clicking
   Set sail to ready. `docs/REFERENCE_TARGETS.md` records 17.3 to 19.7 s for the
   same build on 2026-11-17. The bench TTFF above is far shorter because it

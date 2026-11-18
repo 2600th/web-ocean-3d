@@ -425,6 +425,37 @@ of them brighter) with nine impacts live. The functional suite has no skipped
 test left. The failing direction (spray drawing nothing) was not run; with a
 control pair at zero it follows from the arithmetic.
 
+## After wave 2: an optimisation pass, and automatic quality (2026-11-18)
+
+A pass for frame time with the picture held still: no canonical shot may move
+by more than 1.0 mean Delta E, and it ran until five rounds in a row each took
+under 5% off the frame. Nine rounds; `docs/PERFORMANCE.md` (Results,
+2026-11-18) has the table, the method and what was tried and put back.
+
+- **High, on the benchmark: frame interval 6.39 to 4.91 ms (-23%), CPU 6.77 to
+  4.83 ms, GPU 4.64 to 3.87 ms**; 495 to 327 draws and 61 to 50 passes a
+  frame. Low is 14% quicker, Medium 19%, Ultra 8%, Max 13%. Start-up did not
+  move (17 to 19 s to ready).
+- The two largest: three r187 drew every sun cascade a second time for the
+  mirror's camera (and left the view sampling that second set), and drew the
+  ocean and every spray mesh twice, as a back-face and a front-face pass.
+- **The picture:** 13 of the 16 shots are within 0.05 mean Delta E of their
+  baselines and `boat-chase` is 0.22 from its own, inside its threshold.
+  `ship-underway` and `waterline` were recaptured: folding the wave transform's passes changes the sea in its last
+  bits, which is enough to settle the sailcloth in a slightly different pose
+  and move the drops on the lens. 21 of 21 visual tests pass.
+- **Automatic quality** now drops a tier only after four seconds, without a
+  break, of the device being busy and under 41 fps. One slow frame or a burst
+  cannot do it, and a frame rate capped by the display or the browser no
+  longer walks the tier down to Low.
+- Two faults in passing: the benchmark's own warm-up broke every frame it
+  sampled on r187, and Low and Medium raised a validation error on every boot.
+  Both fixed.
+
+Still open from this pass: `scripts/profile-frame.mjs` no longer runs against
+the current scene (`scripts/perf-subtract.mjs` stands in), and the per-system
+caps in `docs/BUDGETS.md` have still not been set.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system

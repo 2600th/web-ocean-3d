@@ -160,6 +160,165 @@ has already been burned once by treating the second as if it were the first.
 
 ## Results
 
+### 2026-11-18: fewer draws and fewer passes, the picture unchanged
+
+A pass over the whole frame with one rule: no canonical shot may move by more
+than 1.0 mean Delta E (CIE94, the visual suite's measure, on a 0 to 100 scale)
+and every shot must still pass its own threshold. It ran until five rounds in a
+row each took less than 5% off the frame.
+
+**How it was measured.** `node scripts/benchmark.mjs --only webgpu-high`, three
+runs per round, on a build made into a scratch folder (`OCEAN_DIST`, below):
+1600 x 900, DPR 1, r187, Chrome with vsync and the frame-rate limit off, nothing
+else on the GPU. Three numbers per round:
+
+- **Frame interval**: the mean time between frames with the loop running free,
+  from the benchmark's pacing phase. This is the overall frame time, and the
+  number the 5% rule was applied to.
+- **CPU**: the p50 of one stepped frame on the page (updates plus encoding).
+- **GPU**: the p50 of the frame's timestamp queries.
+
+Frame interval moves by about 2% from run to run. GPU p50 has two modes about
+0.18 ms apart from round 5 on (3.9 and 4.1 ms at High); the lower is quoted
+where two runs of three agree.
+
+| Round | Change | Interval | CPU | GPU | Draws | Passes | Interval, vs the round before | Worst shot, mean Delta E |
+|---|---|---|---|---|---|---|---|---|
+| | Before | 6.39 ms | 6.77 ms | 4.64 ms | 495 | 61 | | |
+| 1 | Sun cascades drawn once a frame, not once per camera | 6.04 | 6.23 | 4.22 | 397 | 58 | -5.5% | 0.013 |
+| 2 | Reef rock and kelp cast sun shadows only with the eye in the water | 5.79 | 5.93 | 4.22 | 381 | 58 | -4.2% | 0 |
+| 3 | Empty level-of-detail meshes are not prepared | 5.73 | 5.43 | 4.23 | 381 | 58 | -1.0% | 0 |
+| 4 | Ocean, spray, spindrift and splash depth in one draw, not two | 5.38 | 5.33 | 4.14 | 372 | 58 | -6.1% | 0 |
+| 5 | The mirror stops drawing what cannot be made out in it | 5.21 | 5.20 | 3.92 | 356 | 58 | -3.1% | 0.046 |
+| 6 | Casters that cannot show are dropped | 5.23 | 5.13 | 3.92 | 343 | 58 | +0.2% | 0.046 |
+| 7 | Lantern ironwork merged, stern windows in one draw | 5.27 | 5.13 | 3.92 | 335 | 58 | +0.7% | 0.046 |
+| 8 | Nested renders do not walk the scene's transforms again | 5.15 | 5.07 | 3.92 | 335 | 58 | -2.2% | 0.046 |
+| 9 | Wave transform: a horizontal and a vertical stage per pass | **4.91** | **4.83** | **3.87** | 327 | 50 | -4.6% | 0.22 (see below) |
+
+Before to after at High: **frame interval 6.39 to 4.91 ms (-23%), CPU 6.77 to
+4.83 ms (-29%), GPU 4.64 to 3.87 ms (-17%)**, 495 to 327 draws, 61 to 50 render
+passes, 8.7 M to 6.6 M triangles a frame. Rounds 5 to 9 are the five in a row
+under 5%.
+
+The other tiers, one run each of the whole matrix, before and after:
+
+| Tier | Interval | CPU | GPU |
+|---|---|---|---|
+| Low | 4.49 to 3.84 ms | 4.8 to 3.1 ms | 2.74 to 0.80 ms |
+| Medium | 6.10 to 4.94 ms | 6.3 to 4.6 ms | 2.70 to 2.41 ms |
+| Ultra | 7.18 to 6.58 ms | 7.2 to 4.9 ms | 6.43 to 5.70 ms |
+| Max | 8.46 to 7.32 ms | 8.0 to 5.9 ms | 6.94 to 6.08 ms |
+
+Live, in plain Chrome at 1920 x 1080 on a 120 Hz display at High: 106.5 fps
+drawn before (one run; the other sat in an occluded window), 112.7 and 113.6
+after. The display is the limit there. Click to ready: 17.6 s before, 16.9 and
+18.8 s after, so start-up did not move.
+
+**What each round was.**
+
+1. **Sun cascades once a frame** (`installShadowRefreshHold`,
+   `holdShadowRefresh`). `ShadowNode.updateBefore` refreshes a light's map the
+   first time each *camera* draws something it lights. The planar mirror has a
+   camera of its own, so all three cascades were drawn twice a frame: 204
+   caster draws for the view, then 98 for the mirror into the same maps. The
+   second set was also the one the view ended up sampling, since the mirror's
+   command buffer is submitted first, and it was the thinner one: three gives
+   the shadow camera the layers of the camera it draws for, and the mirror's
+   camera has only layer 0. The mirror now reads the maps the view drew.
+2. **Reef casters only with a wet eye** (`SunShadows.setCasterLayers`). Round 1
+   brought the reef rock and kelp back into the maps (they are on the
+   underwater layer). From above the surface their shadows moved no shot by
+   more than 0.013, for about a hundred caster draws a frame, so they cast only
+   while the eye is within 0.75 m of the surface or under it. That is what the
+   frame showed before round 1, by accident; now it is a rule.
+3. **Empty levels are dropped** (`installSubmissionFixes`). An `InstancedMesh`
+   with `count === 0` draws nothing, and three finds out last, after the
+   render object lookup, the cache keys and the bindings refresh. 69 of the
+   scene pass's 225 objects were empty levels of reef and seabed rock. They are
+   let through once per render context, so pipelines are built when they were
+   before, and never filtered during a compile.
+4. **One draw, not two** (`forceSinglePass`). Three draws a transparent
+   double-sided material as a back-face pass and a front-face pass. The ocean
+   is opaque and writes depth, so the nearest face wins either way; the spray
+   and spindrift quads face the eye, so the back-face pass culled everything it
+   was given. 760 000 triangles a frame went through the vertex stage for
+   nothing. The splash's coloured sheets keep both passes.
+5. **A leaner mirror** (`VIEW_ONLY_LAYER`). The mirror's cost is objects and
+   triangles, not pixels: a tenth of its resolution saved nothing measurable.
+   Kept out of it: the meadow's grass (600 000 triangles), beach decals, reef
+   shells, lantern ironwork, the rudder, the whipstaff, the depth-only spray
+   copies. **Tried and put back:** the spindrift and the lantern glass. Both
+   show; without them five shots failed and the night shot moved by 0.93.
+6. **Hidden casters.** The whipstaff, below decks, and the reef's crate and
+   chest from above the water. **Tried and put back:** the rudder, whose shadow
+   shows in the underwater shot (0.148 against a limit of 0.1).
+7. **Lanterns.** Each lantern's rope, cap and base are one mesh; the stern
+   windows are additive, so one draw. Eight draws, nothing measurable.
+8. **No repeated transform walks** (`withWorldMatricesHeld`). The mirror and
+   the cascades render from inside the scene pass, which has just run
+   `scene.updateMatrixWorld()`; each ran it again.
+9. **Half the butterfly passes** (`butterflyBothPassNode`). The transform along
+   x and the transform along y commute, so stage k of each runs in one pass
+   with four reads instead of two: 8 passes at 256 where there were 16, and
+   n + 1 where log2(N) is odd. The result differs in float rounding only. That
+   is enough to move two things that amplify it: the sailcloth settles in a
+   slightly different pose and the drops on the lens land elsewhere. The
+   baselines for `ship-underway` and `waterline` were recaptured (0.18 and 0.16
+   mean Delta E against the old ones, the same picture otherwise), and
+   `boat-chase` now sits 0.22 from its baseline, inside its threshold.
+
+**Where the frame goes now** (High, by subtraction with
+`scripts/perf-subtract.mjs`, and a CPU profile with `scripts/perf-cpu.mjs`):
+
+- GPU, of about 3.9 ms: the ocean surface 0.9, the clouds 0.75, the seabed
+  0.44, the ship 0.34, the island's grass about 0.2 and canopy 0.2, props 0.3,
+  the sun's shadows 0.27, spindrift about 0.2. Halving the render scale takes
+  1.4 ms off, so about half the frame is fill.
+- CPU, of about 4.8 ms: the scene pass about 2.0 (some 135 draws at 10 to 13
+  microseconds each, which is three's cost per object), the mirror 0.9, the
+  sun's shadows 0.7, the wave transform 0.35, the rest of the update 0.8.
+
+What is left is in three's cost per draw and per pass, and in shading that
+cannot change without the picture changing. The candidates not taken: the
+cloud march below full resolution (0.34 ms of GPU at half, and the reason it is
+at full is the crispness of an eroded edge), the mirror on alternate frames
+(its image is looked up by screen position, so a stale one judders as the
+camera turns), and the crew out of the mirror (five draws).
+
+**The harness, fixed on the way.**
+
+- `scripts/benchmark.mjs` and `scripts/profile-frame.mjs` warmed up with
+  `renderer.compileAsync(scene, camera)`, a compile straight to the canvas,
+  which the app never does. On r187 that left the canvas depth buffer
+  destroyed and rebuilt every frame and a submit rejected on each sampled
+  frame ("Destroyed texture depthBuffer used in a submit"): about 1 750 console
+  errors a run and an UNVERIFIED verdict. Removed; the numbers did not move.
+- `OCEAN_DIST=<folder>` makes both scripts measure a build made elsewhere and
+  leave `dist/` alone.
+- At Low and Medium the app itself raised one validation error on every boot:
+  the prewarm's `compileAsync` ran the depth nodes' `updateBefore`, which
+  copied the canvas depth buffer at the scene pass's size. No copy is made
+  during a compile now, and the benchmark's Low gate passes.
+- `scripts/profile-frame.mjs` no longer runs: its cases were written against
+  an older scene. `scripts/perf-subtract.mjs` does its job for now.
+- GPU time per pass, from three's timestamp queries, is not usable for
+  attribution on this stack: a small pass that follows a heavy one is charged
+  part of it (a 128 x 128 pass read 0.25 ms). The frame total is sound.
+
+**Automatic quality.** Checked at the same time, because a drop is a rebuild
+the viewer sits through. `AdaptiveQuality` used to read a smoothed frame rate
+and drop after 2.5 s of the simulation clock under 41 fps. One slow frame could
+not trip that, but a frame rate held under 41 by something other than load
+could, and would walk the tier down to Low: a 30 Hz display, a remote desktop,
+the browser's energy saver. It now needs all of: under 41 fps (smoothed over
+about ten frames), the device busy for at least half of each frame (the cost
+the pacer already measures), for four seconds of wall clock without a break,
+each frame counting for at most 100 ms; and it waits 6 s after the first frame,
+10 s after a drop and 2 s after frames stop and start again. Unit-tested
+(`tests/adaptiveQuality.spec.ts`) and checked live at High: one 600 ms frame
+and ten 200 ms frames in a row left the tier alone; a sustained load dropped
+High to Medium at 4.0 s and no further once it was removed.
+
 ### 2026-11-17: High at the display rate, and a shorter boot
 
 Not from `npm run bench`. The harness unhooks rAF from the display, and this
