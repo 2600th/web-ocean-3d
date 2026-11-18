@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { reflector } from 'three/tsl';
-import { holdShadowRefresh } from '../core/threeFixes';
+import { holdShadowRefresh, withWorldMatricesHeld } from '../core/threeFixes';
 
 /**
  * Planar reflection of the scene in the water surface.
@@ -81,7 +81,9 @@ export class Reflections {
       try {
         // The mirror reads the shadow maps the view drew this frame; without
         // the hold three draws every cascade again for the mirror's camera.
-        return holdShadowRefresh(() => update(frame));
+        // Nor does it walk the scene's transforms again: the scene pass, which
+        // this runs inside, has just done so.
+        return holdShadowRefresh(() => withWorldMatricesHeld(frame.scene, () => update(frame)));
       } finally {
         renderer.setClearColor(_clearColor, alpha);
       }

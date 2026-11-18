@@ -12,6 +12,26 @@ import * as THREE from 'three/webgpu';
  */
 const VERIFIED_PERF_REVISIONS = new Set(['187']);
 
+/**
+ * Runs a render nested inside another render of `scene` without walking the
+ * scene's transforms again.
+ *
+ * Every `renderer.render(scene, camera)` begins with `scene.updateMatrixWorld()`,
+ * which recomposes the matrix of each node that has `matrixAutoUpdate`. The
+ * mirror and the three sun cascades are drawn from inside the scene pass, which
+ * has just done that walk, and nothing moves in between: four more walks of the
+ * same 800 nodes a frame. A camera outside the scene still updates itself.
+ */
+export function withWorldMatricesHeld<T>(scene: { matrixWorldAutoUpdate: boolean } | null | undefined, render: () => T): T {
+  if (!scene || scene.matrixWorldAutoUpdate !== true) return render();
+  scene.matrixWorldAutoUpdate = false;
+  try {
+    return render();
+  } finally {
+    scene.matrixWorldAutoUpdate = true;
+  }
+}
+
 let shadowRefreshHolds = 0;
 
 /**
@@ -54,9 +74,10 @@ export function installShadowRefreshHold(): void {
   if (!proto || typeof proto.updateBefore !== 'function' || proto.__refreshHold) return;
   proto.__refreshHold = true;
   const updateBefore = proto.updateBefore;
-  proto.updateBefore = function (this: unknown, frame: unknown): void {
+  proto.updateBefore = function (this: unknown, frame: any): void {
     if (shadowRefreshHolds > 0) return;
-    updateBefore.call(this, frame);
+    // Always reached from inside a render of the scene; see `withWorldMatricesHeld`.
+    withWorldMatricesHeld(frame?.scene, () => updateBefore.call(this, frame));
   };
 }
 
