@@ -327,6 +327,28 @@ Still open from this pass:
   date. One ocean test ("quality tiers apply cleanly") was reported failing
   with a destroyed shadow texture, with and without this pass's changes.
 
+## After wave 2: black patches on the sails (2026-11-18)
+
+Reported from the film: a working sail broke out in black, jagged patches.
+
+- **Cause.** Not the sail's shading and not the shadow cascades (the patches
+  stayed with the sail neither casting nor receiving). The screen-space
+  contact shadows (`src/post/ContactShadows.ts`) march a few decimetres
+  toward the sun looking for centimetre relief, and a sail in the wind is
+  creased at exactly that scale: under a low sun every crease's lee side lost
+  the sun's whole share, as a dithered black lozenge a cloth cell across.
+- **Fix.** Sails and the pennant are marked thin sheets
+  (`material.userData.thinSheet`); the scene pass writes that into the
+  surface flag (velocity `.z`, beside the water flag) and the contact shadows
+  skip those pixels. The cascades still shadow the sails, and the sails still
+  occlude the march for what is next to them. No new pass and no new target.
+- **Also fixed.** A hand could be stood on the main yard, ten metres up: the
+  crew measure the deck once at load by a ray down, the yards are separate
+  parts braced round with the wind, and were not excluded.
+
+Two earlier attempts (holding the cloth normal to one side, and taking it
+across two cells) did not remove the patches and were not kept.
+
 ## Milestones
 
 Sizes are relative effort: S is a short focused change, M a system, L a system
