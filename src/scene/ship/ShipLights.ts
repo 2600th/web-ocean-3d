@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { color, float, max, normalView, smoothstep, uv, vec2 } from 'three/tsl';
 import { uniform } from '../../core/uniform';
 
@@ -133,13 +134,16 @@ export class ShipLights {
     const body = new THREE.CylinderGeometry(0.075, 0.085, GLASS_H, 6).translate(0, -ROPE - CAP_H - GLASS_H / 2, 0);
     const base = new THREE.CylinderGeometry(0.1, 0.1, 0.03, 6).translate(0, -ROPE - CAP_H - GLASS_H - 0.015, 0);
     const haloGeo = new THREE.SphereGeometry(0.26, 12, 8).translate(0, -PENDULUM, 0);
-    this.geometries.push(rope, cap, body, base, haloGeo);
+    // The ironwork as one mesh per lantern: rope, cap and base share a pivot
+    // and a material, and as three meshes they were three draws each.
+    const ironwork = mergeGeometries([rope, cap, base]);
+    this.geometries.push(rope, cap, body, base, haloGeo, ironwork);
 
     for (const hook of HOOKS) {
       const pivot = new THREE.Group();
       pivot.name = 'ship-deck-lantern';
       pivot.position.copy(hook);
-      for (const [geometry, material] of [[rope, iron], [cap, iron], [base, iron], [body, glass], [haloGeo, halo]] as const) {
+      for (const [geometry, material] of [[ironwork, iron], [body, glass], [haloGeo, halo]] as const) {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.castShadow = false;
         mesh.receiveShadow = material !== halo;
@@ -193,6 +197,9 @@ export class ShipLights {
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
     });
+    // Additive, so the order of the faces changes nothing: one draw, where
+    // three would draw a transparent double-sided mesh as two.
+    material.forceSinglePass = true;
     material.name = 'ship-stern-windows';
     material.fog = false;
     // Leaded lights: a frame and a cross of glazing bars, with the cabin's
