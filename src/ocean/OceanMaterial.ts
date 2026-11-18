@@ -17,6 +17,7 @@ import {
   positionWorld,
   dFdx,
   dFdy,
+  screenSize,
   screenUV,
   texture,
   vec2,
@@ -743,6 +744,39 @@ const HULL_MIRROR_REACH: [number, number] = [35, 120];
  * the preset and the time of day.
  */
 const HULL_MIRROR_ALBEDO: [number, number, number] = [0.09, 0.06, 0.04];
+
+/**
+ * [island-reflection] The planar mirror's vertical stretch on a rough sea:
+ * gain on `sigV * P[1][1]` (the half-height of the column, in uv), its cap in
+ * uv far off, the mirror target's size relative to the screen's (for the
+ * sideways footprint; the tiers run 0.25 to 0.75, so a middling guess), and
+ * the cap near the eye. See the reflection block.
+ */
+const MIRROR_STRETCH: [number, number, number, number] = [1, 0.12, 0.6, 0.015];
+
+/** Metres from the eye over which the stretch's cap opens from its near value (the last above) to its far one. */
+const MIRROR_STRETCH_REACH: [number, number] = [60, 260];
+
+/** Three taps down the stretch, at -2/3, 0 and +2/3 of it: offset, weight. */
+const MIRROR_TAPS: ReadonlyArray<readonly [number, number]> = [
+  [-1, 0.3],
+  [0, 0.4],
+  [1, 0.3],
+];
+
+/**
+ * Metres from the eye over which the mirror's facing gate is lifted. Inside,
+ * the hull's near reflection keeps the gate it was tuned with; past it the
+ * gate held the island's reflection at a tenth or less.
+ */
+const MIRROR_FACING_REACH: [number, number] = [40, 120];
+
+/**
+ * Metres from the eye over which the screen-space trace hands over to the
+ * mirror. The hull is reflected within this; past it SSR found only the
+ * island, in fragments.
+ */
+const SSR_REACH: [number, number] = [90, 180];
 
 /**
  * Softness of the hull's shadow in the glitter: metres at the hull, and
@@ -2880,16 +2914,63 @@ export class OceanMaterial {
         // its hull reflection hundreds of pixels to the left (the "ghost hull"
         // of reflections-3 and the rectangle beside the hull in boat-sea-2), and
         // nothing under the ship itself.
-        const safeUv: any = (viewportSafeUV(vec2(rawUv.x.oneMinus(), rawUv.y)) as any).toVar();
         // Softer with sub-pixel roughness and with distance; capped because the
         // target is already at reduced resolution.
         const reflectionLod = sig.mul(6).add(viewDistance.mul(0.004)).clamp(0, 1.25).toVar();
-        const mirrored = planar.sample(safeUv).level(reflectionLod).toVar();
+        // [island-reflection] **Stretched along the vertical by the sub-pixel
+        // slopes.** A facet tilted by a slope s toward or away from the eye
+        // turns the reflected ray by 2s in elevation and hardly at all in
+        // bearing, so a rough sea smears what it reflects up and down the
+        // frame and not sideways: the long, soft columns under a coast seen
+        // across a chop. One tap at one mip level drew the island as a sharp
+        // mirror on a sea that cannot hold one, or (with the facing gate below)
+        // not at all. The spread is the along-view slope RMS `sigV` turned into
+        // screen height: 2 sigV radians is `sigV * P[1][1]` in uv.
+        //
+        // Blurred along the vertical only, by the hardware's anisotropic
+        // filter (`Reflections` turns it on): three taps, each given a
+        // gradient a third of the column tall and only the old roughness
+        // level wide. A first cut took seven taps at a mip level as wide as
+        // the gap between them; the isotropic mip blurred sideways as much as
+        // down, and the masts' reflections under the sunset ship went with it.
+        // A mast stretched vertically is still a mast.
+        //
+        // Why the mirror and not a traced reflection: WebGPU exposes no ray
+        // tracing, and the mirror already holds the true mirrored scene,
+        // canopy, cliffs and all, at a fixed cost. A march against the
+        // island's height field would trace the silhouette off-screen and on
+        // a tilted face, but with a flat colour in place of the canopy, and
+        // the toggled frames (`.claude/progress/17-island-reflection`) showed
+        // the mirror failing on how it was sampled, not on what it held.
+        const p11 = (cameraProjectionMatrix as any).element(1).element(1).abs().toVar();
+        // Capped tighter near the eye. Cox and Munk put a 6 m/s sea's slope RMS
+        // near 0.18, so by the numbers even the sunset swell should smear the
+        // ship's rig into a haze; the near water's resolved swell already
+        // breaks the rig's reflection up (the offset above), and drawn as
+        // well the masts' streaks under the sunset hull were lost.
+        const stretchCap = mix(float(MIRROR_STRETCH[3]), float(MIRROR_STRETCH[1]), viewDistance.smoothstep(...MIRROR_STRETCH_REACH));
+        const stretch = sigV.mul(p11).mul(MIRROR_STRETCH[0]).min(stretchCap).toVar();
+        const tapGap = stretch.mul(2 / 3).toVar();
+        // The old level's footprint across, in uv; the tap's third of the column down.
+        const footX: any = reflectionLod.exp2().div(screenSize.x.mul(MIRROR_STRETCH[2])).toVar();
+        const gradX = vec2(footX, 0).toVar();
+        const gradY = vec2(0, tapGap.max(footX) as any).toVar();
+        const mirrored = vec4(0, 0, 0, 0).toVar();
+        for (const [k, w] of MIRROR_TAPS) {
+          const tapUv: any = viewportSafeUV(vec2(rawUv.x.oneMinus(), (rawUv as any).y.add(tapGap.mul(k))) as any);
+          mirrored.addAssign(planar.sample(tapUv).grad(gradX, gradY).mul(w));
+        }
         const objectMask: any = mirrored.a.clamp(0, 1).toVar();
 
         const rEdge = rawUv.min(rawUv.oneMinus()).toVar();
         const inFrame = rEdge.x.min(rEdge.y).smoothstep(0, 0.05).clamp(0, 1).toVar();
-        const facing = nDotV.smoothstep(0.02, 0.22).toVar();
+        // The gate is for the near water, where a facet that nearly faces away
+        // reflects a ray the flat mirror's lookup does not describe. Far off,
+        // every pixel is a crowd of facets whose statistics the stretch above
+        // already carries, and n.v there is the view's own few degrees: the
+        // gate held the mirror at a tenth or less from about 60 m out, which
+        // is why the island-reveal sea showed no island at all.
+        const facing = mix(nDotV.smoothstep(0.02, 0.22), float(1), viewDistance.smoothstep(...MIRROR_FACING_REACH)).toVar();
 
         objectCover.assign(inFrame.mul(facing).mul(objectMask).mul(this.uReflectionAmount));
         reflection.assign(
@@ -2991,9 +3072,21 @@ export class OceanMaterial {
         // mirror keeps the rig whole where it reaches. (The mast-like ghosts in
         // ship-underway's foreground are not this: they go with the kelp
         // hidden and stay with SSR, the mirror and refraction all off.)
+        //
+        // [island-reflection] Nor on far water. There a single sharp ray per
+        // pixel is the wrong answer for a sea whose facets scatter the
+        // reflection over a tenth of the frame, and what it found was the
+        // island as torn, flickering fragments laid over the mirror's soft
+        // column. The mirror holds the whole island (and the hull) at any
+        // range; SSR stays where it earns its cost, near the hull.
         const beforeSsr = vec3(0, 0, 0).toVar();
         beforeSsr.assign(reflection);
-        reflection.assign(mix(ssr(worldPos, n, reflection) as any, beforeSsr, hullOver));
+        // Past the reach the trace is not run at all, which pays for the
+        // mirror's extra taps on the far water that is most of an island view.
+        const ssrFar = viewDistance.smoothstep(...SSR_REACH).toVar();
+        If(ssrFar.lessThan(0.999), () => {
+          reflection.assign(mix(ssr(worldPos, n, beforeSsr) as any, beforeSsr, hullOver.max(ssrFar)));
+        });
       }
 
       If(this.uHullActive.greaterThan(0.5), () => {
