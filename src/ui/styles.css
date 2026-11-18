@@ -4226,3 +4226,11 @@ html[data-reduce-motion='on'] .quote {
 html[data-reduce-motion='on'] .boot__ship {
   animation: none !important;
 }
+
+/* A phone held upright has no room in the corner beside the objective chip: the
+   ledger's "Pause & settings" button is the way in there. */
+@media (max-width: 600px) and (orientation: portrait) {
+  .hud-corner__pause {
+    display: none;
+  }
+}
