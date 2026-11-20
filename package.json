@@ -1,6 +1,7 @@
 {
   "name": "web-ocean-3d",
   "private": true,
+  "license": "MIT",
   "version": "1.0.0",
   "type": "module",
   "description": "Production-quality WebGPU/TSL ocean experience built with Three.js",

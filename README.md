@@ -518,6 +518,10 @@ Full methodology, cost model and the honest list of what remains unmeasured:
 
 ## Licence and provenance
 
+**The code is MIT-licensed** ([`LICENSE`](LICENSE)): use it, change it, ship it, sell it,
+as long as the copyright notice comes with it. A link back here is appreciated. The assets
+are not covered by that licence; they keep their own, below.
+
 Project code is original. Techniques are implemented from published literature — Tessendorf's
 FFT ocean, JONSWAP and Pierson–Moskowitz spectra, the Preetham sky model — and from
 MIT-licensed Three.js examples.
